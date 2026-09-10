@@ -1,0 +1,20 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npm run build",
+  "framework": "vite",
+  "outputDirectory": "dist",
+  "regions": ["syd1"],
+  "functions": {
+    "api/index.ts": { "maxDuration": 60 },
+    "api/queue.ts": {
+      "maxDuration": 60,
+      "experimentalTriggers": [{ "type": "queue/v2beta", "topic": "orderly-jobs" }]
+    }
+  },
+  "crons": [{ "path": "/api/cron/recover", "schedule": "* * * * *" }],
+  "rewrites": [
+    { "source": "/api/queue", "destination": "/api/queue" },
+    { "source": "/api/:path*", "destination": "/api/index" },
+    { "source": "/((?!api/).*)", "destination": "/index.html" }
+  ]
+}

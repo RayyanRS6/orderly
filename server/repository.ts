@@ -1,0 +1,110 @@
+import type {
+  Company,
+  Conversation,
+  Integration,
+  IntegrationKind,
+  Job,
+  Order,
+  Product,
+  Role,
+  Trace,
+  Usage,
+} from '../src/shared/types';
+import { DemoFileRepository, MemoryRepository } from './storage/memory';
+import { SupabaseRepository } from './storage/supabase';
+import { appMode } from './config';
+
+export interface Repository {
+  listCompanies(): Promise<Company[]>;
+  getCompany(id: string): Promise<Company | undefined>;
+  saveCompany(company: Company): Promise<void>;
+  getRole(userId: string, companyId: string): Promise<Role | null>;
+  isAdmin(userId: string): Promise<boolean>;
+  listProducts(companyId: string): Promise<Product[]>;
+  saveProduct(product: Product): Promise<void>;
+  deleteProduct(companyId: string, id: string): Promise<void>;
+  replaceProducts(companyId: string, products: Product[]): Promise<void>;
+  listConversations(companyId: string): Promise<Conversation[]>;
+  getConversation(companyId: string, id: string): Promise<Conversation | undefined>;
+  findConversation(
+    companyId: string,
+    phone: string,
+    channel: Conversation['channel'],
+  ): Promise<Conversation | undefined>;
+  saveConversation(conversation: Conversation, expectedVersion?: number): Promise<boolean>;
+  acquireConversationLock(
+    companyId: string,
+    conversationId: string,
+    ownerId: string,
+    leaseUntil: string,
+  ): Promise<boolean>;
+  releaseConversationLock(
+    companyId: string,
+    conversationId: string,
+    ownerId: string,
+  ): Promise<void>;
+  listOrders(companyId: string): Promise<Order[]>;
+  getOrder(companyId: string, id: string): Promise<Order | undefined>;
+  saveOrder(order: Order): Promise<void>;
+  updateOrderStatus(
+    companyId: string,
+    id: string,
+    expectedStatus: Order['status'],
+    newStatus: Order['status'],
+    now: string,
+    jobs?: Job[],
+    automatedConversation?: Conversation,
+  ): Promise<Order | undefined>;
+  setOrderSyncStatus(
+    companyId: string,
+    id: string,
+    status: Order['syncStatus'],
+    expectedUpdatedAt?: string,
+  ): Promise<void>;
+  retryFailedJobs(companyId: string): Promise<number>;
+  commitTurn(
+    companyId: string,
+    conversation: Conversation,
+    expectedVersion: number,
+    order?: Order,
+    jobs?: Job[],
+    usage?: Usage,
+  ): Promise<boolean>;
+  getIntegrations(companyId: string): Promise<Integration[]>;
+  saveIntegration(
+    companyId: string,
+    integration: Integration,
+    encryptedSecret?: string,
+  ): Promise<void>;
+  getSecret(companyId: string, kind: IntegrationKind): Promise<string | undefined>;
+  addTrace(trace: Trace): Promise<void>;
+  listTraces(companyId: string): Promise<Trace[]>;
+  addUsage(usage: Usage): Promise<void>;
+  listUsage(companyId: string): Promise<Usage[]>;
+  reserveBudget(
+    companyId: string,
+    reservationId: string,
+    amountUsd: number,
+    expiresAt: string,
+  ): Promise<boolean>;
+  settleBudget(reservationId: string, usage: Usage): Promise<void>;
+  insertJob(job: Job, dedupeKey?: string): Promise<boolean>;
+  getJob(id: string): Promise<Job | undefined>;
+  listDueJobs(limit: number): Promise<Job[]>;
+  claimJob(id: string, now: string, leaseUntil: string): Promise<Job | undefined>;
+  saveJob(job: Job): Promise<void>;
+  findCompanyByPhoneNumberId(id: string): Promise<Company | undefined>;
+}
+
+export { DemoFileRepository, MemoryRepository, SupabaseRepository };
+
+export function createRepository(): Repository {
+  const mode = appMode();
+  if (mode === 'demo') return new DemoFileRepository();
+  if (mode !== 'live') throw new Error('APP_MODE must be demo or live.');
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  if (!url || !key)
+    throw new Error('Live mode requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.');
+  return new SupabaseRepository(url, key);
+}

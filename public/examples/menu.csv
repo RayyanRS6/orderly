@@ -1,0 +1,5 @@
+id,name,description,category,price,available,emoji,aliases,variants,modifiers
+biryani,Chicken Biryani,Fragrant rice with chicken,Mains,450,true,🍛,biryani|بریانی,[],"[{""id"":""raita"",""name"":""Extra raita"",""price"":80}]"
+karahi,Chicken Karahi,Fresh tomato and ginger curry,Mains,1200,true,🥘,karahi|کڑاہی,"[{""id"":""half"",""name"":""Half"",""price"":1200},{""id"":""full"",""name"":""Full"",""price"":2200}]",[]
+naan,Butter Naan,Fresh tandoor bread,Sides,100,true,🫓,naan|نان,[],[]
+lassi,Mango Lassi,Chilled yogurt and mango,Drinks,280,false,🥭,lassi|لسی,[],[]

@@ -1,0 +1,705 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { mkdir, rename, writeFile } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import type {
+  Company,
+  Conversation,
+  Integration,
+  IntegrationKind,
+  Job,
+  Order,
+  Product,
+  Role,
+  Trace,
+  Usage,
+} from '../../src/shared/types';
+import {
+  seedCompanies,
+  seedConversations,
+  seedOrders,
+  seedProducts,
+  seedTraces,
+} from '../../src/shared/seed';
+import type { Repository } from '../repository';
+import { transitionOrder } from '../../src/domain/engine';
+import { PublicError } from '../security';
+
+interface Reservation {
+  id: string;
+  companyId: string;
+  amountUsd: number;
+  expiresAt: string;
+  createdAt?: string;
+  settled: boolean;
+}
+interface State {
+  companies: Company[];
+  products: Product[];
+  conversations: Conversation[];
+  orders: Order[];
+  integrations: { companyId: string; integration: Integration; encryptedSecret?: string }[];
+  traces: Trace[];
+  usage: Usage[];
+  jobs: Job[];
+  dedupe: Record<string, string>;
+  admins: string[];
+  memberships: { userId: string; companyId: string; role: Role }[];
+  reservations: Reservation[];
+  locks: { companyId: string; conversationId: string; ownerId: string; leaseUntil: string }[];
+}
+const copy = <T>(value: T): T => structuredClone(value);
+const freshState = (seed: boolean): State => ({
+  companies: seed ? copy(seedCompanies) : [],
+  products: seed ? copy(seedProducts) : [],
+  conversations: seed ? copy(seedConversations) : [],
+  orders: seed ? copy(seedOrders) : [],
+  traces: seed ? copy(seedTraces) : [],
+  integrations: [],
+  usage: [],
+  jobs: [],
+  dedupe: {},
+  admins: seed ? ['demo-admin'] : [],
+  memberships: [],
+  reservations: [],
+  locks: [],
+});
+const newest = <T>(rows: T[], key: (row: T) => string, limit: number) =>
+  rows.sort((a, b) => key(b).localeCompare(key(a))).slice(0, limit);
+const companyExists = (state: State, id: string) => {
+  if (!state.companies.some((c) => c.id === id)) throw new Error('Unknown company.');
+};
+const assertOwnership = (existing: { companyId: string } | undefined, companyId: string) => {
+  if (existing && existing.companyId !== companyId)
+    throw new Error('Cross-company reference is forbidden.');
+};
+const put = <T extends { id: string }>(rows: T[], value: T) => {
+  const index = rows.findIndex((r) => r.id === value.id);
+  if (index < 0) rows.push(copy(value));
+  else rows[index] = copy(value);
+};
+const validCost = (amount: number) => {
+  if (!Number.isFinite(amount) || amount < 0) throw new Error('Invalid usage amount.');
+};
+
+function checkConversation(state: State, conversation: Conversation): void {
+  companyExists(state, conversation.companyId);
+  assertOwnership(
+    state.conversations.find((c) => c.id === conversation.id),
+    conversation.companyId,
+  );
+  if (
+    state.conversations.some(
+      (c) =>
+        c.companyId === conversation.companyId &&
+        c.customerPhone === conversation.customerPhone &&
+        c.channel === conversation.channel &&
+        c.id !== conversation.id,
+    )
+  )
+    throw new Error('Conversation already exists for this channel and phone.');
+  for (const item of conversation.cart.items)
+    assertOwnership(
+      state.products.find((p) => p.id === item.productId),
+      conversation.companyId,
+    );
+  if (conversation.cart.orderId)
+    assertOwnership(
+      state.orders.find((o) => o.id === conversation.cart.orderId),
+      conversation.companyId,
+    );
+}
+function checkOrder(state: State, order: Order, pendingConversation?: Conversation): void {
+  companyExists(state, order.companyId);
+  assertOwnership(
+    state.orders.find((o) => o.id === order.id),
+    order.companyId,
+  );
+  const conversation =
+    pendingConversation?.id === order.conversationId
+      ? pendingConversation
+      : state.conversations.find((c) => c.id === order.conversationId);
+  if (!conversation || conversation.companyId !== order.companyId)
+    throw new Error('Order conversation belongs to another company or does not exist.');
+  for (const item of order.items)
+    assertOwnership(
+      state.products.find((p) => p.id === item.productId),
+      order.companyId,
+    );
+  if (
+    state.orders.some(
+      (o) =>
+        o.companyId === order.companyId &&
+        o.submissionKey === order.submissionKey &&
+        o.id !== order.id,
+    )
+  )
+    throw new Error('Duplicate order submission.');
+}
+function checkJob(state: State, job: Job): void {
+  companyExists(state, job.companyId);
+  assertOwnership(
+    state.jobs.find((j) => j.id === job.id),
+    job.companyId,
+  );
+  if (typeof job.payload.conversationId === 'string') {
+    const conversation = state.conversations.find((c) => c.id === job.payload.conversationId);
+    if (!conversation || conversation.companyId !== job.companyId)
+      throw new Error('Invalid job conversation.');
+  }
+  if (typeof job.payload.orderId === 'string') {
+    const order = state.orders.find((o) => o.id === job.payload.orderId);
+    if (!order || order.companyId !== job.companyId) throw new Error('Invalid job order.');
+  }
+}
+function putUsage(state: State, usage: Usage): void {
+  companyExists(state, usage.companyId);
+  validCost(usage.costUsd);
+  const existing = state.usage.find((u) => u.id === usage.id);
+  assertOwnership(existing, usage.companyId);
+  if (!existing) state.usage.push(copy(usage));
+}
+
+// The persisted jobs array is append-only; updating a job keeps its arrival position.
+// A failed predecessor remains a barrier until staff retry it successfully.
+function incomingHeads(jobs: Job[]): Set<string> {
+  const seen = new Set<string>();
+  const heads = new Set<string>();
+  for (const job of jobs) {
+    if (job.kind !== 'incoming' || job.status === 'done') continue;
+    const key = JSON.stringify([job.companyId, job.payload.phone]);
+    if (!seen.has(key)) {
+      seen.add(key);
+      heads.add(job.id);
+    }
+  }
+  return heads;
+}
+
+/** Development/test store. Every write commits a cloned snapshot, avoiding mutation leaks. */
+export class MemoryRepository implements Repository {
+  protected state: State;
+  private pending: Promise<unknown> = Promise.resolve();
+  constructor(seed = true) {
+    this.state = freshState(seed);
+  }
+  protected async persist(_next: State): Promise<void> {}
+  private async read<T>(fn: (state: State) => T): Promise<T> {
+    await this.pending;
+    return copy(fn(this.state));
+  }
+  private mutate<T>(fn: (state: State) => T): Promise<T> {
+    const operation = this.pending.then(async () => {
+      const next = copy(this.state);
+      const result = fn(next);
+      await this.persist(next);
+      this.state = next;
+      return copy(result);
+    });
+    this.pending = operation.catch(() => undefined);
+    return operation;
+  }
+  listCompanies() {
+    return this.read((s) => s.companies);
+  }
+  getCompany(id: string) {
+    return this.read((s) => s.companies.find((c) => c.id === id));
+  }
+  saveCompany(company: Company) {
+    return this.mutate((s) => {
+      if (s.companies.some((c) => c.slug === company.slug && c.id !== company.id))
+        throw new Error('Company slug already exists.');
+      put(s.companies, company);
+    });
+  }
+  isAdmin(userId: string) {
+    return this.read((s) => s.admins.includes(userId));
+  }
+  getRole(userId: string, companyId: string): Promise<Role | null> {
+    return this.read((s) =>
+      s.admins.includes(userId)
+        ? 'admin'
+        : (s.memberships.find((m) => m.userId === userId && m.companyId === companyId)?.role ??
+          null),
+    );
+  }
+  listProducts(companyId: string) {
+    return this.read((s) => s.products.filter((p) => p.companyId === companyId));
+  }
+  saveProduct(product: Product) {
+    return this.mutate((s) => {
+      companyExists(s, product.companyId);
+      assertOwnership(
+        s.products.find((p) => p.id === product.id),
+        product.companyId,
+      );
+      put(s.products, product);
+    });
+  }
+  deleteProduct(companyId: string, id: string) {
+    return this.mutate((s) => {
+      companyExists(s, companyId);
+      s.products = s.products.filter((p) => p.companyId !== companyId || p.id !== id);
+    });
+  }
+  replaceProducts(companyId: string, products: Product[]) {
+    return this.mutate((s) => {
+      companyExists(s, companyId);
+      if (new Set(products.map((p) => p.id)).size !== products.length)
+        throw new Error('Duplicate product id.');
+      for (const product of products) {
+        if (product.companyId !== companyId) throw new Error('Invalid product company.');
+        assertOwnership(
+          s.products.find((p) => p.id === product.id),
+          companyId,
+        );
+      }
+      s.products = [...s.products.filter((p) => p.companyId !== companyId), ...copy(products)];
+    });
+  }
+  listConversations(companyId: string) {
+    return this.read((s) =>
+      newest(
+        s.conversations.filter((c) => c.companyId === companyId),
+        (c) => c.updatedAt,
+        200,
+      ),
+    );
+  }
+  getConversation(companyId: string, id: string) {
+    return this.read((s) => s.conversations.find((c) => c.companyId === companyId && c.id === id));
+  }
+  findConversation(companyId: string, phone: string, channel: Conversation['channel']) {
+    return this.read((s) =>
+      s.conversations.find(
+        (c) => c.companyId === companyId && c.customerPhone === phone && c.channel === channel,
+      ),
+    );
+  }
+  saveConversation(conversation: Conversation, expectedVersion?: number) {
+    return this.mutate((s) => {
+      if (
+        s.conversations.some(
+          (c) =>
+            c.companyId === conversation.companyId &&
+            c.customerPhone === conversation.customerPhone &&
+            c.channel === conversation.channel &&
+            c.id !== conversation.id,
+        )
+      )
+        return false;
+      checkConversation(s, conversation);
+      const existing = s.conversations.find((c) => c.id === conversation.id);
+      if (expectedVersion !== undefined && (existing?.version ?? 0) !== expectedVersion)
+        return false;
+      if (expectedVersion !== undefined && conversation.version !== expectedVersion + 1)
+        throw new Error('Conversation version must advance by one.');
+      put(s.conversations, conversation);
+      return true;
+    });
+  }
+  acquireConversationLock(
+    companyId: string,
+    conversationId: string,
+    ownerId: string,
+    leaseUntil: string,
+  ) {
+    return this.mutate((s) => {
+      companyExists(s, companyId);
+      if (
+        !ownerId ||
+        !Number.isFinite(Date.parse(leaseUntil)) ||
+        Date.parse(leaseUntil) <= Date.now()
+      )
+        throw new Error('Invalid conversation lease.');
+      const existing = s.locks.find(
+        (l) => l.companyId === companyId && l.conversationId === conversationId,
+      );
+      if (existing && Date.parse(existing.leaseUntil) > Date.now() && existing.ownerId !== ownerId)
+        return false;
+      if (existing) {
+        existing.ownerId = ownerId;
+        existing.leaseUntil = leaseUntil;
+      } else s.locks.push({ companyId, conversationId, ownerId, leaseUntil });
+      return true;
+    });
+  }
+  releaseConversationLock(companyId: string, conversationId: string, ownerId: string) {
+    return this.mutate((s) => {
+      s.locks = s.locks.filter(
+        (l) =>
+          l.companyId !== companyId || l.conversationId !== conversationId || l.ownerId !== ownerId,
+      );
+    });
+  }
+  listOrders(companyId: string) {
+    return this.read((s) =>
+      newest(
+        s.orders.filter((o) => o.companyId === companyId),
+        (o) => o.createdAt,
+        500,
+      ),
+    );
+  }
+  getOrder(companyId: string, id: string) {
+    return this.read((s) => s.orders.find((o) => o.companyId === companyId && o.id === id));
+  }
+  saveOrder(order: Order) {
+    return this.mutate((s) => {
+      checkOrder(s, order);
+      put(s.orders, order);
+    });
+  }
+  updateOrderStatus(
+    companyId: string,
+    id: string,
+    expectedStatus: Order['status'],
+    newStatus: Order['status'],
+    now: string,
+    jobs: Job[] = [],
+    automatedConversation?: Conversation,
+  ) {
+    return this.mutate((s) => {
+      const order = s.orders.find((o) => o.companyId === companyId && o.id === id);
+      if (!order || order.status !== expectedStatus) return undefined;
+      if (automatedConversation) {
+        const current = s.conversations.find(
+          (c) => c.companyId === companyId && c.id === automatedConversation.id,
+        );
+        if (
+          !current ||
+          current.mode !== 'bot' ||
+          !s.companies.find((c) => c.id === companyId)?.botEnabled ||
+          current.version !== automatedConversation.version - 1
+        )
+          return undefined;
+        if (
+          newStatus !== 'cancelled' ||
+          expectedStatus !== 'pending' ||
+          automatedConversation.companyId !== companyId ||
+          current.id !== order.conversationId ||
+          current.cart.orderId !== id
+        )
+          throw new Error('Invalid automatic cancellation.');
+        checkConversation(s, automatedConversation);
+        put(s.conversations, automatedConversation);
+      }
+      transitionOrder(order, newStatus, now);
+      order.status = newStatus;
+      order.updatedAt = now;
+      if (jobs.some((job) => job.kind === 'sheet_sync')) order.syncStatus = 'pending';
+      for (const job of jobs) {
+        if (job.companyId !== companyId) throw new Error('Cross-company job.');
+        checkJob(s, job);
+        if (!s.jobs.some((j) => j.id === job.id)) s.jobs.push(copy(job));
+      }
+      return order;
+    });
+  }
+  setOrderSyncStatus(
+    companyId: string,
+    id: string,
+    status: Order['syncStatus'],
+    expectedUpdatedAt?: string,
+  ) {
+    return this.mutate((s) => {
+      const order = s.orders.find((o) => o.companyId === companyId && o.id === id);
+      if (order && (!expectedUpdatedAt || order.updatedAt === expectedUpdatedAt))
+        order.syncStatus = status;
+    });
+  }
+  retryFailedJobs(companyId: string) {
+    return this.mutate((s) => {
+      let count = 0;
+      for (const job of s.jobs)
+        if (job.companyId === companyId && job.status === 'failed') {
+          job.status = 'pending';
+          job.attempts = 0;
+          job.nextRunAt = new Date().toISOString();
+          job.leaseUntil = undefined;
+          count++;
+        }
+      return count;
+    });
+  }
+  commitTurn(
+    companyId: string,
+    conversation: Conversation,
+    expectedVersion: number,
+    order?: Order,
+    jobs: Job[] = [],
+    usage?: Usage,
+  ) {
+    return this.mutate((s) => {
+      if (
+        conversation.companyId !== companyId ||
+        (order && order.companyId !== companyId) ||
+        jobs.some((j) => j.companyId !== companyId) ||
+        (usage && usage.companyId !== companyId)
+      )
+        throw new Error('Cross-company turn is forbidden.');
+      checkConversation(s, conversation);
+      if ((s.conversations.find((c) => c.id === conversation.id)?.version ?? 0) !== expectedVersion)
+        return false;
+      if (conversation.version !== expectedVersion + 1)
+        throw new Error('Conversation version must advance by one.');
+      if (
+        order &&
+        s.orders.some(
+          (o) =>
+            o.companyId === companyId &&
+            o.submissionKey === order.submissionKey &&
+            o.id !== order.id,
+        )
+      )
+        return false;
+      if (order) {
+        if (!s.companies.find((c) => c.id === companyId)?.botEnabled) return false;
+        checkOrder(s, order, conversation);
+      }
+      put(s.conversations, conversation);
+      if (order) put(s.orders, order);
+      for (const job of jobs) {
+        checkJob(s, job);
+        if (!s.jobs.some((j) => j.id === job.id)) s.jobs.push(copy(job));
+      }
+      if (usage) putUsage(s, usage);
+      return true;
+    });
+  }
+  getIntegrations(companyId: string) {
+    return this.read((s) =>
+      s.integrations.filter((i) => i.companyId === companyId).map((i) => i.integration),
+    );
+  }
+  saveIntegration(companyId: string, integration: Integration, encryptedSecret?: string) {
+    return this.mutate((s) => {
+      companyExists(s, companyId);
+      if (
+        integration.kind === 'sheets' &&
+        integration.configured &&
+        integration.config.spreadsheetId &&
+        s.integrations.some(
+          (i) =>
+            i.companyId !== companyId &&
+            i.integration.kind === 'sheets' &&
+            i.integration.configured &&
+            i.integration.config.spreadsheetId === integration.config.spreadsheetId &&
+            (i.integration.config.ordersSheet || 'Orders').toLowerCase() ===
+              (integration.config.ordersSheet || 'Orders').toLowerCase(),
+        )
+      )
+        throw new PublicError(
+          'That orders spreadsheet tab is already assigned to another company. Choose a different spreadsheet or orders tab.',
+          409,
+        );
+      if (
+        integration.kind === 'whatsapp' &&
+        integration.config.phoneNumberId &&
+        s.integrations.some(
+          (i) =>
+            i.companyId !== companyId &&
+            i.integration.kind === 'whatsapp' &&
+            i.integration.config.phoneNumberId === integration.config.phoneNumberId,
+        )
+      )
+        throw new Error('WhatsApp number is already connected to another company.');
+      const existing = s.integrations.find(
+        (i) => i.companyId === companyId && i.integration.kind === integration.kind,
+      );
+      if (existing) {
+        existing.integration = copy(integration);
+        if (encryptedSecret !== undefined) existing.encryptedSecret = encryptedSecret;
+      } else s.integrations.push({ companyId, integration: copy(integration), encryptedSecret });
+    });
+  }
+  getSecret(companyId: string, kind: IntegrationKind) {
+    return this.read(
+      (s) =>
+        s.integrations.find((i) => i.companyId === companyId && i.integration.kind === kind)
+          ?.encryptedSecret,
+    );
+  }
+  addTrace(trace: Trace) {
+    return this.mutate((s) => {
+      companyExists(s, trace.companyId);
+      assertOwnership(
+        s.traces.find((t) => t.id === trace.id),
+        trace.companyId,
+      );
+      if (trace.conversationId) {
+        const conversation = s.conversations.find((c) => c.id === trace.conversationId);
+        if (!conversation || conversation.companyId !== trace.companyId)
+          throw new Error('Invalid trace conversation.');
+      }
+      put(s.traces, trace);
+    });
+  }
+  listTraces(companyId: string) {
+    return this.read((s) =>
+      newest(
+        s.traces.filter((t) => t.companyId === companyId),
+        (t) => t.createdAt,
+        200,
+      ),
+    );
+  }
+  addUsage(usage: Usage) {
+    return this.mutate((s) => putUsage(s, usage));
+  }
+  listUsage(companyId: string) {
+    return this.read((s) => s.usage.filter((u) => u.companyId === companyId));
+  }
+  reserveBudget(companyId: string, reservationId: string, amountUsd: number, expiresAt: string) {
+    return this.mutate((s) => {
+      companyExists(s, companyId);
+      validCost(amountUsd);
+      const now = new Date();
+      if (!Number.isFinite(Date.parse(expiresAt)) || Date.parse(expiresAt) <= now.getTime())
+        throw new Error('Reservation expiry must be in the future.');
+      if (
+        s.reservations.some((r) => r.id === reservationId) ||
+        s.usage.some((u) => u.id === reservationId)
+      )
+        return false;
+      const month = now.toISOString().slice(0, 7);
+      const spent = s.usage
+        .filter((u) => u.companyId === companyId && u.createdAt.slice(0, 7) === month)
+        .reduce((sum, u) => sum + u.costUsd, 0);
+      const reserved = s.reservations
+        .filter(
+          (r) =>
+            r.companyId === companyId &&
+            !r.settled &&
+            (r.createdAt ?? r.expiresAt).slice(0, 7) === month,
+        )
+        .reduce((sum, r) => sum + r.amountUsd, 0);
+      if (
+        spent + reserved + amountUsd >
+        s.companies.find((c) => c.id === companyId)!.ai.monthlyBudgetUsd + 1e-9
+      )
+        return false;
+      s.reservations.push({
+        id: reservationId,
+        companyId,
+        amountUsd,
+        expiresAt,
+        createdAt: now.toISOString(),
+        settled: false,
+      });
+      return true;
+    });
+  }
+  settleBudget(reservationId: string, usage: Usage) {
+    return this.mutate((s) => {
+      const reservation = s.reservations.find((r) => r.id === reservationId);
+      if (!reservation || reservation.companyId !== usage.companyId || usage.id !== reservationId)
+        throw new Error('Invalid budget settlement.');
+      if (reservation.settled) return;
+      putUsage(s, usage);
+      reservation.settled = true;
+    });
+  }
+  insertJob(job: Job, dedupeKey?: string) {
+    return this.mutate((s) => {
+      checkJob(s, job);
+      if (s.jobs.some((j) => j.id === job.id) || (dedupeKey && Object.hasOwn(s.dedupe, dedupeKey)))
+        return false;
+      s.jobs.push(copy(job));
+      if (dedupeKey)
+        Object.defineProperty(s.dedupe, dedupeKey, {
+          value: job.id,
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
+      return true;
+    });
+  }
+  getJob(id: string) {
+    return this.read((s) => s.jobs.find((j) => j.id === id));
+  }
+  listDueJobs(limit: number) {
+    return this.read((s) => {
+      const now = Date.now();
+      const heads = incomingHeads(s.jobs);
+      return s.jobs
+        .filter(
+          (j) =>
+            (j.kind !== 'incoming' || heads.has(j.id)) &&
+            Date.parse(j.nextRunAt) <= now &&
+            (j.status === 'pending' ||
+              (j.status === 'processing' && (!j.leaseUntil || Date.parse(j.leaseUntil) <= now))),
+        )
+        .sort((a, b) => a.nextRunAt.localeCompare(b.nextRunAt))
+        .slice(0, Math.min(Math.max(limit, 1), 100));
+    });
+  }
+  claimJob(id: string, now: string, leaseUntil: string) {
+    return this.mutate((s) => {
+      if (
+        !Number.isFinite(Date.parse(now)) ||
+        !Number.isFinite(Date.parse(leaseUntil)) ||
+        Date.parse(leaseUntil) <= Date.parse(now)
+      )
+        throw new Error('Invalid job lease.');
+      const job = s.jobs.find((j) => j.id === id);
+      if (
+        !job ||
+        (job.kind === 'incoming' && !incomingHeads(s.jobs).has(job.id)) ||
+        Date.parse(job.nextRunAt) > Date.parse(now) ||
+        (job.status !== 'pending' &&
+          !(
+            job.status === 'processing' &&
+            (!job.leaseUntil || Date.parse(job.leaseUntil) <= Date.parse(now))
+          ))
+      )
+        return undefined;
+      job.status = 'processing';
+      job.leaseUntil = leaseUntil;
+      job.attempts += 1;
+      return job;
+    });
+  }
+  saveJob(job: Job) {
+    return this.mutate((s) => {
+      checkJob(s, job);
+      put(s.jobs, job);
+    });
+  }
+  findCompanyByPhoneNumberId(id: string) {
+    return this.read((s) => {
+      const integration = s.integrations.find(
+        (i) => i.integration.kind === 'whatsapp' && i.integration.config.phoneNumberId === id,
+      );
+      return integration ? s.companies.find((c) => c.id === integration.companyId) : undefined;
+    });
+  }
+}
+
+/** Single-process local demo persistence. Production uses Postgres transactions. */
+export class DemoFileRepository extends MemoryRepository {
+  private readonly path: string;
+  constructor(path = resolve('.local/data.json'), seed = true) {
+    super(seed);
+    this.path = path;
+    if (existsSync(path)) {
+      const loaded = JSON.parse(readFileSync(path, 'utf8')) as Partial<State>;
+      if (
+        !Array.isArray(loaded.companies) ||
+        !Array.isArray(loaded.conversations) ||
+        !Array.isArray(loaded.orders)
+      )
+        throw new Error(
+          'Demo database is invalid. Restore .local/data.json from backup or move it aside.',
+        );
+      this.state = { ...freshState(false), ...loaded };
+    }
+  }
+  protected override async persist(next: State): Promise<void> {
+    await mkdir(dirname(this.path), { recursive: true });
+    const temporary = `${this.path}.${randomUUID()}.tmp`;
+    await writeFile(temporary, JSON.stringify(next), { encoding: 'utf8', mode: 0o600 });
+    await rename(temporary, this.path);
+  }
+}
