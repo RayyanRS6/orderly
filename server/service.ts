@@ -15,6 +15,11 @@ import { WhatsAppAdapter } from './integrations/whatsapp.js';
 import { decryptSecret, PublicError } from './security.js';
 import { dispatchJob, makeJob } from './jobs.js';
 
+// Supabase Free workers can run for 150 seconds. A lease must outlive that
+// runtime so recovery cannot overlap a still-running worker. Revisit this when
+// upgrading to a plan with a longer worker lifetime.
+const WORKER_LEASE_MS = 180000;
+
 export async function integrationAdapter(
   repo: Repository,
   companyId: string,
@@ -68,7 +73,7 @@ export async function handleTurn(
       company.id,
       conversation.id,
       lockId,
-      new Date(Date.now() + 60000).toISOString(),
+      new Date(Date.now() + WORKER_LEASE_MS).toISOString(),
     ))
   )
     throw new PublicError(
@@ -329,10 +334,12 @@ export async function processJob(repo: Repository, id: string) {
   const job = await repo.claimJob(
     id,
     new Date().toISOString(),
-    new Date(Date.now() + 90000).toISOString(),
+    new Date(Date.now() + WORKER_LEASE_MS).toISOString(),
   );
   if (!job) return;
   try {
+    if (job.attempts > 5)
+      throw new PublicError('Repeated worker interruptions require staff review.', 503);
     const company = await repo.getCompany(job.companyId);
     if (!company) throw new PublicError('Job company no longer exists.', 404);
     if (job.kind === 'incoming') {
@@ -349,7 +356,7 @@ export async function processJob(repo: Repository, id: string) {
             company.id,
             conversation.id,
             job.id,
-            new Date(Date.now() + 60000).toISOString(),
+            new Date(Date.now() + WORKER_LEASE_MS).toISOString(),
           ))
         )
           throw new PublicError('Conversation is busy.', 409);
@@ -397,7 +404,7 @@ export async function processJob(repo: Repository, id: string) {
           company.id,
           sheetLock,
           job.id,
-          new Date(Date.now() + 60000).toISOString(),
+          new Date(Date.now() + WORKER_LEASE_MS).toISOString(),
         ))
       )
         throw new PublicError('Another spreadsheet write is running.', 409);

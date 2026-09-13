@@ -158,6 +158,11 @@ export interface Bootstrap {
   orders: Order[];
   conversations: Conversation[];
   integrations: Integration[];
+  aiConnection: {
+    provider: Provider;
+    keyMode: 'platform' | 'own';
+    configured: boolean;
+  };
   usage: Usage[];
   traces: Trace[];
 }

@@ -8,3 +8,8 @@ dist/
 coverage/
 test-results/
 *.log
+.wrangler/
+supabase/.temp/
+supabase/functions/orderly/index.js
+# Downloaded Google service-account keys must never enter source control.
+gen-lang-client-*.json

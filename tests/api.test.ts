@@ -14,7 +14,6 @@ import { createConversation, processTurn } from '../src/domain/engine';
 import { catalogFromRows, parseCsv } from '../server/integrations/catalog';
 import type { BotAction, Conversation, TurnResult } from '../src/shared/types';
 
-vi.mock('@vercel/queue', () => ({ send: vi.fn(async () => ({ messageId: 'fake-queue-id' })) }));
 vi.mock('@supabase/supabase-js', () => ({
   createClient: () => ({
     auth: { getUser: async () => ({ data: { user: { id: 'signed-in-user' } }, error: null }) },

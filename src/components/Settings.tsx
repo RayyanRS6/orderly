@@ -26,7 +26,7 @@ const providers: Record<Provider, { name: string; model: string }> = {
   mock: { name: 'Local demo · no API calls', model: 'deterministic-demo' },
   openai: { name: 'OpenAI', model: 'gpt-5.4-mini' },
   anthropic: { name: 'Anthropic', model: 'claude-haiku-4-5' },
-  gemini: { name: 'Google Gemini', model: 'gemini-2.5-flash-lite' },
+  gemini: { name: 'Google Gemini', model: 'gemini-3.5-flash-lite' },
 };
 
 export function Settings() {
@@ -265,7 +265,7 @@ export function Settings() {
               </Field>
               <Field
                 label="Monthly AI limit (USD)"
-                hint="When the budget is exhausted, new AI requests go to staff. Messaging and hosting charges are separate."
+                hint="When this allowance is exhausted, new AI requests go to staff. A $0 limit blocks model calls, including free-tier calls."
               >
                 <input
                   className="input"
@@ -393,8 +393,9 @@ export function Settings() {
           </span>
         </p>
         <p className="mt-2 text-xs leading-relaxed text-stone-500">
-          UTC calendar month. Unsettled requests also reserve budget. These estimates cover model
-          tokens; WhatsApp and hosting are billed separately.
+          UTC calendar month. Unsettled requests also reserve budget. Estimates use paid token rates
+          even when your provider usage is free; this is not a billing invoice. WhatsApp and hosting
+          are separate.
         </p>
       </section>
       <Team />
@@ -466,10 +467,10 @@ export function Integrations() {
   const [secret, setSecret] = useState('');
   const [notice, setNotice] = useState('');
   const canEdit = data.role !== 'staff';
-  const run = async (path: string, message: string) => {
+  const run = async (path: string, message: string, body: Record<string, string> = {}) => {
     setNotice('');
     try {
-      await mutate(path, {});
+      await mutate(path, body);
       setNotice(message);
     } catch {}
   };
@@ -495,6 +496,48 @@ export function Integrations() {
           {notice}
         </p>
       )}
+      <section className="card mb-6 p-6">
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="font-semibold">Selected AI connection</h2>
+          <Status value={data.aiConnection.configured ? 'configured' : 'disconnected'} />
+        </div>
+        <p className="mt-3 text-sm text-stone-700">
+          {providers[data.aiConnection.provider].name}
+          {data.aiConnection.provider !== 'mock' &&
+            ` · ${data.aiConnection.keyMode === 'platform' ? 'Platform account' : 'This business’s API key'}`}
+        </p>
+        <p className="mt-2 text-xs leading-relaxed text-stone-500">
+          {data.aiConnection.provider === 'mock'
+            ? 'The local demo does not need an API key.'
+            : data.aiConnection.configured
+              ? 'The selected key is available. Test account access, then try a natural-language order in Test your bot to check the model.'
+              : data.aiConnection.keyMode === 'platform'
+                ? 'The platform key is missing. Ask the platform administrator to connect this provider.'
+                : 'Add this business’s provider key below to use the selected model.'}
+        </p>
+        <div className="mt-4 flex flex-wrap gap-2">
+          {data.aiConnection.provider !== 'mock' && data.aiConnection.configured && (
+            <button
+              className="btn"
+              disabled={!canEdit || busy}
+              onClick={() =>
+                void run(
+                  `/integrations/${data.aiConnection.provider}/test`,
+                  `${providers[data.aiConnection.provider].name} ${data.aiConnection.keyMode === 'platform' ? 'platform' : 'business'} key verified. Test a natural-language order to check the selected model.`,
+                  { keyMode: data.aiConnection.keyMode },
+                )
+              }
+            >
+              <RefreshCw className="size-4" />
+              Test selected key
+            </button>
+          )}
+          <button className="btn btn-quiet" onClick={() => navigate('settings')}>
+            Change AI settings
+            <ArrowRight className="size-4" />
+          </button>
+        </div>
+      </section>
       <div className="grid gap-5 md:grid-cols-2">
         {data.integrations.map((integration) => {
           const info = integrationInfo[integration.kind];
@@ -539,6 +582,7 @@ export function Integrations() {
                       void run(
                         `/integrations/${integration.kind}/test`,
                         `${info.title} credentials verified. Live message delivery still needs end-to-end testing.`,
+                        { keyMode: 'own' },
                       )
                     }
                   >

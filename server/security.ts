@@ -57,7 +57,8 @@ export class PublicError extends Error {
   constructor(
     message: string,
     public status = 400,
+    options?: ErrorOptions,
   ) {
-    super(message);
+    super(message, options);
   }
 }

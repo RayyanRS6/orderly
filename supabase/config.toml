@@ -1,0 +1,11 @@
+project_id = "orderly"
+
+[functions.orderly]
+enabled = true
+# The API verifies Supabase user tokens, Meta signatures and worker secrets on
+# their respective routes. Meta cannot supply Supabase's gateway JWT.
+verify_jwt = false
+entrypoint = "./functions/orderly/index.js"
+
+[edge_runtime]
+policy = "per_worker"

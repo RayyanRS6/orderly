@@ -1,17 +1,18 @@
 # Live deployment and onboarding
 
-All account-based steps below remain to be performed. Keep the restaurant bot paused until the final delivery test passes.
+Orderly uses Cloudflare Workers Static Assets for the dashboard and Supabase Edge Functions for its Hono API and job workers. Supabase Postgres stores companies, orders, encrypted credentials and durable jobs; Supabase Cron recovers unfinished work. No Vercel, Railway or n8n subscription is required. Check [account setup status](SETUP-STATUS.md) for completed cloud steps, and keep the restaurant bot paused until the final delivery test passes.
 
 ## 1. Supabase
 
-Create one Supabase project for the platform. The current project is in Sydney, and Vercel functions target `syd1` to match it. Companies are isolated within this project using `company_id`, membership checks and RLS. See `SETUP-STATUS.md` before applying migrations to an existing project.
+Create one Supabase project for the platform. The existing Orderly project is in Sydney. Companies are isolated within it using `company_id`, membership checks and RLS. See `SETUP-STATUS.md` before applying migrations to an existing project.
 
 Run these files in order in the Supabase SQL editor:
 
 1. `supabase/migrations/202609090001_initial.sql`
 2. `supabase/migrations/202609090002_order_transitions.sql`
+3. `supabase/migrations/202609110001_job_dispatch.sql`
 
-These are initial migrations for an empty project. Do not rerun them over existing tables. All mutating RPCs require the server service-role key. Browser users have tenant-scoped reads; they cannot call the write RPCs or read the secrets table.
+For the existing Orderly project, the first two migrations are already applied through the SQL editor: apply only the new job-dispatch migration. SQL-editor execution does not populate CLI migration history; do not blindly run `supabase db push`. All mutating RPCs require the server service-role key. Browser users have tenant-scoped reads; they cannot call the write RPCs or read the secrets table.
 
 Create the founder’s email/password user in Supabase Authentication, then grant platform administration in SQL. Replace the placeholder with that user’s actual UUID:
 
@@ -30,11 +31,11 @@ on conflict(company_id, user_id) do update set role=excluded.role;
 
 Use `staff` for employees who only handle orders and conversations. Owners can manage their own menu and connections. Only the founder creates companies, raises AI allowances, or grants access to platform-owned model keys. Manage passwords and account recovery in Supabase for this pilot.
 
-## 2. Vercel
+## 2. Supabase backend and Cloudflare frontend
 
-Connect the GitHub repository when it is available. The checked-in `vercel.json` selects Vite, publishes `dist`, builds two Node API functions and configures a one-minute recovery cron. Use a Pro project for the commercial pilot. Node 24 is recommended. No deployment is triggered by local `npm run build`.
+Use Node 24 and `npm ci`. `npm run build:edge` bundles the server into the ignored `supabase/functions/orderly/index.js`, without embedding environment variables. `npm run test:edge-runtime` starts that actual bundle in Deno with fictional credentials. The deployment below uses server-side bundling and does not require Docker.
 
-Set server environment variables from `.env.example`:
+Save server environment variables in an ignored file, such as `.local/supabase.env`. Supabase automatically provides `SUPABASE_URL`, `SUPABASE_ANON_KEY` and `SUPABASE_SERVICE_ROLE_KEY` inside hosted functions; omit those reserved names when uploading function secrets. They may remain in the local file used by the scheduler-configuration helper.
 
 | Variable                                                | Value                                                                             |
 | ------------------------------------------------------- | --------------------------------------------------------------------------------- |
@@ -44,14 +45,14 @@ Set server environment variables from `.env.example`:
 | `SUPABASE_ANON_KEY`                                     | Public project key used for Auth                                                  |
 | `SUPABASE_SERVICE_ROLE_KEY`                             | Server service-role key                                                           |
 | `CREDENTIAL_ENCRYPTION_KEY`                             | Base64 encoding of 32 cryptographically random bytes                              |
-| `CRON_SECRET`                                           | A long random secret; Vercel uses it as the cron bearer token                     |
+| `CRON_SECRET`                                           | A long random secret shared by the worker and Supabase Vault                      |
 | `META_GRAPH_VERSION`                                    | Supported version selected in your Meta app                                       |
 | `META_APP_ID`, `META_APP_SECRET`                        | Your platform Meta app credentials                                                |
 | `META_VERIFY_TOKEN`                                     | Random secret you will also enter in Meta’s webhook setup                         |
 | `META_EMBEDDED_SIGNUP_CONFIG_ID`                        | Your Facebook Login for Business / Embedded Signup v4 configuration               |
 | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` | Optional platform model keys; company-owned keys are entered in Integrations      |
 
-Generate the encryption key in your own terminal and put the output directly into Vercel environment settings:
+Reuse the existing encryption key when migrating. Generate one only for a new installation:
 
 ```powershell
 node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
@@ -59,19 +60,46 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 
 Keep a secure backup. Changing this key without re-encrypting stored credentials makes the existing credentials unreadable. Nothing prefixed `VITE_` should contain a secret.
 
-Enable/verify Vercel Queues access for this project and confirm the `orderly-jobs` topic trigger is attached to `api/queue.ts`. The SDK uses Vercel OIDC credentials. Queue availability, region support and billing need confirmation in the actual account because the service is beta. [Queue setup](https://vercel.com/docs/queues/quickstart).
+Deploy the backend after uploading the non-reserved variables through Supabase Secrets or `supabase secrets set --env-file <filtered-ignored-file> --project-ref <project-ref>`:
 
-After deployment, check `/api/health`, sign-in, the initial company screen, and a demo order. Confirm the cron appears and runs successfully. The cron recovers saved jobs and refreshes Sheet catalogs during opening hours. Its current catalog loop is intended for a small pilot; move catalog refreshes to individual jobs before onboarding enough companies to exceed a function’s 60-second limit.
+```powershell
+npx supabase login
+npm run build:edge
+npx supabase functions deploy orderly --project-ref zygsuxgqkeedgcbjhfzx --use-api
+```
+
+`supabase/config.toml` disables only gateway JWT verification, since Meta cannot send a Supabase JWT. The API still verifies user tokens and company membership, Meta webhook signatures, and the private worker bearer token on their respective routes. Never replace these checks with a public worker endpoint.
+
+Build and deploy the frontend separately:
+
+```powershell
+$env:VITE_API_BASE_URL = 'https://zygsuxgqkeedgcbjhfzx.supabase.co/functions/v1/orderly'
+npm run build:cloudflare
+npx wrangler login
+npx wrangler deploy
+```
+
+Alternatively upload the contents of `dist` through Cloudflare's static-site upload flow. `wrangler.jsonc` defines a static-only app with SPA routing. Set the backend's `APP_URL` to the resulting exact HTTPS frontend origin, without a trailing slash. Add that frontend origin to Supabase Auth's site/redirect configuration. Public preview origins are not automatically allowed. Do not put a service-role or provider key in `VITE_*` variables.
+
+After the new SQL migration and backend are deployed, configure Vault using the existing server environment file:
+
+```powershell
+node scripts/configure-scheduler.mjs .local/supabase.env
+```
+
+The helper sends the worker URL and `CRON_SECRET` to a service-role-only RPC and prints readiness flags, never keys. The scheduler checks due jobs in Postgres every minute and dispatches at most 20; idle checks invoke no Edge Functions. Incoming messages dispatch immediately, and completion notifies the next message from the same customer. Sheet catalogs refresh before bot turns and on the owner's sync action, avoiding idle sweeps of every restaurant.
+
+Inspect `/functions/v1/orderly/api/health`, sign-in, first-company creation and a demo order after deployment. Confirm worker requests return 202, jobs finish, a temporary integration failure retries, and a stale fifth attempt is held for staff. Job and conversation leases are 180 seconds to outlive the Free worker's 150-second lifetime; review them before upgrading to a plan with a longer runtime. These are bounded free-tier workers, not continuously running servers. [Supabase deployment](https://supabase.com/docs/guides/functions/deploy), [runtime limits](https://supabase.com/docs/guides/functions/limits).
 
 ## 3. Models
 
-In **Settings**, choose a provider and model. Default suggestions are OpenAI `gpt-5.4-mini`, Anthropic `claude-haiku-4-5`, or Gemini `gemini-2.5-flash-lite`. Use **This business’s API key** for BYOK, then save the key in **Integrations**. Alternatively the founder can enable a platform key for that company.
+In **Settings**, choose a provider and model. Default suggestions are OpenAI `gpt-5.4-mini`, Anthropic `claude-haiku-4-5`, or Gemini `gemini-3.5-flash-lite`. Use **This business’s API key** for BYOK, then save the key in **Integrations**. Alternatively the founder can enable a platform key for that company. The **Selected AI connection** card reports whether that chosen key is available and can test account access. Individual provider cards test the separately saved business key.
 
 The key test checks provider account access; it does not establish model availability or language quality. Test a natural-language order in **Test your bot** afterward. This incurs normal provider usage if a live model is selected, even in local demo mode.
 
 Unknown model IDs require `MODEL_PRICING_JSON`, keyed by exact model ID, with `[input USD per million tokens, output USD per million tokens]`. Update prices when providers change them. Context and model output are bounded; API calls have a 25-second deadline and no automatic SDK retries. Tool actions are validated regardless of provider.
 
-Budget reservations are conservative. A timed-out call is charged at its reserved estimate if actual usage is unavailable. If the whole worker dies before settlement, the unresolved hold continues counting against that month’s allowance. The founder should reconcile such rows in `budget_reservations` against provider usage, rather than automatically deleting them. Pricing differences, taxes, provider credits and provider-side adjustments mean this is an application estimate, not a billing invoice.
+Budget reservations are conservative and use paid token rates even when the provider grants free usage. A $0 application allowance blocks model calls, including free-tier calls. Gemini 3.5 Flash-Lite uses a fallback estimate of $0.30 per million input tokens and $2.50 per million output tokens; verify project eligibility for free usage separately. [Gemini pricing](https://ai.google.dev/gemini-api/docs/pricing). A timed-out call is charged at its reserved estimate if actual usage is unavailable. If the whole worker dies before settlement, the unresolved hold continues counting against that month’s allowance. The founder should reconcile such rows in `budget_reservations` against provider usage, rather than automatically deleting them. Pricing differences, taxes, provider credits and provider-side adjustments mean this is an application estimate, not a billing invoice.
 
 ## 4. WhatsApp
 
@@ -82,7 +110,7 @@ For initial testing, create a WhatsApp-enabled Meta app and use its test phone n
 Configure the app webhook at:
 
 ```text
-https://YOUR_DOMAIN/api/webhooks/whatsapp
+https://YOUR_PROJECT_REF.supabase.co/functions/v1/orderly/api/webhooks/whatsapp
 ```
 
 Use the same `META_VERIFY_TOKEN` as on the server. Subscribe to the `messages` webhook field. Meta POST requests must include a valid `X-Hub-Signature-256` calculated with your app secret. Map each restaurant’s phone number ID to exactly one company.
@@ -123,7 +151,7 @@ id,name,description,category,price,available,emoji,aliases,variants,modifiers
 
 Use the supplied [`public/examples/menu.csv`](../public/examples/menu.csv). Prices in imports are **rupees**; internal prices are integer paisa. Variant prices are the full replacement item price. Extras add to the selected item price. Aliases use `|`; variants/modifiers use JSON arrays with `id`, `name`, and `price`.
 
-Keep stable IDs when editing a menu. Non-UUID source IDs are converted into stable company-specific UUIDs. Imports replace the entire company catalog and reject invalid files without partially applying rows. Limits: 500 KB CSV, 500 products. Google Sheets must contain the same columns; use **Settings → Menu source → Connected Google Sheet** to make it authoritative. The cron refreshes during opening hours; bot turns refresh it again before modifying an order. If it cannot be read, the cart is retained and staff take over.
+Keep stable IDs when editing a menu. Non-UUID source IDs are converted into stable company-specific UUIDs. Imports replace the entire company catalog and reject invalid files without partially applying rows. Limits: 500 KB CSV, 500 products. Google Sheets must contain the same columns; use **Settings → Menu source → Connected Google Sheet** to make it authoritative. Bot turns refresh the menu before modifying an order; owners can also sync it manually. If it cannot be read, the cart is retained and staff take over.
 
 Orders first commit to Postgres, then synchronize in the background. Sheet downtime never erases the saved order. Writes use a company lock and look up the order ID before appending. An ambiguous append can temporarily duplicate a row; a retry reconciles duplicates without deleting unrelated rows. If synchronization fails repeatedly, correct the connection and use **Retry failed jobs**. [Google Sheets API](https://developers.google.com/workspace/sheets/api/guides/concepts).
 

@@ -2,7 +2,7 @@
 
 A working local MVP for a WhatsApp restaurant ordering platform. Customers use the restaurant’s WhatsApp number; owners and staff use this dashboard to manage menus, orders, and conversations. The application replaces n8n with its own TypeScript ordering engine.
 
-**Current status:** the local app works without accounts or API keys. Live adapters, Supabase migrations, and Vercel configuration are included. No cloud project has been created, no phone number has been connected, and no real WhatsApp message has been sent. Live provider calls and deployment still need account-based testing.
+**Current status:** the local app works without accounts or API keys. Cloudflare frontend and Supabase backend/scheduler support are implemented and tested, including the actual backend bundle in Deno. Cloud deployment and real provider checks remain pending; see [account setup status](docs/SETUP-STATUS.md). No phone number has been connected, and no real WhatsApp message has been sent.
 
 ## Run locally
 
@@ -32,7 +32,7 @@ Try `mujhe 2 biryani chahiye`, `مینو`, a sold-out item, or **Talk to staff**
 
 **Test your bot creates demo conversations, even on a live deployment.** These never send WhatsApp messages. If you connect a real Sheet, confirmed demo orders can enter that Sheet through the sync queue: use a dedicated test workspace and spreadsheet.
 
-Local demo mode does not automatically dispatch cloud queue jobs. Use **Integrations → Retry failed jobs** to process pending Sheet jobs locally after configuring a test spreadsheet. Automatic queue processing is enabled by the live Vercel deployment.
+Local demo mode does not automatically dispatch cloud queue jobs. Use **Integrations → Retry failed jobs** to process pending Sheet jobs locally after configuring a test spreadsheet. Hosted automatic processing requires the Supabase worker and Vault-backed scheduler configuration.
 
 ## What is implemented
 
@@ -49,7 +49,7 @@ Local demo mode does not automatically dispatch cloud queue jobs. Use **Integrat
 - Google Sheets menu reads and order writes with stable order IDs, retries and duplicate-row reconciliation.
 - Supabase Auth, tenant membership checks, database RLS, atomic order/outbox transactions, and worker leases.
 - Incoming messages process in arrival order per company and customer, including retries; failed messages block later automation until recovery.
-- Vercel Node Functions, Vercel Queues adapter and a one-minute recovery cron. No n8n service is used.
+- Cloudflare static hosting, Hono on Supabase Edge Functions, and Postgres job dispatch with minute recovery. Repeated worker crashes stop after five attempts. No n8n service is used.
 
 ## How the brain works
 
@@ -57,7 +57,7 @@ Local demo mode does not automatically dispatch cloud queue jobs. Use **Integrat
 flowchart LR
     Customer[Customer WhatsApp] --> Meta[Meta Cloud API]
     Meta --> Webhook[Verify signature and save incoming job]
-    Webhook --> Queue[Vercel Queue]
+    Webhook --> Queue[Postgres dispatch to Supabase worker]
     Queue --> Context[Load company, menu and cart]
     Context --> Model[Optional model: typed actions]
     Model --> Rules[Deterministic validation and quote]
@@ -89,7 +89,7 @@ The browser flow has been exercised at mobile and desktop widths: menu → cart 
 
 ## Stack and cost decision
 
-The chosen stack is **React/Vite + Hono on Vercel + Supabase Postgres/Auth**, with direct Meta and Google APIs. Hono is portable; Vercel is the agreed deployment target. Railway or Cloudflare is not required for this MVP. This is a fit decision, not a claim that one provider is universally faster.
+The implemented stack is **React/Vite on Cloudflare static hosting + Hono on Supabase Edge Functions + Supabase Postgres/Auth/Cron**, with direct Meta and Google APIs. The [free hosting plan](docs/FREE-HOSTING-PLAN.md) records quotas and tradeoffs. Existing Vercel queue and deployment files have been removed; the model-independent order engine and multi-company database remain.
 
 | Database                      | Free database allowance                 | Why it matters here                                                                             |
 | ----------------------------- | --------------------------------------- | ----------------------------------------------------------------------------------------------- |
@@ -99,15 +99,15 @@ The chosen stack is **React/Vite + Hono on Vercel + Supabase Postgres/Auth**, wi
 
 These allowances were checked September 2026: [Supabase pricing](https://supabase.com/pricing), [Firebase pricing](https://firebase.google.com/pricing), [Neon pricing](https://neon.com/pricing). No comparative latency benchmark has been run. Put the database near the function region and measure actual traffic before choosing more compute.
 
-Local development costs **$0**. Vercel Hobby is limited to personal, non-commercial use; a customer-facing startup needs an appropriate commercial plan. Pro starts at $20/month with one deploying seat and $20 usage credit. This project’s one-minute cron also assumes Pro. [Vercel Hobby terms](https://vercel.com/docs/plans/hobby), [Pro pricing](https://vercel.com/docs/plans/pro-plan).
+Local development and the selected hosting plans start at **$0**, within their free quotas. Cloudflare serves the static dashboard; Supabase includes 500,000 function invocations. The scheduler checks for due jobs inside Postgres and invokes workers only for work. Vercel Hobby's personal, non-commercial restriction is one reason for changing hosts. [Cloudflare static pricing](https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/), [Supabase pricing](https://supabase.com/pricing), [Vercel Hobby terms](https://vercel.com/docs/plans/hobby).
 
-Supabase Free works for an early test but can pause after inactivity and has no automatic backups. Pro starts at $25/month with the first project, 8 GB disk and daily backups. A practical paid pilot starts around **$45/month base**, before tax, extra usage, model calls, WhatsApp charges and add-ons. Multiple restaurants share one project with tenant isolation; a separate paid project per restaurant is not required. [Supabase pricing](https://supabase.com/pricing).
+Supabase Free works for an early test but can pause after inactivity and has no automatic backups. Pro starts at $25/month with the first project, 8 GB disk and daily backups; that is a later upgrade option, not an initial requirement. Multiple restaurants share one project with tenant isolation; a separate paid project per restaurant is not required. [Supabase pricing](https://supabase.com/pricing).
 
-Vercel Queues is currently beta. Its adapter can be replaced without replacing the order engine or Postgres outbox. Do not assume messaging or AI is free: confirm current destination-country Meta rates and model rates before quoting a client. Meta’s published changes around October 2026 make old “all service replies are free” estimates unsafe. [Meta pricing](https://developers.facebook.com/documentation/business-messaging/whatsapp/pricing).
+Do not assume messaging or AI is free: confirm the selected model's quota, Google project's billing tier and current destination-country Meta rates before live testing or quoting a client. Hosting quotas are separate from API charges. [Gemini pricing](https://ai.google.dev/gemini-api/docs/pricing), [Meta pricing](https://developers.facebook.com/documentation/business-messaging/whatsapp/pricing).
 
 ## Connect real accounts
 
-Follow [the deployment guide](docs/DEPLOYMENT.md) for Supabase, Vercel, Meta, Google Sheets and the activation checklist. The keys are supplied through server environment variables or the encrypted Integrations forms. Do not put service-role, Meta, Google or model secrets in `VITE_*` variables.
+Follow [the deployment guide](docs/DEPLOYMENT.md) for Supabase, Cloudflare, Meta, Google Sheets and the activation checklist. The keys are supplied through server environment variables or the encrypted Integrations forms. Do not put service-role, Meta, Google or model secrets in `VITE_*` variables.
 
 ## Scope and next milestones
 

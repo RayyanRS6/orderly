@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { secureHeaders } from 'hono/secure-headers';
+import { cors } from 'hono/cors';
 import { createClient } from '@supabase/supabase-js';
 import { z, ZodError } from 'zod';
 import type { Repository } from './repository.js';
@@ -13,19 +14,18 @@ import type {
   Role,
   OrderStatus,
 } from '../src/shared/types.js';
-import { createConversation, isOpen } from '../src/domain/engine.js';
+import { createConversation } from '../src/domain/engine.js';
 import { appMode } from './config.js';
 import {
   PublicError,
   encryptSecret,
-  decryptSecret,
   safeEqual,
   sanitizeError,
   verifyMetaSignature,
 } from './security.js';
 import { productSchema, companySchema, chatSchema } from './validation.js';
 import { catalogFromRows, parseCsv } from './integrations/catalog.js';
-import { modelDefaults, validateModelConfiguration } from './integrations/models.js';
+import { modelDefaults, providerKey, validateModelConfiguration } from './integrations/models.js';
 import {
   handleTurn,
   integrationAdapter,
@@ -52,9 +52,27 @@ const owner = (role: Role) => {
     throw new PublicError('Only the restaurant owner can change these settings.', 403);
 };
 
-export function createApp(repo: Repository) {
+export type AppOptions = { waitUntil?: (task: Promise<unknown>) => void };
+
+export function createApp(repo: Repository, options: AppOptions = {}) {
   const app = new Hono<Env>();
   app.use('/api/*', secureHeaders());
+  app.use('/api/*', async (c, next) => {
+    // The split frontend may access only this exact origin; webhooks and workers
+    // authenticate separately and do not send browser Origin headers.
+    const allowedOrigin =
+      process.env.APP_URL ||
+      (appMode() === 'demo' ? 'http://127.0.0.1:5173' : new URL(c.req.url).origin);
+    const origin = c.req.header('origin');
+    if (origin && origin !== allowedOrigin)
+      throw new PublicError('This origin is not allowed.', 403);
+    return cors({
+      origin: allowedOrigin,
+      allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+      allowHeaders: ['Content-Type', 'Authorization', 'x-company-id'],
+      maxAge: 3600,
+    })(c, next);
+  });
   app.use(
     '/api/*',
     bodyLimit({
@@ -85,6 +103,24 @@ export function createApp(repo: Repository) {
     }),
   );
   app.get('/api/health', (c) => c.json({ ok: true, mode: appMode() }));
+  app.post('/api/jobs/process', async (c) => {
+    if (appMode() !== 'live') throw new PublicError('Hosted workers require live mode.', 503);
+    const secret = process.env.CRON_SECRET;
+    if (!secret || !safeEqual(c.req.header('authorization') || '', `Bearer ${secret}`))
+      throw new PublicError('Unauthorized.', 401);
+    const { jobId } = z
+      .object({ jobId: z.string().min(1).max(200) })
+      .strict()
+      .parse(await c.req.json());
+    const task = processJob(repo, jobId);
+    if (options.waitUntil) {
+      // Failures are saved by processJob; never log provider payloads or keys.
+      options.waitUntil(task.catch(() => console.warn('Saved job awaits recovery.')));
+      return c.json({ accepted: true }, 202);
+    }
+    await task;
+    return c.json({ processed: true });
+  });
   app.get('/api/webhooks/whatsapp', (c) => {
     const token = process.env.META_VERIFY_TOKEN;
     if (
@@ -179,37 +215,11 @@ export function createApp(repo: Repository) {
     if (!secret || !safeEqual(c.req.header('authorization') || '', `Bearer ${secret}`))
       throw new PublicError('Unauthorized.', 401);
     const dispatched = await recoverJobs(repo);
-    let refreshed = 0;
-    for (const company of await repo.listCompanies())
-      if (
-        company.catalogSource === 'sheets' &&
-        company.botEnabled &&
-        isOpen(company, new Date().toISOString())
-      ) {
-        if (company.catalogSyncedAt && Date.now() - Date.parse(company.catalogSyncedAt) < 55000)
-          continue;
-        try {
-          await refreshCatalog(repo, company);
-          refreshed++;
-        } catch {
-          await repo.addTrace({
-            id: randomUUID(),
-            companyId: company.id,
-            action: 'catalog.refresh_failed',
-            detail: 'Check the Sheets connection. Last valid menu retained.',
-            createdAt: new Date().toISOString(),
-          });
-        }
-      }
-    return c.json({ dispatched, refreshed });
+    // Catalogs are refreshed by handleTurn before use and by the owner's sync
+    // action, avoiding an unbounded sweep of idle restaurants here.
+    return c.json({ dispatched });
   });
   app.use('/api/*', async (c, next) => {
-    const origin = c.req.header('origin');
-    const allowedOrigin =
-      process.env.APP_URL ||
-      (appMode() === 'demo' ? 'http://127.0.0.1:5173' : new URL(c.req.url).origin);
-    if (origin && origin !== allowedOrigin)
-      throw new PublicError('This origin is not allowed.', 403);
     const mode = appMode();
     let allowed: Company[];
     let userId = 'local-demo-admin';
@@ -289,6 +299,15 @@ export function createApp(repo: Repository) {
           config: {},
         },
     );
+    let aiKeyConfigured = company.ai.provider === 'mock';
+    if (!aiKeyConfigured) {
+      try {
+        await providerKey(repo, company);
+        aiKeyConfigured = true;
+      } catch {
+        // Readiness exposes only availability, never credentials or decryption errors.
+      }
+    }
     return c.json({
       mode: appMode(),
       role: c.get('role'),
@@ -298,6 +317,11 @@ export function createApp(repo: Repository) {
       orders,
       conversations,
       integrations: allIntegrations,
+      aiConnection: {
+        provider: company.ai.provider,
+        keyMode: company.ai.keyMode,
+        configured: aiKeyConfigured,
+      },
       usage,
       traces,
     });
@@ -551,14 +575,26 @@ export function createApp(repo: Repository) {
     const kind = kindSchema.parse(c.req.param('kind'));
     const company = c.get('company');
     const integration = (await repo.getIntegrations(company.id)).find((i) => i.kind === kind);
-    if (!integration?.configured) throw new PublicError('Save the connection credentials first.');
+    const isModel = kind !== 'sheets' && kind !== 'whatsapp';
+    const body = isModel
+      ? z
+          .object({ keyMode: z.enum(['own', 'platform']).optional() })
+          .parse(JSON.parse((await c.req.text()) || '{}'))
+      : {};
+    const keyMode = body.keyMode ?? (company.ai.provider === kind ? company.ai.keyMode : 'own');
+    const usePlatform = isModel && keyMode === 'platform';
+    if (usePlatform && (company.ai.keyMode !== 'platform' || company.ai.provider !== kind))
+      throw new PublicError(
+        'Select an authorized platform provider in Settings before testing it.',
+        403,
+      );
+    if (!usePlatform && !integration?.configured)
+      throw new PublicError('Save the connection credentials first.');
     try {
       if (kind === 'sheets' || kind === 'whatsapp')
         await (await integrationAdapter(repo, company.id, kind as 'sheets')).test();
       else {
-        const encrypted = await repo.getSecret(company.id, kind);
-        if (!encrypted) throw new PublicError('Save an API key first.');
-        const key = decryptSecret(encrypted);
+        const key = await providerKey(repo, { ...company, ai: { ...company.ai, keyMode } }, kind);
         const config: { url: string; headers: Record<string, string> } =
           kind === 'openai'
             ? {
@@ -583,17 +619,22 @@ export function createApp(repo: Repository) {
             'The provider rejected these credentials. Check the key and account permissions.',
           );
       }
+      const checkedAt = new Date().toISOString();
+      if (usePlatform)
+        return c.json({ kind, keyMode, configured: true, status: 'connected', checkedAt });
       const updated = {
-        ...integration,
+        ...integration!,
         status: 'connected' as const,
-        checkedAt: new Date().toISOString(),
+        checkedAt,
         error: undefined,
       };
       await repo.saveIntegration(company.id, updated);
       return c.json(updated);
     } catch (error) {
+      // Platform tests must not replace the separate business-key connection state.
+      if (usePlatform) throw error;
       const updated = {
-        ...integration,
+        ...integration!,
         status: 'error' as const,
         error: sanitizeError(error),
         checkedAt: new Date().toISOString(),
