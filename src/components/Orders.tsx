@@ -156,7 +156,7 @@ export function Overview() {
       </section>
       <div className="mb-8 grid gap-6 xl:grid-cols-3">
         <section className="card p-5 sm:p-6 overflow-hidden xl:col-span-2">
-          <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
             <div>
               <h2 className="text-base font-bold tracking-tight text-stone-900">
                 Orders over time
@@ -165,15 +165,58 @@ export function Overview() {
                 {daysData.reduce((sum, day) => sum + day.count, 0)} orders in the last {days} days
               </p>
             </div>
-            <select
-              aria-label="Order chart period"
-              className="rounded-full border border-stone-200/90 bg-stone-50/80 px-3.5 py-1.5 text-xs font-semibold text-stone-700 hover:bg-stone-100 transition-all"
-              value={days}
-              onChange={(e) => setDays(Number(e.target.value))}
-            >
-              <option value={7}>Last 7 days</option>
-              <option value={30}>Last 30 days</option>
-            </select>
+            <div className="flex items-center rounded-full bg-stone-100 p-1 border border-stone-200/70 shadow-2xs">
+              <button
+                type="button"
+                aria-pressed={days === 7}
+                className={cn(
+                  'rounded-full px-3 py-1 text-xs font-semibold transition-all',
+                  days === 7
+                    ? 'bg-white text-stone-900 shadow-xs'
+                    : 'text-stone-500 hover:text-stone-800',
+                )}
+                onClick={() => setDays(7)}
+              >
+                Last 7 days
+              </button>
+              <button
+                type="button"
+                aria-pressed={days === 30}
+                className={cn(
+                  'rounded-full px-3 py-1 text-xs font-semibold transition-all',
+                  days === 30
+                    ? 'bg-white text-stone-900 shadow-xs'
+                    : 'text-stone-500 hover:text-stone-800',
+                )}
+                onClick={() => setDays(30)}
+              >
+                Last 30 days
+              </button>
+            </div>
+          </div>
+          <div className="mb-5 flex flex-wrap items-center gap-4 text-xs font-bold border-b border-stone-100 pb-4">
+            <div className="flex items-baseline gap-1.5">
+              <span className="text-2xl font-extrabold text-stone-900 tabular-nums">
+                {daysData.reduce((sum, day) => sum + day.count, 0)}
+              </span>
+              <span className="text-[11px] font-semibold text-stone-400 uppercase tracking-wider">
+                Total
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5 rounded-full border border-emerald-200/80 bg-emerald-50 px-3 py-1 text-emerald-900">
+              <span className="text-sm font-extrabold tabular-nums">
+                {Math.max(...daysData.map((d) => d.count), 0)}
+              </span>
+              <span className="text-[11px] font-semibold text-emerald-700">Peak / day</span>
+            </div>
+            <div className="flex items-baseline gap-1.5">
+              <span className="text-2xl font-extrabold text-stone-900 tabular-nums">
+                {(daysData.reduce((sum, day) => sum + day.count, 0) / days).toFixed(1)}
+              </span>
+              <span className="text-[11px] font-semibold text-stone-400 uppercase tracking-wider">
+                Avg / day
+              </span>
+            </div>
           </div>
           <div className="relative mx-1 mb-2">
             <div
@@ -219,72 +262,94 @@ export function Overview() {
             </div>
           </div>
         </section>
-        <section className="card p-5 sm:p-6">
-          <div className="flex items-center justify-between">
-            <h2 className="text-base font-bold tracking-tight text-stone-900">Your setup</h2>
-            <span className="rounded-full bg-emerald-50 border border-emerald-200/60 px-2.5 py-0.5 text-xs font-bold text-emerald-800 tabular-nums">
-              {Number(data.products.length > 0) +
-                Number(whatsapp?.status === 'connected') +
-                Number(
-                  data.integrations.some((i) => i.kind === 'sheets' && i.status === 'connected'),
-                )}
-              /3
-            </span>
-          </div>
-          <div className="mt-5 space-y-3">
-            {[
-              {
-                title: 'Add your menu',
-                sub: `${data.products.length} items in your catalog`,
-                done: data.products.length > 0,
-                page: 'menu' as const,
-              },
-              {
-                title: 'Connect WhatsApp',
-                sub:
-                  whatsapp?.status === 'connected'
-                    ? 'Credentials verified'
-                    : 'Link a business phone number',
-                done: whatsapp?.status === 'connected',
-                page: 'integrations' as const,
-              },
-              {
-                title: 'Connect your spreadsheet',
-                sub: 'Send orders straight to your Sheet',
-                done: data.integrations.some(
-                  (i) => i.kind === 'sheets' && i.status === 'connected',
-                ),
-                page: 'integrations' as const,
-              },
-            ].map((step) => (
-              <button
-                key={step.title}
-                className="flex w-full items-center gap-3 rounded-2xl p-2.5 text-left hover:bg-stone-50 transition-colors"
-                onClick={() => navigate(step.page)}
-              >
-                <span
-                  className={cn(
-                    'flex size-8 shrink-0 items-center justify-center rounded-full border',
-                    step.done
-                      ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
-                      : 'border-stone-200 bg-stone-50 text-stone-400',
+        <section className="card p-5 sm:p-6 flex flex-col justify-between">
+          <div>
+            <div className="flex items-center justify-between">
+              <h2 className="text-base font-bold tracking-tight text-stone-900">Your setup</h2>
+              <span className="rounded-full bg-emerald-50 border border-emerald-200/60 px-2.5 py-0.5 text-xs font-bold text-emerald-800 tabular-nums">
+                {Number(data.products.length > 0) +
+                  Number(whatsapp?.status === 'connected') +
+                  Number(
+                    data.integrations.some((i) => i.kind === 'sheets' && i.status === 'connected'),
                   )}
+                /3
+              </span>
+            </div>
+            <div className="mt-3">
+              <div className="h-2 w-full rounded-full bg-stone-100 overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-emerald-600 transition-all duration-500"
+                  style={{
+                    width: `${
+                      ((Number(data.products.length > 0) +
+                        Number(whatsapp?.status === 'connected') +
+                        Number(
+                          data.integrations.some(
+                            (i) => i.kind === 'sheets' && i.status === 'connected',
+                          ),
+                        )) /
+                        3) *
+                      100
+                    }%`,
+                  }}
+                />
+              </div>
+            </div>
+            <div className="mt-5 space-y-3">
+              {[
+                {
+                  title: 'Add your menu',
+                  sub: `${data.products.length} items in your catalog`,
+                  done: data.products.length > 0,
+                  page: 'menu' as const,
+                },
+                {
+                  title: 'Connect WhatsApp',
+                  sub:
+                    whatsapp?.status === 'connected'
+                      ? 'Credentials verified'
+                      : 'Link a business phone number',
+                  done: whatsapp?.status === 'connected',
+                  page: 'integrations' as const,
+                },
+                {
+                  title: 'Connect your spreadsheet',
+                  sub: 'Send orders straight to your Sheet',
+                  done: data.integrations.some(
+                    (i) => i.kind === 'sheets' && i.status === 'connected',
+                  ),
+                  page: 'integrations' as const,
+                },
+              ].map((step) => (
+                <button
+                  key={step.title}
+                  className="flex w-full items-center gap-3 rounded-2xl border border-stone-100 bg-stone-50/60 p-3 text-left hover:bg-stone-50 hover:border-emerald-200/80 transition-all"
+                  onClick={() => navigate(step.page)}
                 >
-                  {step.done ? (
-                    <Check className="size-4" />
-                  ) : (
-                    <span className="size-1.5 rounded-full bg-stone-300" />
-                  )}
-                </span>
-                <span className="flex-1 min-w-0">
-                  <span className="block truncate text-xs font-bold text-stone-800">
-                    {step.title}
+                  <span
+                    className={cn(
+                      'flex size-8 shrink-0 items-center justify-center rounded-full border',
+                      step.done
+                        ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                        : 'border-stone-200 bg-stone-50 text-stone-400',
+                    )}
+                  >
+                    {step.done ? (
+                      <Check className="size-4" />
+                    ) : (
+                      <span className="size-1.5 rounded-full bg-stone-300" />
+                    )}
                   </span>
-                  <span className="mt-0.5 block truncate text-xs text-stone-400">{step.sub}</span>
-                </span>
-                <ChevronRight className="size-4 text-stone-300" />
-              </button>
-            ))}
+                  <span className="flex-1 min-w-0">
+                    <span className="block truncate text-xs font-bold text-stone-800">
+                      {step.title}
+                    </span>
+                    <span className="mt-0.5 block truncate text-xs text-stone-400">{step.sub}</span>
+                  </span>
+                  <ChevronRight className="size-4 text-stone-300" />
+                </button>
+              ))}
+            </div>
           </div>
         </section>
       </div>
@@ -424,7 +489,7 @@ export function Orders() {
       <section className="card overflow-hidden">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-4 sm:p-6 border-b border-stone-100">
           <div
-            className="flex items-center gap-1.5 overflow-x-auto max-w-full pb-1.5 md:pb-0"
+            className="inline-flex items-center gap-1 overflow-x-auto max-w-full rounded-full bg-stone-100/90 p-1 border border-stone-200/70 shadow-2xs"
             aria-label="Order filters"
           >
             {['all', 'pending', 'active', 'completed', 'rejected', 'cancelled'].map((value) => (
@@ -435,7 +500,7 @@ export function Orders() {
                   'rounded-full px-3.5 py-1.5 text-xs font-semibold whitespace-nowrap transition-all',
                   filter === value
                     ? 'bg-emerald-700 text-white shadow-xs'
-                    : 'text-stone-600 hover:bg-stone-100 hover:text-stone-900',
+                    : 'text-stone-600 hover:text-stone-900 hover:bg-white/60',
                 )}
                 onClick={() => setFilter(value)}
               >
@@ -583,7 +648,7 @@ function OrderDetails({ order, onClose }: { order: Order | null; onClose: () => 
             <div className="my-5 divide-y divide-stone-100 border-y border-stone-100">
               {order.items.map((item, index) => (
                 <div key={index} className="flex gap-3 py-4">
-                  <span className="rounded-md bg-stone-100 px-2 py-1 text-xs tabular-nums">
+                  <span className="rounded-full bg-stone-100 px-2.5 py-1 text-xs font-semibold tabular-nums text-stone-700">
                     {item.quantity}×
                   </span>
                   <div className="flex-1">
@@ -616,7 +681,7 @@ function OrderDetails({ order, onClose }: { order: Order | null; onClose: () => 
                 <dd className="tabular-nums">{money(order.total)}</dd>
               </div>
             </dl>
-            <div className="mt-5 space-y-2 rounded-lg bg-stone-50 p-4 text-xs text-stone-500">
+            <div className="mt-5 space-y-2 rounded-2xl border border-stone-200/80 bg-stone-50/80 p-4 text-xs text-stone-500">
               <p>
                 <span className="font-semibold text-stone-700">Customer:</span> {order.customerName}{' '}
                 · {order.customerPhone}

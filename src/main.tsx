@@ -13,7 +13,5 @@ const pathname = window.location.pathname.replace(/\/+$/, '') || '/';
 const legalKind = legalPages[pathname as keyof typeof legalPages];
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    {legalKind ? <LegalPage kind={legalKind} /> : <App />}
-  </React.StrictMode>,
+  <React.StrictMode>{legalKind ? <LegalPage kind={legalKind} /> : <App />}</React.StrictMode>,
 );

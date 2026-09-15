@@ -17,6 +17,8 @@ import {
   Search,
   Settings2,
   ShoppingBag,
+  SlidersHorizontal,
+  Sparkles,
   X,
 } from 'lucide-react';
 import type { Bootstrap } from './shared/types';
@@ -215,14 +217,19 @@ export default function App() {
     item.label.toLowerCase().includes(navSearch.toLowerCase()),
   );
 
+  const handleNavClick = (id: Page) => {
+    navigate(id);
+    setMobile(false);
+  };
+
   const sidebar = (
     <div className="flex h-full flex-col bg-[#121417] px-4 pb-5 pt-6 text-stone-400 border-r border-white/5">
       <div className="px-2">
         <Brand />
       </div>
 
-      <div className="mt-5 px-1">
-        <div className="relative">
+      <div className="mt-5 px-1 flex items-center gap-2">
+        <div className="relative flex-1">
           <Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-stone-500" />
           <input
             type="text"
@@ -230,9 +237,31 @@ export default function App() {
             value={navSearch}
             onChange={(e) => setNavSearch(e.target.value)}
             placeholder="Search..."
-            className="h-9 w-full rounded-full border border-white/10 bg-white/[0.05] pl-9 pr-3 text-xs text-stone-200 placeholder:text-stone-500 transition-all focus:border-emerald-500 focus:bg-white/[0.08] focus:outline-none"
+            className="h-9 w-full rounded-full border border-white/10 bg-white/[0.05] pl-9 pr-7 text-xs text-stone-200 placeholder:text-stone-500 transition-all focus:border-emerald-500 focus:bg-white/[0.08] focus:outline-none"
           />
+          {navSearch && (
+            <button
+              type="button"
+              className="absolute right-2.5 top-2.5 text-stone-400 hover:text-white"
+              onClick={() => setNavSearch('')}
+              aria-label="Clear search"
+            >
+              <X className="size-3.5" />
+            </button>
+          )}
         </div>
+        <button
+          type="button"
+          className="flex size-9 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/[0.05] text-stone-400 hover:bg-white/10 hover:text-white transition-all"
+          title="Getting started"
+          aria-label="Getting started"
+          onClick={() => {
+            setHelp(true);
+            setMobile(false);
+          }}
+        >
+          <SlidersHorizontal className="size-3.5" />
+        </button>
       </div>
 
       <div className="my-5 rounded-2xl border border-white/10 bg-white/[0.03] p-3.5 backdrop-blur-xs">
@@ -248,12 +277,12 @@ export default function App() {
             key={item.id}
             aria-current={page === item.id ? 'page' : undefined}
             className={cn(
-              'flex min-h-11 w-full items-center gap-3 rounded-2xl px-3.5 text-left text-sm font-medium transition-all',
+              'flex min-h-11 w-full items-center gap-3 rounded-full px-4 text-left text-sm font-medium transition-all',
               page === item.id
                 ? 'bg-emerald-600 text-white font-semibold shadow-md shadow-emerald-950/40'
                 : 'text-stone-400 hover:bg-white/[0.06] hover:text-white',
             )}
-            onClick={() => navigate(item.id)}
+            onClick={() => handleNavClick(item.id)}
           >
             <item.icon className="size-4.5 shrink-0" />
             <span className="truncate">{item.label}</span>
@@ -271,7 +300,7 @@ export default function App() {
 
       {filteredManage.length > 0 && (
         <>
-          <p className="mb-2 mt-6 px-3.5 text-[10px] font-bold tracking-widest text-stone-400 uppercase">
+          <p className="mb-2 mt-6 px-4 text-[10px] font-bold tracking-widest text-stone-400 uppercase">
             MANAGE
           </p>
           <nav aria-label="Workspace management" className="space-y-1.5">
@@ -280,12 +309,12 @@ export default function App() {
                 key={item.id}
                 aria-current={page === item.id ? 'page' : undefined}
                 className={cn(
-                  'flex min-h-11 w-full items-center gap-3 rounded-2xl px-3.5 text-left text-sm font-medium transition-all',
+                  'flex min-h-11 w-full items-center gap-3 rounded-full px-4 text-left text-sm font-medium transition-all',
                   page === item.id
                     ? 'bg-emerald-600 text-white font-semibold shadow-md shadow-emerald-950/40'
                     : 'text-stone-400 hover:bg-white/[0.06] hover:text-white',
                 )}
-                onClick={() => navigate(item.id)}
+                onClick={() => handleNavClick(item.id)}
               >
                 <item.icon className="size-4.5 shrink-0" />
                 <span className="truncate">{item.label}</span>
@@ -293,6 +322,19 @@ export default function App() {
             ))}
           </nav>
         </>
+      )}
+
+      {filteredNav.length === 0 && filteredManage.length === 0 && (
+        <div className="py-6 text-center text-xs text-stone-500">
+          <p>No matching pages</p>
+          <button
+            type="button"
+            className="mt-2 font-semibold text-emerald-400 underline"
+            onClick={() => setNavSearch('')}
+          >
+            Clear search
+          </button>
+        </div>
       )}
 
       <div className="mt-auto pt-6">
@@ -308,8 +350,11 @@ export default function App() {
           </p>
         </div>
         <button
-          className="mt-3 flex min-h-9 w-full items-center gap-2.5 rounded-xl px-3 text-xs font-medium text-stone-300 hover:bg-white/[0.06] hover:text-white transition-all"
-          onClick={() => setHelp(true)}
+          className="mt-3 flex min-h-9 w-full items-center gap-2.5 rounded-full px-3.5 text-xs font-medium text-stone-300 hover:bg-white/[0.06] hover:text-white transition-all"
+          onClick={() => {
+            setHelp(true);
+            setMobile(false);
+          }}
         >
           <CircleHelp className="size-4 text-stone-400" />
           Getting started
@@ -317,7 +362,7 @@ export default function App() {
         </button>
         {client && (
           <button
-            className="mt-2 flex min-h-9 w-full items-center gap-2.5 rounded-xl px-3 text-xs font-medium text-stone-400 hover:bg-white/[0.06] hover:text-red-400 transition-all"
+            className="mt-2.5 flex min-h-9.5 w-full items-center justify-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-4 py-2 text-xs font-semibold text-stone-300 hover:bg-white/10 hover:text-red-400 transition-all"
             onClick={() => void client.auth.signOut()}
           >
             <LogOut className="size-3.5" />
@@ -353,7 +398,7 @@ export default function App() {
             <div className="fixed inset-y-0 left-0 z-50 w-72 max-w-[85vw] bg-[#121417] shadow-2xl flex flex-col">
               <div className="absolute right-3 top-4 z-10">
                 <button
-                  className="flex size-8 items-center justify-center rounded-xl text-stone-400 hover:text-white hover:bg-white/10 transition-colors"
+                  className="flex size-8 items-center justify-center rounded-full text-stone-400 hover:text-white hover:bg-white/10 transition-colors"
                   aria-label="Close navigation"
                   onClick={() => setMobile(false)}
                 >
@@ -368,7 +413,7 @@ export default function App() {
           <header className="sticky top-0 z-20 flex min-h-16 items-center justify-between gap-3 border-b border-stone-200/80 bg-white/95 px-4 backdrop-blur-md sm:px-8 lg:px-10">
             <div className="flex min-w-0 items-center gap-2.5 sm:gap-3">
               <button
-                className="icon-btn lg:hidden rounded-xl"
+                className="icon-btn lg:hidden rounded-full"
                 aria-label="Open navigation"
                 onClick={() => setMobile(true)}
               >
@@ -382,14 +427,22 @@ export default function App() {
                 {[...navigation, ...manage].find((n) => n.id === page)?.label}
               </span>
             </div>
-            <div className="flex items-center gap-2.5 sm:gap-4">
+            <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+              <button
+                type="button"
+                className="hidden md:inline-flex items-center gap-1.5 rounded-full border border-stone-200/80 bg-stone-50/80 px-3 py-1.5 text-xs font-semibold text-stone-700 hover:bg-stone-100 hover:border-stone-300 transition-all shadow-2xs"
+                onClick={() => setHelp(true)}
+              >
+                <Sparkles className="size-3.5 text-emerald-600" />
+                Getting started
+              </button>
               <div className="relative">
                 <label className="sr-only" htmlFor="company-switch">
                   Current business
                 </label>
                 <select
                   id="company-switch"
-                  className="max-w-36 appearance-none rounded-full border border-stone-200/90 bg-stone-50/90 py-1.5 pl-3.5 pr-8 text-xs font-semibold text-stone-700 shadow-2xs hover:bg-stone-100 transition-all sm:max-w-56 sm:text-sm"
+                  className="max-w-32 sm:max-w-48 appearance-none rounded-full border border-stone-200/90 bg-stone-50/90 py-1.5 pl-3.5 pr-8 text-xs font-semibold text-stone-700 shadow-2xs hover:bg-stone-100 transition-all truncate"
                   value={data.company.id}
                   disabled={busy}
                   onChange={(e) => switchCompany(e.target.value)}
@@ -402,7 +455,7 @@ export default function App() {
                 </select>
                 <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 size-3.5 text-stone-400" />
               </div>
-              <div className="h-5 w-px bg-stone-200" />
+              <div className="h-5 w-px bg-stone-200 hidden sm:block" />
               <div className="flex items-center gap-2">
                 <div className="flex size-8.5 shrink-0 items-center justify-center rounded-full bg-emerald-700 text-xs font-bold text-white shadow-2xs ring-2 ring-emerald-600/20">
                   {initials(data.company.name)}

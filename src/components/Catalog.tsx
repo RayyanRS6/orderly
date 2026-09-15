@@ -95,21 +95,21 @@ export function Catalog() {
         </p>
       )}
       <div className="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div className="flex flex-wrap gap-2">
+        <div className="inline-flex flex-wrap items-center gap-1 rounded-full bg-stone-100/90 p-1 border border-stone-200/70 shadow-2xs">
           {['All items', ...categories].map((value) => (
             <button
               key={value}
               aria-pressed={category === value}
               className={cn(
-                'rounded-full border px-4 py-1.5 text-xs font-semibold transition-all',
+                'rounded-full px-3.5 py-1.5 text-xs font-semibold whitespace-nowrap transition-all',
                 category === value
-                  ? 'border-emerald-800 bg-emerald-800 text-white shadow-xs'
-                  : 'border-stone-200/90 bg-white text-stone-600 hover:bg-stone-50',
+                  ? 'bg-emerald-800 text-white shadow-xs'
+                  : 'text-stone-600 hover:text-stone-900 hover:bg-white/60',
               )}
               onClick={() => setCategory(value)}
             >
               {value}
-              <span className="ml-2 opacity-75">
+              <span className="ml-1.5 opacity-80 tabular-nums">
                 {value === 'All items'
                   ? data.products.length
                   : data.products.filter((p) => p.category === value).length}
@@ -442,7 +442,7 @@ function OptionEditor({
   onChange: (options: ProductOption[]) => void;
 }) {
   return (
-    <div className="rounded-lg border border-stone-200 p-4">
+    <div className="rounded-2xl border border-stone-200/80 bg-stone-50/40 p-4 sm:p-5">
       <div className="flex items-center justify-between gap-3">
         <div>
           <p className="text-xs font-semibold">{title}</p>

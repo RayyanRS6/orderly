@@ -298,7 +298,7 @@ export function Settings() {
                   <option value="sheets">Connected Google Sheet</option>
                 </select>
               </Field>
-              <label className="flex items-center gap-3 self-start rounded-lg border border-stone-200 p-4 text-sm">
+              <label className="flex items-center gap-3 self-start rounded-2xl border border-stone-200/90 p-4 text-sm">
                 <input
                   type="checkbox"
                   checked={draft.botEnabled}
@@ -312,7 +312,7 @@ export function Settings() {
                 </span>
               </label>
             </div>
-            <div className="mt-6 rounded-lg bg-emerald-50 p-4 text-sm leading-relaxed text-emerald-900">
+            <div className="mt-6 rounded-2xl border border-emerald-200/80 bg-emerald-50/80 p-4 sm:p-5 text-sm leading-relaxed text-emerald-900">
               The ordering rules stay the same whichever model you choose: check the menu, calculate
               the price, ask for confirmation, then save a pending order for staff.
             </div>
@@ -489,11 +489,13 @@ export function Integrations() {
         title="Everything, connected."
         description="Choose the tools behind your business. Each connection belongs to this workspace."
       />
-      <div className="mb-7 flex items-start gap-3 rounded-xl border border-emerald-100 bg-emerald-50 p-5">
+      <div className="mb-7 flex items-start gap-3.5 rounded-2xl sm:rounded-3xl border border-emerald-200/80 bg-emerald-50/70 p-5 sm:p-6 shadow-2xs">
         <ShieldCheck className="mt-0.5 size-5 shrink-0 text-emerald-800" />
         <div>
-          <h2 className="text-sm font-semibold text-emerald-900">Your keys stay on the server.</h2>
-          <p className="mt-1 text-sm leading-relaxed text-emerald-800">
+          <h2 className="text-sm font-bold text-emerald-950 tracking-tight">
+            Your keys stay on the server.
+          </h2>
+          <p className="mt-1 text-sm leading-relaxed text-emerald-900">
             Credentials are encrypted before storage. The local playground works without keys; live
             WhatsApp requires the deployed backend and Meta setup.
           </p>
@@ -501,7 +503,10 @@ export function Integrations() {
       </div>
       <WhatsAppSignup />
       {notice && (
-        <p role="status" className="mb-5 rounded-lg bg-emerald-50 p-4 text-sm text-emerald-800">
+        <p
+          role="status"
+          className="mb-5 rounded-2xl border border-emerald-200/80 bg-emerald-50 p-4 text-sm text-emerald-800"
+        >
           {notice}
         </p>
       )}
@@ -731,7 +736,7 @@ export function Integrations() {
               )}
             </Field>
             {editing.kind === 'sheets' && (
-              <p className="rounded-lg bg-stone-50 p-3 text-xs leading-relaxed text-stone-600">
+              <p className="rounded-2xl border border-stone-200/80 bg-stone-50/80 p-3.5 text-xs leading-relaxed text-stone-600">
                 Create separate Menu and Orders tabs. Share this spreadsheet with the service
                 account email as Editor. Menu columns: id, name, description, category, price,
                 available, emoji, aliases, variants, modifiers. Prices in the sheet use PKR rupees.
@@ -883,7 +888,7 @@ function Team() {
         creates Supabase accounts and assigns owner or staff membership to this company. Staff can
         manage orders and reply to customers. Owners can also change menus and connections.
       </p>
-      <p className="mt-3 break-all rounded-lg bg-stone-50 p-3 font-mono text-xs text-stone-500">
+      <p className="mt-3 break-all rounded-2xl border border-stone-200/80 bg-stone-50/80 p-3.5 font-mono text-xs text-stone-500">
         Company ID: {data.company.id}
       </p>
     </section>

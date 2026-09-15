@@ -255,7 +255,7 @@ export function WhatsAppSignup() {
           )}
         </div>
       ) : (
-        <p className="mt-4 rounded-lg bg-stone-50 p-4 text-xs leading-relaxed text-stone-500">
+        <p className="mt-4 rounded-2xl border border-stone-200/80 bg-stone-50/80 p-4 text-xs leading-relaxed text-stone-500">
           Available after the live backend is configured with your Meta app and Embedded Signup
           configuration. You can also connect a test number with its access token below.
         </p>

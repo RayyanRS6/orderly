@@ -294,7 +294,7 @@ export function Playground() {
                 </p>
               )}
               {conversation?.cart.status === 'submitted' ? (
-                <div className="mt-4 rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800">
+                <div className="mt-4 rounded-2xl border border-emerald-200/80 bg-emerald-50/80 p-4 text-sm text-emerald-800">
                   <Check className="mb-1 size-4" />
                   Order received. Waiting for the restaurant.
                   <button
@@ -348,7 +348,7 @@ export function Playground() {
                   disabled={!product.available || busy || conversation?.cart.status === 'submitted'}
                   onClick={() => setSelected(product)}
                 >
-                  <span className="flex size-10 items-center justify-center rounded-lg bg-stone-100 text-2xl">
+                  <span className="flex size-10 items-center justify-center rounded-2xl bg-stone-100 text-2xl shadow-2xs">
                     {product.emoji}
                   </span>
                   <span className="flex-1">
@@ -386,7 +386,7 @@ export function Playground() {
         >
           <Field label="Customer name">
             <input
-              className="input"
+              className="input rounded-xl"
               required
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -394,7 +394,7 @@ export function Playground() {
           </Field>
           <Field label="Fulfillment">
             <select
-              className="input"
+              className="input rounded-xl"
               value={fulfillment}
               onChange={(e) => setFulfillment(e.target.value as 'pickup' | 'delivery')}
             >
@@ -406,7 +406,7 @@ export function Playground() {
             <>
               <Field label="Delivery area">
                 <select
-                  className="input"
+                  className="input rounded-xl"
                   required
                   value={zone}
                   onChange={(e) => setZone(e.target.value)}
@@ -421,7 +421,7 @@ export function Playground() {
               </Field>
               <Field label="Complete address">
                 <textarea
-                  className="input"
+                  className="input rounded-xl"
                   value={address}
                   required
                   onChange={(e) => setAddress(e.target.value)}
