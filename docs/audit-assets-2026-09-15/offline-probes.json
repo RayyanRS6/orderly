@@ -1,0 +1,38 @@
+{
+  "date": "2026-09-16",
+  "scope": "Offline in-memory audit probes; all outbound fetch disabled",
+  "unverifiedNumberMapping": {
+    "status": 200,
+    "mappedCompany": "11111111-1111-4111-a111-111111111111"
+  },
+  "failedConnectionPersists": {
+    "status": 409,
+    "response": {
+      "error": "Connect WhatsApp first."
+    },
+    "mappingPersisted": true
+  },
+  "pausedPlayground": {
+    "status": 200,
+    "reply": "",
+    "mode": "human"
+  },
+  "demoOrderFlow": {
+    "channel": "demo",
+    "orderCreated": true,
+    "status": "pending",
+    "totalPaisa": 105000,
+    "syncStatus": "pending",
+    "customerName": "Fictional Audit Customer",
+    "jobs": [
+      {
+        "kind": "sheet_sync",
+        "status": "pending"
+      }
+    ]
+  },
+  "staffAccept": {
+    "httpStatus": 200,
+    "status": "accepted"
+  }
+}

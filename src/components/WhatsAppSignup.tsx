@@ -40,6 +40,7 @@ export function WhatsAppSignup() {
   const [pin, setPin] = useState('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const pendingSignupTimer = useRef<number | undefined>(undefined);
   const session = useRef<{
     active: boolean;
     code?: string;
@@ -49,9 +50,16 @@ export function WhatsAppSignup() {
     pin?: string;
   }>({ active: false });
   const submit = useRef<() => void>(() => {});
+  const clearPendingSignupTimer = () => {
+    if (pendingSignupTimer.current !== undefined) {
+      window.clearTimeout(pendingSignupTimer.current);
+      pendingSignupTimer.current = undefined;
+    }
+  };
   submit.current = () => {
     const current = session.current;
     if (!current.active || !current.code || !current.phoneNumberId || !current.wabaId) return;
+    clearPendingSignupTimer();
     current.active = false;
     setWorking(true);
     void mutate<{ message: string }>('/whatsapp/signup', {
@@ -114,6 +122,7 @@ export function WhatsAppSignup() {
         session.current.coexistence = message.event === 'FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING';
         submit.current();
       } else if (['ERROR', 'CANCEL'].includes(message.event)) {
+        clearPendingSignupTimer();
         session.current.active = false;
         setWorking(false);
         setNotice('Setup was not completed. Your current connection was kept.');
@@ -122,6 +131,7 @@ export function WhatsAppSignup() {
     window.addEventListener('message', listener);
     return () => {
       active = false;
+      clearPendingSignupTimer();
       session.current.active = false;
       window.removeEventListener('message', listener);
     };
@@ -131,6 +141,7 @@ export function WhatsAppSignup() {
     if (!ready || !config) return;
     setError('');
     setNotice('');
+    clearPendingSignupTimer();
     session.current = { active: true, pin: coexistence ? undefined : pin || undefined };
     setWorking(true);
     // Keep FB.login inside the original click event so browsers allow the popup.
@@ -139,7 +150,25 @@ export function WhatsAppSignup() {
         if (response.authResponse?.code) {
           session.current.code = response.authResponse.code;
           submit.current();
+          // Meta can return the OAuth code without a completed Embedded Signup event when
+          // the business account is ineligible for onboarding. Do not leave the UI locked
+          // forever while waiting for phone_number_id and waba_id that will never arrive.
+          pendingSignupTimer.current = window.setTimeout(() => {
+            const current = session.current;
+            if (
+              current.active &&
+              current.code &&
+              (!current.phoneNumberId || !current.wabaId)
+            ) {
+              current.active = false;
+              setWorking(false);
+              setError(
+                'Meta did not complete WhatsApp number selection. Use Edit settings in Meta, or resolve the business portfolio onboarding restriction before trying again.',
+              );
+            }
+          }, 12_000);
         } else {
+          clearPendingSignupTimer();
           session.current.active = false;
           setWorking(false);
           setNotice('Facebook login was cancelled.');
@@ -216,6 +245,7 @@ export function WhatsAppSignup() {
             <button
               className="btn btn-quiet ml-2"
               onClick={() => {
+                clearPendingSignupTimer();
                 session.current.active = false;
                 setWorking(false);
               }}

@@ -1,0 +1,271 @@
+{
+  "checkedAt": "2026-09-15T17:18:10.892Z",
+  "results": [
+    {
+      "name": "frontend /",
+      "status": 200,
+      "durationMs": 196,
+      "headers": {
+        "content-type": "text/html",
+        "content-security-policy": null,
+        "strict-transport-security": null,
+        "x-frame-options": null,
+        "x-content-type-options": null,
+        "referrer-policy": null,
+        "cache-control": "public, max-age=0, must-revalidate",
+        "access-control-allow-origin": null
+      },
+      "bytes": 928,
+      "hasPrivacyText": false,
+      "scriptAssets": [
+        "/assets/index-D79IpcNa.js"
+      ]
+    },
+    {
+      "name": "frontend /privacy",
+      "status": 200,
+      "durationMs": 134,
+      "headers": {
+        "content-type": "text/html",
+        "content-security-policy": null,
+        "strict-transport-security": null,
+        "x-frame-options": null,
+        "x-content-type-options": null,
+        "referrer-policy": null,
+        "cache-control": "public, max-age=0, must-revalidate",
+        "access-control-allow-origin": null
+      },
+      "bytes": 928,
+      "hasPrivacyText": false,
+      "scriptAssets": [
+        "/assets/index-D79IpcNa.js"
+      ]
+    },
+    {
+      "name": "frontend /terms",
+      "status": 200,
+      "durationMs": 133,
+      "headers": {
+        "content-type": "text/html",
+        "content-security-policy": null,
+        "strict-transport-security": null,
+        "x-frame-options": null,
+        "x-content-type-options": null,
+        "referrer-policy": null,
+        "cache-control": "public, max-age=0, must-revalidate",
+        "access-control-allow-origin": null
+      },
+      "bytes": 928,
+      "hasPrivacyText": false,
+      "scriptAssets": [
+        "/assets/index-D79IpcNa.js"
+      ]
+    },
+    {
+      "name": "frontend /data-deletion",
+      "status": 200,
+      "durationMs": 151,
+      "headers": {
+        "content-type": "text/html",
+        "content-security-policy": null,
+        "strict-transport-security": null,
+        "x-frame-options": null,
+        "x-content-type-options": null,
+        "referrer-policy": null,
+        "cache-control": "public, max-age=0, must-revalidate",
+        "access-control-allow-origin": null
+      },
+      "bytes": 928,
+      "hasPrivacyText": false,
+      "scriptAssets": [
+        "/assets/index-D79IpcNa.js"
+      ]
+    },
+    {
+      "name": "frontend /orders",
+      "status": 200,
+      "durationMs": 126,
+      "headers": {
+        "content-type": "text/html",
+        "content-security-policy": null,
+        "strict-transport-security": null,
+        "x-frame-options": null,
+        "x-content-type-options": null,
+        "referrer-policy": null,
+        "cache-control": "public, max-age=0, must-revalidate",
+        "access-control-allow-origin": null
+      },
+      "bytes": 928,
+      "hasPrivacyText": false,
+      "scriptAssets": [
+        "/assets/index-D79IpcNa.js"
+      ]
+    },
+    {
+      "name": "frontend /__audit_missing_route__",
+      "status": 200,
+      "durationMs": 124,
+      "headers": {
+        "content-type": "text/html",
+        "content-security-policy": null,
+        "strict-transport-security": null,
+        "x-frame-options": null,
+        "x-content-type-options": null,
+        "referrer-policy": null,
+        "cache-control": "public, max-age=0, must-revalidate",
+        "access-control-allow-origin": null
+      },
+      "bytes": 928,
+      "hasPrivacyText": false,
+      "scriptAssets": [
+        "/assets/index-D79IpcNa.js"
+      ]
+    },
+    {
+      "name": "API health",
+      "status": 200,
+      "durationMs": 501,
+      "headers": {
+        "content-type": "application/json",
+        "content-security-policy": null,
+        "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+        "x-frame-options": "SAMEORIGIN",
+        "x-content-type-options": "nosniff",
+        "referrer-policy": "no-referrer",
+        "cache-control": null,
+        "access-control-allow-origin": null
+      },
+      "response": {
+        "ok": true,
+        "mode": "live"
+      }
+    },
+    {
+      "name": "Anonymous bootstrap",
+      "status": 401,
+      "durationMs": 614,
+      "headers": {
+        "content-type": "application/json",
+        "content-security-policy": null,
+        "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+        "x-frame-options": "SAMEORIGIN",
+        "x-content-type-options": "nosniff",
+        "referrer-policy": "no-referrer",
+        "cache-control": null,
+        "access-control-allow-origin": null
+      },
+      "response": {
+        "error": "Sign in to continue."
+      }
+    },
+    {
+      "name": "Anonymous worker",
+      "status": 401,
+      "durationMs": 541,
+      "headers": {
+        "content-type": "application/json",
+        "content-security-policy": null,
+        "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+        "x-frame-options": "SAMEORIGIN",
+        "x-content-type-options": "nosniff",
+        "referrer-policy": "no-referrer",
+        "cache-control": null,
+        "access-control-allow-origin": null
+      },
+      "response": {
+        "error": "Unauthorized."
+      }
+    },
+    {
+      "name": "Anonymous recovery",
+      "status": 401,
+      "durationMs": 1111,
+      "headers": {
+        "content-type": "application/json",
+        "content-security-policy": null,
+        "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+        "x-frame-options": "SAMEORIGIN",
+        "x-content-type-options": "nosniff",
+        "referrer-policy": "no-referrer",
+        "cache-control": null,
+        "access-control-allow-origin": null
+      },
+      "response": {
+        "error": "Unauthorized."
+      }
+    },
+    {
+      "name": "Unverified webhook GET",
+      "status": 403,
+      "durationMs": 481,
+      "headers": {
+        "content-type": "application/json",
+        "content-security-policy": null,
+        "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+        "x-frame-options": "SAMEORIGIN",
+        "x-content-type-options": "nosniff",
+        "referrer-policy": "no-referrer",
+        "cache-control": null,
+        "access-control-allow-origin": null
+      },
+      "response": {
+        "error": "Webhook verification failed."
+      }
+    },
+    {
+      "name": "Unsigned webhook POST",
+      "status": 401,
+      "durationMs": 502,
+      "headers": {
+        "content-type": "application/json",
+        "content-security-policy": null,
+        "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+        "x-frame-options": "SAMEORIGIN",
+        "x-content-type-options": "nosniff",
+        "referrer-policy": "no-referrer",
+        "cache-control": null,
+        "access-control-allow-origin": null
+      },
+      "response": {
+        "error": "Invalid webhook signature."
+      }
+    },
+    {
+      "name": "Untrusted browser origin",
+      "status": 403,
+      "durationMs": 513,
+      "headers": {
+        "content-type": "application/json",
+        "content-security-policy": null,
+        "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+        "x-frame-options": "SAMEORIGIN",
+        "x-content-type-options": "nosniff",
+        "referrer-policy": "no-referrer",
+        "cache-control": null,
+        "access-control-allow-origin": null
+      },
+      "response": {
+        "error": "This origin is not allowed."
+      }
+    },
+    {
+      "name": "Allowed frontend origin",
+      "status": 200,
+      "durationMs": 478,
+      "headers": {
+        "content-type": "application/json",
+        "content-security-policy": null,
+        "strict-transport-security": "max-age=31536000; includeSubDomains; preload",
+        "x-frame-options": "SAMEORIGIN",
+        "x-content-type-options": "nosniff",
+        "referrer-policy": "no-referrer",
+        "cache-control": null,
+        "access-control-allow-origin": "https://orderly.waytogalaxy999.workers.dev"
+      },
+      "response": {
+        "ok": true,
+        "mode": "live"
+      }
+    }
+  ]
+}

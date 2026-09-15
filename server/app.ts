@@ -15,7 +15,7 @@ import type {
   OrderStatus,
 } from '../src/shared/types.js';
 import { createConversation } from '../src/domain/engine.js';
-import { appMode } from './config.js';
+import { appMode, env } from './config.js';
 import {
   PublicError,
   encryptSecret,
@@ -568,6 +568,9 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
       integration,
       body.secret ? encryptSecret(body.secret) : undefined,
     );
+    if (kind === 'whatsapp' && integration.config.wabaId) {
+      await (await integrationAdapter(repo, c.get('company').id, 'whatsapp')).subscribe();
+    }
     return c.json(integration);
   });
   app.post('/api/integrations/:kind/test', async (c) => {
@@ -656,12 +659,12 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
     return c.json({
       enabled:
         appMode() === 'live' &&
-        !!process.env.META_APP_ID &&
-        !!process.env.META_EMBEDDED_SIGNUP_CONFIG_ID &&
-        !!process.env.META_APP_SECRET,
-      appId: process.env.META_APP_ID || '',
-      configId: process.env.META_EMBEDDED_SIGNUP_CONFIG_ID || '',
-      version: process.env.META_GRAPH_VERSION || '',
+        !!env('META_APP_ID') &&
+        !!env('META_EMBEDDED_SIGNUP_CONFIG_ID') &&
+        !!env('META_APP_SECRET'),
+      appId: env('META_APP_ID') || '',
+      configId: env('META_EMBEDDED_SIGNUP_CONFIG_ID') || '',
+      version: env('META_GRAPH_VERSION') || '',
     });
   });
   app.post('/api/whatsapp/signup', async (c) => {
