@@ -44,7 +44,7 @@ export function Catalog() {
       >
         {data.company.catalogSource === 'sheets' ? (
           <button
-            className="btn"
+            className="btn rounded-full shadow-xs"
             disabled={busy}
             onClick={() => void mutate('/catalog/refresh', {}).catch(() => {})}
           >
@@ -54,11 +54,14 @@ export function Catalog() {
         ) : (
           editable && (
             <>
-              <button className="btn" onClick={() => setImporting(true)}>
+              <button className="btn rounded-full shadow-xs" onClick={() => setImporting(true)}>
                 <Upload className="size-4" />
                 Import CSV
               </button>
-              <button className="btn btn-primary" onClick={() => setEditing('new')}>
+              <button
+                className="btn btn-primary rounded-full shadow-xs"
+                onClick={() => setEditing('new')}
+              >
                 <Plus className="size-4" />
                 Add item
               </button>
@@ -66,20 +69,20 @@ export function Catalog() {
           )
         )}
       </PageHeading>
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-stone-200 bg-white px-4 py-3">
-        <div className="flex items-center gap-2 text-xs text-stone-500">
-          <span className="size-1.5 rounded-full bg-emerald-600" />
-          <span className="font-semibold text-stone-700">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-stone-200/80 bg-white px-5 py-3.5 shadow-2xs">
+        <div className="flex items-center gap-2.5 text-xs text-stone-500">
+          <span className="size-2 rounded-full bg-emerald-600 shadow-[0_0_6px_rgba(5,150,105,0.4)]" />
+          <span className="font-bold text-stone-800">
             {data.products.filter((p) => p.available).length} available
           </span>
           <span>of {data.products.length} menu items</span>
           <span className="mx-1 text-stone-300">|</span>
-          <span>
+          <span className="font-medium">
             Source: {data.company.catalogSource === 'app' ? 'Orderly menu' : 'Google Sheets'}
           </span>
         </div>
         <button
-          className="inline-flex items-center gap-1 text-xs font-medium text-emerald-800"
+          className="inline-flex items-center gap-1 text-xs font-bold text-emerald-800 hover:text-emerald-950 transition-colors"
           onClick={() => navigate('settings')}
         >
           Manage source
@@ -87,26 +90,26 @@ export function Catalog() {
         </button>
       </div>
       {data.company.catalogSyncedAt && (
-        <p className="mb-4 text-xs text-stone-400">
+        <p className="mb-4 text-xs text-stone-400 font-medium">
           Last catalog sync: {shortDate(data.company.catalogSyncedAt)}
         </p>
       )}
-      <div className="mb-5 flex flex-wrap items-center justify-between gap-4">
+      <div className="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="flex flex-wrap gap-2">
           {['All items', ...categories].map((value) => (
             <button
               key={value}
               aria-pressed={category === value}
               className={cn(
-                'rounded-lg border px-3 py-2 text-xs font-medium',
+                'rounded-full border px-4 py-1.5 text-xs font-semibold transition-all',
                 category === value
-                  ? 'border-emerald-800 bg-emerald-800 text-white'
-                  : 'border-stone-200 bg-white text-stone-500 hover:bg-stone-100',
+                  ? 'border-emerald-800 bg-emerald-800 text-white shadow-xs'
+                  : 'border-stone-200/90 bg-white text-stone-600 hover:bg-stone-50',
               )}
               onClick={() => setCategory(value)}
             >
               {value}
-              <span className="ml-2 opacity-65">
+              <span className="ml-2 opacity-75">
                 {value === 'All items'
                   ? data.products.length
                   : data.products.filter((p) => p.category === value).length}
@@ -114,11 +117,11 @@ export function Catalog() {
             </button>
           ))}
         </div>
-        <div className="relative">
-          <Search className="absolute left-3 top-3 size-4 text-stone-400" />
+        <div className="relative w-full sm:w-64 shrink-0">
+          <Search className="pointer-events-none absolute left-3.5 top-2.5 size-4 text-stone-400" />
           <input
             aria-label="Search menu"
-            className="input pl-9"
+            className="input rounded-full pl-9 pr-4 py-1.5 text-xs sm:text-sm bg-stone-50/80 focus:bg-white"
             placeholder="Search menu…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -126,13 +129,16 @@ export function Catalog() {
         </div>
       </div>
       {products.length ? (
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {products.map((product) => (
-            <article key={product.id} className="card overflow-hidden">
-              <div className="flex items-start gap-4 p-5">
+            <article
+              key={product.id}
+              className="card overflow-hidden rounded-3xl border border-stone-200/80 bg-white shadow-xs hover:border-stone-300/90 hover:shadow-sm transition-all"
+            >
+              <div className="flex items-start gap-4 p-5 sm:p-6">
                 <div
                   className={cn(
-                    'flex size-16 shrink-0 items-center justify-center rounded-xl bg-stone-100 text-3xl',
+                    'flex size-16 shrink-0 items-center justify-center rounded-2xl bg-stone-100 text-3xl shadow-2xs',
                     !product.available && 'grayscale',
                   )}
                   aria-hidden

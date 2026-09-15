@@ -53,19 +53,19 @@ export function Overview() {
         title="A little less busy. A lot more orderly."
         description={`Here's what's happening at ${data.company.name}.`}
       >
-        <button className="btn" onClick={() => navigate('playground')}>
-          <MessageCircle className="size-4" />
+        <button className="btn rounded-full shadow-xs" onClick={() => navigate('playground')}>
+          <MessageCircle className="size-4 text-emerald-700" />
           Test your bot
-          <ArrowUpRight className="size-4" />
+          <ArrowUpRight className="size-4 text-stone-400" />
         </button>
       </PageHeading>
-      <section className="mb-7 grid grid-cols-1 overflow-hidden rounded-xl border border-emerald-200 bg-emerald-50 md:grid-cols-5">
-        <div className="p-6 md:col-span-3 md:p-7">
-          <div className="mb-3 flex items-center gap-2 text-xs font-semibold text-emerald-800">
-            <span className="size-1.5 rounded-full bg-emerald-700" />
+      <section className="mb-8 grid grid-cols-1 overflow-hidden rounded-3xl border border-emerald-200/80 bg-gradient-to-br from-emerald-50/90 via-white to-emerald-50/40 shadow-xs md:grid-cols-5">
+        <div className="p-6 sm:p-8 md:col-span-3">
+          <div className="mb-3 flex items-center gap-2 text-xs font-bold tracking-wider text-emerald-800 uppercase">
+            <span className="size-2 rounded-full bg-emerald-600 shadow-[0_0_6px_rgba(5,150,105,0.5)]" />
             YOUR RESTAURANT, CONNECTED
           </div>
-          <h2 className="max-w-lg text-2xl font-semibold leading-tight text-emerald-950">
+          <h2 className="max-w-lg text-2xl sm:text-3xl font-bold leading-tight tracking-tight text-emerald-950">
             Good conversations.
             <br />
             Great orders.
@@ -74,31 +74,31 @@ export function Overview() {
             Let your bot take care of the menu and the details, while you take care of the food.
           </p>
           <button
-            className="mt-5 inline-flex items-center gap-2 text-sm font-semibold text-emerald-900"
+            className="mt-6 inline-flex items-center gap-2 text-sm font-bold text-emerald-900 hover:text-emerald-700 transition-colors group"
             onClick={() => navigate('playground')}
           >
             See your bot in action
-            <ArrowRight className="size-4" />
+            <ArrowRight className="size-4 group-hover:translate-x-1 transition-transform" />
           </button>
         </div>
-        <div className="flex items-center justify-center p-6 pt-0 md:col-span-2 md:py-6">
-          <div className="w-full max-w-sm rounded-xl border border-emerald-200 bg-white p-4 shadow-xs">
-            <div className="flex items-center gap-3 border-b border-stone-100 pb-3">
-              <div className="flex size-9 items-center justify-center rounded-full bg-emerald-50 text-emerald-800">
+        <div className="flex items-center justify-center p-6 pt-0 md:col-span-2 md:py-8 md:pr-8">
+          <div className="w-full max-w-sm rounded-2xl border border-emerald-200/80 bg-white p-4 sm:p-5 shadow-sm">
+            <div className="flex items-center gap-3 border-b border-stone-100 pb-3.5">
+              <div className="flex size-9 items-center justify-center rounded-xl bg-emerald-50 text-emerald-800 shadow-2xs">
                 <MessageCircle className="size-5" />
               </div>
-              <div>
-                <p className="text-sm font-semibold">{data.company.name}</p>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-bold text-stone-900">{data.company.name}</p>
                 <p className="mt-0.5 text-xs text-stone-400">Customer conversation preview</p>
               </div>
             </div>
-            <div className="mt-3 ml-auto w-fit max-w-full rounded-xl rounded-tr-sm bg-stone-100 px-3 py-2 text-xs text-stone-600">
+            <div className="mt-3.5 ml-auto w-fit max-w-[85%] rounded-2xl rounded-tr-sm bg-stone-100 px-3.5 py-2 text-xs font-medium text-stone-700 shadow-2xs">
               Hi! Can I see your menu?
             </div>
-            <div className="mt-2 w-fit max-w-full rounded-xl rounded-tl-sm bg-emerald-50 px-3 py-2 text-xs text-emerald-900">
+            <div className="mt-2.5 w-fit max-w-[85%] rounded-2xl rounded-tl-sm bg-emerald-50 border border-emerald-100 px-3.5 py-2 text-xs font-medium text-emerald-900 shadow-2xs">
               Of course. Something delicious awaits. 🍽️
             </div>
-            <div className="mt-3 flex items-center justify-between text-xs text-stone-400">
+            <div className="mt-3.5 flex items-center justify-between text-[11px] text-stone-400 border-t border-stone-100 pt-3">
               <span>Available in English, Urdu & Roman Urdu</span>
               <CheckCheck className="size-4 text-emerald-600" />
             </div>
@@ -106,7 +106,7 @@ export function Overview() {
         </div>
       </section>
       <section
-        className="mb-7 grid gap-4 sm:grid-cols-2 xl:grid-cols-4"
+        className="mb-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-4"
         aria-label="Workspace metrics"
       >
         {[
@@ -135,30 +135,39 @@ export function Overview() {
             icon: Clock3,
           },
         ].map((metric) => (
-          <div key={metric.label} className="card p-5">
+          <div
+            key={metric.label}
+            className="card p-5 sm:p-6 hover:border-stone-300/80 transition-all"
+          >
             <div className="flex items-center justify-between">
-              <p className="text-xs font-medium text-stone-500">{metric.label}</p>
-              <metric.icon className="size-4 text-stone-400" />
+              <p className="text-[11px] font-bold tracking-wider text-stone-500 uppercase">
+                {metric.label}
+              </p>
+              <div className="flex size-9 items-center justify-center rounded-xl bg-stone-100 text-stone-600">
+                <metric.icon className="size-4" />
+              </div>
             </div>
-            <p className="mt-4 text-2xl font-semibold tabular-nums text-stone-900">
+            <p className="mt-4 text-3xl font-bold tracking-tight tabular-nums text-stone-900">
               {metric.value}
             </p>
             <p className="mt-2 text-xs text-stone-400">{metric.sub}</p>
           </div>
         ))}
       </section>
-      <div className="mb-7 grid gap-6 xl:grid-cols-3">
-        <section className="card overflow-hidden xl:col-span-2">
-          <div className="flex flex-wrap items-center justify-between gap-3 p-5">
+      <div className="mb-8 grid gap-6 xl:grid-cols-3">
+        <section className="card p-5 sm:p-6 overflow-hidden xl:col-span-2">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
             <div>
-              <h2 className="text-sm font-semibold">Orders over time</h2>
+              <h2 className="text-base font-bold tracking-tight text-stone-900">
+                Orders over time
+              </h2>
               <p className="mt-1 text-xs text-stone-400">
                 {daysData.reduce((sum, day) => sum + day.count, 0)} orders in the last {days} days
               </p>
             </div>
             <select
               aria-label="Order chart period"
-              className="rounded-md border border-stone-200 px-2 py-1.5 text-xs"
+              className="rounded-full border border-stone-200/90 bg-stone-50/80 px-3.5 py-1.5 text-xs font-semibold text-stone-700 hover:bg-stone-100 transition-all"
               value={days}
               onChange={(e) => setDays(Number(e.target.value))}
             >
@@ -166,7 +175,7 @@ export function Overview() {
               <option value={30}>Last 30 days</option>
             </select>
           </div>
-          <div className="relative mx-5 mb-5">
+          <div className="relative mx-1 mb-2">
             <div
               aria-hidden
               className="pointer-events-none absolute inset-x-0 top-0 flex h-40 flex-col justify-between"
@@ -188,15 +197,17 @@ export function Overview() {
                     <div
                       title={`${day.count} orders`}
                       style={{
-                        height: day.count ? `${Math.max(8, (day.count / maxCount) * 92)}%` : '3px',
+                        height: day.count ? `${Math.max(8, (day.count / maxCount) * 92)}%` : '4px',
                       }}
                       className={cn(
-                        'w-full max-w-10 rounded-t-md',
-                        i === days - 1 ? 'bg-emerald-800' : 'bg-emerald-200',
+                        'w-full max-w-10 rounded-t-lg transition-all',
+                        i === days - 1
+                          ? 'bg-emerald-700 shadow-sm'
+                          : 'bg-emerald-200/80 hover:bg-emerald-300',
                       )}
                     />
                   </div>
-                  <span className="mt-3 h-4 text-center text-xs tabular-nums text-stone-400">
+                  <span className="mt-3 h-4 text-center text-xs tabular-nums text-stone-400 font-medium">
                     {days === 7
                       ? day.date.toLocaleDateString('en', { weekday: 'short' })
                       : i % 5 === 0
@@ -208,10 +219,10 @@ export function Overview() {
             </div>
           </div>
         </section>
-        <section className="card p-5">
+        <section className="card p-5 sm:p-6">
           <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold">Your setup</h2>
-            <span className="text-xs tabular-nums text-stone-400">
+            <h2 className="text-base font-bold tracking-tight text-stone-900">Your setup</h2>
+            <span className="rounded-full bg-emerald-50 border border-emerald-200/60 px-2.5 py-0.5 text-xs font-bold text-emerald-800 tabular-nums">
               {Number(data.products.length > 0) +
                 Number(whatsapp?.status === 'connected') +
                 Number(
@@ -220,7 +231,7 @@ export function Overview() {
               /3
             </span>
           </div>
-          <div className="mt-5 space-y-5">
+          <div className="mt-5 space-y-3">
             {[
               {
                 title: 'Add your menu',
@@ -248,26 +259,28 @@ export function Overview() {
             ].map((step) => (
               <button
                 key={step.title}
-                className="flex w-full items-center gap-3 text-left"
+                className="flex w-full items-center gap-3 rounded-2xl p-2.5 text-left hover:bg-stone-50 transition-colors"
                 onClick={() => navigate(step.page)}
               >
                 <span
                   className={cn(
-                    'flex size-7 shrink-0 items-center justify-center rounded-full border',
+                    'flex size-8 shrink-0 items-center justify-center rounded-full border',
                     step.done
-                      ? 'border-emerald-100 bg-emerald-50 text-emerald-800'
-                      : 'border-stone-200 text-stone-400',
+                      ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                      : 'border-stone-200 bg-stone-50 text-stone-400',
                   )}
                 >
                   {step.done ? (
-                    <Check className="size-3.5" />
+                    <Check className="size-4" />
                   ) : (
                     <span className="size-1.5 rounded-full bg-stone-300" />
                   )}
                 </span>
-                <span className="flex-1">
-                  <span className="block text-xs font-semibold text-stone-700">{step.title}</span>
-                  <span className="mt-1 block text-xs text-stone-400">{step.sub}</span>
+                <span className="flex-1 min-w-0">
+                  <span className="block truncate text-xs font-bold text-stone-800">
+                    {step.title}
+                  </span>
+                  <span className="mt-0.5 block truncate text-xs text-stone-400">{step.sub}</span>
                 </span>
                 <ChevronRight className="size-4 text-stone-300" />
               </button>
@@ -276,13 +289,13 @@ export function Overview() {
         </section>
       </div>
       <section className="card overflow-hidden">
-        <div className="flex items-center justify-between p-5">
-          <div className="flex items-center gap-2">
-            <h2 className="text-sm font-semibold">Recent orders</h2>
-            <Badge>{data.orders.length}</Badge>
+        <div className="flex items-center justify-between p-5 sm:p-6 border-b border-stone-100">
+          <div className="flex items-center gap-2.5">
+            <h2 className="text-base font-bold tracking-tight text-stone-900">Recent orders</h2>
+            <Badge tone="neutral">{data.orders.length}</Badge>
           </div>
           <button
-            className="inline-flex items-center gap-2 text-xs font-medium text-emerald-800"
+            className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-800 hover:text-emerald-950 transition-colors"
             onClick={() => navigate('orders')}
           >
             View all orders
@@ -298,16 +311,21 @@ export function Overview() {
         />
       </section>
       {activity.length > 0 && (
-        <section className="mt-7">
+        <section className="mt-8">
           <div className="mb-4 flex items-center gap-2">
-            <h2 className="text-sm font-semibold">Behind the conversation</h2>
+            <h2 className="text-base font-bold tracking-tight text-stone-900">
+              Behind the conversation
+            </h2>
             <span className="text-xs text-stone-400">Recent bot activity</span>
           </div>
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             {activity.map((trace) => (
-              <div key={trace.id} className="rounded-lg border border-stone-200 bg-white p-4">
-                <div className="flex items-center gap-2 text-xs font-medium text-stone-700">
-                  <span className="size-1.5 rounded-full bg-emerald-600" />
+              <div
+                key={trace.id}
+                className="card p-4 sm:p-5 hover:border-emerald-200/80 transition-all"
+              >
+                <div className="flex items-center gap-2 text-xs font-bold text-stone-800">
+                  <span className="size-2 rounded-full bg-emerald-600 shadow-[0_0_6px_rgba(5,150,105,0.4)]" />
                   {label(trace.action)}
                 </div>
                 <p className="mt-2 line-clamp-2 text-xs leading-relaxed text-stone-500">
@@ -387,44 +405,59 @@ export function Orders() {
         title="Orders"
         description="From the first hello to the last bite. Keep every order moving."
       >
-        <button className="btn" disabled={!filtered.length} onClick={exportCsv}>
+        <button
+          className="btn rounded-full shadow-xs"
+          disabled={!filtered.length}
+          onClick={exportCsv}
+        >
           <ArrowDownToLine className="size-4" />
           Export CSV
         </button>
-        <button className="btn btn-primary" onClick={() => navigate('playground')}>
+        <button
+          className="btn btn-primary rounded-full shadow-xs"
+          onClick={() => navigate('playground')}
+        >
           <ShoppingBag className="size-4" />
           Try an order
         </button>
       </PageHeading>
       <section className="card overflow-hidden">
-        <div className="flex flex-wrap items-center justify-between gap-4 p-4 sm:p-5">
-          <div className="flex flex-wrap gap-1" aria-label="Order filters">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-4 sm:p-6 border-b border-stone-100">
+          <div
+            className="flex items-center gap-1.5 overflow-x-auto max-w-full pb-1.5 md:pb-0"
+            aria-label="Order filters"
+          >
             {['all', 'pending', 'active', 'completed', 'rejected', 'cancelled'].map((value) => (
               <button
                 key={value}
                 aria-pressed={filter === value}
                 className={cn(
-                  'rounded-lg px-3 py-2 text-xs font-medium',
+                  'rounded-full px-3.5 py-1.5 text-xs font-semibold whitespace-nowrap transition-all',
                   filter === value
-                    ? 'bg-emerald-50 text-emerald-900'
-                    : 'text-stone-500 hover:bg-stone-50',
+                    ? 'bg-emerald-700 text-white shadow-xs'
+                    : 'text-stone-600 hover:bg-stone-100 hover:text-stone-900',
                 )}
                 onClick={() => setFilter(value)}
               >
                 {label(value)}
                 {value === 'pending' && (
-                  <span className="ml-1.5 tabular-nums">
+                  <span
+                    className={cn(
+                      'ml-1.5 rounded-full px-1.5 py-0.5 text-[10px] font-bold tabular-nums',
+                      filter === value ? 'bg-white/20 text-white' : 'bg-stone-200 text-stone-700',
+                    )}
+                  >
                     {data.orders.filter((o) => o.status === 'pending').length}
                   </span>
                 )}
               </button>
             ))}
           </div>
-          <div className="relative">
-            <Search className="absolute left-3 top-3 size-4 text-stone-400" />
+          <div className="relative w-full md:w-64 shrink-0">
+            <Search className="pointer-events-none absolute left-3.5 top-2.5 size-4 text-stone-400" />
             <input
               aria-label="Search orders"
-              className="input pl-9"
+              className="input rounded-full pl-9 pr-4 py-1.5 text-xs sm:text-sm bg-stone-50/80 focus:bg-white"
               placeholder="Search orders…"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
@@ -464,35 +497,39 @@ function OrderTable({ orders, onSelect }: { orders: Order[]; onSelect: (order: O
             ))}
           </tr>
         </thead>
-        <tbody>
+        <tbody className="divide-y divide-stone-100">
           {orders.map((order) => (
-            <tr key={order.id} className="hover:bg-stone-50">
+            <tr key={order.id} className="hover:bg-stone-50/70 transition-colors">
               <td className="table-cell">
                 <button
-                  className="text-left text-xs font-semibold text-emerald-800 underline-offset-4 hover:underline"
+                  className="text-left text-xs font-bold text-emerald-800 underline-offset-4 hover:underline"
                   onClick={() => onSelect(order)}
                 >
                   {order.reference}
                 </button>
-                <p className="mt-1 text-xs text-stone-400">
+                <p className="mt-0.5 text-xs text-stone-400">
                   {order.items.reduce((sum, i) => sum + i.quantity, 0)} items
                 </p>
               </td>
               <td className="table-cell">
-                <div className="flex items-center gap-2.5">
-                  <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-stone-100 text-xs text-stone-500">
+                <div className="flex items-center gap-3">
+                  <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-emerald-50 text-xs font-bold text-emerald-800 ring-1 ring-emerald-200/70">
                     {initials(order.customerName || 'Guest')}
                   </div>
-                  <div>
-                    <p className="text-xs font-medium">{order.customerName || 'Guest'}</p>
-                    <p className="mt-1 text-xs tabular-nums text-stone-400">
+                  <div className="min-w-0">
+                    <p className="truncate text-xs font-semibold text-stone-800">
+                      {order.customerName || 'Guest'}
+                    </p>
+                    <p className="mt-0.5 text-xs tabular-nums text-stone-400">
                       {order.customerPhone}
                     </p>
                   </div>
                 </div>
               </td>
-              <td className="table-cell text-xs text-stone-500">{label(order.fulfillment)}</td>
-              <td className="table-cell whitespace-nowrap text-xs font-semibold tabular-nums">
+              <td className="table-cell text-xs font-medium text-stone-600">
+                {label(order.fulfillment)}
+              </td>
+              <td className="table-cell whitespace-nowrap text-xs font-bold tabular-nums text-stone-900">
                 {money(order.total)}
               </td>
               <td className="table-cell">
@@ -596,14 +633,18 @@ function OrderDetails({ order, onClose }: { order: Order | null; onClose: () => 
               </div>
             </div>
             {nextStatus && (
-              <div className="mt-6 flex gap-2">
+              <div className="mt-6 flex gap-2.5">
                 {order.status === 'pending' && (
-                  <button className="btn" disabled={busy} onClick={() => setReject(true)}>
+                  <button
+                    className="btn rounded-full"
+                    disabled={busy}
+                    onClick={() => setReject(true)}
+                  >
                     Reject order
                   </button>
                 )}
                 <button
-                  className="btn btn-primary flex-1"
+                  className="btn btn-primary rounded-full flex-1"
                   disabled={busy}
                   onClick={() => void update(nextStatus)}
                 >

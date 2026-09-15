@@ -155,11 +155,7 @@ export function WhatsAppSignup() {
           // forever while waiting for phone_number_id and waba_id that will never arrive.
           pendingSignupTimer.current = window.setTimeout(() => {
             const current = session.current;
-            if (
-              current.active &&
-              current.code &&
-              (!current.phoneNumberId || !current.wabaId)
-            ) {
+            if (current.active && current.code && (!current.phoneNumberId || !current.wabaId)) {
               current.active = false;
               setWorking(false);
               setError(
@@ -188,10 +184,12 @@ export function WhatsAppSignup() {
     );
   }
   return (
-    <section className="card mb-6 p-6">
+    <section className="card mb-6 p-6 sm:p-7 rounded-3xl border border-stone-200/80 bg-white shadow-xs">
       <div className="flex items-center gap-3">
-        <Link2 className="size-5 text-emerald-800" />
-        <h2 className="font-semibold">Connect with Facebook</h2>
+        <div className="flex size-9 items-center justify-center rounded-xl bg-emerald-50 text-emerald-800">
+          <Link2 className="size-5" />
+        </div>
+        <h2 className="font-bold text-stone-900 tracking-tight">Connect with Facebook</h2>
       </div>
       <p className="mt-3 text-sm leading-relaxed text-stone-500">
         The restaurant signs in with Meta and grants access to its WhatsApp account. Use an Embedded
@@ -199,17 +197,19 @@ export function WhatsAppSignup() {
       </p>
       {config?.enabled ? (
         <div className="mt-5 space-y-4">
-          <label className="flex items-start gap-2 text-sm">
+          <label className="flex items-start gap-2.5 text-sm cursor-pointer">
             <input
-              className="mt-1"
+              className="mt-1 accent-emerald-700"
               type="checkbox"
               checked={coexistence}
               disabled={working}
               onChange={(e) => setCoexistence(e.target.checked)}
             />
             <span>
-              Keep using the WhatsApp Business mobile app
-              <span className="mt-1 block text-xs text-stone-500">
+              <span className="font-semibold text-stone-800">
+                Keep using the WhatsApp Business mobile app
+              </span>
+              <span className="mt-0.5 block text-xs text-stone-400">
                 Requests Meta’s coexistence flow for eligible existing Business App numbers.
               </span>
             </span>
@@ -221,7 +221,7 @@ export function WhatsAppSignup() {
                 hint="For a new Cloud API number. Store this PIN securely; the app will not keep a copy."
               >
                 <input
-                  className="input"
+                  className="input rounded-xl"
                   type="password"
                   inputMode="numeric"
                   pattern="[0-9]{6}"
@@ -234,7 +234,7 @@ export function WhatsAppSignup() {
             </div>
           )}
           <button
-            className="btn btn-primary"
+            className="btn btn-primary rounded-full shadow-xs"
             disabled={!ready || busy || working || (!coexistence && !!pin && pin.length !== 6)}
             onClick={launch}
           >
@@ -243,7 +243,7 @@ export function WhatsAppSignup() {
           </button>
           {working && (
             <button
-              className="btn btn-quiet ml-2"
+              className="btn btn-quiet rounded-full ml-2"
               onClick={() => {
                 clearPendingSignupTimer();
                 session.current.active = false;

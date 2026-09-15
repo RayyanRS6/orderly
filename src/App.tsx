@@ -14,6 +14,7 @@ import {
   MessageCircle,
   MessageSquare,
   Plus,
+  Search,
   Settings2,
   ShoppingBag,
   X,
@@ -204,65 +205,100 @@ export default function App() {
         </div>
       </div>
     );
+  const [navSearch, setNavSearch] = useState('');
   const pending = data.orders.filter((o) => o.status === 'pending').length;
+
+  const filteredNav = navigation.filter((item) =>
+    item.label.toLowerCase().includes(navSearch.toLowerCase()),
+  );
+  const filteredManage = manage.filter((item) =>
+    item.label.toLowerCase().includes(navSearch.toLowerCase()),
+  );
+
   const sidebar = (
-    <div className="flex h-full flex-col bg-stone-900 px-4 pb-5 pt-7 text-stone-400">
-      <div className="px-3">
+    <div className="flex h-full flex-col bg-[#121417] px-4 pb-5 pt-6 text-stone-400 border-r border-white/5">
+      <div className="px-2">
         <Brand />
       </div>
-      <div className="mb-7 mt-9 rounded-lg border border-stone-700 px-3 py-3">
-        <p className="text-xs text-stone-500">YOUR WORKSPACE</p>
-        <p className="mt-1 truncate text-sm font-medium text-stone-100">{data.company.name}</p>
+
+      <div className="mt-5 px-1">
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-stone-500" />
+          <input
+            type="text"
+            aria-label="Search navigation"
+            value={navSearch}
+            onChange={(e) => setNavSearch(e.target.value)}
+            placeholder="Search..."
+            className="h-9 w-full rounded-full border border-white/10 bg-white/[0.05] pl-9 pr-3 text-xs text-stone-200 placeholder:text-stone-500 transition-all focus:border-emerald-500 focus:bg-white/[0.08] focus:outline-none"
+          />
+        </div>
       </div>
-      <nav aria-label="Main navigation" className="space-y-1">
-        {navigation.map((item) => (
+
+      <div className="my-5 rounded-2xl border border-white/10 bg-white/[0.03] p-3.5 backdrop-blur-xs">
+        <p className="text-[10px] font-bold tracking-widest text-stone-400 uppercase">
+          YOUR WORKSPACE
+        </p>
+        <p className="mt-1 truncate text-sm font-semibold text-white">{data.company.name}</p>
+      </div>
+
+      <nav aria-label="Main navigation" className="space-y-1.5 overflow-y-auto">
+        {filteredNav.map((item) => (
           <button
             key={item.id}
             aria-current={page === item.id ? 'page' : undefined}
             className={cn(
-              'flex min-h-11 w-full items-center gap-3 rounded-lg px-3 text-left text-sm',
+              'flex min-h-11 w-full items-center gap-3 rounded-2xl px-3.5 text-left text-sm font-medium transition-all',
               page === item.id
-                ? 'bg-emerald-900 text-emerald-50'
-                : 'hover:bg-stone-800 hover:text-white',
+                ? 'bg-emerald-600 text-white font-semibold shadow-md shadow-emerald-950/40'
+                : 'text-stone-400 hover:bg-white/[0.06] hover:text-white',
             )}
             onClick={() => navigate(item.id)}
           >
-            <item.icon className="size-4.5" />
-            {item.label}
+            <item.icon className="size-4.5 shrink-0" />
+            <span className="truncate">{item.label}</span>
             {item.id === 'orders' && pending > 0 && (
-              <span className="ml-auto rounded bg-stone-700 px-1.5 py-0.5 text-xs tabular-nums text-stone-100">
+              <span className="ml-auto rounded-full bg-white/20 px-2 py-0.5 text-[11px] font-bold tabular-nums text-white">
                 {pending}
               </span>
             )}
             {item.id === 'playground' && (
-              <span className="ml-auto size-1.5 rounded-full bg-emerald-500" />
+              <span className="ml-auto size-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]" />
             )}
           </button>
         ))}
       </nav>
-      <p className="mb-3 mt-8 px-3 text-xs text-stone-500">MANAGE</p>
-      <nav aria-label="Workspace management" className="space-y-1">
-        {manage.map((item) => (
-          <button
-            key={item.id}
-            aria-current={page === item.id ? 'page' : undefined}
-            className={cn(
-              'flex min-h-11 w-full items-center gap-3 rounded-lg px-3 text-left text-sm',
-              page === item.id
-                ? 'bg-emerald-900 text-emerald-50'
-                : 'hover:bg-stone-800 hover:text-white',
-            )}
-            onClick={() => navigate(item.id)}
-          >
-            <item.icon className="size-4.5" />
-            {item.label}
-          </button>
-        ))}
-      </nav>
-      <div className="mt-auto pt-12">
-        <div className="rounded-xl border border-stone-700 p-4">
-          <div className="mb-2 flex items-center gap-2 text-sm font-medium text-stone-100">
-            <MessageCircle className="size-4 text-emerald-400" />
+
+      {filteredManage.length > 0 && (
+        <>
+          <p className="mb-2 mt-6 px-3.5 text-[10px] font-bold tracking-widest text-stone-400 uppercase">
+            MANAGE
+          </p>
+          <nav aria-label="Workspace management" className="space-y-1.5">
+            {filteredManage.map((item) => (
+              <button
+                key={item.id}
+                aria-current={page === item.id ? 'page' : undefined}
+                className={cn(
+                  'flex min-h-11 w-full items-center gap-3 rounded-2xl px-3.5 text-left text-sm font-medium transition-all',
+                  page === item.id
+                    ? 'bg-emerald-600 text-white font-semibold shadow-md shadow-emerald-950/40'
+                    : 'text-stone-400 hover:bg-white/[0.06] hover:text-white',
+                )}
+                onClick={() => navigate(item.id)}
+              >
+                <item.icon className="size-4.5 shrink-0" />
+                <span className="truncate">{item.label}</span>
+              </button>
+            ))}
+          </nav>
+        </>
+      )}
+
+      <div className="mt-auto pt-6">
+        <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 shadow-xs">
+          <div className="mb-1.5 flex items-center gap-2 text-xs font-semibold text-stone-100">
+            <MessageCircle className="size-4 text-emerald-400 shrink-0" />
             Made for the conversation.
           </div>
           <p className="text-xs leading-relaxed text-stone-400">
@@ -272,13 +308,22 @@ export default function App() {
           </p>
         </div>
         <button
-          className="mt-4 flex min-h-10 w-full items-center gap-3 px-3 text-sm hover:text-white"
+          className="mt-3 flex min-h-9 w-full items-center gap-2.5 rounded-xl px-3 text-xs font-medium text-stone-300 hover:bg-white/[0.06] hover:text-white transition-all"
           onClick={() => setHelp(true)}
         >
-          <CircleHelp className="size-4" />
+          <CircleHelp className="size-4 text-stone-400" />
           Getting started
-          <ArrowRight className="ml-auto size-4" />
+          <ArrowRight className="ml-auto size-3.5" />
         </button>
+        {client && (
+          <button
+            className="mt-2 flex min-h-9 w-full items-center gap-2.5 rounded-xl px-3 text-xs font-medium text-stone-400 hover:bg-white/[0.06] hover:text-red-400 transition-all"
+            onClick={() => void client.auth.signOut()}
+          >
+            <LogOut className="size-3.5" />
+            Sign out
+          </button>
+        )}
       </div>
     </div>
   );
@@ -297,37 +342,54 @@ export default function App() {
         mutate,
       }}
     >
-      <div className="min-h-dvh bg-stone-50">
-        <aside className="fixed inset-y-0 left-0 z-30 hidden w-60 lg:block">{sidebar}</aside>
+      <div className="min-h-dvh bg-[#f8fafc]">
+        <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 lg:block">{sidebar}</aside>
         {mobile && (
-          <Modal open={mobile} onOpenChange={setMobile} title="Navigate workspace">
-            <div className="-mx-6 -mb-6 h-[70dvh]">{sidebar}</div>
-          </Modal>
+          <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true">
+            <div
+              className="fixed inset-0 bg-stone-950/60 backdrop-blur-xs transition-opacity"
+              onClick={() => setMobile(false)}
+            />
+            <div className="fixed inset-y-0 left-0 z-50 w-72 max-w-[85vw] bg-[#121417] shadow-2xl flex flex-col">
+              <div className="absolute right-3 top-4 z-10">
+                <button
+                  className="flex size-8 items-center justify-center rounded-xl text-stone-400 hover:text-white hover:bg-white/10 transition-colors"
+                  aria-label="Close navigation"
+                  onClick={() => setMobile(false)}
+                >
+                  <X className="size-5" />
+                </button>
+              </div>
+              {sidebar}
+            </div>
+          </div>
         )}
-        <div className="lg:pl-60">
-          <header className="flex min-h-20 items-center justify-between gap-4 border-b border-stone-200 bg-white px-5 sm:px-8 lg:px-10">
-            <div className="flex min-w-0 items-center gap-3">
+        <div className="lg:pl-64">
+          <header className="sticky top-0 z-20 flex min-h-16 items-center justify-between gap-3 border-b border-stone-200/80 bg-white/95 px-4 backdrop-blur-md sm:px-8 lg:px-10">
+            <div className="flex min-w-0 items-center gap-2.5 sm:gap-3">
               <button
-                className="icon-btn lg:hidden"
+                className="icon-btn lg:hidden rounded-xl"
                 aria-label="Open navigation"
                 onClick={() => setMobile(true)}
               >
                 <MenuIcon className="size-5" />
               </button>
-              <span className="hidden text-sm text-stone-400 sm:block">Workspace</span>
+              <span className="hidden text-xs font-semibold tracking-wider text-stone-400 uppercase sm:block">
+                Workspace
+              </span>
               <span className="hidden text-stone-300 sm:block">/</span>
-              <span className="truncate text-sm font-medium">
+              <span className="truncate text-sm font-bold text-stone-900 tracking-tight">
                 {[...navigation, ...manage].find((n) => n.id === page)?.label}
               </span>
             </div>
-            <div className="flex items-center gap-3 sm:gap-5">
+            <div className="flex items-center gap-2.5 sm:gap-4">
               <div className="relative">
                 <label className="sr-only" htmlFor="company-switch">
                   Current business
                 </label>
                 <select
                   id="company-switch"
-                  className="max-w-40 appearance-none rounded-lg bg-stone-50 py-2 pl-3 pr-8 text-xs font-medium sm:max-w-56 sm:text-sm"
+                  className="max-w-36 appearance-none rounded-full border border-stone-200/90 bg-stone-50/90 py-1.5 pl-3.5 pr-8 text-xs font-semibold text-stone-700 shadow-2xs hover:bg-stone-100 transition-all sm:max-w-56 sm:text-sm"
                   value={data.company.id}
                   disabled={busy}
                   onChange={(e) => switchCompany(e.target.value)}
@@ -338,22 +400,22 @@ export default function App() {
                     </option>
                   ))}
                 </select>
-                <ChevronDown className="pointer-events-none absolute right-2 top-2.5 size-4 text-stone-400" />
+                <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 size-3.5 text-stone-400" />
               </div>
-              <div className="h-6 w-px bg-stone-200" />
+              <div className="h-5 w-px bg-stone-200" />
               <div className="flex items-center gap-2">
-                <div className="flex size-9 items-center justify-center rounded-full bg-stone-200 text-xs font-semibold">
+                <div className="flex size-8.5 shrink-0 items-center justify-center rounded-full bg-emerald-700 text-xs font-bold text-white shadow-2xs ring-2 ring-emerald-600/20">
                   {initials(data.company.name)}
                 </div>
                 <div className="hidden text-xs xl:block">
-                  <p className="font-semibold text-stone-700">{label(data.role)}</p>
-                  <p className="mt-0.5 text-stone-400">
+                  <p className="font-bold text-stone-800">{label(data.role)}</p>
+                  <p className="text-[11px] text-stone-400">
                     {data.mode === 'demo' ? 'Demo workspace' : 'Team workspace'}
                   </p>
                 </div>
                 {client && (
                   <button
-                    className="icon-btn"
+                    className="icon-btn rounded-full hover:text-stone-800"
                     aria-label="Sign out"
                     onClick={() => void client.auth.signOut()}
                   >
@@ -364,21 +426,21 @@ export default function App() {
             </div>
           </header>
           {data.mode === 'demo' && (
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-stone-200 bg-stone-100 px-5 py-2.5 text-xs text-stone-500 sm:px-8 lg:px-10">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-stone-200 bg-stone-100/90 px-4 py-2 text-xs text-stone-600 sm:px-8 lg:px-10">
               <span>
-                <span className="font-semibold text-stone-600">Sample workspace</span>
+                <span className="font-semibold text-stone-800">Sample workspace</span>
                 <span className="mx-2">·</span>Changes saved on this local server. No real messages
                 are sent.
               </span>
               <button
-                className="font-medium text-emerald-800 hover:underline"
+                className="font-semibold text-emerald-800 hover:text-emerald-950 transition-colors"
                 onClick={() => navigate('playground')}
               >
                 Try an order <span aria-hidden>↗</span>
               </button>
             </div>
           )}
-          <main id="main" className="mx-auto max-w-7xl px-5 py-7 sm:px-8 lg:px-10 lg:py-9">
+          <main id="main" className="mx-auto max-w-7xl px-4 py-6 sm:px-8 lg:px-10 lg:py-8">
             <div className="mb-4 empty:hidden">
               <ErrorNotice message={error} onDismiss={() => setError('')} />
             </div>
@@ -435,7 +497,7 @@ export default function App() {
           ))}
         </ol>
         <button
-          className="btn btn-primary mt-7 w-full"
+          className="btn btn-primary mt-7 w-full rounded-full"
           onClick={() => {
             setHelp(false);
             navigate('playground');
@@ -453,15 +515,15 @@ function Brand({ dark = true }: { dark?: boolean }) {
   return (
     <div
       className={cn(
-        'flex items-center gap-2.5 text-2xl font-semibold',
+        'flex items-center gap-2.5 text-2xl font-bold tracking-tight',
         dark ? 'text-white' : 'text-stone-900',
       )}
     >
-      <span className="relative flex size-8 items-center justify-center rounded-lg bg-emerald-500 text-stone-950">
+      <span className="relative flex size-8.5 items-center justify-center rounded-xl bg-emerald-600 text-white shadow-sm shadow-emerald-700/20">
         <MessageCircle className="size-5" strokeWidth={2.5} />
-        <span className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-white" />
+        <span className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-white ring-2 ring-emerald-600" />
       </span>
-      orderly<span className="self-end pb-1 text-emerald-500">.</span>
+      orderly<span className="self-end pb-0.5 text-emerald-500 font-extrabold">.</span>
     </div>
   );
 }
@@ -471,11 +533,11 @@ function FirstBusiness({ onCreated }: { onCreated: (id: string) => void }) {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   return (
-    <div className="grid min-h-dvh place-items-center px-5">
+    <div className="grid min-h-dvh place-items-center bg-[#f8fafc] px-4 py-8">
       <div className="w-full max-w-md">
         <Brand dark={false} />
         <form
-          className="card mt-8 space-y-5 p-7"
+          className="card mt-8 space-y-5 rounded-3xl border border-stone-200/90 bg-white p-7 sm:p-9 shadow-xl"
           onSubmit={async (e) => {
             e.preventDefault();
             setBusy(true);
@@ -490,20 +552,22 @@ function FirstBusiness({ onCreated }: { onCreated: (id: string) => void }) {
             }
           }}
         >
-          <h1 className="text-2xl font-semibold">Add your first business.</h1>
-          <p className="text-sm text-stone-500">
+          <h1 className="text-2xl font-bold tracking-tight text-stone-900">
+            Add your first business.
+          </h1>
+          <p className="text-sm text-stone-500 leading-relaxed">
             Your administrator account is ready. Create an empty workspace to begin.
           </p>
           <Field label="Business name">
             <input
-              className="input"
+              className="input rounded-xl"
               required
               value={name}
               onChange={(e) => setName(e.target.value)}
             />
           </Field>
           <ErrorNotice message={error} />
-          <button className="btn btn-primary w-full" disabled={busy}>
+          <button className="btn btn-primary rounded-full w-full" disabled={busy}>
             Create workspace
             <Plus className="size-4" />
           </button>
@@ -519,12 +583,14 @@ function Login({ client }: { client: SupabaseClient }) {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   return (
-    <div className="grid min-h-dvh place-items-center bg-stone-100 px-5">
+    <div className="grid min-h-dvh place-items-center bg-[#f8fafc] px-4 py-8">
       <div className="w-full max-w-md">
         <Brand dark={false} />
-        <div className="card mt-8 p-8">
-          <h1 className="text-2xl font-semibold">Welcome back.</h1>
-          <p className="mb-7 mt-2 text-sm text-stone-500">Sign in to your restaurant workspace.</p>
+        <div className="card mt-8 rounded-3xl border border-stone-200/90 bg-white p-7 sm:p-9 shadow-xl">
+          <h1 className="text-2xl font-bold tracking-tight text-stone-900">Welcome back.</h1>
+          <p className="mb-7 mt-2 text-sm text-stone-500 leading-relaxed">
+            Sign in to your restaurant workspace.
+          </p>
           <form
             className="space-y-5"
             onSubmit={async (e) => {
@@ -543,7 +609,7 @@ function Login({ client }: { client: SupabaseClient }) {
           >
             <Field label="Email address">
               <input
-                className="input"
+                className="input rounded-xl"
                 type="email"
                 value={email}
                 required
@@ -553,7 +619,7 @@ function Login({ client }: { client: SupabaseClient }) {
             </Field>
             <Field label="Password">
               <input
-                className="input"
+                className="input rounded-xl"
                 type="password"
                 value={password}
                 required
@@ -562,12 +628,12 @@ function Login({ client }: { client: SupabaseClient }) {
               />
             </Field>
             <ErrorNotice message={error} />
-            <button className="btn btn-primary w-full" disabled={busy}>
+            <button className="btn btn-primary rounded-full w-full" disabled={busy}>
               {busy ? 'Signing in…' : 'Sign in'}
               <ArrowRight className="size-4" />
             </button>
           </form>
-          <p className="mt-5 text-xs leading-relaxed text-stone-500">
+          <p className="mt-6 text-xs leading-relaxed text-stone-400">
             Workspace access is managed by your administrator. Contact them if you need an account
             or password reset.
           </p>

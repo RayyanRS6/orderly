@@ -120,10 +120,16 @@ export function Settings() {
                   {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day, i) => (
                     <label
                       key={day}
-                      className="flex min-h-10 items-center gap-2 rounded-lg border border-stone-200 px-3 text-sm"
+                      className={cn(
+                        'flex min-h-9 items-center gap-2 rounded-full border px-3.5 text-xs font-semibold cursor-pointer transition-all',
+                        draft.openingHours.days.includes(i)
+                          ? 'border-emerald-800 bg-emerald-50 text-emerald-900 shadow-2xs'
+                          : 'border-stone-200 bg-white text-stone-600 hover:bg-stone-50',
+                      )}
                     >
                       <input
                         type="checkbox"
+                        className="accent-emerald-700"
                         checked={draft.openingHours.days.includes(i)}
                         onChange={(e) =>
                           update({
@@ -315,7 +321,7 @@ export function Settings() {
             <div className="mb-2 flex items-center justify-between gap-3">
               <h2 className="font-semibold">Common questions</h2>
               <button
-                className="btn"
+                className="btn rounded-full shadow-xs"
                 type="button"
                 onClick={() => update({ faqs: [...draft.faqs, { question: '', answer: '' }] })}
               >
@@ -328,7 +334,10 @@ export function Settings() {
             </p>
             <div className="space-y-5">
               {draft.faqs.map((faq, i) => (
-                <div key={i} className="rounded-lg border border-stone-200 p-4">
+                <div
+                  key={i}
+                  className="rounded-2xl border border-stone-200/90 p-4 sm:p-5 bg-stone-50/40"
+                >
                   <div className="mb-3 flex gap-2">
                     <div className="flex-1">
                       <Field label="Question">
@@ -347,7 +356,7 @@ export function Settings() {
                       </Field>
                     </div>
                     <button
-                      className="icon-btn self-end"
+                      className="icon-btn self-end rounded-full"
                       type="button"
                       aria-label={`Remove question ${i + 1}`}
                       onClick={() => update({ faqs: draft.faqs.filter((_, j) => j !== i) })}
@@ -374,10 +383,10 @@ export function Settings() {
             </div>
           </section>
           <div className="flex items-center justify-end gap-4">
-            <span role="status" className="text-sm text-emerald-800">
+            <span role="status" className="text-sm font-medium text-emerald-800">
               {saved ? 'Settings saved.' : !canEdit ? 'Only an owner can edit settings.' : ''}
             </span>
-            <button className="btn btn-primary">
+            <button className="btn btn-primary rounded-full px-6 shadow-sm">
               <Save className="size-4" />
               {busy ? 'Saving…' : 'Save settings'}
             </button>
@@ -757,7 +766,7 @@ export function Businesses() {
         description="Each workspace has its own menu, conversations, orders, and connections."
       >
         {data.role === 'admin' && (
-          <button className="btn btn-primary" onClick={() => setOpen(true)}>
+          <button className="btn btn-primary rounded-full shadow-xs" onClick={() => setOpen(true)}>
             <Plus className="size-4" />
             Add business
           </button>
@@ -765,9 +774,12 @@ export function Businesses() {
       </PageHeading>
       <div className="grid gap-5 md:grid-cols-2">
         {data.companies.map((company) => (
-          <section key={company.id} className="card p-6">
+          <section
+            key={company.id}
+            className="card p-6 sm:p-7 rounded-3xl border border-stone-200/80 bg-white shadow-xs hover:border-stone-300 transition-all"
+          >
             <div className="flex items-start justify-between gap-3">
-              <div className="flex size-12 items-center justify-center rounded-xl bg-stone-100 font-semibold text-stone-600">
+              <div className="flex size-12 items-center justify-center rounded-2xl bg-emerald-50 font-bold text-emerald-800 ring-1 ring-emerald-200/70">
                 {initials(company.name)}
               </div>
               {company.id === data.company.id && (
@@ -777,17 +789,17 @@ export function Businesses() {
                 </Badge>
               )}
             </div>
-            <h2 className="mt-5 text-lg font-semibold">{company.name}</h2>
+            <h2 className="mt-5 text-lg font-bold text-stone-900 tracking-tight">{company.name}</h2>
             <p className="mt-2 min-h-10 text-sm text-stone-500">
               {company.address || 'Add a pickup address in Settings.'}
             </p>
             <div className="mb-6 mt-5 flex flex-wrap gap-2">
-              <Badge>{company.botEnabled ? 'Bot enabled' : 'Bot paused'}</Badge>
-              <Badge>{company.currency}</Badge>
-              <Badge>{providers[company.ai.provider].name}</Badge>
+              <Badge tone="neutral">{company.botEnabled ? 'Bot enabled' : 'Bot paused'}</Badge>
+              <Badge tone="neutral">{company.currency}</Badge>
+              <Badge tone="neutral">{providers[company.ai.provider].name}</Badge>
             </div>
             <button
-              className="btn w-full"
+              className="btn rounded-full w-full shadow-xs"
               disabled={company.id === data.company.id || busy}
               onClick={() => switchCompany(company.id)}
             >
@@ -826,7 +838,7 @@ export function Businesses() {
         >
           <Field label="Business name">
             <input
-              className="input"
+              className="input rounded-xl"
               required
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -834,17 +846,21 @@ export function Businesses() {
             />
           </Field>
           <Field label="Pickup address">
-            <input className="input" value={address} onChange={(e) => setAddress(e.target.value)} />
+            <input
+              className="input rounded-xl"
+              value={address}
+              onChange={(e) => setAddress(e.target.value)}
+            />
           </Field>
           <Field label="Contact number">
             <input
-              className="input"
+              className="input rounded-xl"
               type="tel"
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
             />
           </Field>
-          <button className="btn btn-primary w-full" disabled={busy}>
+          <button className="btn btn-primary rounded-full w-full shadow-xs" disabled={busy}>
             <Plus className="size-4" />
             Create workspace
           </button>

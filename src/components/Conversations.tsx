@@ -140,7 +140,7 @@ export function Playground() {
         description="Try the complete ordering experience before connecting your number."
       >
         <button
-          className="btn"
+          className="btn rounded-full shadow-xs"
           disabled={busy}
           onClick={() => {
             setId(undefined);
@@ -153,15 +153,15 @@ export function Playground() {
         </button>
       </PageHeading>
       <div className="grid gap-5 xl:grid-cols-3">
-        <div className="card flex h-[42rem] min-h-0 flex-col overflow-hidden xl:col-span-2">
-          <div className="flex items-center justify-between gap-3 border-b border-stone-200 px-5 py-4">
+        <div className="card flex h-[44rem] min-h-0 flex-col overflow-hidden xl:col-span-2 rounded-3xl border border-stone-200/80 shadow-sm">
+          <div className="flex items-center justify-between gap-3 border-b border-stone-100 bg-white px-5 sm:px-6 py-4">
             <div className="flex items-center gap-3">
-              <div className="flex size-10 items-center justify-center rounded-xl bg-emerald-100 text-emerald-800">
+              <div className="flex size-10 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-800 shadow-2xs">
                 <MessageCircle className="size-5" />
               </div>
               <div>
-                <p className="text-sm font-semibold">{data.company.name}</p>
-                <p className="mt-0.5 text-xs text-stone-500">
+                <p className="text-sm font-bold text-stone-900">{data.company.name}</p>
+                <p className="mt-0.5 text-xs text-stone-400">
                   Preview conversation · no WhatsApp delivery
                 </p>
               </div>
@@ -172,14 +172,14 @@ export function Playground() {
           </div>
           <Messages conversation={conversation} waiting={busy} />
           {conversation?.mode === 'human' && (
-            <div className="border-t border-amber-100 bg-amber-50 px-5 py-3 text-xs text-amber-900">
+            <div className="border-t border-amber-200/80 bg-amber-50 px-5 py-3 text-xs text-amber-900 font-medium">
               This conversation is waiting for staff.{' '}
-              <button className="font-semibold underline" onClick={() => navigate('inbox')}>
+              <button className="font-bold underline ml-1" onClick={() => navigate('inbox')}>
                 Open inbox
               </button>
             </div>
           )}
-          <div className="border-t border-stone-200 bg-white p-4">
+          <div className="border-t border-stone-100 bg-white p-4 sm:p-5">
             <div className="mb-3 flex flex-wrap gap-2">
               {[
                 ['Show menu', { type: 'menu' }],
@@ -188,7 +188,7 @@ export function Playground() {
               ].map(([title, action]) => (
                 <button
                   key={String(title)}
-                  className="rounded-full border border-stone-200 px-3 py-1.5 text-xs text-stone-600 hover:bg-stone-50 disabled:opacity-50"
+                  className="rounded-full border border-stone-200/90 bg-stone-50/80 hover:bg-stone-100 hover:border-stone-300 px-3.5 py-1.5 text-xs font-semibold text-stone-700 shadow-2xs transition-all disabled:opacity-50"
                   disabled={busy}
                   onClick={() => void send(String(title), action as BotAction)}
                 >
@@ -209,7 +209,7 @@ export function Playground() {
               </label>
               <input
                 id="chat-message"
-                className="input"
+                className="input rounded-full pl-4 pr-4 py-2 bg-stone-50/80 focus:bg-white"
                 value={text}
                 onChange={(e) => setText(e.target.value)}
                 placeholder="Type a message… or try ‘2 biryani’"
@@ -217,14 +217,14 @@ export function Playground() {
                 autoComplete="off"
               />
               <button
-                className="btn btn-primary px-3"
+                className="btn btn-primary rounded-full px-4 shadow-xs"
                 aria-label="Send message"
                 disabled={busy || !text.trim()}
               >
                 <Send className="size-4" />
               </button>
             </form>
-            <p className="mt-2 text-center text-[10px] text-stone-400">
+            <p className="mt-2 text-center text-[10px] font-medium text-stone-400">
               English · اردو · Roman Urdu
             </p>
           </div>
@@ -307,7 +307,7 @@ export function Playground() {
               ) : (
                 <>
                   <button
-                    className="btn mt-4 w-full"
+                    className="btn rounded-full mt-4 w-full shadow-xs"
                     disabled={busy || !conversation?.cart.items.length}
                     onClick={() => setDetails(true)}
                   >
@@ -316,7 +316,7 @@ export function Playground() {
                   </button>
                   {conversation?.cart.status === 'awaiting_confirmation' && (
                     <button
-                      className="btn btn-primary mt-2 w-full"
+                      className="btn btn-primary rounded-full mt-2 w-full shadow-xs"
                       disabled={busy}
                       onClick={() =>
                         void send('Confirm order', {
@@ -429,7 +429,7 @@ export function Playground() {
               </Field>
             </>
           )}
-          <button className="btn btn-primary w-full" disabled={busy}>
+          <button className="btn btn-primary rounded-full w-full shadow-xs" disabled={busy}>
             Save details
           </button>
         </form>
@@ -487,7 +487,7 @@ function AddItem({
       >
         <Field label="Quantity">
           <input
-            className="input"
+            className="input rounded-xl"
             type="number"
             min={1}
             max={50}
@@ -498,7 +498,11 @@ function AddItem({
         </Field>
         {product.variants.length > 0 && (
           <Field label="Size">
-            <select className="input" value={variant} onChange={(e) => setVariant(e.target.value)}>
+            <select
+              className="input rounded-xl"
+              value={variant}
+              onChange={(e) => setVariant(e.target.value)}
+            >
               {product.variants.map((v) => (
                 <option value={v.id} key={v.id}>
                   {v.name} · {money(v.price)}
@@ -524,21 +528,21 @@ function AddItem({
                   />
                   {m.name}
                 </span>
-                <span className="text-stone-500">+ {money(m.price)}</span>
+                <span className="text-stone-500 font-medium">+ {money(m.price)}</span>
               </label>
             ))}
           </fieldset>
         )}
         <Field label="Special instructions">
           <input
-            className="input"
+            className="input rounded-xl"
             placeholder="For example, less spicy"
             value={notes}
             maxLength={300}
             onChange={(e) => setNotes(e.target.value)}
           />
         </Field>
-        <button className="btn btn-primary w-full" disabled={busy}>
+        <button className="btn btn-primary rounded-full w-full shadow-xs" disabled={busy}>
           <Plus className="size-4" />
           Add to order
         </button>
@@ -569,11 +573,11 @@ export function Inbox() {
         title="Inbox"
         description="Every conversation, with a person ready when it matters."
       >
-        <Badge>{data.conversations.length} conversations</Badge>
+        <Badge tone="neutral">{data.conversations.length} conversations</Badge>
       </PageHeading>
-      <div className="card grid min-h-[36rem] overflow-hidden md:grid-cols-3">
-        <div className="max-h-[40rem] overflow-y-auto border-b border-stone-200 md:border-b-0 md:border-r">
-          <div className="border-b border-stone-100 px-5 py-4 text-xs font-semibold text-stone-500">
+      <div className="card grid min-h-[38rem] overflow-hidden rounded-3xl border border-stone-200/80 shadow-xs md:grid-cols-3">
+        <div className="max-h-[42rem] overflow-y-auto border-b border-stone-200/80 md:border-b-0 md:border-r">
+          <div className="border-b border-stone-100 px-5 py-4 text-[11px] font-bold tracking-wider text-stone-500 uppercase">
             RECENT CONVERSATIONS
           </div>
           {!data.conversations.length ? (
@@ -588,8 +592,8 @@ export function Inbox() {
               <button
                 key={c.id}
                 className={cn(
-                  'w-full border-b border-stone-100 px-5 py-5 text-left hover:bg-stone-50',
-                  c.id === id && 'bg-emerald-50/60',
+                  'w-full border-b border-stone-100/80 px-5 py-4 text-left transition-colors hover:bg-stone-50/80',
+                  c.id === id && 'bg-emerald-50/70 border-l-4 border-l-emerald-700',
                 )}
                 onClick={() => {
                   setId(c.id);
@@ -598,14 +602,16 @@ export function Inbox() {
                 }}
               >
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm font-semibold">{c.customerName || 'Guest'}</span>
+                  <span className="text-sm font-bold text-stone-900">
+                    {c.customerName || 'Guest'}
+                  </span>
                   {c.mode === 'human' && <Badge tone="amber">Needs you</Badge>}
                 </div>
-                <p className="mt-2 truncate text-xs text-stone-500">
+                <p className="mt-1.5 truncate text-xs text-stone-500">
                   {c.messages.at(-1)?.text || 'New conversation'}
                 </p>
-                <div className="mt-3 flex items-center gap-2 text-[10px] text-stone-400">
-                  <MessageCircle className="size-3" />
+                <div className="mt-2.5 flex items-center gap-2 text-[11px] text-stone-400 font-medium">
+                  <MessageCircle className="size-3 text-emerald-600" />
                   {c.channel === 'demo' ? 'Test conversation' : 'WhatsApp'}
                   <span>·</span>
                   {label(c.language)}
@@ -614,16 +620,16 @@ export function Inbox() {
             ))
           )}
         </div>
-        <div className="flex h-[40rem] min-h-0 flex-col md:col-span-2">
+        <div className="flex h-[42rem] min-h-0 flex-col md:col-span-2">
           {conversation ? (
             <>
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-stone-200 px-5 py-4">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-stone-100 bg-white px-5 sm:px-6 py-4">
                 <div>
-                  <p className="font-semibold">{conversation.customerName}</p>
-                  <p className="mt-1 text-xs text-stone-500">{conversation.customerPhone}</p>
+                  <p className="font-bold text-stone-900">{conversation.customerName}</p>
+                  <p className="mt-0.5 text-xs text-stone-400">{conversation.customerPhone}</p>
                 </div>
                 <button
-                  className="btn"
+                  className="btn rounded-full shadow-xs"
                   disabled={busy}
                   onClick={() =>
                     void act(`/conversations/${conversation.id}/mode`, {
@@ -640,7 +646,7 @@ export function Inbox() {
                 </button>
               </div>
               <Messages conversation={conversation} />
-              <div className="border-t border-stone-200 p-4">
+              <div className="border-t border-stone-100 bg-white p-4 sm:p-5">
                 <ErrorNotice message={error} />
                 <form
                   className="flex gap-2"
@@ -655,14 +661,14 @@ export function Inbox() {
                   </label>
                   <input
                     id="staff-reply"
-                    className="input"
+                    className="input rounded-full pl-4 pr-4 py-2 bg-stone-50/80 focus:bg-white"
                     placeholder="Reply as restaurant staff…"
                     value={text}
                     maxLength={2000}
                     onChange={(e) => setText(e.target.value)}
                   />
                   <button
-                    className="btn btn-primary px-3"
+                    className="btn btn-primary rounded-full px-4 shadow-xs"
                     aria-label="Send staff reply"
                     disabled={busy || !text.trim()}
                   >
