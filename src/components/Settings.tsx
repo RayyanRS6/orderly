@@ -19,7 +19,7 @@ import type { Company, Integration, IntegrationKind, Provider } from '../shared/
 import { money } from '../shared/types';
 import { useWorkspace } from '../lib/workspace';
 import { cn, initials, label } from '../lib/utils';
-import { Badge, Empty, Field, Modal, PageHeading, Status } from './ui';
+import { Badge, CustomSelect, Empty, Field, Modal, PageHeading, Status } from './ui';
 import { WhatsAppSignup } from './WhatsAppSignup';
 
 const providers: Record<Provider, { name: string; model: string }> = {
@@ -231,20 +231,17 @@ export function Settings() {
             </div>
             <div className="grid gap-5 sm:grid-cols-2">
               <Field label="AI provider">
-                <select
-                  className="input"
+                <CustomSelect
                   value={draft.ai.provider}
-                  onChange={(e) => {
-                    const provider = e.target.value as Provider;
+                  onChange={(val) => {
+                    const provider = val as Provider;
                     update({ ai: { ...draft.ai, provider, model: providers[provider].model } });
                   }}
-                >
-                  {Object.entries(providers).map(([id, p]) => (
-                    <option key={id} value={id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
+                  options={Object.entries(providers).map(([id, p]) => ({
+                    value: id,
+                    label: p.name,
+                  }))}
+                />
               </Field>
               <Field
                 label="Model"
@@ -258,16 +255,16 @@ export function Settings() {
                 />
               </Field>
               <Field label="API key source">
-                <select
-                  className="input"
+                <CustomSelect
                   value={draft.ai.keyMode}
-                  onChange={(e) =>
-                    update({ ai: { ...draft.ai, keyMode: e.target.value as 'own' | 'platform' } })
+                  onChange={(val) =>
+                    update({ ai: { ...draft.ai, keyMode: val as 'own' | 'platform' } })
                   }
-                >
-                  <option value="platform">Platform account</option>
-                  <option value="own">This business's API key</option>
-                </select>
+                  options={[
+                    { value: 'platform', label: 'Platform account' },
+                    { value: 'own', label: "This business's API key" },
+                  ]}
+                />
               </Field>
               <Field
                 label="Monthly AI limit (USD)"
@@ -289,14 +286,14 @@ export function Settings() {
                 label="Menu source"
                 hint="One source controls item prices and availability for this business."
               >
-                <select
-                  className="input"
+                <CustomSelect
                   value={draft.catalogSource}
-                  onChange={(e) => update({ catalogSource: e.target.value as 'app' | 'sheets' })}
-                >
-                  <option value="app">Manage here · forms or CSV</option>
-                  <option value="sheets">Connected Google Sheet</option>
-                </select>
+                  onChange={(val) => update({ catalogSource: val as 'app' | 'sheets' })}
+                  options={[
+                    { value: 'app', label: 'Manage here · forms or CSV' },
+                    { value: 'sheets', label: 'Connected Google Sheet' },
+                  ]}
+                />
               </Field>
               <label className="flex items-center gap-3 self-start rounded-2xl border border-stone-200/90 p-4 text-sm">
                 <input

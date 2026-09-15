@@ -25,7 +25,7 @@ import type { Bootstrap } from './shared/types';
 import { api, setAccessToken } from './lib/api';
 import { cn, initials, label } from './lib/utils';
 import { Workspace, type Page } from './lib/workspace';
-import { ErrorNotice, Field, Modal } from './components/ui';
+import { CustomSelect, ErrorNotice, Field, Modal } from './components/ui';
 import { Overview, Orders } from './components/Orders';
 import { Catalog } from './components/Catalog';
 import { Inbox, Playground } from './components/Conversations';
@@ -45,11 +45,36 @@ const manage = [
 ] as const;
 type Configuration = { mode: 'demo' | 'live'; supabaseUrl?: string; supabaseAnonKey?: string };
 
+function getStoredCompany(): string {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      return localStorage.getItem('orderly.company') || '';
+    }
+  } catch {}
+  return '';
+}
+
+function setStoredCompany(id: string) {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('orderly.company', id);
+    }
+  } catch {}
+}
+
+function removeStoredCompany() {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem('orderly.company');
+    }
+  } catch {}
+}
+
 export default function App() {
   const [config, setConfig] = useState<Configuration | null>(null);
   const [client, setClient] = useState<SupabaseClient | null>(null);
   const [authenticated, setAuthenticated] = useState(false);
-  const [companyId, setCompanyId] = useState(() => localStorage.getItem('orderly.company') || '');
+  const [companyId, setCompanyId] = useState(getStoredCompany);
   const [data, setData] = useState<Bootstrap | null>(null);
   const [page, setPage] = useState<Page>('overview');
   const [error, setError] = useState('');
@@ -101,7 +126,7 @@ export default function App() {
       companyId,
     );
     setData((current) => (current?.company.id === result.company.id ? result : current));
-    localStorage.setItem('orderly.company', result.company.id);
+    setStoredCompany(result.company.id);
   }, [companyId]);
 
   useEffect(() => {
@@ -115,13 +140,13 @@ export default function App() {
       .then((result) => {
         if (active) {
           setData(result);
-          localStorage.setItem('orderly.company', result.company.id);
+          setStoredCompany(result.company.id);
         }
       })
       .catch((e) => {
         if (active) {
           if (companyId) {
-            localStorage.removeItem('orderly.company');
+            removeStoredCompany();
             setCompanyId('');
           } else {
             setError(e.message);
@@ -223,12 +248,12 @@ export default function App() {
   };
 
   const sidebar = (
-    <div className="flex h-full flex-col bg-[#121417] px-4 pb-5 pt-6 text-stone-400 border-r border-white/5">
-      <div className="px-2">
+    <div className="flex h-full flex-col overflow-y-auto bg-[#121417] px-4 pb-5 pt-6 text-stone-400 border-r border-white/5 custom-scrollbar-dark">
+      <div className="px-2 shrink-0">
         <Brand />
       </div>
 
-      <div className="mt-5 px-1 flex items-center gap-2">
+      <div className="mt-5 px-1 flex items-center gap-2 shrink-0">
         <div className="relative flex-1">
           <Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-stone-500" />
           <input
@@ -264,14 +289,14 @@ export default function App() {
         </button>
       </div>
 
-      <div className="my-5 rounded-2xl border border-white/10 bg-white/[0.03] p-3.5 backdrop-blur-xs">
+      <div className="my-5 rounded-2xl border border-white/10 bg-white/[0.03] p-3.5 backdrop-blur-xs shrink-0">
         <p className="text-[10px] font-bold tracking-widest text-stone-400 uppercase">
           YOUR WORKSPACE
         </p>
         <p className="mt-1 truncate text-sm font-semibold text-white">{data.company.name}</p>
       </div>
 
-      <nav aria-label="Main navigation" className="space-y-1.5 overflow-y-auto">
+      <nav aria-label="Main navigation" className="space-y-1.5 shrink-0">
         {filteredNav.map((item) => (
           <button
             key={item.id}
@@ -299,7 +324,7 @@ export default function App() {
       </nav>
 
       {filteredManage.length > 0 && (
-        <>
+        <div className="shrink-0">
           <p className="mb-2 mt-6 px-4 text-[10px] font-bold tracking-widest text-stone-400 uppercase">
             MANAGE
           </p>
@@ -321,11 +346,11 @@ export default function App() {
               </button>
             ))}
           </nav>
-        </>
+        </div>
       )}
 
       {filteredNav.length === 0 && filteredManage.length === 0 && (
-        <div className="py-6 text-center text-xs text-stone-500">
+        <div className="py-6 text-center text-xs text-stone-500 shrink-0">
           <p>No matching pages</p>
           <button
             type="button"
@@ -337,7 +362,7 @@ export default function App() {
         </div>
       )}
 
-      <div className="mt-auto pt-6">
+      <div className="mt-auto pt-6 shrink-0">
         <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 shadow-xs">
           <div className="mb-1.5 flex items-center gap-2 text-xs font-semibold text-stone-100">
             <MessageCircle className="size-4 text-emerald-400 shrink-0" />
@@ -440,20 +465,19 @@ export default function App() {
                 <label className="sr-only" htmlFor="company-switch">
                   Current business
                 </label>
-                <select
+                <CustomSelect
                   id="company-switch"
-                  className="max-w-32 sm:max-w-48 appearance-none rounded-full border border-stone-200/90 bg-stone-50/90 py-1.5 pl-3.5 pr-8 text-xs font-semibold text-stone-700 shadow-2xs hover:bg-stone-100 transition-all truncate"
+                  variant="pill"
+                  align="right"
                   value={data.company.id}
                   disabled={busy}
-                  onChange={(e) => switchCompany(e.target.value)}
-                >
-                  {data.companies.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
-                <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 size-3.5 text-stone-400" />
+                  onChange={(val) => switchCompany(val)}
+                  options={data.companies.map((c) => ({
+                    value: c.id,
+                    label: c.name,
+                  }))}
+                  className="max-w-36 sm:max-w-56"
+                />
               </div>
               <div className="h-5 w-px bg-stone-200 hidden sm:block" />
               <div className="flex items-center gap-2">

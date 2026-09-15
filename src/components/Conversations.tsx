@@ -18,7 +18,7 @@ import { money } from '../shared/types';
 import { quoteCart } from '../domain/engine';
 import { useWorkspace } from '../lib/workspace';
 import { cn, label } from '../lib/utils';
-import { Badge, Empty, ErrorNotice, Field, Modal, PageHeading, Status } from './ui';
+import { Badge, CustomSelect, Empty, ErrorNotice, Field, Modal, PageHeading, Status } from './ui';
 
 function Messages({ conversation, waiting }: { conversation?: Conversation; waiting?: boolean }) {
   const end = useRef<HTMLDivElement>(null);
@@ -393,31 +393,30 @@ export function Playground() {
             />
           </Field>
           <Field label="Fulfillment">
-            <select
-              className="input rounded-xl"
+            <CustomSelect
               value={fulfillment}
-              onChange={(e) => setFulfillment(e.target.value as 'pickup' | 'delivery')}
-            >
-              <option value="pickup">Pickup · pay at the restaurant</option>
-              <option value="delivery">Delivery · pay cash on delivery</option>
-            </select>
+              onChange={(val) => setFulfillment(val as 'pickup' | 'delivery')}
+              options={[
+                { value: 'pickup', label: 'Pickup · pay at the restaurant' },
+                { value: 'delivery', label: 'Delivery · pay cash on delivery' },
+              ]}
+            />
           </Field>
           {fulfillment === 'delivery' && (
             <>
               <Field label="Delivery area">
-                <select
-                  className="input rounded-xl"
-                  required
+                <CustomSelect
+                  placeholder="Select an area"
                   value={zone}
-                  onChange={(e) => setZone(e.target.value)}
-                >
-                  <option value="">Select an area</option>
-                  {data.company.deliveryZones.map((z) => (
-                    <option key={z.name} value={z.name}>
-                      {z.name} · {money(z.fee)}
-                    </option>
-                  ))}
-                </select>
+                  onChange={(val) => setZone(val)}
+                  options={[
+                    { value: '', label: 'Select an area' },
+                    ...data.company.deliveryZones.map((z) => ({
+                      value: z.name,
+                      label: `${z.name} · ${money(z.fee)}`,
+                    })),
+                  ]}
+                />
               </Field>
               <Field label="Complete address">
                 <textarea
@@ -498,17 +497,14 @@ function AddItem({
         </Field>
         {product.variants.length > 0 && (
           <Field label="Size">
-            <select
-              className="input rounded-xl"
+            <CustomSelect
               value={variant}
-              onChange={(e) => setVariant(e.target.value)}
-            >
-              {product.variants.map((v) => (
-                <option value={v.id} key={v.id}>
-                  {v.name} · {money(v.price)}
-                </option>
-              ))}
-            </select>
+              onChange={(val) => setVariant(val)}
+              options={product.variants.map((v) => ({
+                value: v.id,
+                label: `${v.name} · ${money(v.price)}`,
+              }))}
+            />
           </Field>
         )}
         {product.modifiers.length > 0 && (

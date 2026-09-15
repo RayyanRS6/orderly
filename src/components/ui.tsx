@@ -1,8 +1,16 @@
-import { Component, type ErrorInfo, useContext, type ReactNode } from 'react';
+import {
+  Component,
+  type ErrorInfo,
+  useContext,
+  useState,
+  useEffect,
+  useRef,
+  type ReactNode,
+} from 'react';
 import { Workspace } from '../lib/workspace';
 import * as Dialog from '@radix-ui/react-dialog';
 import * as AlertDialog from '@radix-ui/react-alert-dialog';
-import { AlertCircle, ArrowRight, Check, X } from 'lucide-react';
+import { AlertCircle, ArrowRight, Check, ChevronDown, X } from 'lucide-react';
 import { cn, label } from '../lib/utils';
 
 export function Badge({
@@ -226,6 +234,192 @@ export function PageHeading({
   );
 }
 
+export interface SelectOption {
+  value: string;
+  label: ReactNode;
+  disabled?: boolean;
+}
+
+export function CustomSelect({
+  id,
+  name,
+  value,
+  onChange,
+  options,
+  placeholder = 'Select an option',
+  disabled = false,
+  className,
+  menuClassName,
+  align = 'left',
+  variant = 'input',
+  theme = 'light',
+  'aria-label': ariaLabel,
+}: {
+  id?: string;
+  name?: string;
+  value: string;
+  onChange: (value: string) => void;
+  options: SelectOption[];
+  placeholder?: string;
+  disabled?: boolean;
+  className?: string;
+  menuClassName?: string;
+  align?: 'left' | 'right';
+  variant?: 'input' | 'pill';
+  theme?: 'light' | 'dark';
+  'aria-label'?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    function handlePointerDown(e: MouseEvent | TouchEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        setOpen(false);
+        triggerRef.current?.focus();
+      }
+    }
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('touchstart', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('touchstart', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [open]);
+
+  const selectedOption = options.find((opt) => opt.value === value);
+
+  const handleSelect = (optionValue: string) => {
+    onChange(optionValue);
+    setOpen(false);
+    triggerRef.current?.focus();
+  };
+
+  return (
+    <div
+      ref={containerRef}
+      className={cn('relative', variant === 'input' ? 'w-full' : 'inline-block')}
+    >
+      {name && <input type="hidden" name={name} value={value} />}
+      <button
+        ref={triggerRef}
+        id={id}
+        type="button"
+        role="combobox"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={ariaLabel}
+        disabled={disabled}
+        onClick={() => setOpen((prev) => !prev)}
+        onKeyDown={(e) => {
+          if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            e.preventDefault();
+            setOpen(true);
+          }
+        }}
+        className={cn(
+          'flex items-center justify-between gap-2 transition-all select-none cursor-pointer focus:outline-none',
+          variant === 'pill'
+            ? cn(
+                'rounded-full border text-xs font-semibold py-1.5 pl-3.5 pr-2.5',
+                theme === 'dark'
+                  ? 'border-white/10 bg-white/[0.05] text-stone-200 hover:bg-white/10 hover:text-white focus-visible:ring-2 focus-visible:ring-emerald-500/50'
+                  : 'border-stone-200/90 bg-stone-50/90 text-stone-700 shadow-2xs hover:bg-stone-100 hover:border-stone-300 focus-visible:ring-2 focus-visible:ring-emerald-500/20',
+              )
+            : cn(
+                'min-h-10 w-full rounded-xl border text-sm px-3.5 py-2 text-left',
+                theme === 'dark'
+                  ? 'border-white/10 bg-white/[0.05] text-stone-200 hover:bg-white/[0.08] focus-visible:border-emerald-500 focus-visible:ring-2 focus-visible:ring-emerald-500/20'
+                  : 'border-stone-200/90 bg-white text-stone-800 hover:border-stone-300 focus-visible:border-emerald-600 focus-visible:ring-2 focus-visible:ring-emerald-500/15',
+              ),
+          disabled && 'opacity-60 cursor-not-allowed pointer-events-none',
+          className,
+        )}
+      >
+        <span className="truncate">
+          {selectedOption ? (
+            selectedOption.label
+          ) : (
+            <span className="text-stone-400 font-normal">{placeholder}</span>
+          )}
+        </span>
+        <ChevronDown
+          className={cn(
+            'size-3.5 shrink-0 transition-transform duration-200',
+            open && 'rotate-180',
+            theme === 'dark' ? 'text-stone-400' : 'text-stone-400',
+          )}
+        />
+      </button>
+
+      {open && (
+        <div
+          role="listbox"
+          className={cn(
+            'absolute top-full mt-1.5 z-50 max-h-60 overflow-y-auto rounded-2xl border p-1.5 shadow-xl backdrop-blur-md transition-all animate-in fade-in zoom-in-95 duration-100',
+            align === 'right' ? 'right-0' : 'left-0',
+            variant === 'pill' ? 'min-w-[12rem]' : 'w-full min-w-[10rem]',
+            theme === 'dark'
+              ? 'bg-[#1a1d21]/95 border-white/10 text-stone-200 shadow-black/60 custom-scrollbar-dark'
+              : 'bg-white/95 border-stone-200/90 text-stone-800 shadow-stone-900/10 custom-scrollbar',
+            menuClassName,
+          )}
+        >
+          {options.length === 0 ? (
+            <div className="px-3 py-2 text-xs text-stone-400">No options available</div>
+          ) : (
+            options.map((option) => {
+              const isSelected = option.value === value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="option"
+                  aria-selected={isSelected}
+                  disabled={option.disabled}
+                  onClick={() => handleSelect(option.value)}
+                  className={cn(
+                    'flex w-full items-center justify-between gap-2.5 rounded-xl px-3 py-2 text-xs sm:text-sm font-medium transition-colors text-left cursor-pointer',
+                    isSelected
+                      ? theme === 'dark'
+                        ? 'bg-emerald-500/20 text-emerald-300 font-semibold'
+                        : 'bg-emerald-50 text-emerald-900 font-semibold'
+                      : theme === 'dark'
+                        ? 'text-stone-300 hover:bg-white/[0.08] hover:text-white'
+                        : 'text-stone-700 hover:bg-stone-100/80 hover:text-stone-900',
+                    option.disabled && 'opacity-40 cursor-not-allowed pointer-events-none',
+                  )}
+                >
+                  <span className="truncate">{option.label}</span>
+                  {isSelected && (
+                    <Check
+                      className={cn(
+                        'size-4 shrink-0',
+                        theme === 'dark' ? 'text-emerald-400' : 'text-emerald-700',
+                      )}
+                    />
+                  )}
+                </button>
+              );
+            })
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export const Select = CustomSelect;
+
 export class ErrorBoundary extends Component<
   { children: ReactNode },
   { hasError: boolean; error: Error | null }
@@ -252,7 +446,7 @@ export class ErrorBoundary extends Component<
               {this.state.error?.message ||
                 'An unexpected error occurred while rendering the workspace.'}
             </p>
-            <div className="mt-6">
+            <div className="mt-6 flex flex-col gap-2">
               <button
                 className="btn btn-primary rounded-full w-full"
                 onClick={() => {
@@ -261,6 +455,18 @@ export class ErrorBoundary extends Component<
                 }}
               >
                 Reload page
+              </button>
+              <button
+                type="button"
+                className="btn btn-quiet rounded-full w-full text-xs text-stone-500 hover:text-stone-700"
+                onClick={() => {
+                  try {
+                    localStorage.removeItem('orderly.company');
+                  } catch {}
+                  window.location.href = '/';
+                }}
+              >
+                Reset workspace and return home
               </button>
             </div>
           </div>
