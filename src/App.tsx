@@ -57,6 +57,7 @@ export default function App() {
   const [mobile, setMobile] = useState(false);
   const [help, setHelp] = useState(false);
   const [firstBusiness, setFirstBusiness] = useState(false);
+  const [navSearch, setNavSearch] = useState('');
 
   useEffect(() => {
     let active = true;
@@ -207,7 +208,6 @@ export default function App() {
         </div>
       </div>
     );
-  const [navSearch, setNavSearch] = useState('');
   const pending = data.orders.filter((o) => o.status === 'pending').length;
 
   const filteredNav = navigation.filter((item) =>

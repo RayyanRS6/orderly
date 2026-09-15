@@ -35,14 +35,25 @@ export function Overview() {
   const daysData = Array.from({ length: days }, (_, index) => {
     const date = new Date();
     date.setDate(date.getDate() - (days - 1 - index));
-    const key = date.toLocaleDateString('en-CA', { timeZone: data.company.timezone });
+    let key: string;
+    try {
+      key = date.toLocaleDateString('en-CA', { timeZone: data.company.timezone });
+    } catch {
+      key = date.toISOString().slice(0, 10);
+    }
     return {
       date,
-      count: data.orders.filter(
-        (o) =>
-          new Date(o.createdAt).toLocaleDateString('en-CA', { timeZone: data.company.timezone }) ===
-          key,
-      ).length,
+      count: data.orders.filter((o) => {
+        try {
+          return (
+            new Date(o.createdAt).toLocaleDateString('en-CA', {
+              timeZone: data.company.timezone,
+            }) === key
+          );
+        } catch {
+          return o.createdAt.slice(0, 10) === key;
+        }
+      }).length,
     };
   });
   const maxCount = Math.max(1, ...daysData.map((day) => day.count));

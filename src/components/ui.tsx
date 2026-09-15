@@ -1,4 +1,4 @@
-import { useContext, type ReactNode } from 'react';
+import { Component, type ErrorInfo, useContext, type ReactNode } from 'react';
 import { Workspace } from '../lib/workspace';
 import * as Dialog from '@radix-ui/react-dialog';
 import * as AlertDialog from '@radix-ui/react-alert-dialog';
@@ -224,4 +224,49 @@ export function PageHeading({
       {children && <div className="flex flex-wrap items-center gap-2.5 shrink-0">{children}</div>}
     </div>
   );
+}
+
+export class ErrorBoundary extends Component<
+  { children: ReactNode },
+  { hasError: boolean; error: Error | null }
+> {
+  state = { hasError: false, error: null as Error | null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    console.error('Uncaught error in UI:', error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="grid min-h-dvh place-items-center bg-[#f8fafc] p-6 text-stone-800">
+          <div className="w-full max-w-md rounded-3xl border border-stone-200/90 bg-white p-7 sm:p-9 shadow-xl">
+            <h1 className="text-xl font-bold tracking-tight text-stone-900">
+              Something went wrong
+            </h1>
+            <p className="mt-2 text-sm text-stone-500 leading-relaxed">
+              {this.state.error?.message ||
+                'An unexpected error occurred while rendering the workspace.'}
+            </p>
+            <div className="mt-6">
+              <button
+                className="btn btn-primary rounded-full w-full"
+                onClick={() => {
+                  this.setState({ hasError: false, error: null });
+                  window.location.reload();
+                }}
+              >
+                Reload page
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
 }

@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import { LegalPage } from './components/Legal';
+import { ErrorBoundary } from './components/ui';
 import './index.css';
 
 const legalPages = {
@@ -13,5 +14,7 @@ const pathname = window.location.pathname.replace(/\/+$/, '') || '/';
 const legalKind = legalPages[pathname as keyof typeof legalPages];
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>{legalKind ? <LegalPage kind={legalKind} /> : <App />}</React.StrictMode>,
+  <React.StrictMode>
+    <ErrorBoundary>{legalKind ? <LegalPage kind={legalKind} /> : <App />}</ErrorBoundary>
+  </React.StrictMode>,
 );
