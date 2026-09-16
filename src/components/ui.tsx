@@ -5,7 +5,9 @@ import {
   useState,
   useEffect,
   useRef,
+  useId,
   type ReactNode,
+  type KeyboardEvent as ReactKeyboardEvent,
 } from 'react';
 import { Workspace } from '../lib/workspace';
 import * as Dialog from '@radix-ui/react-dialog';
@@ -248,6 +250,7 @@ export function CustomSelect({
   options,
   placeholder = 'Select an option',
   disabled = false,
+  required = false,
   className,
   menuClassName,
   align = 'left',
@@ -262,6 +265,7 @@ export function CustomSelect({
   options: SelectOption[];
   placeholder?: string;
   disabled?: boolean;
+  required?: boolean;
   className?: string;
   menuClassName?: string;
   align?: 'left' | 'right';
@@ -269,39 +273,131 @@ export function CustomSelect({
   theme?: 'light' | 'dark';
   'aria-label'?: string;
 }) {
+  const generatedId = useId();
+  const selectId = id || generatedId;
+  const listboxId = `${selectId}-listbox`;
+
   const [open, setOpen] = useState(false);
+  const [placement, setPlacement] = useState<'bottom' | 'top'>('bottom');
+  const [highlightedIndex, setHighlightedIndex] = useState<number>(-1);
+
   const containerRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const listboxRef = useRef<HTMLDivElement>(null);
+  const optionRefs = useRef<(HTMLButtonElement | null)[]>([]);
+
+  const selectedIndex = options.findIndex((opt) => opt.value === value);
+  const selectedOption = selectedIndex >= 0 ? options[selectedIndex] : undefined;
+
+  const updatePlacement = () => {
+    if (typeof window === 'undefined' || !triggerRef.current) return;
+    const rect = triggerRef.current.getBoundingClientRect();
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const spaceAbove = rect.top;
+    const estimatedHeight = Math.min(240, options.length * 40 + 16);
+    if (spaceBelow < estimatedHeight && spaceAbove > spaceBelow) {
+      setPlacement('top');
+    } else {
+      setPlacement('bottom');
+    }
+  };
+
+  const handleOpen = () => {
+    if (disabled) return;
+    updatePlacement();
+    setHighlightedIndex(selectedIndex >= 0 ? selectedIndex : options.findIndex((o) => !o.disabled));
+    setOpen(true);
+  };
+
+  const handleClose = () => {
+    setOpen(false);
+    setHighlightedIndex(-1);
+  };
+
+  const handleSelect = (optionValue: string) => {
+    onChange(optionValue);
+    handleClose();
+    triggerRef.current?.focus();
+  };
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || typeof document === 'undefined') return;
     function handlePointerDown(e: MouseEvent | TouchEvent) {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    }
-    function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') {
-        setOpen(false);
-        triggerRef.current?.focus();
+        handleClose();
       }
     }
     document.addEventListener('mousedown', handlePointerDown);
     document.addEventListener('touchstart', handlePointerDown);
-    document.addEventListener('keydown', handleKeyDown);
     return () => {
       document.removeEventListener('mousedown', handlePointerDown);
       document.removeEventListener('touchstart', handlePointerDown);
-      document.removeEventListener('keydown', handleKeyDown);
     };
   }, [open]);
 
-  const selectedOption = options.find((opt) => opt.value === value);
+  useEffect(() => {
+    if (open && highlightedIndex >= 0 && optionRefs.current[highlightedIndex]) {
+      optionRefs.current[highlightedIndex]?.scrollIntoView({ block: 'nearest' });
+    }
+  }, [open, highlightedIndex]);
 
-  const handleSelect = (optionValue: string) => {
-    onChange(optionValue);
-    setOpen(false);
-    triggerRef.current?.focus();
+  const getNextEnabledIndex = (current: number, step: 1 | -1): number => {
+    if (options.length === 0) return -1;
+    let next = current + step;
+    for (let i = 0; i < options.length; i++) {
+      if (next >= options.length) next = 0;
+      if (next < 0) next = options.length - 1;
+      if (!options[next]?.disabled) return next;
+      next += step;
+    }
+    return current;
+  };
+
+  const handleKeyDown = (e: ReactKeyboardEvent) => {
+    if (disabled) return;
+
+    if (!open) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === ' ' || e.key === 'Enter') {
+        e.preventDefault();
+        handleOpen();
+      }
+      return;
+    }
+
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      handleClose();
+      triggerRef.current?.focus();
+    } else if (e.key === 'Tab') {
+      handleClose();
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      setHighlightedIndex((prev) => getNextEnabledIndex(prev, 1));
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      setHighlightedIndex((prev) => getNextEnabledIndex(prev, -1));
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      const first = options.findIndex((o) => !o.disabled);
+      if (first >= 0) setHighlightedIndex(first);
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      for (let i = options.length - 1; i >= 0; i--) {
+        if (!options[i]?.disabled) {
+          setHighlightedIndex(i);
+          break;
+        }
+      }
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      if (
+        highlightedIndex >= 0 &&
+        options[highlightedIndex] &&
+        !options[highlightedIndex].disabled
+      ) {
+        handleSelect(options[highlightedIndex].value);
+      }
+    }
   };
 
   return (
@@ -309,23 +405,41 @@ export function CustomSelect({
       ref={containerRef}
       className={cn('relative', variant === 'input' ? 'w-full' : 'inline-block')}
     >
-      {name && <input type="hidden" name={name} value={value} />}
+      {(name || required) && (
+        <input
+          tabIndex={-1}
+          aria-hidden="true"
+          required={required}
+          name={name}
+          value={value}
+          onChange={() => {}}
+          onFocus={() => triggerRef.current?.focus()}
+          className="sr-only pointer-events-none absolute bottom-0 left-1/2 h-0 w-0 opacity-0"
+        />
+      )}
       <button
         ref={triggerRef}
-        id={id}
+        id={selectId}
         type="button"
         role="combobox"
         aria-haspopup="listbox"
         aria-expanded={open}
+        aria-controls={listboxId}
+        aria-activedescendant={
+          open && highlightedIndex >= 0 && options[highlightedIndex]
+            ? `${listboxId}-opt-${highlightedIndex}`
+            : undefined
+        }
         aria-label={ariaLabel}
         disabled={disabled}
-        onClick={() => setOpen((prev) => !prev)}
-        onKeyDown={(e) => {
-          if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-            e.preventDefault();
-            setOpen(true);
+        onClick={() => {
+          if (open) {
+            handleClose();
+          } else {
+            handleOpen();
           }
         }}
+        onKeyDown={handleKeyDown}
         className={cn(
           'flex items-center justify-between gap-2 transition-all select-none cursor-pointer focus:outline-none',
           variant === 'pill'
@@ -363,9 +477,13 @@ export function CustomSelect({
 
       {open && (
         <div
+          ref={listboxRef}
+          id={listboxId}
           role="listbox"
+          tabIndex={-1}
           className={cn(
-            'absolute top-full mt-1.5 z-50 max-h-60 overflow-y-auto rounded-2xl border p-1.5 shadow-xl backdrop-blur-md transition-all animate-in fade-in zoom-in-95 duration-100',
+            'absolute z-50 max-h-60 overflow-y-auto rounded-2xl border p-1.5 shadow-xl backdrop-blur-md transition-all animate-in fade-in zoom-in-95 duration-100',
+            placement === 'top' ? 'bottom-full mb-1.5 origin-bottom' : 'top-full mt-1.5 origin-top',
             align === 'right' ? 'right-0' : 'left-0',
             variant === 'pill' ? 'min-w-[12rem]' : 'w-full min-w-[10rem]',
             theme === 'dark'
@@ -377,25 +495,40 @@ export function CustomSelect({
           {options.length === 0 ? (
             <div className="px-3 py-2 text-xs text-stone-400">No options available</div>
           ) : (
-            options.map((option) => {
+            options.map((option, index) => {
               const isSelected = option.value === value;
+              const isHighlighted = index === highlightedIndex;
               return (
                 <button
                   key={option.value}
+                  ref={(el) => {
+                    optionRefs.current[index] = el;
+                  }}
+                  id={`${listboxId}-opt-${index}`}
                   type="button"
                   role="option"
                   aria-selected={isSelected}
                   disabled={option.disabled}
-                  onClick={() => handleSelect(option.value)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleSelect(option.value);
+                  }}
+                  onMouseEnter={() => {
+                    if (!option.disabled) setHighlightedIndex(index);
+                  }}
                   className={cn(
                     'flex w-full items-center justify-between gap-2.5 rounded-xl px-3 py-2 text-xs sm:text-sm font-medium transition-colors text-left cursor-pointer',
                     isSelected
                       ? theme === 'dark'
                         ? 'bg-emerald-500/20 text-emerald-300 font-semibold'
                         : 'bg-emerald-50 text-emerald-900 font-semibold'
-                      : theme === 'dark'
-                        ? 'text-stone-300 hover:bg-white/[0.08] hover:text-white'
-                        : 'text-stone-700 hover:bg-stone-100/80 hover:text-stone-900',
+                      : isHighlighted
+                        ? theme === 'dark'
+                          ? 'bg-white/[0.08] text-white'
+                          : 'bg-stone-100/90 text-stone-900'
+                        : theme === 'dark'
+                          ? 'text-stone-300 hover:bg-white/[0.08] hover:text-white'
+                          : 'text-stone-700 hover:bg-stone-100/80 hover:text-stone-900',
                     option.disabled && 'opacity-40 cursor-not-allowed pointer-events-none',
                   )}
                 >

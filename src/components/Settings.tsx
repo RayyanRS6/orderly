@@ -34,9 +34,10 @@ export function Settings() {
   const [draft, setDraft] = useState<Company>(() => structuredClone(data.company));
   const [saved, setSaved] = useState(false);
   const canEdit = data.role !== 'staff';
-  const recordedSpend = data.usage
-    .filter((u) => u.createdAt.startsWith(new Date().toISOString().slice(0, 7)))
-    .reduce((sum, u) => sum + u.costUsd, 0);
+  const usage = data.usage || [];
+  const recordedSpend = usage
+    .filter((u) => u.createdAt?.startsWith(new Date().toISOString().slice(0, 7)))
+    .reduce((sum, u) => sum + (u.costUsd || 0), 0);
   const update = (values: Partial<Company>) => {
     setSaved(false);
     setDraft((d) => ({ ...d, ...values }));
@@ -117,34 +118,37 @@ export function Settings() {
               <div className="sm:col-span-2">
                 <span className="field-label">Open days · Asia/Karachi</span>
                 <div className="flex flex-wrap gap-2">
-                  {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day, i) => (
-                    <label
-                      key={day}
-                      className={cn(
-                        'flex min-h-9 items-center gap-2 rounded-full border px-3.5 text-xs font-semibold cursor-pointer transition-all',
-                        draft.openingHours.days.includes(i)
-                          ? 'border-emerald-800 bg-emerald-50 text-emerald-900 shadow-2xs'
-                          : 'border-stone-200 bg-white text-stone-600 hover:bg-stone-50',
-                      )}
-                    >
-                      <input
-                        type="checkbox"
-                        className="accent-emerald-700"
-                        checked={draft.openingHours.days.includes(i)}
-                        onChange={(e) =>
-                          update({
-                            openingHours: {
-                              ...draft.openingHours,
-                              days: e.target.checked
-                                ? [...draft.openingHours.days, i]
-                                : draft.openingHours.days.filter((d) => d !== i),
-                            },
-                          })
-                        }
-                      />
-                      {day}
-                    </label>
-                  ))}
+                  {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day, i) => {
+                    const openDays = draft.openingHours?.days || [];
+                    return (
+                      <label
+                        key={day}
+                        className={cn(
+                          'flex min-h-9 items-center gap-2 rounded-full border px-3.5 text-xs font-semibold cursor-pointer transition-all',
+                          openDays.includes(i)
+                            ? 'border-emerald-800 bg-emerald-50 text-emerald-900 shadow-2xs'
+                            : 'border-stone-200 bg-white text-stone-600 hover:bg-stone-50',
+                        )}
+                      >
+                        <input
+                          type="checkbox"
+                          className="accent-emerald-700"
+                          checked={openDays.includes(i)}
+                          onChange={(e) =>
+                            update({
+                              openingHours: {
+                                ...draft.openingHours,
+                                days: e.target.checked
+                                  ? [...openDays, i]
+                                  : openDays.filter((d) => d !== i),
+                              },
+                            })
+                          }
+                        />
+                        {day}
+                      </label>
+                    );
+                  })}
                 </div>
               </div>
             </div>
@@ -156,7 +160,7 @@ export function Settings() {
                 className="btn"
                 type="button"
                 onClick={() =>
-                  update({ deliveryZones: [...draft.deliveryZones, { name: '', fee: 0 }] })
+                  update({ deliveryZones: [...(draft.deliveryZones || []), { name: '', fee: 0 }] })
                 }
               >
                 <Plus className="size-4" />
@@ -167,13 +171,13 @@ export function Settings() {
               Pickup is always available during opening hours. Delivery is limited to these areas,
               with cash payment.
             </p>
-            {!draft.deliveryZones.length && (
+            {!(draft.deliveryZones || []).length && (
               <p className="rounded-lg bg-stone-50 p-4 text-sm text-stone-500">
                 Pickup only. Add an area to offer delivery.
               </p>
             )}
             <div className="space-y-3">
-              {draft.deliveryZones.map((zone, i) => (
+              {(draft.deliveryZones || []).map((zone, i) => (
                 <div className="flex items-end gap-3" key={i}>
                   <div className="flex-1">
                     <Field label="Area">
@@ -183,7 +187,7 @@ export function Settings() {
                         value={zone.name}
                         onChange={(e) =>
                           update({
-                            deliveryZones: draft.deliveryZones.map((z, j) =>
+                            deliveryZones: (draft.deliveryZones || []).map((z, j) =>
                               j === i ? { ...z, name: e.target.value } : z,
                             ),
                           })
@@ -202,7 +206,7 @@ export function Settings() {
                         value={zone.fee / 100}
                         onChange={(e) =>
                           update({
-                            deliveryZones: draft.deliveryZones.map((z, j) =>
+                            deliveryZones: (draft.deliveryZones || []).map((z, j) =>
                               j === i ? { ...z, fee: Math.round(Number(e.target.value) * 100) } : z,
                             ),
                           })
@@ -215,7 +219,7 @@ export function Settings() {
                     type="button"
                     aria-label={`Remove delivery area ${zone.name || i + 1}`}
                     onClick={() =>
-                      update({ deliveryZones: draft.deliveryZones.filter((_, j) => j !== i) })
+                      update({ deliveryZones: (draft.deliveryZones || []).filter((_, j) => j !== i) })
                     }
                   >
                     <Trash2 className="size-4" />
@@ -320,7 +324,9 @@ export function Settings() {
               <button
                 className="btn rounded-full shadow-xs"
                 type="button"
-                onClick={() => update({ faqs: [...draft.faqs, { question: '', answer: '' }] })}
+                onClick={() =>
+                  update({ faqs: [...(draft.faqs || []), { question: '', answer: '' }] })
+                }
               >
                 <Plus className="size-4" />
                 Add answer
@@ -330,7 +336,7 @@ export function Settings() {
               Give your assistant approved answers about your restaurant.
             </p>
             <div className="space-y-5">
-              {draft.faqs.map((faq, i) => (
+              {(draft.faqs || []).map((faq, i) => (
                 <div
                   key={i}
                   className="rounded-2xl border border-stone-200/90 p-4 sm:p-5 bg-stone-50/40"
@@ -344,7 +350,7 @@ export function Settings() {
                           value={faq.question}
                           onChange={(e) =>
                             update({
-                              faqs: draft.faqs.map((f, j) =>
+                              faqs: (draft.faqs || []).map((f, j) =>
                                 j === i ? { ...f, question: e.target.value } : f,
                               ),
                             })
@@ -356,7 +362,9 @@ export function Settings() {
                       className="icon-btn self-end rounded-full"
                       type="button"
                       aria-label={`Remove question ${i + 1}`}
-                      onClick={() => update({ faqs: draft.faqs.filter((_, j) => j !== i) })}
+                      onClick={() =>
+                        update({ faqs: (draft.faqs || []).filter((_, j) => j !== i) })
+                      }
                     >
                       <Trash2 className="size-4" />
                     </button>
@@ -368,7 +376,7 @@ export function Settings() {
                       value={faq.answer}
                       onChange={(e) =>
                         update({
-                          faqs: draft.faqs.map((f, j) =>
+                          faqs: (draft.faqs || []).map((f, j) =>
                             j === i ? { ...f, answer: e.target.value } : f,
                           ),
                         })
@@ -510,48 +518,61 @@ export function Integrations() {
       <section className="card mb-6 p-6">
         <div className="flex items-center justify-between gap-3">
           <h2 className="font-semibold">Selected AI connection</h2>
-          <Status value={data.aiConnection.configured ? 'configured' : 'disconnected'} />
+          <Status value={data.aiConnection?.configured ? 'configured' : 'disconnected'} />
         </div>
-        <p className="mt-3 text-sm text-stone-700">
-          {providers[data.aiConnection.provider].name}
-          {data.aiConnection.provider !== 'mock' &&
-            ` · ${data.aiConnection.keyMode === 'platform' ? 'Platform account' : 'This business’s API key'}`}
-        </p>
-        <p className="mt-2 text-xs leading-relaxed text-stone-500">
-          {data.aiConnection.provider === 'mock'
-            ? 'The local demo does not need an API key.'
-            : data.aiConnection.configured
-              ? 'The selected key is available. Test account access, then try a natural-language order in Test your bot to check the model.'
-              : data.aiConnection.keyMode === 'platform'
-                ? 'The platform key is missing. Ask the platform administrator to connect this provider.'
-                : 'Add this business’s provider key below to use the selected model.'}
-        </p>
-        <div className="mt-4 flex flex-wrap gap-2">
-          {data.aiConnection.provider !== 'mock' && data.aiConnection.configured && (
-            <button
-              className="btn"
-              disabled={!canEdit || busy}
-              onClick={() =>
-                void run(
-                  `/integrations/${data.aiConnection.provider}/test`,
-                  `${providers[data.aiConnection.provider].name} ${data.aiConnection.keyMode === 'platform' ? 'platform' : 'business'} key verified. Test a natural-language order to check the selected model.`,
-                  { keyMode: data.aiConnection.keyMode },
-                )
-              }
-            >
-              <RefreshCw className="size-4" />
-              Test selected key
-            </button>
-          )}
-          <button className="btn btn-quiet" onClick={() => navigate('settings')}>
-            Change AI settings
-            <ArrowRight className="size-4" />
-          </button>
-        </div>
+        {(() => {
+          const aiConn = data.aiConnection || {
+            provider: 'mock',
+            keyMode: 'platform',
+            configured: true,
+          };
+          const providerDef = providers[aiConn.provider] || providers.mock;
+          return (
+            <>
+              <p className="mt-3 text-sm text-stone-700">
+                {providerDef.name}
+                {aiConn.provider !== 'mock' &&
+                  ` · ${aiConn.keyMode === 'platform' ? 'Platform account' : 'This business’s API key'}`}
+              </p>
+              <p className="mt-2 text-xs leading-relaxed text-stone-500">
+                {aiConn.provider === 'mock'
+                  ? 'The local demo does not need an API key.'
+                  : aiConn.configured
+                    ? 'The selected key is available. Test account access, then try a natural-language order in Test your bot to check the model.'
+                    : aiConn.keyMode === 'platform'
+                      ? 'The platform key is missing. Ask the platform administrator to connect this provider.'
+                      : 'Add this business’s provider key below to use the selected model.'}
+              </p>
+              <div className="mt-4 flex flex-wrap gap-2">
+                {aiConn.provider !== 'mock' && aiConn.configured && (
+                  <button
+                    className="btn"
+                    disabled={!canEdit || busy}
+                    onClick={() =>
+                      void run(
+                        `/integrations/${aiConn.provider}/test`,
+                        `${providerDef.name} ${aiConn.keyMode === 'platform' ? 'platform' : 'business'} key verified. Test a natural-language order to check the selected model.`,
+                        { keyMode: aiConn.keyMode },
+                      )
+                    }
+                  >
+                    <RefreshCw className="size-4" />
+                    Test selected key
+                  </button>
+                )}
+                <button className="btn btn-quiet" onClick={() => navigate('settings')}>
+                  Change AI settings
+                  <ArrowRight className="size-4" />
+                </button>
+              </div>
+            </>
+          );
+        })()}
       </section>
       <div className="grid gap-5 md:grid-cols-2">
-        {data.integrations.map((integration) => {
+        {(data.integrations || []).map((integration) => {
           const info = integrationInfo[integration.kind];
+          if (!info) return null;
           return (
             <section key={integration.kind} className="card flex flex-col p-6">
               <div className="mb-5 flex items-center justify-between gap-3">
@@ -798,7 +819,9 @@ export function Businesses() {
             <div className="mb-6 mt-5 flex flex-wrap gap-2">
               <Badge tone="neutral">{company.botEnabled ? 'Bot enabled' : 'Bot paused'}</Badge>
               <Badge tone="neutral">{company.currency}</Badge>
-              <Badge tone="neutral">{providers[company.ai.provider].name}</Badge>
+              <Badge tone="neutral">
+                {(providers[company.ai?.provider] || providers.mock).name}
+              </Badge>
             </div>
             <button
               className="btn rounded-full w-full shadow-xs"

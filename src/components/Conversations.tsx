@@ -24,10 +24,10 @@ function Messages({ conversation, waiting }: { conversation?: Conversation; wait
   const end = useRef<HTMLDivElement>(null);
   useEffect(() => {
     end.current?.scrollIntoView({ block: 'nearest' });
-  }, [conversation?.messages.length, waiting]);
+  }, [conversation?.messages?.length, waiting]);
   return (
     <div className="min-h-72 flex-1 space-y-5 overflow-y-auto bg-stone-50/60 p-5 sm:p-6">
-      {!conversation?.messages.length && (
+      {!conversation?.messages?.length && (
         <div className="py-14 text-center">
           <div className="mx-auto mb-4 flex size-14 items-center justify-center rounded-2xl border border-emerald-100 bg-emerald-50 text-emerald-800">
             <MessageCircle className="size-7" />
@@ -38,7 +38,7 @@ function Messages({ conversation, waiting }: { conversation?: Conversation; wait
           </p>
         </div>
       )}
-      {conversation?.messages.map((message) => (
+      {conversation?.messages?.map((message) => (
         <div
           key={message.id}
           className={cn(
@@ -73,10 +73,15 @@ function Messages({ conversation, waiting }: { conversation?: Conversation; wait
               )}
             >
               {message.role === 'staff' ? 'Staff · ' : ''}
-              {new Date(message.createdAt).toLocaleTimeString('en-PK', {
-                hour: '2-digit',
-                minute: '2-digit',
-              })}
+              {(() => {
+                const d = new Date(message.createdAt);
+                return Number.isNaN(d.getTime())
+                  ? ''
+                  : d.toLocaleTimeString('en-PK', {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    });
+              })()}
             </p>
           </div>
         </div>
@@ -375,6 +380,9 @@ export function Playground() {
           className="space-y-4"
           onSubmit={async (e) => {
             e.preventDefault();
+            if (fulfillment === 'delivery' && (!zone.trim() || !address.trim())) {
+              return;
+            }
             const saved = await send('Here are my order details', {
               type: 'set_details',
               customerName: name,
@@ -407,15 +415,13 @@ export function Playground() {
               <Field label="Delivery area">
                 <CustomSelect
                   placeholder="Select an area"
+                  required
                   value={zone}
                   onChange={(val) => setZone(val)}
-                  options={[
-                    { value: '', label: 'Select an area' },
-                    ...data.company.deliveryZones.map((z) => ({
-                      value: z.name,
-                      label: `${z.name} · ${money(z.fee)}`,
-                    })),
-                  ]}
+                  options={data.company.deliveryZones.map((z) => ({
+                    value: z.name,
+                    label: `${z.name} · ${money(z.fee)}`,
+                  }))}
                 />
               </Field>
               <Field label="Complete address">
@@ -563,20 +569,21 @@ export function Inbox() {
       return false;
     }
   }
+  const conversations = data.conversations || [];
   return (
     <>
       <PageHeading
         title="Inbox"
         description="Every conversation, with a person ready when it matters."
       >
-        <Badge tone="neutral">{data.conversations.length} conversations</Badge>
+        <Badge tone="neutral">{conversations.length} conversations</Badge>
       </PageHeading>
       <div className="card grid min-h-[38rem] overflow-hidden rounded-3xl border border-stone-200/80 shadow-xs md:grid-cols-3">
         <div className="max-h-[42rem] overflow-y-auto border-b border-stone-200/80 md:border-b-0 md:border-r">
           <div className="border-b border-stone-100 px-5 py-4 text-[11px] font-bold tracking-wider text-stone-500 uppercase">
             RECENT CONVERSATIONS
           </div>
-          {!data.conversations.length ? (
+          {!conversations.length ? (
             <Empty
               title="Your inbox is ready"
               description="Start a test conversation to see it here."
@@ -584,7 +591,7 @@ export function Inbox() {
               onAction={() => navigate('playground')}
             />
           ) : (
-            data.conversations.map((c) => (
+            conversations.map((c) => (
               <button
                 key={c.id}
                 className={cn(
@@ -604,7 +611,7 @@ export function Inbox() {
                   {c.mode === 'human' && <Badge tone="amber">Needs you</Badge>}
                 </div>
                 <p className="mt-1.5 truncate text-xs text-stone-500">
-                  {c.messages.at(-1)?.text || 'New conversation'}
+                  {c.messages?.at(-1)?.text || 'New conversation'}
                 </p>
                 <div className="mt-2.5 flex items-center gap-2 text-[11px] text-stone-400 font-medium">
                   <MessageCircle className="size-3 text-emerald-600" />

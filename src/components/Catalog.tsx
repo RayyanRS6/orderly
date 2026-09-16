@@ -27,11 +27,12 @@ export function Catalog() {
   const [removing, setRemoving] = useState<Product | null>(null);
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState('');
-  const categories = [...new Set(data.products.map((product) => product.category))];
-  const products = data.products.filter(
+  const catalogProducts = data.products || [];
+  const categories = [...new Set(catalogProducts.map((product) => product.category))];
+  const products = catalogProducts.filter(
     (p) =>
       (category === 'All items' || p.category === category) &&
-      `${p.name} ${p.description} ${p.aliases.join(' ')}`
+      `${p.name || ''} ${p.description || ''} ${(p.aliases || []).join(' ')}`
         .toLowerCase()
         .includes(query.toLowerCase()),
   );
@@ -73,9 +74,9 @@ export function Catalog() {
         <div className="flex items-center gap-2.5 text-xs text-stone-500">
           <span className="size-2 rounded-full bg-emerald-600 shadow-[0_0_6px_rgba(5,150,105,0.4)]" />
           <span className="font-bold text-stone-800">
-            {data.products.filter((p) => p.available).length} available
+            {catalogProducts.filter((p) => p.available).length} available
           </span>
-          <span>of {data.products.length} menu items</span>
+          <span>of {catalogProducts.length} menu items</span>
           <span className="mx-1 text-stone-300">|</span>
           <span className="font-medium">
             Source: {data.company.catalogSource === 'app' ? 'Orderly menu' : 'Google Sheets'}
@@ -169,11 +170,11 @@ export function Catalog() {
                 <p className="min-h-10 text-xs leading-5 text-stone-500">
                   {product.description || 'No description added yet.'}
                 </p>
-                {(product.variants.length > 0 || product.modifiers.length > 0) && (
+                {((product.variants?.length || 0) > 0 || (product.modifiers?.length || 0) > 0) && (
                   <p className="mt-3 text-xs text-stone-400">
                     {[
-                      product.variants.length && `${product.variants.length} variants`,
-                      product.modifiers.length && `${product.modifiers.length} extras`,
+                      product.variants?.length ? `${product.variants.length} variants` : '',
+                      product.modifiers?.length ? `${product.modifiers.length} extras` : '',
                     ]
                       .filter(Boolean)
                       .join(' · ')}
@@ -288,7 +289,9 @@ function ProductEditor({ product, onDone }: { product?: Product; onDone: () => v
   const [category, setCategory] = useState(product?.category || 'Mains');
   const [price, setPrice] = useState(String((product?.price || 0) / 100));
   const [emoji, setEmoji] = useState(product?.emoji || '🍽️');
-  const [aliases, setAliases] = useState(product?.aliases.join(', ') || '');
+  const [aliases, setAliases] = useState(
+    product?.aliases ? product.aliases.join(', ') : '',
+  );
   const [available, setAvailable] = useState(product?.available ?? true);
   const [variants, setVariants] = useState<ProductOption[]>(product?.variants || []);
   const [modifiers, setModifiers] = useState<ProductOption[]>(product?.modifiers || []);

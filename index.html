@@ -22,7 +22,24 @@
     />
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div style="min-height: 100dvh; display: grid; place-items: center; background-color: #f8fafc; font-family: 'Plus Jakarta Sans', system-ui, sans-serif; color: #1c1917;">
+        <div style="text-align: center;">
+          <div style="font-size: 1.5rem; font-weight: 700; letter-spacing: -0.025em; display: inline-flex; align-items: center; gap: 0.5rem;">
+            orderly<span style="color: #10b981;">.</span>
+          </div>
+          <p style="margin-top: 0.75rem; font-size: 0.875rem; color: #78716c;">Opening your workspace…</p>
+        </div>
+      </div>
+    </div>
+    <noscript>
+      <div style="min-height: 100dvh; display: grid; place-items: center; background-color: #f8fafc; font-family: system-ui, sans-serif; padding: 1.5rem;">
+        <div style="max-width: 28rem; background: white; padding: 2rem; border-radius: 1rem; border: 1px solid #e7e5e4; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);">
+          <h1 style="font-size: 1.25rem; font-weight: bold; margin-bottom: 0.5rem; color: #1c1917;">JavaScript Required</h1>
+          <p style="color: #78716c; font-size: 0.875rem; line-height: 1.5;">Orderly requires JavaScript to be enabled in your browser to run the workspace.</p>
+        </div>
+      </div>
+    </noscript>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

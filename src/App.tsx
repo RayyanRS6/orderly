@@ -248,121 +248,125 @@ export default function App() {
   };
 
   const sidebar = (
-    <div className="flex h-full flex-col overflow-y-auto bg-[#121417] px-4 pb-5 pt-6 text-stone-400 border-r border-white/5 custom-scrollbar-dark">
-      <div className="px-2 shrink-0">
-        <Brand />
-      </div>
-
-      <div className="mt-5 px-1 flex items-center gap-2 shrink-0">
-        <div className="relative flex-1">
-          <Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-stone-500" />
-          <input
-            type="text"
-            aria-label="Search navigation"
-            value={navSearch}
-            onChange={(e) => setNavSearch(e.target.value)}
-            placeholder="Search..."
-            className="h-9 w-full rounded-full border border-white/10 bg-white/[0.05] pl-9 pr-7 text-xs text-stone-200 placeholder:text-stone-500 transition-all focus:border-emerald-500 focus:bg-white/[0.08] focus:outline-none"
-          />
-          {navSearch && (
-            <button
-              type="button"
-              className="absolute right-2.5 top-2.5 text-stone-400 hover:text-white"
-              onClick={() => setNavSearch('')}
-              aria-label="Clear search"
-            >
-              <X className="size-3.5" />
-            </button>
-          )}
+    <div className="flex h-full flex-col overflow-hidden bg-[#121417] px-4 pb-5 pt-6 text-stone-400 border-r border-white/5">
+      <div className="shrink-0">
+        <div className="px-2 shrink-0">
+          <Brand />
         </div>
-        <button
-          type="button"
-          className="flex size-9 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/[0.05] text-stone-400 hover:bg-white/10 hover:text-white transition-all"
-          title="Getting started"
-          aria-label="Getting started"
-          onClick={() => {
-            setHelp(true);
-            setMobile(false);
-          }}
-        >
-          <SlidersHorizontal className="size-3.5" />
-        </button>
-      </div>
 
-      <div className="my-5 rounded-2xl border border-white/10 bg-white/[0.03] p-3.5 backdrop-blur-xs shrink-0">
-        <p className="text-[10px] font-bold tracking-widest text-stone-400 uppercase">
-          YOUR WORKSPACE
-        </p>
-        <p className="mt-1 truncate text-sm font-semibold text-white">{data.company.name}</p>
-      </div>
-
-      <nav aria-label="Main navigation" className="space-y-1.5 shrink-0">
-        {filteredNav.map((item) => (
-          <button
-            key={item.id}
-            aria-current={page === item.id ? 'page' : undefined}
-            className={cn(
-              'flex min-h-11 w-full items-center gap-3 rounded-full px-4 text-left text-sm font-medium transition-all',
-              page === item.id
-                ? 'bg-emerald-600 text-white font-semibold shadow-md shadow-emerald-950/40'
-                : 'text-stone-400 hover:bg-white/[0.06] hover:text-white',
-            )}
-            onClick={() => handleNavClick(item.id)}
-          >
-            <item.icon className="size-4.5 shrink-0" />
-            <span className="truncate">{item.label}</span>
-            {item.id === 'orders' && pending > 0 && (
-              <span className="ml-auto rounded-full bg-white/20 px-2 py-0.5 text-[11px] font-bold tabular-nums text-white">
-                {pending}
-              </span>
-            )}
-            {item.id === 'playground' && (
-              <span className="ml-auto size-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]" />
-            )}
-          </button>
-        ))}
-      </nav>
-
-      {filteredManage.length > 0 && (
-        <div className="shrink-0">
-          <p className="mb-2 mt-6 px-4 text-[10px] font-bold tracking-widest text-stone-400 uppercase">
-            MANAGE
-          </p>
-          <nav aria-label="Workspace management" className="space-y-1.5">
-            {filteredManage.map((item) => (
+        <div className="mt-5 px-1 flex items-center gap-2 shrink-0">
+          <div className="relative flex-1">
+            <Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-stone-500" />
+            <input
+              type="text"
+              aria-label="Search navigation"
+              value={navSearch}
+              onChange={(e) => setNavSearch(e.target.value)}
+              placeholder="Search..."
+              className="h-9 w-full rounded-full border border-white/10 bg-white/[0.05] pl-9 pr-7 text-xs text-stone-200 placeholder:text-stone-500 transition-all focus:border-emerald-500 focus:bg-white/[0.08] focus:outline-none"
+            />
+            {navSearch && (
               <button
-                key={item.id}
-                aria-current={page === item.id ? 'page' : undefined}
-                className={cn(
-                  'flex min-h-11 w-full items-center gap-3 rounded-full px-4 text-left text-sm font-medium transition-all',
-                  page === item.id
-                    ? 'bg-emerald-600 text-white font-semibold shadow-md shadow-emerald-950/40'
-                    : 'text-stone-400 hover:bg-white/[0.06] hover:text-white',
-                )}
-                onClick={() => handleNavClick(item.id)}
+                type="button"
+                className="absolute right-2.5 top-2.5 text-stone-400 hover:text-white"
+                onClick={() => setNavSearch('')}
+                aria-label="Clear search"
               >
-                <item.icon className="size-4.5 shrink-0" />
-                <span className="truncate">{item.label}</span>
+                <X className="size-3.5" />
               </button>
-            ))}
-          </nav>
-        </div>
-      )}
-
-      {filteredNav.length === 0 && filteredManage.length === 0 && (
-        <div className="py-6 text-center text-xs text-stone-500 shrink-0">
-          <p>No matching pages</p>
+            )}
+          </div>
           <button
             type="button"
-            className="mt-2 font-semibold text-emerald-400 underline"
-            onClick={() => setNavSearch('')}
+            className="flex size-9 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/[0.05] text-stone-400 hover:bg-white/10 hover:text-white transition-all"
+            title="Getting started"
+            aria-label="Getting started"
+            onClick={() => {
+              setHelp(true);
+              setMobile(false);
+            }}
           >
-            Clear search
+            <SlidersHorizontal className="size-3.5" />
           </button>
         </div>
-      )}
 
-      <div className="mt-auto pt-6 shrink-0">
+        <div className="my-5 rounded-2xl border border-white/10 bg-white/[0.03] p-3.5 backdrop-blur-xs shrink-0">
+          <p className="text-[10px] font-bold tracking-widest text-stone-400 uppercase">
+            YOUR WORKSPACE
+          </p>
+          <p className="mt-1 truncate text-sm font-semibold text-white">{data.company.name}</p>
+        </div>
+      </div>
+
+      <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar-dark pr-1 -mr-1">
+        <nav aria-label="Main navigation" className="space-y-1.5">
+          {filteredNav.map((item) => (
+            <button
+              key={item.id}
+              aria-current={page === item.id ? 'page' : undefined}
+              className={cn(
+                'flex min-h-11 w-full items-center gap-3 rounded-full px-4 text-left text-sm font-medium transition-all',
+                page === item.id
+                  ? 'bg-emerald-600 text-white font-semibold shadow-md shadow-emerald-950/40'
+                  : 'text-stone-400 hover:bg-white/[0.06] hover:text-white',
+              )}
+              onClick={() => handleNavClick(item.id)}
+            >
+              <item.icon className="size-4.5 shrink-0" />
+              <span className="truncate">{item.label}</span>
+              {item.id === 'orders' && pending > 0 && (
+                <span className="ml-auto rounded-full bg-white/20 px-2 py-0.5 text-[11px] font-bold tabular-nums text-white">
+                  {pending}
+                </span>
+              )}
+              {item.id === 'playground' && (
+                <span className="ml-auto size-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]" />
+              )}
+            </button>
+          ))}
+        </nav>
+
+        {filteredManage.length > 0 && (
+          <div className="mt-6">
+            <p className="mb-2 px-4 text-[10px] font-bold tracking-widest text-stone-400 uppercase">
+              MANAGE
+            </p>
+            <nav aria-label="Workspace management" className="space-y-1.5">
+              {filteredManage.map((item) => (
+                <button
+                  key={item.id}
+                  aria-current={page === item.id ? 'page' : undefined}
+                  className={cn(
+                    'flex min-h-11 w-full items-center gap-3 rounded-full px-4 text-left text-sm font-medium transition-all',
+                    page === item.id
+                      ? 'bg-emerald-600 text-white font-semibold shadow-md shadow-emerald-950/40'
+                      : 'text-stone-400 hover:bg-white/[0.06] hover:text-white',
+                  )}
+                  onClick={() => handleNavClick(item.id)}
+                >
+                  <item.icon className="size-4.5 shrink-0" />
+                  <span className="truncate">{item.label}</span>
+                </button>
+              ))}
+            </nav>
+          </div>
+        )}
+
+        {filteredNav.length === 0 && filteredManage.length === 0 && (
+          <div className="py-6 text-center text-xs text-stone-500">
+            <p>No matching pages</p>
+            <button
+              type="button"
+              className="mt-2 font-semibold text-emerald-400 underline"
+              onClick={() => setNavSearch('')}
+            >
+              Clear search
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div className="mt-auto pt-4 shrink-0">
         <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 shadow-xs">
           <div className="mb-1.5 flex items-center gap-2 text-xs font-semibold text-stone-100">
             <MessageCircle className="size-4 text-emerald-400 shrink-0" />

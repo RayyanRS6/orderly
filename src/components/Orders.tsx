@@ -25,12 +25,16 @@ export function Overview() {
   const { data, navigate } = useWorkspace();
   const [selected, setSelected] = useState<Order | null>(null);
   const [days, setDays] = useState(7);
-  const pending = data.orders.filter((o) => o.status === 'pending');
-  const valid = data.orders.filter((o) => !['cancelled', 'rejected'].includes(o.status));
+  const orders = data.orders || [];
+  const traces = data.traces || [];
+  const integrations = data.integrations || [];
+  const products = data.products || [];
+  const pending = orders.filter((o) => o.status === 'pending');
+  const valid = orders.filter((o) => !['cancelled', 'rejected'].includes(o.status));
   const total = valid.reduce((sum, o) => sum + o.total, 0);
-  const activity = data.traces
+  const activity = traces
     .slice()
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
     .slice(0, 4);
   const daysData = Array.from({ length: days }, (_, index) => {
     const date = new Date();
@@ -43,7 +47,8 @@ export function Overview() {
     }
     return {
       date,
-      count: data.orders.filter((o) => {
+      count: orders.filter((o) => {
+        if (!o.createdAt) return false;
         try {
           return (
             new Date(o.createdAt).toLocaleDateString('en-CA', {
@@ -51,13 +56,13 @@ export function Overview() {
             }) === key
           );
         } catch {
-          return o.createdAt.slice(0, 10) === key;
+          return typeof o.createdAt === 'string' && o.createdAt.slice(0, 10) === key;
         }
       }).length,
     };
   });
   const maxCount = Math.max(1, ...daysData.map((day) => day.count));
-  const whatsapp = data.integrations.find((i) => i.kind === 'whatsapp');
+  const whatsapp = integrations.find((i) => i.kind === 'whatsapp');
   return (
     <>
       <PageHeading
@@ -310,8 +315,8 @@ export function Overview() {
               {[
                 {
                   title: 'Add your menu',
-                  sub: `${data.products.length} items in your catalog`,
-                  done: data.products.length > 0,
+                  sub: `${products.length} items in your catalog`,
+                  done: products.length > 0,
                   page: 'menu' as const,
                 },
                 {
@@ -326,7 +331,7 @@ export function Overview() {
                 {
                   title: 'Connect your spreadsheet',
                   sub: 'Send orders straight to your Sheet',
-                  done: data.integrations.some(
+                  done: integrations.some(
                     (i) => i.kind === 'sheets' && i.status === 'connected',
                   ),
                   page: 'integrations' as const,
@@ -368,7 +373,7 @@ export function Overview() {
         <div className="flex items-center justify-between p-5 sm:p-6 border-b border-stone-100">
           <div className="flex items-center gap-2.5">
             <h2 className="text-base font-bold tracking-tight text-stone-900">Recent orders</h2>
-            <Badge tone="neutral">{data.orders.length}</Badge>
+            <Badge tone="neutral">{orders.length}</Badge>
           </div>
           <button
             className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-800 hover:text-emerald-950 transition-colors"
@@ -379,9 +384,9 @@ export function Overview() {
           </button>
         </div>
         <OrderTable
-          orders={data.orders
+          orders={orders
             .slice()
-            .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+            .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
             .slice(0, 5)}
           onSelect={setSelected}
         />
@@ -428,18 +433,19 @@ export function Orders() {
   const [filter, setFilter] = useState('all');
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<Order | null>(null);
-  const filtered = data.orders
+  const orders = data.orders || [];
+  const filtered = orders
     .filter(
       (order) =>
         (filter === 'all' ||
           (filter === 'active'
             ? ['accepted', 'preparing', 'ready', 'out_for_delivery'].includes(order.status)
             : order.status === filter)) &&
-        `${order.reference} ${order.customerName} ${order.customerPhone}`
+        `${order.reference || ''} ${order.customerName || ''} ${order.customerPhone || ''}`
           .toLowerCase()
           .includes(query.toLowerCase()),
     )
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
   function exportCsv() {
     const fields = [
       'reference',
@@ -523,7 +529,7 @@ export function Orders() {
                       filter === value ? 'bg-white/20 text-white' : 'bg-stone-200 text-stone-700',
                     )}
                   >
-                    {data.orders.filter((o) => o.status === 'pending').length}
+                    {orders.filter((o) => o.status === 'pending').length}
                   </span>
                 )}
               </button>

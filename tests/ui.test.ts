@@ -21,6 +21,7 @@ import { Inbox, Playground } from '../src/components/Conversations';
 import { Businesses, Integrations, Settings } from '../src/components/Settings';
 import { WhatsAppSignup } from '../src/components/WhatsAppSignup';
 import App from '../src/App';
+import { initials, label, shortDate } from '../src/lib/utils';
 import { seedCompanies, seedProducts, seedOrders, seedConversations } from '../src/shared/seed';
 import type { Bootstrap } from '../src/shared/types';
 
@@ -381,15 +382,20 @@ describe('Theme Polish: Dropdowns, Scrollbars, and Sidebar Scrolling', () => {
       ).toBe(false);
     }
   });
-
-  it('ensures the sidebar scrolls as a unified unit instead of an isolated nav section', () => {
+  it('ensures only the middle navigation section scrolls while top and bottom stay fixed', () => {
     const appContent = readFileSync(join(process.cwd(), 'src/App.tsx'), 'utf8');
 
-    // Main nav must NOT have overflow-y-auto
-    expect(appContent).not.toMatch(/<nav[^>]*aria-label="Main navigation"[^>]*overflow-y-auto/);
+    // Sidebar outer container must NOT have overflow-y-auto
+    expect(appContent).not.toMatch(/<div[^>]*overflow-y-auto[^>]*bg-\[#121417\]/);
 
-    // Sidebar outer container must have overflow-y-auto and dark scrollbar styling
-    expect(appContent).toMatch(/overflow-y-auto[^"]*bg-\[#121417\][^"]*custom-scrollbar-dark/);
+    // Middle navigation wrapper must have flex-1, min-h-0, overflow-y-auto, and custom-scrollbar-dark
+    expect(appContent).toMatch(/flex-1[^"]*min-h-0[^"]*overflow-y-auto[^"]*custom-scrollbar-dark/);
+
+    // Top section (Brand, Search, YOUR WORKSPACE) must have shrink-0
+    expect(appContent).toMatch(/YOUR WORKSPACE[\s\S]*?shrink-0/);
+
+    // Bottom section must stay pinned at bottom with shrink-0 and mt-auto
+    expect(appContent).toMatch(/mt-auto[^"]*shrink-0|shrink-0[^"]*mt-auto/);
   });
 
   it('ensures index.css defines clean and minimal scrollbar rules', () => {
@@ -397,6 +403,130 @@ describe('Theme Polish: Dropdowns, Scrollbars, and Sidebar Scrolling', () => {
 
     expect(cssContent).toContain('scrollbar-width: thin');
     expect(cssContent).toContain('::-webkit-scrollbar');
+    expect(cssContent).toContain('.custom-scrollbar');
     expect(cssContent).toContain('custom-scrollbar-dark');
+    expect(cssContent).toContain('color-scheme: dark');
+  });
+
+  it('ensures CustomSelect renders accessible combobox and supports required validation', () => {
+    const html = renderToStaticMarkup(
+      createElement(CustomSelect, {
+        id: 'test-select',
+        name: 'zone',
+        required: true,
+        value: '',
+        placeholder: 'Select an area',
+        onChange: () => {},
+        options: [
+          { value: 'dha', label: 'DHA' },
+          { value: 'gulberg', label: 'Gulberg' },
+        ],
+      }),
+    );
+
+    expect(html).toContain('role="combobox"');
+    expect(html).toContain('aria-haspopup="listbox"');
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain('name="zone"');
+    expect(html).toContain('required=""');
+    expect(html).toContain('Select an area');
+  });
+});
+
+describe('UI Helper Utilities and Edge Case Resilience', () => {
+  it('handles initials safely with nullish, whitespace, or empty input', () => {
+    expect(initials(null)).toBe('O');
+    expect(initials(undefined)).toBe('O');
+    expect(initials('')).toBe('O');
+    expect(initials('   ')).toBe('O');
+    expect(initials('Orderly')).toBe('O');
+    expect(initials('Bun & Co.')).toBe('B&');
+    expect(initials('The Pizza Place')).toBe('TP');
+  });
+
+  it('handles label safely with nullish, empty, or underscored strings', () => {
+    expect(label(null)).toBe('');
+    expect(label(undefined)).toBe('');
+    expect(label('')).toBe('');
+    expect(label('out_for_delivery')).toBe('Out for delivery');
+    expect(label('ready')).toBe('Ready');
+  });
+
+  it('handles shortDate safely with nullish, invalid, and valid dates', () => {
+    expect(shortDate(null)).toBe('');
+    expect(shortDate(undefined)).toBe('');
+    expect(shortDate('invalid-date')).toBe('');
+    expect(shortDate('2026-09-16T12:00:00Z')).toBeTruthy();
+  });
+
+  it('renders Overview and Orders without throwing when all data arrays and company properties are empty/nullish', () => {
+    const minimalData: Bootstrap = {
+      mode: 'demo',
+      role: 'owner',
+      company: {
+        id: 'c1',
+        slug: 'test-slug',
+        name: '',
+        phone: '',
+        address: '',
+        currency: 'PKR',
+        timezone: 'Asia/Karachi',
+        openingHours: { start: '09:00', end: '22:00', days: [] },
+        deliveryZones: [],
+        faqs: [],
+        botEnabled: true,
+        catalogSource: 'app',
+        ai: { provider: 'mock', model: 'mock', keyMode: 'platform', monthlyBudgetUsd: 10 },
+        createdAt: '2026-09-16T12:00:00Z',
+      },
+      companies: [],
+      products: [],
+      orders: [],
+      conversations: [],
+      integrations: [],
+      aiConnection: { provider: 'mock', keyMode: 'platform', configured: true },
+      usage: [],
+      traces: [],
+    };
+
+    const overviewCtx = createMockWorkspaceContext(minimalData, 'overview');
+    expect(() =>
+      renderToStaticMarkup(
+        createElement(Workspace.Provider, { value: overviewCtx }, createElement(Overview)),
+      ),
+    ).not.toThrow();
+
+    const ordersCtx = createMockWorkspaceContext(minimalData, 'orders');
+    expect(() =>
+      renderToStaticMarkup(
+        createElement(Workspace.Provider, { value: ordersCtx }, createElement(Orders)),
+      ),
+    ).not.toThrow();
+
+    const catalogCtx = createMockWorkspaceContext(minimalData, 'menu');
+    expect(() =>
+      renderToStaticMarkup(
+        createElement(Workspace.Provider, { value: catalogCtx }, createElement(Catalog)),
+      ),
+    ).not.toThrow();
+
+    const inboxCtx = createMockWorkspaceContext(minimalData, 'inbox');
+    expect(() =>
+      renderToStaticMarkup(
+        createElement(Workspace.Provider, { value: inboxCtx }, createElement(Inbox)),
+      ),
+    ).not.toThrow();
+
+    // Verify Settings renders cleanly even when openingHours.days is undefined
+    delete (minimalData.company.openingHours as unknown as Record<string, unknown>).days;
+    delete (minimalData.company as unknown as Record<string, unknown>).deliveryZones;
+    delete (minimalData.company as unknown as Record<string, unknown>).faqs;
+
+    const settingsCtx = createMockWorkspaceContext(minimalData, 'settings');
+    expect(() =>
+      renderToStaticMarkup(
+        createElement(Workspace.Provider, { value: settingsCtx }, createElement(Settings)),
+      ),
+    ).not.toThrow();
   });
 });
