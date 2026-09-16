@@ -476,7 +476,7 @@ export default function App() {
                   value={data.company.id}
                   disabled={busy}
                   onChange={(val) => switchCompany(val)}
-                  options={data.companies.map((c) => ({
+                  options={(data.companies || []).map((c) => ({
                     value: c.id,
                     label: c.name,
                   }))}
@@ -538,7 +538,7 @@ export default function App() {
             <footer className="mt-10 flex flex-wrap justify-between gap-2 border-t border-stone-200 pt-5 text-xs text-stone-400">
               <span>Orderly · Conversations to orders</span>
               <span>
-                {data.company.currency} · {data.company.timezone}
+                {data.company?.currency || 'PKR'} · {data.company?.timezone || 'Asia/Karachi'}
               </span>
             </footer>
           </main>

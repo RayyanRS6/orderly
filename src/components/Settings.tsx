@@ -31,7 +31,25 @@ const providers: Record<Provider, { name: string; model: string }> = {
 
 export function Settings() {
   const { data, mutate, busy } = useWorkspace();
-  const [draft, setDraft] = useState<Company>(() => structuredClone(data.company));
+  const [draft, setDraft] = useState<Company>(() => {
+    const c = structuredClone(data.company || {});
+    return {
+      ...c,
+      openingHours: c.openingHours || {
+        start: '09:00',
+        end: '22:00',
+        days: [0, 1, 2, 3, 4, 5, 6],
+      },
+      ai: c.ai || {
+        provider: 'mock',
+        model: 'mock',
+        keyMode: 'platform',
+        monthlyBudgetUsd: 10,
+      },
+      deliveryZones: c.deliveryZones || [],
+      faqs: c.faqs || [],
+    };
+  });
   const [saved, setSaved] = useState(false);
   const canEdit = data.role !== 'staff';
   const usage = data.usage || [];
@@ -95,9 +113,18 @@ export function Settings() {
                   className="input"
                   type="time"
                   required
-                  value={draft.openingHours.start}
+                  value={draft.openingHours?.start || '09:00'}
                   onChange={(e) =>
-                    update({ openingHours: { ...draft.openingHours, start: e.target.value } })
+                    update({
+                      openingHours: {
+                        ...(draft.openingHours || {
+                          start: '09:00',
+                          end: '22:00',
+                          days: [0, 1, 2, 3, 4, 5, 6],
+                        }),
+                        start: e.target.value,
+                      },
+                    })
                   }
                 />
               </Field>
@@ -109,9 +136,18 @@ export function Settings() {
                   className="input"
                   type="time"
                   required
-                  value={draft.openingHours.end}
+                  value={draft.openingHours?.end || '22:00'}
                   onChange={(e) =>
-                    update({ openingHours: { ...draft.openingHours, end: e.target.value } })
+                    update({
+                      openingHours: {
+                        ...(draft.openingHours || {
+                          start: '09:00',
+                          end: '22:00',
+                          days: [0, 1, 2, 3, 4, 5, 6],
+                        }),
+                        end: e.target.value,
+                      },
+                    })
                   }
                 />
               </Field>
@@ -236,10 +272,22 @@ export function Settings() {
             <div className="grid gap-5 sm:grid-cols-2">
               <Field label="AI provider">
                 <CustomSelect
-                  value={draft.ai.provider}
+                  value={draft.ai?.provider || 'mock'}
                   onChange={(val) => {
                     const provider = val as Provider;
-                    update({ ai: { ...draft.ai, provider, model: providers[provider].model } });
+                    const defaultModel = (providers[provider] || providers.mock).model;
+                    update({
+                      ai: {
+                        ...(draft.ai || {
+                          provider: 'mock',
+                          model: 'mock',
+                          keyMode: 'platform',
+                          monthlyBudgetUsd: 10,
+                        }),
+                        provider,
+                        model: defaultModel,
+                      },
+                    });
                   }}
                   options={Object.entries(providers).map(([id, p]) => ({
                     value: id,
@@ -254,15 +302,37 @@ export function Settings() {
                 <input
                   className="input"
                   required
-                  value={draft.ai.model}
-                  onChange={(e) => update({ ai: { ...draft.ai, model: e.target.value } })}
+                  value={draft.ai?.model || 'mock'}
+                  onChange={(e) =>
+                    update({
+                      ai: {
+                        ...(draft.ai || {
+                          provider: 'mock',
+                          model: 'mock',
+                          keyMode: 'platform',
+                          monthlyBudgetUsd: 10,
+                        }),
+                        model: e.target.value,
+                      },
+                    })
+                  }
                 />
               </Field>
               <Field label="API key source">
                 <CustomSelect
-                  value={draft.ai.keyMode}
+                  value={draft.ai?.keyMode || 'platform'}
                   onChange={(val) =>
-                    update({ ai: { ...draft.ai, keyMode: val as 'own' | 'platform' } })
+                    update({
+                      ai: {
+                        ...(draft.ai || {
+                          provider: 'mock',
+                          model: 'mock',
+                          keyMode: 'platform',
+                          monthlyBudgetUsd: 10,
+                        }),
+                        keyMode: val as 'own' | 'platform',
+                      },
+                    })
                   }
                   options={[
                     { value: 'platform', label: 'Platform account' },
@@ -280,9 +350,19 @@ export function Settings() {
                   min="0"
                   max="10000"
                   step="0.01"
-                  value={draft.ai.monthlyBudgetUsd}
+                  value={draft.ai?.monthlyBudgetUsd ?? 10}
                   onChange={(e) =>
-                    update({ ai: { ...draft.ai, monthlyBudgetUsd: Number(e.target.value) } })
+                    update({
+                      ai: {
+                        ...(draft.ai || {
+                          provider: 'mock',
+                          model: 'mock',
+                          keyMode: 'platform',
+                          monthlyBudgetUsd: 10,
+                        }),
+                        monthlyBudgetUsd: Number(e.target.value),
+                      },
+                    })
                   }
                 />
               </Field>
@@ -403,7 +483,7 @@ export function Settings() {
         <p className="mt-3 text-2xl font-semibold tabular-nums">
           ${recordedSpend.toFixed(4)}
           <span className="ml-2 text-sm font-normal text-stone-500">
-            recorded / ${data.company.ai.monthlyBudgetUsd.toFixed(2)} allowance
+            recorded / ${(data.company.ai?.monthlyBudgetUsd ?? 10).toFixed(2)} allowance
           </span>
         </p>
         <p className="mt-2 text-xs leading-relaxed text-stone-500">

@@ -517,15 +517,23 @@ describe('UI Helper Utilities and Edge Case Resilience', () => {
       ),
     ).not.toThrow();
 
-    // Verify Settings renders cleanly even when openingHours.days is undefined
-    delete (minimalData.company.openingHours as unknown as Record<string, unknown>).days;
+    // Verify Settings and Playground render cleanly even when openingHours, deliveryZones, faqs, and ai are completely undefined
+    delete (minimalData.company as unknown as Record<string, unknown>).openingHours;
     delete (minimalData.company as unknown as Record<string, unknown>).deliveryZones;
     delete (minimalData.company as unknown as Record<string, unknown>).faqs;
+    delete (minimalData.company as unknown as Record<string, unknown>).ai;
 
     const settingsCtx = createMockWorkspaceContext(minimalData, 'settings');
     expect(() =>
       renderToStaticMarkup(
         createElement(Workspace.Provider, { value: settingsCtx }, createElement(Settings)),
+      ),
+    ).not.toThrow();
+
+    const playgroundCtx = createMockWorkspaceContext(minimalData, 'playground');
+    expect(() =>
+      renderToStaticMarkup(
+        createElement(Workspace.Provider, { value: playgroundCtx }, createElement(Playground)),
       ),
     ).not.toThrow();
   });

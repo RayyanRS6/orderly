@@ -407,14 +407,13 @@ export function CustomSelect({
     >
       {(name || required) && (
         <input
-          tabIndex={-1}
           aria-hidden="true"
           required={required}
           name={name}
           value={value}
           onChange={() => {}}
           onFocus={() => triggerRef.current?.focus()}
-          className="sr-only pointer-events-none absolute bottom-0 left-1/2 h-0 w-0 opacity-0"
+          className="sr-only absolute"
         />
       )}
       <button

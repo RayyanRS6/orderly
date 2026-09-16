@@ -109,7 +109,7 @@ export function Playground() {
   const [name, setName] = useState('');
   const [fulfillment, setFulfillment] = useState<'pickup' | 'delivery'>('pickup');
   const [address, setAddress] = useState('');
-  const [zone, setZone] = useState(data.company.deliveryZones[0]?.name || '');
+  const [zone, setZone] = useState(data.company.deliveryZones?.[0]?.name || '');
   const conversation = data.conversations.find((c) => c.id === id) ?? latest;
   const [details, setDetails] = useState(false);
   async function send(message: string, action?: BotAction) {
@@ -172,7 +172,7 @@ export function Playground() {
               </div>
             </div>
             <Badge tone="green">
-              {data.company.ai.provider === 'mock' ? 'Demo bot' : label(data.company.ai.provider)}
+              {(data.company.ai?.provider || 'mock') === 'mock' ? 'Demo bot' : label(data.company.ai?.provider || 'mock')}
             </Badge>
           </div>
           <Messages conversation={conversation} waiting={busy} />
@@ -418,7 +418,7 @@ export function Playground() {
                   required
                   value={zone}
                   onChange={(val) => setZone(val)}
-                  options={data.company.deliveryZones.map((z) => ({
+                  options={(data.company.deliveryZones || []).map((z) => ({
                     value: z.name,
                     label: `${z.name} · ${money(z.fee)}`,
                   }))}
