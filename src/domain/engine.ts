@@ -1,3 +1,4 @@
+import { botConfig } from '../shared/bot';
 import type {
   BotAction,
   Cart,
@@ -196,41 +197,44 @@ export function quoteCart(company: Company, products: Product[], cart: Cart): Ca
 }
 
 function missingDetails(company: Company, cart: Cart, lang: Language): string | undefined {
-  if (!cart.items.length)
+  const config = botConfig(company);
+  for (const step of config.steps) {
+  if (step === 'items' && !cart.items.length)
     return say(
       lang,
       'Your cart is empty. Choose something from the menu first.',
       'آپ کی ٹوکری خالی ہے۔ پہلے مینو سے کوئی چیز چنیں۔',
       'Aap ka cart khaali hai. Pehle menu se koi cheez chunain.',
     );
-  if (!cart.fulfillment)
+  if (step === 'fulfillment' && !cart.fulfillment)
     return say(
       lang,
       'Would you like pickup or delivery?',
       'آپ پک اپ کریں گے یا ڈیلیوری چاہیے؟',
       'Aap pickup karenge ya delivery chahiye?',
     );
-  if (!cart.customerName?.trim())
+  if (step === 'name' && !cart.customerName?.trim())
     return say(
       lang,
       'What name should I put on the order? Reply “My name is Ali”.',
       'آرڈر کے لیے آپ کا نام کیا ہے؟ لکھیں: میرا نام علی ہے',
       'Order ke liye aap ka naam? Likhein: Mera naam Ali hai.',
     );
-  if (cart.fulfillment === 'delivery' && !cart.zone)
+  if (step === 'address' && cart.fulfillment === 'delivery' && !cart.zone)
     return say(
       lang,
       `Which delivery area? ${company.deliveryZones.map((z) => z.name).join(', ')}.`,
       `ڈیلیوری کا علاقہ بتائیں: ${company.deliveryZones.map((z) => z.name).join('، ')}۔`,
       `Delivery ka ilaqa batayein: ${company.deliveryZones.map((z) => z.name).join(', ')}.`,
     );
-  if (cart.fulfillment === 'delivery' && !cart.address?.trim())
+  if (step === 'address' && cart.fulfillment === 'delivery' && !cart.address?.trim())
     return say(
       lang,
       'Please send your complete address: “Address: house, street, area”.',
       'مکمل پتہ لکھیں: پتہ: گھر، گلی، علاقہ',
       'Mukammal pata likhein: Address: ghar, gali, ilaqa.',
     );
+  }
 }
 
 function review(company: Company, products: Product[], cart: Cart, lang: Language): string {
@@ -445,6 +449,7 @@ export function processTurn(
   if (!Number.isFinite(new Date(input.now).getTime()))
     throw new Error('Invalid message timestamp.');
   const next: Conversation = structuredClone(conversation);
+  const configuration = botConfig(company);
   const traces: string[] = [];
   if (next.messages.some((m) => m.id === input.messageId))
     return {
@@ -453,6 +458,8 @@ export function processTurn(
       traces: ['duplicate_message_ignored'],
     };
   next.language = languageOf(input.text, next.language);
+  if (configuration.language !== 'auto') next.language = configuration.language;
+  next.botVersion = company.bot?.published?.version;
   next.messages.push({
     id: input.messageId,
     role: 'customer',
@@ -472,6 +479,10 @@ export function processTurn(
   let reply = '',
     order: Order | undefined;
   const finish = (): TurnResult => {
+    if (company.bot?.published && reply) {
+      if (/^(hi|hello|salam|سلام|ہیلو)$/iu.test(input.text.trim()) && configuration.greeting) reply = `${configuration.greeting}\n\n${missingDetails(company, cart, lang) ?? reply}`;
+      else if (configuration.personality === 'warm' && lang === 'en' && traces.includes('add_item')) reply = `Happy to help. ${reply}`;
+    }
     if (reply)
       next.messages.push({
         id: `${input.messageId}:reply`,
@@ -510,6 +521,7 @@ export function processTurn(
           'یہ گفتگو اب عملے کے پاس ہے۔ بوٹ روک دیا گیا ہے۔',
           'Yeh conversation ab staff ke paas hai. Bot pause kar diya gaya hai.',
         );
+        if (configuration.handoffMessage) reply = configuration.handoffMessage;
         break;
       }
       if (action.type === 'menu') {
@@ -650,6 +662,8 @@ export function processTurn(
         ]);
         if (action.fulfillment && !['pickup', 'delivery'].includes(action.fulfillment))
           throw new Error('Choose pickup or delivery.');
+        if (action.fulfillment && configuration.fulfillment !== 'both' && action.fulfillment !== configuration.fulfillment)
+          throw new Error(`This restaurant currently offers ${configuration.fulfillment} only.`);
         if (action.customerName !== undefined) {
           const name = action.customerName.trim();
           if (name.length < 2 || name.length > 80)
@@ -755,6 +769,8 @@ export function processTurn(
           syncStatus: 'not_connected',
           createdAt: input.now,
           updatedAt: input.now,
+          sandbox: conversation.channel === 'demo',
+          phoneConfirmationRequired: !!company.bot?.published && configuration.requirePhoneConfirmation,
         };
         cart.status = 'submitted';
         cart.orderId = id;
@@ -764,6 +780,7 @@ export function processTurn(
           `آرڈر ${order.reference} موصول ہوا — ${money(order.total)}۔ ریسٹورنٹ کی منظوری کا انتظار ہے۔ ادائیگی نقد ہوگی۔`,
           `Order ${order.reference} receive ho gaya — ${money(order.total)}. Restaurant ki manzoori ka intezar hai. Payment cash hogi.`,
         );
+        if (order.phoneConfirmationRequired) reply += say(lang, '\nRestaurant staff will call to confirm before accepting your order.', '\nعملہ آرڈر منظور کرنے سے پہلے فون پر تصدیق کرے گا۔', '\nRestaurant staff order accept karne se pehle call kar ke confirm karega.');
         traces.push('order_pending_restaurant_acceptance');
         break;
       }

@@ -19,7 +19,7 @@ import type { Company, Integration, IntegrationKind, Provider } from '../shared/
 import { money } from '../shared/types';
 import { useWorkspace } from '../lib/workspace';
 import { cn, initials, label } from '../lib/utils';
-import { Badge, CustomSelect, Empty, Field, Modal, PageHeading, Status } from './ui';
+import { Badge, ConfirmDialog, CustomSelect, Empty, Field, Modal, PageHeading, Status } from './ui';
 import { WhatsAppSignup } from './WhatsAppSignup';
 
 const providers: Record<Provider, { name: string; model: string }> = {
@@ -30,7 +30,7 @@ const providers: Record<Provider, { name: string; model: string }> = {
 };
 
 export function Settings() {
-  const { data, mutate, busy } = useWorkspace();
+  const { data, mutate, busy, navigate } = useWorkspace();
   const [draft, setDraft] = useState<Company>(() => {
     const c = structuredClone(data.company || {});
     return {
@@ -53,7 +53,7 @@ export function Settings() {
   const [saved, setSaved] = useState(false);
   const canEdit = data.role !== 'staff';
   const usage = data.usage || [];
-  const recordedSpend = usage
+  const recordedSpend = data.summary?.monthlySpend ?? usage
     .filter((u) => u.createdAt?.startsWith(new Date().toISOString().slice(0, 7)))
     .reduce((sum, u) => sum + (u.costUsd || 0), 0);
   const update = (values: Partial<Company>) => {
@@ -63,7 +63,7 @@ export function Settings() {
   return (
     <>
       <PageHeading
-        title="A bot that knows your business."
+        title="Business settings"
         description="Set the details your assistant uses in every conversation."
       />
       <form
@@ -204,7 +204,7 @@ export function Settings() {
               </button>
             </div>
             <p className="mb-5 text-sm text-stone-500">
-              Pickup is always available during opening hours. Delivery is limited to these areas,
+              Fulfillment follows your published bot settings. Delivery is limited to these areas,
               with cash payment.
             </p>
             {!(draft.deliveryZones || []).length && (
@@ -270,102 +270,7 @@ export function Settings() {
               <h2 className="font-semibold">Assistant & menu</h2>
             </div>
             <div className="grid gap-5 sm:grid-cols-2">
-              <Field label="AI provider">
-                <CustomSelect
-                  value={draft.ai?.provider || 'mock'}
-                  onChange={(val) => {
-                    const provider = val as Provider;
-                    const defaultModel = (providers[provider] || providers.mock).model;
-                    update({
-                      ai: {
-                        ...(draft.ai || {
-                          provider: 'mock',
-                          model: 'mock',
-                          keyMode: 'platform',
-                          monthlyBudgetUsd: 10,
-                        }),
-                        provider,
-                        model: defaultModel,
-                      },
-                    });
-                  }}
-                  options={Object.entries(providers).map(([id, p]) => ({
-                    value: id,
-                    label: p.name,
-                  }))}
-                />
-              </Field>
-              <Field
-                label="Model"
-                hint="Custom models require matching prices in the server configuration."
-              >
-                <input
-                  className="input"
-                  required
-                  value={draft.ai?.model || 'mock'}
-                  onChange={(e) =>
-                    update({
-                      ai: {
-                        ...(draft.ai || {
-                          provider: 'mock',
-                          model: 'mock',
-                          keyMode: 'platform',
-                          monthlyBudgetUsd: 10,
-                        }),
-                        model: e.target.value,
-                      },
-                    })
-                  }
-                />
-              </Field>
-              <Field label="API key source">
-                <CustomSelect
-                  value={draft.ai?.keyMode || 'platform'}
-                  onChange={(val) =>
-                    update({
-                      ai: {
-                        ...(draft.ai || {
-                          provider: 'mock',
-                          model: 'mock',
-                          keyMode: 'platform',
-                          monthlyBudgetUsd: 10,
-                        }),
-                        keyMode: val as 'own' | 'platform',
-                      },
-                    })
-                  }
-                  options={[
-                    { value: 'platform', label: 'Platform account' },
-                    { value: 'own', label: "This business's API key" },
-                  ]}
-                />
-              </Field>
-              <Field
-                label="Monthly AI limit (USD)"
-                hint="When this allowance is exhausted, new AI requests go to staff. A $0 limit blocks model calls, including free-tier calls."
-              >
-                <input
-                  className="input"
-                  type="number"
-                  min="0"
-                  max="10000"
-                  step="0.01"
-                  value={draft.ai?.monthlyBudgetUsd ?? 10}
-                  onChange={(e) =>
-                    update({
-                      ai: {
-                        ...(draft.ai || {
-                          provider: 'mock',
-                          model: 'mock',
-                          keyMode: 'platform',
-                          monthlyBudgetUsd: 10,
-                        }),
-                        monthlyBudgetUsd: Number(e.target.value),
-                      },
-                    })
-                  }
-                />
-              </Field>
+              <div className="sm:col-span-2"><button type="button" className="btn" onClick={()=>navigate('bot')}>Open bot behavior & model settings</button></div>
               <Field
                 label="Menu source"
                 hint="One source controls item prices and availability for this business."
@@ -492,7 +397,7 @@ export function Settings() {
           are separate.
         </p>
       </section>
-      <Team />
+      <button className="btn mt-6" onClick={()=>navigate('security')}>Manage team, security & privacy</button>
     </>
   );
 }
@@ -555,6 +460,7 @@ const integrationInfo: Record<
 };
 
 export function Integrations() {
+  const [disconnecting,setDisconnecting]=useState<Integration>();
   const { data, mutate, busy, navigate } = useWorkspace();
   const [editing, setEditing] = useState<Integration | null>(null);
   const [config, setConfig] = useState<Record<string, string>>({});
@@ -570,6 +476,7 @@ export function Integrations() {
   };
   return (
     <>
+      <ConfirmDialog open={!!disconnecting} onOpenChange={v=>{if(!v)setDisconnecting(undefined);}} title="Disconnect this integration?" description="Automation will pause, Orderly will delete the stored credential and cancel pending delivery work for this integration. Revoke Orderly access or the API key in the provider account separately. Existing provider data is kept." confirmLabel="Disconnect" busy={busy} onConfirm={()=>{if(disconnecting)void mutate(`/integrations/${disconnecting.kind}`,undefined,'DELETE').then(()=>setDisconnecting(undefined)).catch(()=>{});}}/>
       <PageHeading
         title="Everything, connected."
         description="Choose the tools behind your business. Each connection belongs to this workspace."
@@ -640,7 +547,7 @@ export function Integrations() {
                     Test selected key
                   </button>
                 )}
-                <button className="btn btn-quiet" onClick={() => navigate('settings')}>
+                <button className="btn btn-quiet" onClick={() => navigate('bot')}>
                   Change AI settings
                   <ArrowRight className="size-4" />
                 </button>
@@ -703,6 +610,7 @@ export function Integrations() {
                   </button>
                 )}
               </div>
+              {integration.configured && <button disabled={!canEdit || busy} className="btn mt-3 text-red-700" onClick={()=>setDisconnecting(integration)}>Disconnect</button>}
               {integration.checkedAt && (
                 <p className="mt-4 text-xs text-stone-400">
                   Last checked {new Date(integration.checkedAt).toLocaleString()}

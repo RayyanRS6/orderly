@@ -38,6 +38,7 @@ export async function api<T>(
   method?: string,
 ): Promise<T> {
   const response = await fetch(`${apiBaseUrl()}/api${path}`, {
+    signal: AbortSignal.timeout(45000),
     method: method || (body !== undefined ? 'POST' : 'GET'),
     headers: {
       'Content-Type': 'application/json',

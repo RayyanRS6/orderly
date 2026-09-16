@@ -19,6 +19,7 @@ import { appMode, env } from './config.js';
 import {
   PublicError,
   encryptSecret,
+  decryptSecret,
   safeEqual,
   sanitizeError,
   verifyMetaSignature,
@@ -35,6 +36,9 @@ import {
 } from './service.js';
 import { dispatchJob, makeJob, recoverJobs } from './jobs.js';
 import { finishSignup, signupSchema } from './integrations/signup.js';
+import { managementRoutes } from './management.js';
+import { readiness } from './readiness.js';
+import { WhatsAppAdapter } from './integrations/whatsapp.js';
 
 type Env = {
   Variables: { company: Company; role: Role; userId: string; allowedCompanies: Company[] };
@@ -237,20 +241,16 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
       const { data, error } = await client.auth.getUser(bearer);
       if (error || !data.user) throw new PublicError('Your session expired. Sign in again.', 401);
       userId = data.user.id;
-      const all = await repo.listCompanies();
-      allowed = (await repo.isAdmin(userId))
-        ? all
-        : (
-            await Promise.all(
-              all.map(async (company) =>
-                (await repo.getRole(userId, company.id)) ? company : null,
-              ),
-            )
-          ).filter((x): x is Company => !!x);
+      if (!await repo.consumeRateLimit(`user:${userId}`,180)) {
+        c.header('Retry-After','60');
+        throw new PublicError('Too many requests. Please wait a minute.',429);
+      }
+      allowed = await repo.listAllowedCompanies(userId);
     }
     c.set('userId', userId);
     c.set('allowedCompanies', allowed);
-    const companyId = c.req.query('companyId') || c.req.header('x-company-id') || allowed[0]?.id;
+    const slug = c.req.query('companySlug');
+    const companyId = slug ? allowed.find(x=>x.slug===slug)?.id : c.req.query('companyId') || c.req.header('x-company-id') || allowed[0]?.id;
     const company = allowed.find((x) => x.id === companyId);
     // The first platform administrator may create a business in an empty live database.
     if (!company) {
@@ -273,7 +273,10 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
     c.set('company', company);
     c.set('role', role);
     await next();
+    if (c.res.ok && !['GET','OPTIONS'].includes(c.req.method) && c.req.path !== '/api/chat')
+      await repo.audit(company.id,userId,`${c.req.method} ${c.req.path.replace(/\/[a-f0-9-]{36}(?=\/|$)/g,'/:id')}`);
   });
+  app.route('/api',managementRoutes(repo));
   app.get('/api/account', async (c) =>
     c.json({
       isAdmin: appMode() === 'demo' || (await repo.isAdmin(c.get('userId'))),
@@ -282,13 +285,14 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
   );
   app.get('/api/bootstrap', async (c) => {
     const company = c.get('company');
-    const [products, orders, conversations, integrations, usage, traces] = await Promise.all([
+    const [products, orderPage, conversationPage, integrations, summary, traces, checks] = await Promise.all([
       repo.listProducts(company.id),
-      repo.listOrders(company.id),
-      repo.listConversations(company.id),
+      repo.queryOrders(company.id,{pageSize:50,sandbox:appMode()==='demo'}),
+      repo.queryConversations(company.id,{pageSize:50,sandbox:appMode()==='demo'}),
       repo.getIntegrations(company.id),
-      repo.listUsage(company.id),
+      repo.getSummary(company.id,appMode()==='demo'),
       repo.listTraces(company.id),
+      readiness(repo,company),
     ]);
     const allIntegrations = kindSchema.options.map(
       (kind) =>
@@ -314,15 +318,17 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
       company,
       companies: c.get('allowedCompanies'),
       products,
-      orders,
-      conversations,
+      orders:orderPage.items,
+      conversations:conversationPage.items,
       integrations: allIntegrations,
       aiConnection: {
         provider: company.ai.provider,
         keyMode: company.ai.keyMode,
         configured: aiKeyConfigured,
       },
-      usage,
+      usage:[],
+      summary,
+      readiness:checks,
       traces,
     });
   });
@@ -374,7 +380,7 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
     };
     if (
       c.get('role') !== 'admin' &&
-      company.ai.monthlyBudgetUsd > c.get('company').ai.monthlyBudgetUsd
+      company.ai.keyMode === 'platform' && company.ai.monthlyBudgetUsd > c.get('company').ai.monthlyBudgetUsd
     )
       throw new PublicError('Ask the platform administrator to raise your AI budget.', 403);
     if (
@@ -387,8 +393,13 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
         403,
       );
     validateModelConfiguration(company);
-    if (appMode() === 'live' && company.botEnabled && company.ai.provider === 'mock')
-      throw new PublicError('Select a live model before enabling WhatsApp automation.');
+    if (c.get('role') !== 'admin' && company.ai.keyMode === 'platform' && JSON.stringify(company.ai.pricing)!==JSON.stringify(c.get('company').ai.pricing))
+      throw new PublicError('Only the platform administrator can change rates for platform-funded AI.',403);
+    if (JSON.stringify(company.ai)!==JSON.stringify(c.get('company').ai)) company.modelVerification=undefined;
+    if (appMode()==='live' && company.botEnabled) {
+      const missing=(await readiness(repo,company)).filter(check=>!check.ready);
+      if(missing.length)throw new PublicError(`Before enabling automation: ${missing.map(check=>check.label).join('; ')}.`,409);
+    }
     await repo.saveCompany(company);
     return c.json(company);
   });
@@ -563,14 +574,21 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
       if (existing && existing.id !== c.get('company').id)
         throw new PublicError('That WhatsApp number is already assigned to another company.');
     }
+    if (kind === 'whatsapp') {
+      const token=body.secret || decryptSecret((await repo.getSecret(c.get('company').id,kind)) || '');
+      const adapter=new WhatsAppAdapter(integration,token);
+      await adapter.verifyOwnership();
+      await adapter.test();
+      await adapter.subscribe();
+      integration.config.ownershipVerifiedAt=new Date().toISOString();
+      integration.status='connected';integration.checkedAt=new Date().toISOString();
+    }
     await repo.saveIntegration(
       c.get('company').id,
       integration,
       body.secret ? encryptSecret(body.secret) : undefined,
     );
-    if (kind === 'whatsapp' && integration.config.wabaId) {
-      await (await integrationAdapter(repo, c.get('company').id, 'whatsapp')).subscribe();
-    }
+    if (kind===c.get('company').ai.provider || kind==='whatsapp') await repo.saveCompany({...c.get('company'),botEnabled:false,modelVerification:undefined});
     return c.json(integration);
   });
   app.post('/api/integrations/:kind/test', async (c) => {

@@ -1,5 +1,13 @@
 import { z } from 'zod';
 const text = (max: number) => z.string().trim().max(max);
+export const botSchema = z.object({
+  name: text(80).min(1), personality: z.enum(['warm', 'professional', 'concise']),
+  language: z.enum(['auto', 'en', 'ur', 'roman-ur']), goal: text(1500).min(1),
+  instructions: text(4000), knowledge: z.array(z.object({ question: text(250).min(1), answer: text(1500).min(1) })).max(30),
+  greeting: text(500), handoffMessage: text(500),
+  steps: z.array(z.enum(['items', 'fulfillment', 'name', 'address'])).length(4).refine(v => new Set(v).size === 4, 'Include each step once.'),
+  fulfillment: z.enum(['both', 'pickup', 'delivery']), requirePhoneConfirmation: z.boolean(),
+});
 export const optionSchema = z.object({
   id: text(80).min(1),
   name: text(100).min(1),
@@ -35,7 +43,7 @@ export const companySchema = z
   .object({
     id: z.string().uuid().optional(),
     name: text(120).min(1),
-    slug: text(140).optional(),
+    slug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(140).optional(),
     address: text(500),
     phone: text(40),
     timezone: z.string().refine((v) => {
@@ -63,9 +71,11 @@ export const companySchema = z
       model: text(120),
       keyMode: z.enum(['platform', 'own']),
       monthlyBudgetUsd: z.number().min(0).max(10000),
+      pricing: z.tuple([z.number().positive().max(1000), z.number().positive().max(1000)]).optional(),
     }),
     catalogSyncedAt: z.string().datetime().optional(),
     createdAt: z.string().datetime().optional(),
+    privacy: z.object({ aiDataApproved: z.boolean(), retentionDays: z.union([z.literal(0), z.number().int().min(30).max(3650)]) }).optional(),
   })
   .superRefine((company, ctx) => {
     if (
@@ -108,5 +118,7 @@ export const chatSchema = z.object({
   text: text(2000).default(''),
   messageId: text(150).min(1),
   action: actionSchema.optional(),
+  useLiveModel: z.boolean().default(false),
+  useDraft: z.boolean().default(true),
 });
 export const modelOutputSchema = z.object({ actions: z.array(actionSchema).min(1).max(6) });

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   ArrowDownToLine,
   ArrowRight,
@@ -15,11 +15,12 @@ import {
   Wallet,
   X,
 } from 'lucide-react';
-import type { Order, OrderStatus } from '../shared/types';
+import type { Order, OrderStatus, PageResult } from '../shared/types';
 import { money } from '../shared/types';
+import { api } from '../lib/api';
 import { useWorkspace } from '../lib/workspace';
 import { cn, initials, label, shortDate } from '../lib/utils';
-import { Badge, ConfirmDialog, Empty, Modal, PageHeading, Status } from './ui';
+import { Badge, ConfirmDialog, Empty, ErrorNotice, Field, CustomSelect, Modal, PageHeading, Status } from './ui';
 
 export function Overview() {
   const { data, navigate } = useWorkspace();
@@ -31,7 +32,7 @@ export function Overview() {
   const products = data.products || [];
   const pending = orders.filter((o) => o.status === 'pending');
   const valid = orders.filter((o) => !['cancelled', 'rejected'].includes(o.status));
-  const total = valid.reduce((sum, o) => sum + o.total, 0);
+  const total = data.summary?.value ?? valid.reduce((sum, o) => sum + o.total, 0);
   const activity = traces
     .slice()
     .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
@@ -47,7 +48,7 @@ export function Overview() {
     }
     return {
       date,
-      count: orders.filter((o) => {
+      count: data.summary?.daily.find(d=>d.date===date.toISOString().slice(0,10))?.count ?? orders.filter((o) => {
         if (!o.createdAt) return false;
         try {
           return (
@@ -75,11 +76,12 @@ export function Overview() {
           <ArrowUpRight className="size-4 text-stone-400" />
         </button>
       </PageHeading>
+      {data.readiness&&<section className="card mb-5 p-5"><div className="flex flex-wrap items-center justify-between gap-3"><h2 className="font-semibold">Launch readiness · {data.readiness.filter(c=>c.ready).length}/{data.readiness.length}</h2><button className="btn" onClick={()=>navigate('bot')}>Review setup</button></div><ul className="mt-3 grid gap-2 text-sm sm:grid-cols-2">{data.readiness.map(c=><li key={c.id}><span className={c.ready?'text-emerald-700':'text-amber-700'}>{c.ready?'✓':'○'}</span> {c.label}</li>)}</ul><p className="mt-3 text-xs text-stone-500">{data.summary?.needsStaff??0} conversations need staff. <button className="underline" onClick={()=>navigate('inbox')}>Open inbox</button></p></section>}
       <section className="mb-8 grid grid-cols-1 overflow-hidden rounded-3xl border border-emerald-200/80 bg-gradient-to-br from-emerald-50/90 via-white to-emerald-50/40 shadow-xs md:grid-cols-5">
         <div className="p-6 sm:p-8 md:col-span-3">
           <div className="mb-3 flex items-center gap-2 text-xs font-bold tracking-wider text-emerald-800 uppercase">
             <span className="size-2 rounded-full bg-emerald-600 shadow-[0_0_6px_rgba(5,150,105,0.5)]" />
-            YOUR RESTAURANT, CONNECTED
+            {data.company.botEnabled?'AUTOMATION ENABLED':'AUTOMATION PAUSED'}
           </div>
           <h2 className="max-w-lg text-2xl sm:text-3xl font-bold leading-tight tracking-tight text-emerald-950">
             Good conversations.
@@ -429,24 +431,21 @@ export function Overview() {
 }
 
 export function Orders() {
-  const { data, navigate } = useWorkspace();
+  const { data, navigate,detailId } = useWorkspace();
   const [filter, setFilter] = useState('all');
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<Order | null>(null);
-  const orders = data.orders || [];
-  const filtered = orders
-    .filter(
-      (order) =>
-        (filter === 'all' ||
-          (filter === 'active'
-            ? ['accepted', 'preparing', 'ready', 'out_for_delivery'].includes(order.status)
-            : order.status === filter)) &&
-        `${order.reference || ''} ${order.customerName || ''} ${order.customerPhone || ''}`
-          .toLowerCase()
-          .includes(query.toLowerCase()),
-    )
-    .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
-  function exportCsv() {
+  const [page,setPage]=useState(1);
+  const [result,setResult]=useState<PageResult<Order>>({items:data.orders,total:data.summary?.orders??data.orders.length,page:1,pageSize:50});
+  const [error,setError]=useState('');const [exporting,setExporting]=useState(false);const [sandbox,setSandbox]=useState(data.mode==='demo');
+  const orders=result.items;const filtered=orders;
+  useEffect(()=>{let active=true;const timer=setTimeout(()=>{void api<PageResult<Order>>('/orders?page='+page+'&search='+encodeURIComponent(query)+'&status='+filter+'&sandbox='+sandbox,data.company.id).then(r=>{if(active)setResult(r);}).catch(e=>{if(active)setError(e.message);});},200);return()=>{active=false;clearTimeout(timer);};},[data.company.id,data.orders,data.summary,query,filter,page,sandbox]);
+  useEffect(()=>{let active=true;if(detailId)void api<Order>('/orders/'+detailId,data.company.id).then(o=>{if(active)setSelected(o);}).catch(e=>{if(active)setError(e.message);});else setSelected(null);return()=>{active=false;};},[detailId,data.company.id,data.orders]);
+  async function exportCsv() {
+    setExporting(true);setError('');
+    try {
+    const exportOrders:Order[]=[];
+    for(let page=1;;page++){const result=await api<PageResult<Order>>(`/orders?page=${page}&pageSize=100&search=${encodeURIComponent(query)}&status=${filter}&sandbox=${sandbox}`,data.company.id);exportOrders.push(...result.items);if(page*100>=result.total)break;if(page>=1000)throw new Error('This export is too large. Contact support for a complete archive.');}
     const fields = [
       'reference',
       'customer',
@@ -458,11 +457,11 @@ export function Orders() {
     ];
     const escape = (value: unknown) => {
       const str = String(value ?? '');
-      return `"${(/^[=+@\-]/.test(str) ? "'" : '') + str.replaceAll('"', '""')}"`;
+      return `"${(/^[\s]*[=+@\-]/.test(str) ? "'" : '') + str.replaceAll('"', '""')}"`;
     };
     const csv = [
       fields,
-      ...filtered.map((o) => [
+      ...exportOrders.map((o) => [
         o.reference,
         o.customerName,
         o.customerPhone,
@@ -479,7 +478,8 @@ export function Orders() {
     link.href = url;
     link.download = `${data.company.slug}-orders.csv`;
     link.click();
-    URL.revokeObjectURL(url);
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+    } catch(e){setError((e as Error).message);}finally{setExporting(false);}
   }
   return (
     <>
@@ -489,11 +489,11 @@ export function Orders() {
       >
         <button
           className="btn rounded-full shadow-xs"
-          disabled={!filtered.length}
-          onClick={exportCsv}
+          disabled={!result.total||exporting}
+          onClick={()=>void exportCsv()}
         >
           <ArrowDownToLine className="size-4" />
-          Export CSV
+          {exporting?'Exporting…':'Export all matching orders'}
         </button>
         <button
           className="btn btn-primary rounded-full shadow-xs"
@@ -519,7 +519,7 @@ export function Orders() {
                     ? 'bg-emerald-700 text-white shadow-xs'
                     : 'text-stone-600 hover:text-stone-900 hover:bg-white/60',
                 )}
-                onClick={() => setFilter(value)}
+                onClick={() => {setFilter(value);setPage(1);}}
               >
                 {label(value)}
                 {value === 'pending' && (
@@ -529,7 +529,7 @@ export function Orders() {
                       filter === value ? 'bg-white/20 text-white' : 'bg-stone-200 text-stone-700',
                     )}
                   >
-                    {orders.filter((o) => o.status === 'pending').length}
+                    {data.summary?.pending??orders.filter((o) => o.status === 'pending').length}
                   </span>
                 )}
               </button>
@@ -542,15 +542,18 @@ export function Orders() {
               className="input rounded-full pl-9 pr-4 py-1.5 text-xs sm:text-sm bg-stone-50/80 focus:bg-white"
               placeholder="Search orders…"
               value={query}
-              onChange={(e) => setQuery(e.target.value)}
+              onChange={(e) => {setQuery(e.target.value);setPage(1);}}
             />
           </div>
         </div>
-        <OrderTable orders={filtered} onSelect={setSelected} />
+        <ErrorNotice message={error}/>
+        <label className="m-4 flex items-center gap-2 text-sm"><input type="checkbox" checked={sandbox} onChange={e=>{setSandbox(e.target.checked);setPage(1);}}/>Show sandbox orders</label>
+        <OrderTable orders={filtered} onSelect={o=>navigate('orders',o.id)} />
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-stone-100 p-4 text-sm"><button className="btn" disabled={page===1} onClick={()=>setPage(page-1)}>Previous</button><span>{result.total} orders · Page {page} of {Math.max(1,Math.ceil(result.total/50))}</span><button className="btn" disabled={page*50>=result.total} onClick={()=>setPage(page+1)}>Next</button></div>
       </section>
       <OrderDetails
         order={selected ? data.orders.find((o) => o.id === selected.id) || selected : null}
-        onClose={() => setSelected(null)}
+        onClose={() => navigate('orders')}
       />
     </>
   );
@@ -568,7 +571,9 @@ function OrderTable({ orders, onSelect }: { orders: Order[]; onSelect: (order: O
       />
     );
   return (
-    <div className="overflow-x-auto">
+    <>
+    <div className="divide-y divide-stone-100 md:hidden">{orders.map(o=><button key={o.id} className="block w-full p-4 text-left hover:bg-stone-50" onClick={()=>onSelect(o)}><div className="flex flex-wrap items-center justify-between gap-2"><strong className="text-sm text-emerald-900">{o.reference}</strong><Status value={o.status}/></div><p className="mt-2 text-sm break-words">{o.customerName} · {money(o.total)}</p><p className="mt-2 text-xs text-stone-500">{label(o.fulfillment)} · {shortDate(o.createdAt)}</p></button>)}</div>
+    <div className="hidden overflow-x-auto md:block">
       <table className="w-full min-w-2xl border-collapse">
         <thead>
           <tr>
@@ -625,6 +630,7 @@ function OrderTable({ orders, onSelect }: { orders: Order[]; onSelect: (order: O
         </tbody>
       </table>
     </div>
+    </>
   );
 }
 
@@ -714,6 +720,7 @@ function OrderDetails({ order, onClose }: { order: Order | null; onClose: () => 
                 <Status value={order.syncStatus} />
               </div>
             </div>
+            {order.status==='pending' && order.phoneConfirmationRequired && <CallConfirmation order={order}/>}
             {nextStatus && (
               <div className="mt-6 flex gap-2.5">
                 {order.status === 'pending' && (
@@ -753,4 +760,9 @@ function OrderDetails({ order, onClose }: { order: Order | null; onClose: () => 
       />
     </>
   );
+}
+
+function CallConfirmation({order}:{order:Order}) {
+  const {mutate,busy}=useWorkspace();const [outcome,setOutcome]=useState<'confirmed'|'unreachable'|'declined'>(order.phoneConfirmation?.outcome??'confirmed');const [addressVerified,setAddressVerified]=useState(order.phoneConfirmation?.addressVerified??false);const [note,setNote]=useState(order.phoneConfirmation?.note??'');
+  return <section className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-4 space-y-3"><h3 className="text-sm font-semibold">Phone confirmation required</h3><p className="text-xs leading-5">Call {order.customerPhone}, verify the order and delivery address, then record the outcome. Orderly does not make this phone call.</p>{order.phoneConfirmation&&<p className="text-xs">Last recorded: {order.phoneConfirmation.outcome} · {shortDate(order.phoneConfirmation.at)}</p>}<Field label="Call outcome"><CustomSelect value={outcome} onChange={v=>setOutcome(v as typeof outcome)} options={[{value:'confirmed',label:'Customer confirmed'},{value:'unreachable',label:'Could not reach customer'},{value:'declined',label:'Customer declined'}]}/></Field>{order.fulfillment==='delivery'&&<label className="flex gap-2 text-sm"><input type="checkbox" checked={addressVerified} onChange={e=>setAddressVerified(e.target.checked)}/>Delivery address verified with customer</label>}<Field label="Call note (optional)"><input className="input" value={note} maxLength={500} onChange={e=>setNote(e.target.value)}/></Field><button className="btn" disabled={busy} onClick={()=>void mutate('/orders/'+order.id+'/call',{outcome,addressVerified,note}).catch(()=>{})}>Record call outcome</button></section>;
 }

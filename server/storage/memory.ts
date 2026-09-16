@@ -13,6 +13,7 @@ import type {
   Role,
   Trace,
   Usage,
+  ListFilter, BotSettings, TeamMember,
 } from '../../src/shared/types';
 import {
   seedCompanies,
@@ -24,6 +25,7 @@ import {
 import type { Repository } from '../repository';
 import { transitionOrder } from '../../src/domain/engine';
 import { PublicError } from '../security';
+import { orderMatches, pageOf, summaryOf } from '../queries';
 
 interface Reservation {
   id: string;
@@ -178,6 +180,22 @@ function incomingHeads(jobs: Job[]): Set<string> {
 
 /** Development/test store. Every write commits a cloned snapshot, avoiding mutation leaks. */
 export class MemoryRepository implements Repository {
+  async audit(companyId:string,actorId:string,action:string) { await this.addTrace({id:randomUUID(),companyId,actorId,action,detail:'Administrative change',createdAt:new Date().toISOString()}); }
+  private rateLimits = new Map<string, {minute:number; count:number}>();
+  listAllowedCompanies(userId: string) { return this.read(s => s.admins.includes(userId) ? s.companies : s.companies.filter(c=>s.memberships.some(m=>m.companyId===c.id && m.userId===userId))); }
+  queryOrders(companyId: string, filter: ListFilter) { return this.read(s => pageOf(s.orders.filter(o=>o.companyId===companyId && orderMatches(o,filter) && (filter.sandbox === undefined || s.conversations.some(c=>c.id===o.conversationId && (c.channel==='demo')===filter.sandbox))).sort((a,b)=>b.createdAt.localeCompare(a.createdAt)||b.id.localeCompare(a.id)),filter)); }
+  queryConversations(companyId: string, filter: ListFilter) { return this.read(s=>pageOf(s.conversations.filter(c=>c.companyId===companyId && (filter.sandbox===undefined || (c.channel==='demo')===filter.sandbox) && (!filter.status || filter.status==='all' || c.mode===filter.status) && (!filter.search || `${c.customerName} ${c.customerPhone}`.toLowerCase().includes(filter.search.toLowerCase()))).sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt)||b.id.localeCompare(a.id)).map(c=>({...c,messages:c.messages.slice(-1)})),filter)); }
+  conversationHistory(companyId: string,id:string,page:number) { return this.read(s=>pageOf([...(s.conversations.find(c=>c.companyId===companyId&&c.id===id)?.messages??[])].reverse(),{page,pageSize:100})); }
+  getSummary(companyId: string,sandbox:boolean) { return this.read(s=>{const conversations=s.conversations.filter(c=>c.companyId===companyId&&(c.channel==='demo')===sandbox);return summaryOf(s.orders.filter(o=>o.companyId===companyId&&conversations.some(c=>c.id===o.conversationId)),conversations,s.usage.filter(u=>u.companyId===companyId));}); }
+  listCompanyJobs(companyId:string) { return this.read(s=>s.jobs.filter(j=>j.companyId===companyId&&j.status!=='done').slice(-100).reverse()); }
+  saveBot(companyId:string,settings:BotSettings,expectedRevision:number) { return this.mutate(s=>{const c=s.companies.find(c=>c.id===companyId);if(!c||(c.bot?.revision??0)!==expectedRevision)return false;c.bot=copy(settings);return true;}); }
+  disconnectIntegration(companyId:string,kind:IntegrationKind) { return this.mutate(s=>{if(s.jobs.some(j=>j.companyId===companyId&&j.status==='processing'&&Date.parse(j.leaseUntil??'')>Date.now()))throw new PublicError('Wait for running jobs to finish before disconnecting.',409);s.integrations=s.integrations.filter(i=>i.companyId!==companyId||i.integration.kind!==kind);for(const j of s.jobs.filter(j=>j.companyId===companyId&&((kind==='sheets'&&j.kind==='sheet_sync')||(kind==='whatsapp'&&j.kind!=='sheet_sync')))){j.status='done';j.payload={};}const c=s.companies.find(c=>c.id===companyId);if(c){c.botEnabled=false;c.modelVerification=undefined;}}); }
+  recordCall(companyId:string,orderId:string,confirmation:NonNullable<Order['phoneConfirmation']>) { return this.mutate(s=>{const o=s.orders.find(o=>o.companyId===companyId&&o.id===orderId);if(!o||o.status!=='pending')return undefined;o.phoneConfirmation=confirmation;o.updatedAt=confirmation.at;return o;}); }
+  listMembers(companyId:string) { return this.read(s=>s.memberships.filter(m=>m.companyId===companyId).map(m=>({userId:m.userId,role:m.role as 'owner'|'staff'}))); }
+  setMember(companyId:string,member:TeamMember,actorId:string) { return this.mutate(s=>{const old=s.memberships.find(m=>m.companyId===companyId&&m.userId===member.userId);if(old?.role==='owner'&&member.role!=='owner'&&(old.userId===actorId||s.memberships.filter(m=>m.companyId===companyId&&m.role==='owner').length<=1))throw new PublicError('Keep another owner and do not demote yourself.',409);if(old)old.role=member.role;else s.memberships.push({companyId,userId:member.userId,role:member.role});}); }
+  removeMember(companyId:string,userId:string,actorId:string) { return this.mutate(s=>{const old=s.memberships.find(m=>m.companyId===companyId&&m.userId===userId);if(userId===actorId||(old?.role==='owner'&&s.memberships.filter(m=>m.companyId===companyId&&m.role==='owner').length<=1))throw new PublicError('Keep another owner and do not remove yourself.',409);s.memberships=s.memberships.filter(m=>m.companyId!==companyId||m.userId!==userId);}); }
+  eraseCustomer(companyId:string,phone:string) { return this.mutate(s=>{if(s.companies.find(c=>c.id===companyId)?.botEnabled||s.jobs.some(j=>j.companyId===companyId&&j.status==='processing'&&Date.parse(j.leaseUntil??'')>Date.now())||s.locks.some(l=>l.companyId===companyId&&Date.parse(l.leaseUntil)>Date.now()))throw new PublicError('Pause automation and wait for running work before deleting customer data.',409);const ids=new Set(s.conversations.filter(c=>c.companyId===companyId&&c.customerPhone===phone).map(c=>c.id));const orderIds=new Set(s.orders.filter(o=>o.companyId===companyId&&ids.has(o.conversationId)).map(o=>o.id));s.jobs=s.jobs.filter(j=>j.companyId!==companyId||!(j.payload.phone===phone||ids.has(String(j.payload.conversationId))||orderIds.has(String(j.payload.orderId))));s.traces=s.traces.filter(t=>t.companyId!==companyId||!ids.has(t.conversationId??''));s.usage=s.usage.map(u=>u.companyId===companyId&&ids.has(u.conversationId??'')?{...u,conversationId:undefined}:u);s.orders=s.orders.filter(o=>!orderIds.has(o.id));s.conversations=s.conversations.filter(c=>!ids.has(c.id));return ids.size;}); }
+  async consumeRateLimit(key:string,limit:number) { const minute=Math.floor(Date.now()/60000);let r=this.rateLimits.get(key);if(!r||r.minute!==minute){r={minute,count:0};this.rateLimits.set(key,r);}r.count++;if(this.rateLimits.size>10000)for(const [k,v]of this.rateLimits)if(v.minute<minute)this.rateLimits.delete(k);return r.count<=limit; }
   protected state: State;
   private pending: Promise<unknown> = Promise.resolve();
   constructor(seed = true) {

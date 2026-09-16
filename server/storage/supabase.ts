@@ -10,6 +10,7 @@ import type {
   Role,
   Trace,
   Usage,
+  ListFilter, PageResult, WorkspaceSummary, TeamMember, BotSettings, Message,
 } from '../../src/shared/types';
 import type { Repository } from '../repository';
 import { PublicError } from '../security';
@@ -32,10 +33,32 @@ const jobRow = (job: Job) => ({
 
 /** All methods run on the server using the service role; API authorization is required. */
 export class SupabaseRepository implements Repository {
+  async audit(companyId:string,actorId:string,action:string) { await this.rpc('audit_event',{p_company_id:companyId,p_actor_id:actorId,p_action:action}); }
+  async listAllowedCompanies(userId: string) {
+    if (await this.isAdmin(userId)) return this.listCompanies();
+    const memberships = unwrap(await this.client.from('company_memberships').select('company_id').eq('user_id', userId)) ?? [];
+    if (!memberships.length) return [];
+    const rows = unwrap(await this.client.from('companies').select('data').in('id', memberships.map(m => m.company_id))) ?? [];
+    return rows.map(row => row.data as Company);
+  }
+  queryOrders(companyId: string, filter: ListFilter) { return this.rpc<PageResult<Order>>('query_orders', { p_company_id: companyId, p_filter: filter }); }
+  queryConversations(companyId: string, filter: ListFilter) { return this.rpc<PageResult<Conversation>>('query_conversations', { p_company_id: companyId, p_filter: filter }); }
+  conversationHistory(companyId: string, id: string, page: number) { return this.rpc<PageResult<Message>>('conversation_history', { p_company_id: companyId, p_id: id, p_page: page }); }
+  getSummary(companyId: string, sandbox: boolean) { return this.rpc<WorkspaceSummary>('workspace_summary', { p_company_id: companyId, p_sandbox: sandbox }); }
+  async disconnectIntegration(companyId: string, kind: IntegrationKind) { await this.rpc('disconnect_integration', { p_company_id: companyId, p_kind: kind }); }
+  async listCompanyJobs(companyId: string) { const rows = unwrap(await this.client.from('jobs').select('data').eq('company_id', companyId).neq('status', 'done').order('created_at', {ascending:false}).limit(100)) ?? []; return rows.map(r => r.data as Job); }
+  saveBot(companyId: string, settings: BotSettings, expectedRevision: number) { return this.rpc<boolean>('save_bot', { p_company_id: companyId, p_settings: settings, p_revision: expectedRevision }); }
+  async recordCall(companyId: string, orderId: string, confirmation: NonNullable<Order['phoneConfirmation']>) { return (await this.rpc<Order | null>('record_call', { p_company_id: companyId, p_id: orderId, p_confirmation: confirmation })) ?? undefined; }
+  async listMembers(companyId: string): Promise<TeamMember[]> { const rows = unwrap(await this.client.from('company_memberships').select('user_id,role').eq('company_id', companyId)) ?? []; return rows.map(r=>({userId:r.user_id,role:r.role})); }
+  async setMember(companyId: string, member: TeamMember, actorId: string) { await this.rpc('manage_member', { p_company_id: companyId, p_user_id: member.userId, p_role: member.role, p_actor_id: actorId }); }
+  async removeMember(companyId: string, userId: string, actorId: string) { await this.rpc('manage_member', { p_company_id: companyId, p_user_id: userId, p_role: null, p_actor_id: actorId }); }
+  eraseCustomer(companyId: string, phone: string) { return this.rpc<number>('erase_customer', { p_company_id: companyId, p_phone: phone }); }
+  consumeRateLimit(key: string, limit: number) { return this.rpc<boolean>('consume_rate_limit', { p_key: key, p_limit: limit }); }
   private client: SupabaseClient;
   constructor(url: string, serviceRoleKey: string) {
     this.client = createClient(url, serviceRoleKey, {
       auth: { persistSession: false, autoRefreshToken: false },
+      global: { fetch: (input, init) => fetch(input, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(10000)]) : AbortSignal.timeout(10000) }) },
     });
   }
   private async rpc<T>(name: string, args: Record<string, unknown>): Promise<T> {
@@ -65,14 +88,7 @@ export class SupabaseRepository implements Repository {
     return this.get<Company>('companies', id);
   }
   async saveCompany(company: Company) {
-    unwrap(
-      await this.client.from('companies').upsert({
-        id: company.id,
-        slug: company.slug,
-        data: company,
-        created_at: company.createdAt,
-      }),
-    );
+    await this.rpc('save_company_settings',{p_company:company});
   }
   async isAdmin(userId: string) {
     return !!unwrap(

@@ -1,6 +1,26 @@
 export type Language = 'en' | 'ur' | 'roman-ur';
 export type Provider = 'mock' | 'openai' | 'anthropic' | 'gemini';
 export type Role = 'admin' | 'owner' | 'staff';
+export interface BotConfig {
+  name: string;
+  personality: 'warm' | 'professional' | 'concise';
+  language: 'auto' | Language;
+  goal: string;
+  instructions: string;
+  knowledge: { question: string; answer: string }[];
+  greeting: string;
+  handoffMessage: string;
+  steps: ('items' | 'fulfillment' | 'name' | 'address')[];
+  fulfillment: 'both' | 'pickup' | 'delivery';
+  requirePhoneConfirmation: boolean;
+}
+export interface BotVersion { version: number; config: BotConfig; publishedAt: string; publishedBy: string }
+export interface BotSettings {
+  draft: BotConfig;
+  published?: BotVersion;
+  history: BotVersion[];
+  revision: number;
+}
 export interface DeliveryZone {
   name: string;
   fee: number;
@@ -18,9 +38,12 @@ export interface Company {
   openingHours: { start: string; end: string; days: number[] };
   deliveryZones: DeliveryZone[];
   faqs: { question: string; answer: string }[];
-  ai: { provider: Provider; model: string; keyMode: 'platform' | 'own'; monthlyBudgetUsd: number };
+  ai: { provider: Provider; model: string; keyMode: 'platform' | 'own'; monthlyBudgetUsd: number; pricing?: [number, number] };
   catalogSyncedAt?: string;
   createdAt: string;
+  bot?: BotSettings;
+  privacy?: { aiDataApproved: boolean; retentionDays: number };
+  modelVerification?: { fingerprint: string; checkedAt: string };
 }
 export interface ProductOption {
   id: string;
@@ -65,6 +88,9 @@ export interface Message {
   role: 'customer' | 'assistant' | 'staff';
   text: string;
   createdAt: string;
+  delivery?: 'accepted' | 'sent' | 'delivered' | 'read' | 'failed';
+  deliveryError?: string;
+  externalId?: string;
 }
 export interface Conversation {
   id: string;
@@ -79,6 +105,9 @@ export interface Conversation {
   version: number;
   updatedAt: string;
   lastInboundAt: string;
+  botVersion?: number;
+  assignedTo?: string;
+  readAt?: string;
 }
 export type OrderStatus =
   | 'pending'
@@ -119,6 +148,9 @@ export interface Order {
   syncStatus: 'not_connected' | 'pending' | 'synced' | 'failed';
   createdAt: string;
   updatedAt: string;
+  sandbox?: boolean;
+  phoneConfirmationRequired?: boolean;
+  phoneConfirmation?: { outcome: 'confirmed' | 'unreachable' | 'declined'; addressVerified: boolean; note: string; at: string; actorId: string };
 }
 export interface Trace {
   id: string;
@@ -128,6 +160,10 @@ export interface Trace {
   detail: string;
   createdAt: string;
   durationMs?: number;
+  actorId?: string;
+  model?: string;
+  botVersion?: number;
+  code?: string;
 }
 export interface Usage {
   id: string;
@@ -138,7 +174,16 @@ export interface Usage {
   outputTokens: number;
   costUsd: number;
   createdAt: string;
+  conversationId?: string;
+  sandbox?: boolean;
+  estimated?: boolean;
 }
+export interface PageResult<T> { items: T[]; total: number; page: number; pageSize: number }
+export interface ListFilter { page?: number; pageSize?: number; search?: string; status?: string; sandbox?: boolean; from?: string; to?: string }
+export interface WorkspaceSummary { orders: number; pending: number; value: number; conversations: number; needsStaff: number; monthlySpend: number; daily: { date: string; count: number }[] }
+export interface ReadinessCheck { id: string; label: string; ready: boolean }
+export interface ModelOption { id: string; name: string; available: boolean; priced: boolean; inputRate?: number; outputRate?: number; verified?: boolean }
+export interface TeamMember { userId: string; role: 'owner' | 'staff'; email?: string }
 export type IntegrationKind = 'whatsapp' | 'sheets' | 'openai' | 'anthropic' | 'gemini';
 export interface Integration {
   kind: IntegrationKind;
@@ -165,6 +210,9 @@ export interface Bootstrap {
   };
   usage: Usage[];
   traces: Trace[];
+  summary?: WorkspaceSummary;
+  readiness?: ReadinessCheck[];
+  jobs?: Job[];
 }
 export type BotAction =
   | { type: 'menu'; query?: string }
@@ -195,6 +243,8 @@ export interface TurnInput {
   text: string;
   action?: BotAction;
   now: string;
+  useLiveModel?: boolean;
+  useDraft?: boolean;
 }
 export interface TurnResult {
   conversation: Conversation;

@@ -15,6 +15,8 @@ import {
 } from 'lucide-react';
 import type { BotAction, Conversation, Product, TurnResult } from '../shared/types';
 import { money } from '../shared/types';
+import { api } from '../lib/api';
+import type { PageResult, Message } from '../shared/types';
 import { quoteCart } from '../domain/engine';
 import { useWorkspace } from '../lib/workspace';
 import { cn, label } from '../lib/utils';
@@ -26,7 +28,7 @@ function Messages({ conversation, waiting }: { conversation?: Conversation; wait
     end.current?.scrollIntoView({ block: 'nearest' });
   }, [conversation?.messages?.length, waiting]);
   return (
-    <div className="min-h-72 flex-1 space-y-5 overflow-y-auto bg-stone-50/60 p-5 sm:p-6">
+    <div className="min-h-0 flex-1 space-y-5 overflow-y-auto bg-stone-50/60 p-5 sm:p-6">
       {!conversation?.messages?.length && (
         <div className="py-14 text-center">
           <div className="mx-auto mb-4 flex size-14 items-center justify-center rounded-2xl border border-emerald-100 bg-emerald-50 text-emerald-800">
@@ -110,7 +112,9 @@ export function Playground() {
   const [fulfillment, setFulfillment] = useState<'pickup' | 'delivery'>('pickup');
   const [address, setAddress] = useState('');
   const [zone, setZone] = useState(data.company.deliveryZones?.[0]?.name || '');
-  const conversation = data.conversations.find((c) => c.id === id) ?? latest;
+  const conversation = latest;
+  const [useLiveModel,setUseLiveModel]=useState(false);
+  const [useDraft,setUseDraft]=useState(true);
   const [details, setDetails] = useState(false);
   async function send(message: string, action?: BotAction) {
     if (busy) return false;
@@ -121,6 +125,7 @@ export function Playground() {
         text: message,
         messageId: crypto.randomUUID(),
         action,
+        useLiveModel, useDraft,
       });
       setId(result.conversation.id);
       setLatest(result.conversation);
@@ -157,8 +162,9 @@ export function Playground() {
           New conversation
         </button>
       </PageHeading>
+      <div className="mb-4 flex flex-wrap gap-4 rounded-xl bg-amber-50 p-4 text-sm"><label className="flex items-center gap-2"><input type="checkbox" checked={useDraft} onChange={e=>{setUseDraft(e.target.checked);setId(undefined);setLatest(undefined);}}/>Use saved draft</label><label className="flex items-center gap-2"><input type="checkbox" checked={useLiveModel} onChange={e=>setUseLiveModel(e.target.checked)} disabled={data.company.ai.provider==='mock'}/>Use selected AI model (API charges apply)</label><span className="w-full text-xs text-amber-950">Sandbox orders never send WhatsApp messages or write to your order Sheet. Use fictional customer details. Free local rules test structured buttons; enable AI to test natural language, goal and instructions.</span></div>
       <div className="grid gap-5 xl:grid-cols-3">
-        <div className="card flex h-[44rem] min-h-0 flex-col overflow-hidden xl:col-span-2 rounded-3xl border border-stone-200/80 shadow-sm">
+        <div className="card flex h-[min(44rem,calc(100dvh-10rem))] min-h-[24rem] min-h-0 flex-col overflow-hidden xl:col-span-2 rounded-3xl border border-stone-200/80 shadow-sm">
           <div className="flex items-center justify-between gap-3 border-b border-stone-100 bg-white px-5 sm:px-6 py-4">
             <div className="flex items-center gap-3">
               <div className="flex size-10 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-800 shadow-2xs">
@@ -172,7 +178,7 @@ export function Playground() {
               </div>
             </div>
             <Badge tone="green">
-              {(data.company.ai?.provider || 'mock') === 'mock' ? 'Demo bot' : label(data.company.ai?.provider || 'mock')}
+              {useLiveModel ? data.company.ai.model : 'Local rules'}
             </Badge>
           </div>
           <Messages conversation={conversation} waiting={busy} />
@@ -553,144 +559,3 @@ function AddItem({
   );
 }
 
-export function Inbox() {
-  const { data, mutate, busy, navigate } = useWorkspace();
-  const [id, setId] = useState(data.conversations[0]?.id);
-  const [text, setText] = useState('');
-  const [error, setError] = useState('');
-  const conversation = data.conversations.find((c) => c.id === id);
-  async function act(path: string, body: unknown) {
-    setError('');
-    try {
-      await mutate(path, body);
-      return true;
-    } catch (reason) {
-      setError((reason as Error).message);
-      return false;
-    }
-  }
-  const conversations = data.conversations || [];
-  return (
-    <>
-      <PageHeading
-        title="Inbox"
-        description="Every conversation, with a person ready when it matters."
-      >
-        <Badge tone="neutral">{conversations.length} conversations</Badge>
-      </PageHeading>
-      <div className="card grid min-h-[38rem] overflow-hidden rounded-3xl border border-stone-200/80 shadow-xs md:grid-cols-3">
-        <div className="max-h-[42rem] overflow-y-auto border-b border-stone-200/80 md:border-b-0 md:border-r">
-          <div className="border-b border-stone-100 px-5 py-4 text-[11px] font-bold tracking-wider text-stone-500 uppercase">
-            RECENT CONVERSATIONS
-          </div>
-          {!conversations.length ? (
-            <Empty
-              title="Your inbox is ready"
-              description="Start a test conversation to see it here."
-              action="Test your bot"
-              onAction={() => navigate('playground')}
-            />
-          ) : (
-            conversations.map((c) => (
-              <button
-                key={c.id}
-                className={cn(
-                  'w-full border-b border-stone-100/80 px-5 py-4 text-left transition-colors hover:bg-stone-50/80',
-                  c.id === id && 'bg-emerald-50/70 border-l-4 border-l-emerald-700',
-                )}
-                onClick={() => {
-                  setId(c.id);
-                  setText('');
-                  setError('');
-                }}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm font-bold text-stone-900">
-                    {c.customerName || 'Guest'}
-                  </span>
-                  {c.mode === 'human' && <Badge tone="amber">Needs you</Badge>}
-                </div>
-                <p className="mt-1.5 truncate text-xs text-stone-500">
-                  {c.messages?.at(-1)?.text || 'New conversation'}
-                </p>
-                <div className="mt-2.5 flex items-center gap-2 text-[11px] text-stone-400 font-medium">
-                  <MessageCircle className="size-3 text-emerald-600" />
-                  {c.channel === 'demo' ? 'Test conversation' : 'WhatsApp'}
-                  <span>·</span>
-                  {label(c.language)}
-                </div>
-              </button>
-            ))
-          )}
-        </div>
-        <div className="flex h-[42rem] min-h-0 flex-col md:col-span-2">
-          {conversation ? (
-            <>
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-stone-100 bg-white px-5 sm:px-6 py-4">
-                <div>
-                  <p className="font-bold text-stone-900">{conversation.customerName}</p>
-                  <p className="mt-0.5 text-xs text-stone-400">{conversation.customerPhone}</p>
-                </div>
-                <button
-                  className="btn rounded-full shadow-xs"
-                  disabled={busy}
-                  onClick={() =>
-                    void act(`/conversations/${conversation.id}/mode`, {
-                      mode: conversation.mode === 'bot' ? 'human' : 'bot',
-                    })
-                  }
-                >
-                  {conversation.mode === 'bot' ? (
-                    <UserRound className="size-4" />
-                  ) : (
-                    <Bot className="size-4" />
-                  )}
-                  {conversation.mode === 'bot' ? 'Take over' : 'Resume bot'}
-                </button>
-              </div>
-              <Messages conversation={conversation} />
-              <div className="border-t border-stone-100 bg-white p-4 sm:p-5">
-                <ErrorNotice message={error} />
-                <form
-                  className="flex gap-2"
-                  onSubmit={async (e) => {
-                    e.preventDefault();
-                    if (!text.trim()) return;
-                    if (await act(`/conversations/${conversation.id}/reply`, { text })) setText('');
-                  }}
-                >
-                  <label className="sr-only" htmlFor="staff-reply">
-                    Reply as restaurant staff
-                  </label>
-                  <input
-                    id="staff-reply"
-                    className="input rounded-full pl-4 pr-4 py-2 bg-stone-50/80 focus:bg-white"
-                    placeholder="Reply as restaurant staff…"
-                    value={text}
-                    maxLength={2000}
-                    onChange={(e) => setText(e.target.value)}
-                  />
-                  <button
-                    className="btn btn-primary rounded-full px-4 shadow-xs"
-                    aria-label="Send staff reply"
-                    disabled={busy || !text.trim()}
-                  >
-                    <Send className="size-4" />
-                  </button>
-                </form>
-                <p className="mt-2 text-xs text-stone-400">
-                  Sending a staff reply pauses the bot for this conversation.
-                </p>
-              </div>
-            </>
-          ) : (
-            <Empty
-              title="Choose a conversation"
-              description="Select a customer on the left to read and reply."
-            />
-          )}
-        </div>
-      </div>
-    </>
-  );
-}

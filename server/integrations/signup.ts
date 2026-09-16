@@ -63,11 +63,13 @@ export async function finishSignup(
       templateLanguage: 'en',
     },
   };
-  // Persist before registration: an external failure must not discard a one-time token.
-  await repo.saveIntegration(companyId, integration, encryptSecret(result.access_token));
   const adapter = new WhatsAppAdapter(integration, result.access_token);
   await adapter.subscribe();
   if (!body.coexistence && body.pin) await adapter.register(body.pin);
+  // Activate only after all requested external steps succeed. A failed attempt
+  // must not replace an already working workspace connection.
+  integration.config.ownershipVerifiedAt = new Date().toISOString();
+  await repo.saveIntegration(companyId, integration, encryptSecret(result.access_token));
   return {
     integration,
     message: body.coexistence

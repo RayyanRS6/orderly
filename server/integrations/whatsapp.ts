@@ -37,6 +37,24 @@ export class WhatsAppAdapter implements ChannelAdapter {
       throw new PublicError('A numeric WhatsApp phone number ID is required.');
     await this.request(`${id}?fields=id,display_phone_number,verified_name`);
   }
+  async verifyOwnership(): Promise<void> {
+    const { wabaId, phoneNumberId } = this.integration.config;
+    if (!/^\d+$/.test(wabaId || '') || !/^\d+$/.test(phoneNumberId || ''))
+      throw new PublicError('Numeric business account and phone number IDs are required.');
+    let after = '';
+    for (let page = 0; page < 20; page++) {
+      const result = await this.request(`${wabaId}/phone_numbers?fields=id&limit=100${after ? `&after=${encodeURIComponent(after)}` : ''}`);
+      if (result.data?.some((number: { id: string }) => number.id === phoneNumberId)) return;
+      const next = result.paging?.cursors?.after;
+      if (!result.paging?.next || !next || next === after) break;
+      after = next;
+    }
+    throw new PublicError('This token does not grant access to that phone number in the selected business account.', 403);
+  }
+  async unsubscribe(): Promise<void> {
+    const waba = this.integration.config.wabaId;
+    if (/^\d+$/.test(waba || '')) await this.request(`${waba}/subscribed_apps`, { method: 'DELETE' });
+  }
   async subscribe(): Promise<unknown> {
     const waba = this.integration.config.wabaId;
     if (!/^\d+$/.test(waba || ''))

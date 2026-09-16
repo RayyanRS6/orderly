@@ -13,12 +13,13 @@ import { AiModelAdapter } from './integrations/models.js';
 import { GoogleSheetsAdapter } from './integrations/sheets.js';
 import { WhatsAppAdapter } from './integrations/whatsapp.js';
 import { decryptSecret, PublicError } from './security.js';
+import { sanitizeError } from './security.js';
+import { botConfig, configuredCompany } from '../src/shared/bot.js';
 import { dispatchJob, makeJob } from './jobs.js';
 
-// Supabase Free workers can run for 150 seconds. A lease must outlive that
-// runtime so recovery cannot overlap a still-running worker. Revisit this when
-// upgrading to a plan with a longer worker lifetime.
-const WORKER_LEASE_MS = 180000;
+// Paid Supabase workers have a 400s maximum lifetime. Include an 80s margin;
+// bounded upstream requests and database requests cannot survive this lease.
+export const WORKER_LEASE_MS = 480000;
 
 export async function integrationAdapter(
   repo: Repository,
@@ -67,6 +68,13 @@ export async function handleTurn(
   conversation: Conversation,
   input: TurnInput,
 ) {
+  const sandbox = conversation.channel === 'demo';
+  const selectConfig = (value: Company): Company => {
+    if (!sandbox) return configuredCompany(value);
+    const selected = botConfig(value, input.useDraft !== false);
+    const preview = { ...value, botEnabled: true, bot: { draft: selected, history: [], revision: value.bot?.revision ?? 0, published: { version: input.useDraft !== false ? 0 : value.bot?.published?.version ?? 0, config: selected, publishedAt: input.now, publishedBy: 'sandbox' } } };
+    return configuredCompany({ ...preview, ai: input.useLiveModel ? value.ai : { ...value.ai, provider: 'mock', model: 'deterministic-demo' } });
+  };
   const lockId = randomUUID();
   if (
     !(await repo.acquireConversationLock(
@@ -81,7 +89,7 @@ export async function handleTurn(
       409,
     );
   try {
-    company = (await repo.getCompany(company.id)) ?? company;
+    company = selectConfig((await repo.getCompany(company.id)) ?? company);
     conversation = (await repo.getConversation(company.id, conversation.id)) ?? conversation;
     if (conversation.messages.some((m) => m.id === input.messageId))
       return {
@@ -104,16 +112,17 @@ export async function handleTurn(
         'There are several messages arriving at once. A staff member will help with your order.',
       );
     // A sheet-backed catalog is refreshed before any potentially mutating bot turn.
-    if (company.catalogSource === 'sheets' && conversation.mode === 'bot' && company.botEnabled) {
+    if (!sandbox && company.catalogSource === 'sheets' && conversation.mode === 'bot' && company.botEnabled && (!company.catalogSyncedAt || Date.now() - Date.parse(company.catalogSyncedAt) > 60000)) {
       try {
         await refreshCatalog(repo, company);
-      } catch {
+      } catch (error) {
         return await saveHandoff(
           repo,
           company,
           conversation,
           input,
           'The menu connection needs attention. A staff member will help you complete your order.',
+          error,
         );
       }
     }
@@ -133,18 +142,19 @@ export async function handleTurn(
           conversation,
           input.text,
         );
-      } catch {
+      } catch (error) {
         return await saveHandoff(
           repo,
           company,
           conversation,
           input,
           'I’m having trouble connecting right now. A staff member will help you; your order has not been submitted.',
+          error,
         );
       }
     }
     // A settings change during a slow model call takes effect before this turn acts.
-    company = (await repo.getCompany(company.id)) ?? company;
+    company = selectConfig((await repo.getCompany(company.id)) ?? company);
     // For a submitted order, cancel only while it is still awaiting staff acceptance.
     if (
       conversation.mode === 'bot' &&
@@ -182,7 +192,7 @@ export async function handleTurn(
     ).toISOString();
     result.conversation.version = conversation.version + 1;
     const integrations = await repo.getIntegrations(company.id);
-    const sheetsConnected = integrations.some((i) => i.kind === 'sheets' && i.configured);
+    const sheetsConnected = !sandbox && integrations.some((i) => i.kind === 'sheets' && i.configured);
     if (result.order) result.order.syncStatus = sheetsConnected ? 'pending' : 'not_connected';
     const jobs = [];
     if (result.order && sheetsConnected)
@@ -217,6 +227,8 @@ export async function handleTurn(
         action,
         detail: action.replaceAll('_', ' '),
         createdAt: input.now,
+        model: company.ai.model,
+        botVersion: company.bot?.published?.version,
       });
     for (const job of jobs) await dispatchJob(repo, job);
     return result;
@@ -230,6 +242,7 @@ async function saveHandoff(
   conversation: Conversation,
   input: TurnInput,
   reply: string,
+  reason?: unknown,
 ) {
   const c = structuredClone(conversation);
   c.mode = 'human';
@@ -259,13 +272,17 @@ async function saveHandoff(
     companyId: company.id,
     conversationId: c.id,
     action: 'staff_attention',
-    detail: 'A connection or model request failed. Automation paused.',
+    detail: reason ? sanitizeError(reason) : reply,
+    code: reason instanceof PublicError && reason.status === 429 ? 'budget_or_rate_limit' : 'connection_failure',
+    model: company.ai.model,
+    botVersion: company.bot?.published?.version,
     createdAt: input.now,
   });
   for (const job of jobs) await dispatchJob(repo, job);
   return { conversation: c, reply, traces: ['staff_attention'] };
 }
 export async function queueOrderSync(repo: Repository, order: Order) {
+  if (order.sandbox || (await repo.getConversation(order.companyId, order.conversationId))?.channel !== 'whatsapp') return;
   const connected = (await repo.getIntegrations(order.companyId)).some(
     (i) => i.kind === 'sheets' && i.configured,
   );
@@ -285,11 +302,13 @@ export async function changeOrderStatus(
   if (order.status === status) return order;
   transitionOrder(order, status, now);
   const conversation = await repo.getConversation(order.companyId, order.conversationId);
+  if (status === 'accepted' && order.phoneConfirmationRequired && (order.phoneConfirmation?.outcome !== 'confirmed' || (order.fulfillment === 'delivery' && !order.phoneConfirmation.addressVerified)))
+    throw new PublicError('Record a confirmed customer call and verify the delivery address before accepting.', 409);
   const connected = (await repo.getIntegrations(order.companyId)).some(
     (i) => i.kind === 'sheets' && i.configured,
   );
   const jobs = [];
-  if (connected) jobs.push(makeJob(order.companyId, 'sheet_sync', { orderId: order.id }));
+  if (connected && !order.sandbox && conversation?.channel === 'whatsapp') jobs.push(makeJob(order.companyId, 'sheet_sync', { orderId: order.id }));
   if (conversation?.channel === 'whatsapp')
     jobs.push(
       makeJob(order.companyId, 'whatsapp_send', {
@@ -411,6 +430,10 @@ export async function processJob(repo: Repository, id: string) {
       try {
         const order = await repo.getOrder(company.id, String(job.payload.orderId));
         if (!order) throw new PublicError('Order not found.', 404);
+        if (order.sandbox || (await repo.getConversation(company.id, order.conversationId))?.channel !== 'whatsapp') {
+          await repo.saveJob({ ...job, status: 'done', leaseUntil: undefined });
+          return;
+        }
         await (await integrationAdapter(repo, company.id, 'sheets')).syncOrder(order);
         await repo.setOrderSyncStatus(company.id, order.id, 'synced', order.updatedAt);
       } finally {

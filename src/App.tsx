@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import * as Dialog from '@radix-ui/react-dialog';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
   ArrowRight,
@@ -28,8 +29,12 @@ import { Workspace, type Page } from './lib/workspace';
 import { CustomSelect, ErrorNotice, Field, Modal } from './components/ui';
 import { Overview, Orders } from './components/Orders';
 import { Catalog } from './components/Catalog';
-import { Inbox, Playground } from './components/Conversations';
+import { Playground } from './components/Conversations';
+import { Inbox } from './components/Inbox';
 import { Businesses, Integrations, Settings } from './components/Settings';
+import { BotSettings } from './components/BotSettings';
+import { Activity, SecuritySettings } from './components/Operations';
+import { go, useRoute, workspacePath } from './lib/routes';
 
 const navigation = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
@@ -37,10 +42,13 @@ const navigation = [
   { id: 'inbox', label: 'Inbox', icon: MessageSquare },
   { id: 'menu', label: 'Menu', icon: BookOpen },
   { id: 'playground', label: 'Test your bot', icon: FlaskConical },
+  { id: 'bot', label: 'Bot settings', icon: SlidersHorizontal },
+  { id: 'activity', label: 'Activity & errors', icon: Sparkles },
 ] as const;
 const manage = [
   { id: 'integrations', label: 'Integrations', icon: Cable },
   { id: 'settings', label: 'Settings', icon: Settings2 },
+  { id: 'security', label: 'Security & privacy', icon: Settings2 },
   { id: 'businesses', label: 'Businesses', icon: Building2 },
 ] as const;
 type Configuration = { mode: 'demo' | 'live'; supabaseUrl?: string; supabaseAnonKey?: string };
@@ -76,7 +84,8 @@ export default function App() {
   const [authenticated, setAuthenticated] = useState(false);
   const [companyId, setCompanyId] = useState(getStoredCompany);
   const [data, setData] = useState<Bootstrap | null>(null);
-  const [page, setPage] = useState<Page>('overview');
+  const route=useRoute();
+  const page=route.page;
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [mobile, setMobile] = useState(false);
@@ -122,30 +131,31 @@ export default function App() {
 
   const refresh = useCallback(async () => {
     const result = await api<Bootstrap>(
-      `/bootstrap${companyId ? `?companyId=${encodeURIComponent(companyId)}` : ''}`,
+      `/bootstrap${route.slug ? `?companySlug=${encodeURIComponent(route.slug)}` : companyId ? `?companyId=${encodeURIComponent(companyId)}` : ''}`,
       companyId,
     );
     setData((current) => (current?.company.id === result.company.id ? result : current));
     setStoredCompany(result.company.id);
-  }, [companyId]);
+  }, [companyId,route.slug]);
 
   useEffect(() => {
     if (!authenticated) return;
     let active = true;
     setError('');
     api<Bootstrap>(
-      `/bootstrap${companyId ? `?companyId=${encodeURIComponent(companyId)}` : ''}`,
+      `/bootstrap${route.slug ? `?companySlug=${encodeURIComponent(route.slug)}` : companyId ? `?companyId=${encodeURIComponent(companyId)}` : ''}`,
       companyId,
     )
       .then((result) => {
         if (active) {
           setData(result);
           setStoredCompany(result.company.id);
+          if(!route.slug)go(workspacePath(result.company.slug,page),true);
         }
       })
       .catch((e) => {
         if (active) {
-          if (companyId) {
+          if (companyId && !route.slug) {
             removeStoredCompany();
             setCompanyId('');
           } else {
@@ -161,12 +171,12 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, [authenticated, companyId]);
+  }, [authenticated, companyId,route.slug]);
 
   useEffect(() => {
-    if (!authenticated || !data || !['overview', 'orders', 'inbox'].includes(page)) return;
+    if (!authenticated || !data || !['overview', 'orders', 'inbox','activity'].includes(page)) return;
     const timer = setInterval(() => {
-      if (!document.hidden && !busy) void refresh().catch(() => {});
+      if (!document.hidden && !busy) void api<Pick<Bootstrap,'summary'|'traces'|'jobs'>>('/activity',data.company.id).then(activity=>{setData(current=>current?.company.id===data.company.id?{...current,...activity}:current);setError('');}).catch(e=>setError(`Updates delayed: ${e.message}`));
     }, 15000);
     return () => clearInterval(timer);
   }, [authenticated, !!data, page, busy, refresh]);
@@ -194,10 +204,12 @@ export default function App() {
     setData(null);
     setError('');
     setCompanyId(id);
+    const company=data?.companies.find(c=>c.id===id);
+    if(company)go(workspacePath(company.slug,page));
     setMobile(false);
   }
-  function navigate(value: Page) {
-    setPage(value);
+  function navigate(value: Page,id?:string) {
+    if(data)go(workspacePath(data.company.slug,value,id));
     setMobile(false);
     setError('');
     window.scrollTo(0, 0);
@@ -233,7 +245,7 @@ export default function App() {
         </div>
       </div>
     );
-  const pending = data.orders.filter((o) => o.status === 'pending').length;
+  const pending = data.summary?.pending ?? data.orders.filter((o) => o.status === 'pending').length;
 
   const filteredNav = navigation.filter((item) =>
     item.label.toLowerCase().includes(navSearch.toLowerCase()),
@@ -414,17 +426,19 @@ export default function App() {
         switchCompany,
         refresh,
         mutate,
+        detailId:route.id,
+        auth:client??undefined,
       }}
     >
       <div className="min-h-dvh bg-[#f8fafc]">
         <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 lg:block">{sidebar}</aside>
-        {mobile && (
-          <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true">
-            <div
+        <Dialog.Root open={mobile} onOpenChange={setMobile}><Dialog.Portal>
+            <Dialog.Overlay
               className="fixed inset-0 bg-stone-950/60 backdrop-blur-xs transition-opacity"
               onClick={() => setMobile(false)}
             />
-            <div className="fixed inset-y-0 left-0 z-50 w-72 max-w-[85vw] bg-[#121417] shadow-2xl flex flex-col">
+            <Dialog.Content aria-describedby={undefined} className="fixed inset-y-0 left-0 z-50 w-72 max-w-[85vw] bg-[#121417] shadow-2xl flex flex-col">
+              <Dialog.Title className="sr-only">Workspace navigation</Dialog.Title>
               <div className="absolute right-3 top-4 z-10">
                 <button
                   className="flex size-8 items-center justify-center rounded-full text-stone-400 hover:text-white hover:bg-white/10 transition-colors"
@@ -435,9 +449,8 @@ export default function App() {
                 </button>
               </div>
               {sidebar}
-            </div>
-          </div>
-        )}
+            </Dialog.Content>
+        </Dialog.Portal></Dialog.Root>
         <div className="lg:pl-64">
           <header className="sticky top-0 z-20 flex min-h-16 items-center justify-between gap-3 border-b border-stone-200/80 bg-white/95 px-4 backdrop-blur-md sm:px-8 lg:px-10">
             <div className="flex min-w-0 items-center gap-2.5 sm:gap-3">
@@ -485,7 +498,7 @@ export default function App() {
               </div>
               <div className="h-5 w-px bg-stone-200 hidden sm:block" />
               <div className="flex items-center gap-2">
-                <div className="flex size-8.5 shrink-0 items-center justify-center rounded-full bg-emerald-700 text-xs font-bold text-white shadow-2xs ring-2 ring-emerald-600/20">
+                <div className="hidden sm:flex size-8.5 shrink-0 items-center justify-center rounded-full bg-emerald-700 text-xs font-bold text-white shadow-2xs ring-2 ring-emerald-600/20">
                   {initials(data.company.name)}
                 </div>
                 <div className="hidden text-xs xl:block">
@@ -534,9 +547,13 @@ export default function App() {
               {page === 'integrations' && <Integrations />}
               {page === 'settings' && <Settings />}
               {page === 'businesses' && <Businesses />}
+              {page === 'bot' && <BotSettings />}
+              {page === 'activity' && <Activity />}
+              {page === 'security' && <SecuritySettings />}
             </div>
             <footer className="mt-10 flex flex-wrap justify-between gap-2 border-t border-stone-200 pt-5 text-xs text-stone-400">
               <span>Orderly · Conversations to orders</span>
+              <nav className="flex flex-wrap gap-3"><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="/contact">Support</a></nav>
               <span>
                 {data.company?.currency || 'PKR'} · {data.company?.timezone || 'Asia/Karachi'}
               </span>

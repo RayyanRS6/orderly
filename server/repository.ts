@@ -9,12 +9,28 @@ import type {
   Role,
   Trace,
   Usage,
+  ListFilter, PageResult, WorkspaceSummary, TeamMember, BotSettings, Message,
 } from '../src/shared/types';
 import { DemoFileRepository, MemoryRepository } from './storage/memory';
 import { SupabaseRepository } from './storage/supabase';
 import { appMode } from './config';
 
 export interface Repository {
+  audit(companyId: string, actorId: string, action: string): Promise<void>;
+  listAllowedCompanies(userId: string): Promise<Company[]>;
+  queryOrders(companyId: string, filter: ListFilter): Promise<PageResult<Order>>;
+  queryConversations(companyId: string, filter: ListFilter): Promise<PageResult<Conversation>>;
+  conversationHistory(companyId: string, id: string, page: number): Promise<PageResult<Message>>;
+  getSummary(companyId: string, sandbox: boolean): Promise<WorkspaceSummary>;
+  disconnectIntegration(companyId: string, kind: IntegrationKind): Promise<void>;
+  listCompanyJobs(companyId: string): Promise<Job[]>;
+  saveBot(companyId: string, settings: BotSettings, expectedRevision: number): Promise<boolean>;
+  recordCall(companyId: string, orderId: string, confirmation: NonNullable<Order['phoneConfirmation']>): Promise<Order | undefined>;
+  listMembers(companyId: string): Promise<TeamMember[]>;
+  setMember(companyId: string, member: TeamMember, actorId: string): Promise<void>;
+  removeMember(companyId: string, userId: string, actorId: string): Promise<void>;
+  eraseCustomer(companyId: string, phone: string): Promise<number>;
+  consumeRateLimit(key: string, limit: number): Promise<boolean>;
   listCompanies(): Promise<Company[]>;
   getCompany(id: string): Promise<Company | undefined>;
   saveCompany(company: Company): Promise<void>;
