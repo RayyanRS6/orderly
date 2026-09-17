@@ -82,6 +82,9 @@ describe('Supabase edge gateway', () => {
   });
   it('acknowledges a worker callback while preserving a failed job for recovery', async () => {
     const order = (await repo.listOrders(seedCompanies[0].id))[0];
+    const conversation = (await repo.getConversation(order.companyId, order.conversationId))!;
+    await repo.saveConversation({ ...conversation, channel: 'whatsapp' });
+    await repo.saveOrder({ ...order, sandbox: false });
     const job = makeJob(seedCompanies[0].id, 'sheet_sync', { orderId: order.id });
     await repo.insertJob(job);
     const tasks: Promise<unknown>[] = [];

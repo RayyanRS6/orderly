@@ -199,41 +199,41 @@ export function quoteCart(company: Company, products: Product[], cart: Cart): Ca
 function missingDetails(company: Company, cart: Cart, lang: Language): string | undefined {
   const config = botConfig(company);
   for (const step of config.steps) {
-  if (step === 'items' && !cart.items.length)
-    return say(
-      lang,
-      'Your cart is empty. Choose something from the menu first.',
-      'آپ کی ٹوکری خالی ہے۔ پہلے مینو سے کوئی چیز چنیں۔',
-      'Aap ka cart khaali hai. Pehle menu se koi cheez chunain.',
-    );
-  if (step === 'fulfillment' && !cart.fulfillment)
-    return say(
-      lang,
-      'Would you like pickup or delivery?',
-      'آپ پک اپ کریں گے یا ڈیلیوری چاہیے؟',
-      'Aap pickup karenge ya delivery chahiye?',
-    );
-  if (step === 'name' && !cart.customerName?.trim())
-    return say(
-      lang,
-      'What name should I put on the order? Reply “My name is Ali”.',
-      'آرڈر کے لیے آپ کا نام کیا ہے؟ لکھیں: میرا نام علی ہے',
-      'Order ke liye aap ka naam? Likhein: Mera naam Ali hai.',
-    );
-  if (step === 'address' && cart.fulfillment === 'delivery' && !cart.zone)
-    return say(
-      lang,
-      `Which delivery area? ${company.deliveryZones.map((z) => z.name).join(', ')}.`,
-      `ڈیلیوری کا علاقہ بتائیں: ${company.deliveryZones.map((z) => z.name).join('، ')}۔`,
-      `Delivery ka ilaqa batayein: ${company.deliveryZones.map((z) => z.name).join(', ')}.`,
-    );
-  if (step === 'address' && cart.fulfillment === 'delivery' && !cart.address?.trim())
-    return say(
-      lang,
-      'Please send your complete address: “Address: house, street, area”.',
-      'مکمل پتہ لکھیں: پتہ: گھر، گلی، علاقہ',
-      'Mukammal pata likhein: Address: ghar, gali, ilaqa.',
-    );
+    if (step === 'items' && !cart.items.length)
+      return say(
+        lang,
+        'Your cart is empty. Choose something from the menu first.',
+        'آپ کی ٹوکری خالی ہے۔ پہلے مینو سے کوئی چیز چنیں۔',
+        'Aap ka cart khaali hai. Pehle menu se koi cheez chunain.',
+      );
+    if (step === 'fulfillment' && !cart.fulfillment)
+      return say(
+        lang,
+        'Would you like pickup or delivery?',
+        'آپ پک اپ کریں گے یا ڈیلیوری چاہیے؟',
+        'Aap pickup karenge ya delivery chahiye?',
+      );
+    if (step === 'name' && !cart.customerName?.trim())
+      return say(
+        lang,
+        'What name should I put on the order? Reply “My name is Ali”.',
+        'آرڈر کے لیے آپ کا نام کیا ہے؟ لکھیں: میرا نام علی ہے',
+        'Order ke liye aap ka naam? Likhein: Mera naam Ali hai.',
+      );
+    if (step === 'address' && cart.fulfillment === 'delivery' && !cart.zone)
+      return say(
+        lang,
+        `Which delivery area? ${company.deliveryZones.map((z) => z.name).join(', ')}.`,
+        `ڈیلیوری کا علاقہ بتائیں: ${company.deliveryZones.map((z) => z.name).join('، ')}۔`,
+        `Delivery ka ilaqa batayein: ${company.deliveryZones.map((z) => z.name).join(', ')}.`,
+      );
+    if (step === 'address' && cart.fulfillment === 'delivery' && !cart.address?.trim())
+      return say(
+        lang,
+        'Please send your complete address: “Address: house, street, area”.',
+        'مکمل پتہ لکھیں: پتہ: گھر، گلی، علاقہ',
+        'Mukammal pata likhein: Address: ghar, gali, ilaqa.',
+      );
   }
 }
 
@@ -480,8 +480,10 @@ export function processTurn(
     order: Order | undefined;
   const finish = (): TurnResult => {
     if (company.bot?.published && reply) {
-      if (/^(hi|hello|salam|سلام|ہیلو)$/iu.test(input.text.trim()) && configuration.greeting) reply = `${configuration.greeting}\n\n${missingDetails(company, cart, lang) ?? reply}`;
-      else if (configuration.personality === 'warm' && lang === 'en' && traces.includes('add_item')) reply = `Happy to help. ${reply}`;
+      if (/^(hi|hello|salam|سلام|ہیلو)$/iu.test(input.text.trim()) && configuration.greeting)
+        reply = `${configuration.greeting}\n\n${missingDetails(company, cart, lang) ?? reply}`;
+      else if (configuration.personality === 'warm' && lang === 'en' && traces.includes('add_item'))
+        reply = `Happy to help. ${reply}`;
     }
     if (reply)
       next.messages.push({
@@ -662,7 +664,11 @@ export function processTurn(
         ]);
         if (action.fulfillment && !['pickup', 'delivery'].includes(action.fulfillment))
           throw new Error('Choose pickup or delivery.');
-        if (action.fulfillment && configuration.fulfillment !== 'both' && action.fulfillment !== configuration.fulfillment)
+        if (
+          action.fulfillment &&
+          configuration.fulfillment !== 'both' &&
+          action.fulfillment !== configuration.fulfillment
+        )
           throw new Error(`This restaurant currently offers ${configuration.fulfillment} only.`);
         if (action.customerName !== undefined) {
           const name = action.customerName.trim();
@@ -706,10 +712,26 @@ export function processTurn(
         continue;
       }
       if (action.type === 'review') {
+        if (
+          cart.fulfillment &&
+          configuration.fulfillment !== 'both' &&
+          cart.fulfillment !== configuration.fulfillment
+        )
+          throw new Error(
+            `This restaurant currently offers ${configuration.fulfillment} only. Please update your fulfillment choice.`,
+          );
         reply = review(company, products, cart, lang);
         continue;
       }
       if (action.type === 'confirm') {
+        if (
+          cart.fulfillment &&
+          configuration.fulfillment !== 'both' &&
+          cart.fulfillment !== configuration.fulfillment
+        )
+          throw new Error(
+            `This restaurant currently offers ${configuration.fulfillment} only. Please update your fulfillment choice.`,
+          );
         if (!input.action && !affirmative(input.text)) {
           reply = say(
             lang,
@@ -770,7 +792,8 @@ export function processTurn(
           createdAt: input.now,
           updatedAt: input.now,
           sandbox: conversation.channel === 'demo',
-          phoneConfirmationRequired: !!company.bot?.published && configuration.requirePhoneConfirmation,
+          phoneConfirmationRequired:
+            !!company.bot?.published && configuration.requirePhoneConfirmation,
         };
         cart.status = 'submitted';
         cart.orderId = id;
@@ -780,7 +803,13 @@ export function processTurn(
           `آرڈر ${order.reference} موصول ہوا — ${money(order.total)}۔ ریسٹورنٹ کی منظوری کا انتظار ہے۔ ادائیگی نقد ہوگی۔`,
           `Order ${order.reference} receive ho gaya — ${money(order.total)}. Restaurant ki manzoori ka intezar hai. Payment cash hogi.`,
         );
-        if (order.phoneConfirmationRequired) reply += say(lang, '\nRestaurant staff will call to confirm before accepting your order.', '\nعملہ آرڈر منظور کرنے سے پہلے فون پر تصدیق کرے گا۔', '\nRestaurant staff order accept karne se pehle call kar ke confirm karega.');
+        if (order.phoneConfirmationRequired)
+          reply += say(
+            lang,
+            '\nRestaurant staff will call to confirm before accepting your order.',
+            '\nعملہ آرڈر منظور کرنے سے پہلے فون پر تصدیق کرے گا۔',
+            '\nRestaurant staff order accept karne se pehle call kar ke confirm karega.',
+          );
         traces.push('order_pending_restaurant_acceptance');
         break;
       }

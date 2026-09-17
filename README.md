@@ -2,7 +2,7 @@
 
 A working local MVP for a WhatsApp restaurant ordering platform. Customers use the restaurant’s WhatsApp number; owners and staff use this dashboard to manage menus, orders, and conversations. The application replaces n8n with its own TypeScript ordering engine.
 
-**Current status:** the local app works without accounts or API keys. Cloudflare frontend and Supabase backend/scheduler support are implemented and tested, including the actual backend bundle in Deno. Cloud deployment and real provider checks remain pending; see [account setup status](docs/SETUP-STATUS.md). No phone number has been connected, and no real WhatsApp message has been sent.
+**Current status (17 September 2026):** deployed on Cloudflare and Supabase, with public pages, workspace URLs, configurable bots/models, security controls and responsive UI based on `Claude-UI-Rayyan`. Laziza remains paused and unconnected. See the [implementation and launch handover](docs/ORDERLY-IMPLEMENTATION-2026-09-17.md), [audit](docs/ORDERLY-AUDIT-2026-09-16.md) and [Pakistan budget](docs/ORDERLY-BUDGET-2026-09-16.md). No real WhatsApp message was sent during this implementation pass.
 
 ## Run locally
 

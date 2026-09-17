@@ -10,7 +10,12 @@ import type {
   Role,
   Trace,
   Usage,
-  ListFilter, PageResult, WorkspaceSummary, TeamMember, BotSettings, Message,
+  ListFilter,
+  PageResult,
+  WorkspaceSummary,
+  TeamMember,
+  BotSettings,
+  Message,
 } from '../../src/shared/types';
 import type { Repository } from '../repository';
 import { PublicError } from '../security';
@@ -33,32 +38,184 @@ const jobRow = (job: Job) => ({
 
 /** All methods run on the server using the service role; API authorization is required. */
 export class SupabaseRepository implements Repository {
-  async audit(companyId:string,actorId:string,action:string) { await this.rpc('audit_event',{p_company_id:companyId,p_actor_id:actorId,p_action:action}); }
+  async recordDelivery(
+    companyId: string,
+    externalId: string,
+    status: NonNullable<Message['delivery']>,
+    conversationId?: string,
+    messageId?: string,
+    error?: string,
+  ) {
+    await this.rpc('record_delivery', {
+      p_company_id: companyId,
+      p_external_id: externalId,
+      p_status: status,
+      p_conversation_id: conversationId ?? null,
+      p_message_id: messageId ?? null,
+      p_error: error ?? null,
+    });
+  }
+  private async messagesWithReceipts(companyId: string, id: string, messages: Message[]) {
+    if (!messages.length) return messages;
+    const rows =
+      unwrap(
+        await this.client
+          .from('message_deliveries')
+          .select('message_id,external_id,status,error')
+          .eq('company_id', companyId)
+          .eq('conversation_id', id)
+          .in(
+            'message_id',
+            messages.map((m) => m.id),
+          ),
+      ) ?? [];
+    const receipts = new Map(rows.map((r) => [r.message_id, r]));
+    return messages.map((m) => {
+      const r = receipts.get(m.id);
+      return r
+        ? {
+            ...m,
+            externalId: r.external_id,
+            delivery: r.status as Message['delivery'],
+            deliveryError: r.error ?? undefined,
+          }
+        : m;
+    });
+  }
+  async audit(companyId: string, actorId: string, action: string) {
+    await this.rpc('audit_event', {
+      p_company_id: companyId,
+      p_actor_id: actorId,
+      p_action: action,
+    });
+  }
   async listAllowedCompanies(userId: string) {
     if (await this.isAdmin(userId)) return this.listCompanies();
-    const memberships = unwrap(await this.client.from('company_memberships').select('company_id').eq('user_id', userId)) ?? [];
+    const memberships =
+      unwrap(
+        await this.client.from('company_memberships').select('company_id').eq('user_id', userId),
+      ) ?? [];
     if (!memberships.length) return [];
-    const rows = unwrap(await this.client.from('companies').select('data').in('id', memberships.map(m => m.company_id))) ?? [];
-    return rows.map(row => row.data as Company);
+    const rows =
+      unwrap(
+        await this.client
+          .from('companies')
+          .select('data')
+          .in(
+            'id',
+            memberships.map((m) => m.company_id),
+          ),
+      ) ?? [];
+    return rows.map((row) => row.data as Company);
   }
-  queryOrders(companyId: string, filter: ListFilter) { return this.rpc<PageResult<Order>>('query_orders', { p_company_id: companyId, p_filter: filter }); }
-  queryConversations(companyId: string, filter: ListFilter) { return this.rpc<PageResult<Conversation>>('query_conversations', { p_company_id: companyId, p_filter: filter }); }
-  conversationHistory(companyId: string, id: string, page: number) { return this.rpc<PageResult<Message>>('conversation_history', { p_company_id: companyId, p_id: id, p_page: page }); }
-  getSummary(companyId: string, sandbox: boolean) { return this.rpc<WorkspaceSummary>('workspace_summary', { p_company_id: companyId, p_sandbox: sandbox }); }
-  async disconnectIntegration(companyId: string, kind: IntegrationKind) { await this.rpc('disconnect_integration', { p_company_id: companyId, p_kind: kind }); }
-  async listCompanyJobs(companyId: string) { const rows = unwrap(await this.client.from('jobs').select('data').eq('company_id', companyId).neq('status', 'done').order('created_at', {ascending:false}).limit(100)) ?? []; return rows.map(r => r.data as Job); }
-  saveBot(companyId: string, settings: BotSettings, expectedRevision: number) { return this.rpc<boolean>('save_bot', { p_company_id: companyId, p_settings: settings, p_revision: expectedRevision }); }
-  async recordCall(companyId: string, orderId: string, confirmation: NonNullable<Order['phoneConfirmation']>) { return (await this.rpc<Order | null>('record_call', { p_company_id: companyId, p_id: orderId, p_confirmation: confirmation })) ?? undefined; }
-  async listMembers(companyId: string): Promise<TeamMember[]> { const rows = unwrap(await this.client.from('company_memberships').select('user_id,role').eq('company_id', companyId)) ?? []; return rows.map(r=>({userId:r.user_id,role:r.role})); }
-  async setMember(companyId: string, member: TeamMember, actorId: string) { await this.rpc('manage_member', { p_company_id: companyId, p_user_id: member.userId, p_role: member.role, p_actor_id: actorId }); }
-  async removeMember(companyId: string, userId: string, actorId: string) { await this.rpc('manage_member', { p_company_id: companyId, p_user_id: userId, p_role: null, p_actor_id: actorId }); }
-  eraseCustomer(companyId: string, phone: string) { return this.rpc<number>('erase_customer', { p_company_id: companyId, p_phone: phone }); }
-  consumeRateLimit(key: string, limit: number) { return this.rpc<boolean>('consume_rate_limit', { p_key: key, p_limit: limit }); }
+  queryOrders(companyId: string, filter: ListFilter) {
+    return this.rpc<PageResult<Order>>('query_orders', {
+      p_company_id: companyId,
+      p_filter: filter,
+    });
+  }
+  queryConversations(companyId: string, filter: ListFilter) {
+    return this.rpc<PageResult<Conversation>>('query_conversations', {
+      p_company_id: companyId,
+      p_filter: filter,
+    });
+  }
+  async conversationHistory(companyId: string, id: string, page: number) {
+    const result = await this.rpc<PageResult<Message>>('conversation_history', {
+      p_company_id: companyId,
+      p_id: id,
+      p_page: page,
+    });
+    result.items = await this.messagesWithReceipts(companyId, id, result.items);
+    return result;
+  }
+  getSummary(companyId: string, sandbox: boolean) {
+    return this.rpc<WorkspaceSummary>('workspace_summary', {
+      p_company_id: companyId,
+      p_sandbox: sandbox,
+    });
+  }
+  async disconnectIntegration(companyId: string, kind: IntegrationKind) {
+    await this.rpc('disconnect_integration', { p_company_id: companyId, p_kind: kind });
+  }
+  async listCompanyJobs(companyId: string) {
+    const rows =
+      unwrap(
+        await this.client
+          .from('jobs')
+          .select('data')
+          .eq('company_id', companyId)
+          .neq('status', 'done')
+          .order('created_at', { ascending: false })
+          .limit(100),
+      ) ?? [];
+    return rows.map((r) => r.data as Job);
+  }
+  saveBot(companyId: string, settings: BotSettings, expectedRevision: number) {
+    return this.rpc<boolean>('save_bot', {
+      p_company_id: companyId,
+      p_settings: settings,
+      p_revision: expectedRevision,
+    });
+  }
+  async recordCall(
+    companyId: string,
+    orderId: string,
+    confirmation: NonNullable<Order['phoneConfirmation']>,
+  ) {
+    return (
+      (await this.rpc<Order | null>('record_call', {
+        p_company_id: companyId,
+        p_id: orderId,
+        p_confirmation: confirmation,
+      })) ?? undefined
+    );
+  }
+  async listMembers(companyId: string): Promise<TeamMember[]> {
+    const rows =
+      unwrap(
+        await this.client
+          .from('company_memberships')
+          .select('user_id,role')
+          .eq('company_id', companyId),
+      ) ?? [];
+    return rows.map((r) => ({ userId: r.user_id, role: r.role }));
+  }
+  async setMember(companyId: string, member: TeamMember, actorId: string) {
+    await this.rpc('manage_member', {
+      p_company_id: companyId,
+      p_user_id: member.userId,
+      p_role: member.role,
+      p_actor_id: actorId,
+    });
+  }
+  async removeMember(companyId: string, userId: string, actorId: string) {
+    await this.rpc('manage_member', {
+      p_company_id: companyId,
+      p_user_id: userId,
+      p_role: null,
+      p_actor_id: actorId,
+    });
+  }
+  eraseCustomer(companyId: string, phone: string) {
+    return this.rpc<number>('erase_customer', { p_company_id: companyId, p_phone: phone });
+  }
+  consumeRateLimit(key: string, limit: number) {
+    return this.rpc<boolean>('consume_rate_limit', { p_key: key, p_limit: limit });
+  }
   private client: SupabaseClient;
   constructor(url: string, serviceRoleKey: string) {
     this.client = createClient(url, serviceRoleKey, {
       auth: { persistSession: false, autoRefreshToken: false },
-      global: { fetch: (input, init) => fetch(input, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(10000)]) : AbortSignal.timeout(10000) }) },
+      global: {
+        fetch: (input, init) =>
+          fetch(input, {
+            ...init,
+            signal: init?.signal
+              ? AbortSignal.any([init.signal, AbortSignal.timeout(10000)])
+              : AbortSignal.timeout(10000),
+          }),
+      },
     });
   }
   private async rpc<T>(name: string, args: Record<string, unknown>): Promise<T> {
@@ -88,7 +245,7 @@ export class SupabaseRepository implements Repository {
     return this.get<Company>('companies', id);
   }
   async saveCompany(company: Company) {
-    await this.rpc('save_company_settings',{p_company:company});
+    await this.rpc('save_company_settings', { p_company: company });
   }
   async isAdmin(userId: string) {
     return !!unwrap(
@@ -130,8 +287,10 @@ export class SupabaseRepository implements Repository {
   listConversations(companyId: string) {
     return this.list<Conversation>('conversations', companyId, 'updated_at', 200);
   }
-  getConversation(companyId: string, id: string) {
-    return this.get<Conversation>('conversations', id, companyId);
+  async getConversation(companyId: string, id: string) {
+    const c = await this.get<Conversation>('conversations', id, companyId);
+    if (c) c.messages = await this.messagesWithReceipts(companyId, id, c.messages);
+    return c;
   }
   async findConversation(companyId: string, phone: string, channel: Conversation['channel']) {
     const row = unwrap(
@@ -289,8 +448,32 @@ export class SupabaseRepository implements Repository {
       }),
     );
   }
-  listTraces(companyId: string) {
-    return this.list<Trace>('traces', companyId, 'created_at', 200);
+  async listTraces(companyId: string) {
+    const [traces, audit] = await Promise.all([
+      this.list<Trace>('traces', companyId, 'created_at', 100),
+      this.client
+        .from('audit_events')
+        .select('id,actor_id,action,created_at')
+        .eq('company_id', companyId)
+        .order('created_at', { ascending: false })
+        .limit(100),
+    ]);
+    return [
+      ...traces,
+      ...(unwrap(audit) ?? []).map(
+        (row) =>
+          ({
+            id: `audit-${row.id}`,
+            companyId,
+            actorId: row.actor_id,
+            action: row.action,
+            detail: 'Administrative change',
+            createdAt: row.created_at,
+          }) as Trace,
+      ),
+    ]
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, 200);
   }
   async addUsage(usage: Usage) {
     await this.rpc('record_usage', { p_usage: usage });

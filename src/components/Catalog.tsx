@@ -45,7 +45,7 @@ export function Catalog() {
       >
         {data.company.catalogSource === 'sheets' ? (
           <button
-            className="btn rounded-full shadow-xs"
+            className="btn"
             disabled={busy}
             onClick={() => void mutate('/catalog/refresh', {}).catch(() => {})}
           >
@@ -55,14 +55,11 @@ export function Catalog() {
         ) : (
           editable && (
             <>
-              <button className="btn rounded-full shadow-xs" onClick={() => setImporting(true)}>
+              <button className="btn" onClick={() => setImporting(true)}>
                 <Upload className="size-4" />
                 Import CSV
               </button>
-              <button
-                className="btn btn-primary rounded-full shadow-xs"
-                onClick={() => setEditing('new')}
-              >
+              <button className="btn btn-primary" onClick={() => setEditing('new')}>
                 <Plus className="size-4" />
                 Add item
               </button>
@@ -70,10 +67,10 @@ export function Catalog() {
           )
         )}
       </PageHeading>
-      <div className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-stone-200/80 bg-white px-5 py-3.5 shadow-2xs">
+      <div className="card mb-6 flex flex-wrap items-center justify-between gap-3 rounded-[14px] px-5 py-3.5">
         <div className="flex items-center gap-2.5 text-xs text-stone-500">
-          <span className="size-2 rounded-full bg-emerald-600 shadow-[0_0_6px_rgba(5,150,105,0.4)]" />
-          <span className="font-bold text-stone-800">
+          <span className="size-2 rounded-full bg-brand-500" />
+          <span className="font-semibold text-ink">
             {catalogProducts.filter((p) => p.available).length} available
           </span>
           <span>of {catalogProducts.length} menu items</span>
@@ -83,7 +80,7 @@ export function Catalog() {
           </span>
         </div>
         <button
-          className="inline-flex items-center gap-1 text-xs font-bold text-emerald-800 hover:text-emerald-950 transition-colors"
+          className="inline-flex items-center gap-1 text-[12.5px] font-semibold text-brand-500 hover:text-brand-600 transition-colors"
           onClick={() => navigate('settings')}
         >
           Manage source
@@ -96,17 +93,12 @@ export function Catalog() {
         </p>
       )}
       <div className="mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div className="inline-flex flex-wrap items-center gap-1 rounded-full bg-stone-100/90 p-1 border border-stone-200/70 shadow-2xs">
+        <div className="tab-group flex-wrap">
           {['All items', ...categories].map((value) => (
             <button
               key={value}
               aria-pressed={category === value}
-              className={cn(
-                'rounded-full px-3.5 py-1.5 text-xs font-semibold whitespace-nowrap transition-all',
-                category === value
-                  ? 'bg-emerald-800 text-white shadow-xs'
-                  : 'text-stone-600 hover:text-stone-900 hover:bg-white/60',
-              )}
+              className="tab-btn"
               onClick={() => setCategory(value)}
             >
               {value}
@@ -122,7 +114,7 @@ export function Catalog() {
           <Search className="pointer-events-none absolute left-3.5 top-2.5 size-4 text-stone-400" />
           <input
             aria-label="Search menu"
-            className="input rounded-full pl-9 pr-4 py-1.5 text-xs sm:text-sm bg-stone-50/80 focus:bg-white"
+            className="input pl-9 pr-4"
             placeholder="Search menu…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -132,14 +124,11 @@ export function Catalog() {
       {products.length ? (
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {products.map((product) => (
-            <article
-              key={product.id}
-              className="card overflow-hidden rounded-3xl border border-stone-200/80 bg-white shadow-xs hover:border-stone-300/90 hover:shadow-sm transition-all"
-            >
+            <article key={product.id} className="card overflow-hidden">
               <div className="flex items-start gap-4 p-5 sm:p-6">
                 <div
                   className={cn(
-                    'flex size-16 shrink-0 items-center justify-center rounded-2xl bg-stone-100 text-3xl shadow-2xs',
+                    'flex size-16 shrink-0 items-center justify-center rounded-xl bg-ink/5 text-3xl',
                     !product.available && 'grayscale',
                   )}
                   aria-hidden
@@ -148,8 +137,8 @@ export function Catalog() {
                 </div>
                 <div className="min-w-0 flex-1">
                   <p className="text-xs text-stone-400">{product.category}</p>
-                  <h2 className="mt-1 text-sm font-semibold">{product.name}</h2>
-                  <p className="mt-2 text-sm font-semibold tabular-nums text-emerald-800">
+                  <h2 className="mt-1 text-[14.5px] font-semibold text-ink">{product.name}</h2>
+                  <p className="mt-2 text-sm font-semibold tabular-nums text-brand-600">
                     {money(product.price)}
                     {product.variants.length > 0 && (
                       <span className="ml-1 text-xs font-normal text-stone-400">base</span>
@@ -181,7 +170,7 @@ export function Catalog() {
                   </p>
                 )}
               </div>
-              <div className="flex items-center justify-between border-t border-stone-100 bg-stone-50 px-5 py-3">
+              <div className="flex items-center justify-between border-t border-ink/[0.05] bg-white/40 px-5 py-3">
                 <Badge tone={product.available ? 'green' : 'neutral'}>
                   <span className="size-1.5 rounded-full bg-current" />
                   {product.available ? 'Available' : 'Sold out'}
@@ -189,7 +178,7 @@ export function Catalog() {
                 {editable && (
                   <div className="flex items-center gap-3">
                     <button
-                      className="text-xs font-medium text-stone-500 hover:text-emerald-800"
+                      className="text-xs font-medium text-stone-500 hover:text-brand-600"
                       disabled={busy}
                       onClick={() =>
                         void mutate('/products', {
@@ -289,9 +278,7 @@ function ProductEditor({ product, onDone }: { product?: Product; onDone: () => v
   const [category, setCategory] = useState(product?.category || 'Mains');
   const [price, setPrice] = useState(String((product?.price || 0) / 100));
   const [emoji, setEmoji] = useState(product?.emoji || '🍽️');
-  const [aliases, setAliases] = useState(
-    product?.aliases ? product.aliases.join(', ') : '',
-  );
+  const [aliases, setAliases] = useState(product?.aliases ? product.aliases.join(', ') : '');
   const [available, setAvailable] = useState(product?.available ?? true);
   const [variants, setVariants] = useState<ProductOption[]>(product?.variants || []);
   const [modifiers, setModifiers] = useState<ProductOption[]>(product?.modifiers || []);
@@ -412,7 +399,7 @@ function ProductEditor({ product, onDone }: { product?: Product; onDone: () => v
       />
       <label className="flex items-center gap-2 text-sm text-stone-600">
         <input
-          className="size-4 accent-emerald-800"
+          className="size-4 accent-brand-500"
           type="checkbox"
           checked={available}
           onChange={(e) => setAvailable(e.target.checked)}
@@ -420,7 +407,7 @@ function ProductEditor({ product, onDone }: { product?: Product; onDone: () => v
         Available to order
       </label>
       <ErrorNotice message={error} />
-      <div className="flex justify-end gap-2 border-t border-stone-100 pt-5">
+      <div className="flex justify-end gap-2 border-t border-ink/[0.06] pt-5">
         <button type="button" className="btn" onClick={onDone}>
           Cancel
         </button>
@@ -445,10 +432,10 @@ function OptionEditor({
   onChange: (options: ProductOption[]) => void;
 }) {
   return (
-    <div className="rounded-2xl border border-stone-200/80 bg-stone-50/40 p-4 sm:p-5">
+    <div className="rounded-xl border border-white bg-white/50 p-4 sm:p-5">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <p className="text-xs font-semibold">{title}</p>
+          <p className="text-xs font-semibold text-ink">{title}</p>
           <p className="mt-1 text-xs text-stone-500">{hint}</p>
         </div>
         <button
@@ -525,12 +512,12 @@ function CsvImport({ onDone }: { onDone: () => void }) {
         }
       }}
     >
-      <label className="block rounded-xl border border-dashed border-stone-300 bg-stone-50 p-6 text-center">
+      <label className="block rounded-xl border border-dashed border-ink/15 bg-white/50 p-6 text-center">
         <Upload className="mx-auto mb-3 size-6 text-stone-400" />
         <span className="block text-sm font-medium">Choose a CSV file</span>
         <input
           aria-label="CSV menu file"
-          className="mt-3 max-w-full text-xs text-stone-500 file:mr-3 file:rounded file:border-0 file:bg-stone-200 file:px-3 file:py-2"
+          className="mt-3 max-w-full text-xs text-stone-500 file:mr-3 file:rounded-[9px] file:border-0 file:bg-ink/5 file:px-3 file:py-2 file:font-semibold file:text-stone-700"
           type="file"
           accept=".csv,text/csv"
           onChange={async (e) => {
@@ -559,7 +546,7 @@ function CsvImport({ onDone }: { onDone: () => void }) {
       </Field>
       <button
         type="button"
-        className="text-xs font-medium text-emerald-800 hover:underline"
+        className="text-xs font-semibold text-brand-500 hover:text-brand-600 hover:underline"
         onClick={() => setCsv(sample)}
       >
         Use example CSV
@@ -567,13 +554,13 @@ function CsvImport({ onDone }: { onDone: () => void }) {
       <a
         href="/examples/menu.csv"
         download
-        className="ml-4 inline-flex items-center gap-1 text-xs font-medium text-emerald-800 hover:underline"
+        className="ml-4 inline-flex items-center gap-1 text-xs font-semibold text-brand-500 hover:text-brand-600 hover:underline"
       >
         <Download className="size-3" />
         Download template
       </a>
       <ErrorNotice message={error} />
-      <div className="flex justify-end gap-2 border-t border-stone-100 pt-5">
+      <div className="flex justify-end gap-2 border-t border-ink/[0.06] pt-5">
         <button type="button" className="btn" onClick={onDone}>
           Cancel
         </button>

@@ -25,12 +25,12 @@ export function Badge({
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-semibold tracking-wide border',
+        'inline-flex items-center gap-1.5 whitespace-nowrap rounded-md px-[7px] py-0.5 text-[11px] font-semibold border border-transparent',
         {
-          'bg-emerald-50 text-emerald-800 border-emerald-200/80': tone === 'green',
-          'bg-amber-50 text-amber-800 border-amber-200/80': tone === 'amber',
-          'bg-stone-100 text-stone-700 border-stone-200/70': tone === 'neutral',
-          'bg-red-50 text-red-700 border-red-200/80': tone === 'red',
+          'bg-success-700/10 text-success-700': tone === 'green',
+          'bg-brand-500/12 text-brand-700': tone === 'amber',
+          'bg-ink/5 text-stone-500': tone === 'neutral',
+          'bg-red-600/10 text-red-700': tone === 'red',
         },
       )}
     >
@@ -58,7 +58,7 @@ export function ErrorNotice({ message, onDismiss }: { message?: string; onDismis
   return (
     <div
       role="alert"
-      className="flex items-start gap-2.5 rounded-xl border border-red-200 bg-red-50/90 px-4 py-3 text-sm text-red-800 shadow-xs"
+      className="flex items-start gap-2.5 rounded-xl border border-red-600/15 bg-red-50/80 px-4 py-3 text-[13px] text-red-800"
     >
       <AlertCircle className="mt-0.5 size-4 shrink-0 text-red-600" />
       <p className="flex-1 font-medium">{message}</p>
@@ -87,13 +87,13 @@ export function Empty({
 }) {
   return (
     <div className="flex flex-col items-center px-5 py-14 text-center">
-      <div className="mb-4 flex size-12 items-center justify-center rounded-2xl bg-stone-100 text-stone-400 border border-stone-200/60">
+      <div className="mb-4 flex size-12 items-center justify-center rounded-xl bg-ink text-brand-500">
         <Check className="size-5" />
       </div>
-      <h3 className="font-semibold text-stone-800">{title}</h3>
-      <p className="mt-2 max-w-sm text-sm text-stone-500">{description}</p>
+      <h3 className="panel-title">{title}</h3>
+      <p className="mt-2 max-w-sm text-[13px] text-stone-500">{description}</p>
       {action && (
-        <button className="btn mt-5 rounded-full" onClick={onAction}>
+        <button className="btn mt-5" onClick={onAction}>
           {action}
           <ArrowRight className="size-4" />
         </button>
@@ -120,27 +120,24 @@ export function Modal({
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-40 bg-stone-950/50 backdrop-blur-xs transition-opacity" />
+        <Dialog.Overlay className="fixed inset-0 z-40 bg-ink/45 backdrop-blur-xs transition-opacity" />
         <Dialog.Content
           className={cn(
-            'fixed inset-x-4 top-1/2 z-50 mx-auto max-h-[90dvh] -translate-y-1/2 overflow-y-auto rounded-3xl border border-stone-200/90 bg-white p-6 sm:p-8 shadow-2xl',
+            'fixed inset-x-4 top-1/2 z-50 mx-auto max-h-[90dvh] -translate-y-1/2 overflow-y-auto rounded-[18px] border border-white/80 bg-cream p-6 sm:p-8 shadow-[0_24px_64px_-12px_rgba(14,6,4,0.25)]',
             wide ? 'max-w-2xl' : 'max-w-lg',
           )}
         >
           <div className="mb-6 pr-10">
-            <Dialog.Title className="text-xl sm:text-2xl font-bold tracking-tight text-stone-900">
+            <Dialog.Title className="font-serif text-xl sm:text-2xl font-bold tracking-[-0.3px] text-ink">
               {title}
             </Dialog.Title>
             <Dialog.Description
-              className={cn('mt-2 text-sm text-stone-500', !description && 'sr-only')}
+              className={cn('mt-2 text-[13.5px] text-stone-500', !description && 'sr-only')}
             >
               {description || title}
             </Dialog.Description>
           </div>
-          <Dialog.Close
-            className="icon-btn absolute right-5 top-5 rounded-full"
-            aria-label="Close dialog"
-          >
+          <Dialog.Close className="icon-btn absolute right-5 top-5" aria-label="Close dialog">
             <X className="size-5" />
           </Dialog.Close>
           {workspace?.error && (
@@ -174,20 +171,20 @@ export function ConfirmDialog({
   return (
     <AlertDialog.Root open={open} onOpenChange={onOpenChange}>
       <AlertDialog.Portal>
-        <AlertDialog.Overlay className="fixed inset-0 z-40 bg-stone-950/50 backdrop-blur-xs transition-opacity" />
-        <AlertDialog.Content className="fixed inset-x-4 top-1/2 z-50 mx-auto max-w-md -translate-y-1/2 rounded-3xl border border-stone-200/90 bg-white p-6 sm:p-7 shadow-2xl">
-          <AlertDialog.Title className="text-xl font-bold tracking-tight text-stone-900">
+        <AlertDialog.Overlay className="fixed inset-0 z-40 bg-ink/45 backdrop-blur-xs transition-opacity" />
+        <AlertDialog.Content className="fixed inset-x-4 top-1/2 z-50 mx-auto max-w-md -translate-y-1/2 rounded-[18px] border border-white/80 bg-cream p-6 sm:p-7 shadow-[0_24px_64px_-12px_rgba(14,6,4,0.25)]">
+          <AlertDialog.Title className="font-serif text-xl font-bold tracking-[-0.3px] text-ink">
             {title}
           </AlertDialog.Title>
-          <AlertDialog.Description className="mt-3 text-sm text-stone-500 leading-relaxed">
+          <AlertDialog.Description className="mt-3 text-[13.5px] text-stone-500 leading-relaxed">
             {description}
           </AlertDialog.Description>
           <div className="mt-6 flex justify-end gap-2.5">
-            <AlertDialog.Cancel className="btn rounded-full" disabled={busy}>
+            <AlertDialog.Cancel className="btn" disabled={busy}>
               Go back
             </AlertDialog.Cancel>
             <button
-              className="btn rounded-full border-red-700 bg-red-700 text-white hover:bg-red-800 shadow-xs"
+              className="btn border-red-700 bg-red-700 text-white hover:bg-red-800"
               disabled={busy}
               onClick={onConfirm}
             >
@@ -226,10 +223,10 @@ export function PageHeading({
   children?: ReactNode;
 }) {
   return (
-    <div className="mb-6 sm:mb-8 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+    <div className="mb-6 sm:mb-[26px] flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
       <div>
         <h1 className="page-title">{title}</h1>
-        <p className="mt-1.5 text-sm text-stone-500 max-w-xl leading-relaxed">{description}</p>
+        <p className="mt-1 text-[13.5px] text-stone-500 max-w-xl leading-relaxed">{description}</p>
       </div>
       {children && <div className="flex flex-wrap items-center gap-2.5 shrink-0">{children}</div>}
     </div>
@@ -443,16 +440,16 @@ export function CustomSelect({
           'flex items-center justify-between gap-2 transition-all select-none cursor-pointer focus:outline-none',
           variant === 'pill'
             ? cn(
-                'rounded-full border text-xs font-semibold py-1.5 pl-3.5 pr-2.5',
+                'h-[38px] rounded-[9px] border text-[13px] font-semibold pl-3.5 pr-2.5',
                 theme === 'dark'
-                  ? 'border-white/10 bg-white/[0.05] text-stone-200 hover:bg-white/10 hover:text-white focus-visible:ring-2 focus-visible:ring-emerald-500/50'
-                  : 'border-stone-200/90 bg-stone-50/90 text-stone-700 shadow-2xs hover:bg-stone-100 hover:border-stone-300 focus-visible:ring-2 focus-visible:ring-emerald-500/20',
+                  ? 'border-white/10 bg-white/[0.05] text-cream hover:bg-white/10 hover:text-white focus-visible:ring-2 focus-visible:ring-brand-500/50'
+                  : 'border-white/80 bg-white/65 text-stone-700 hover:bg-white hover:text-ink focus-visible:ring-3 focus-visible:ring-brand-500/12',
               )
             : cn(
-                'min-h-10 w-full rounded-xl border text-sm px-3.5 py-2 text-left',
+                'min-h-[38px] w-full rounded-[9px] border text-[13px] px-3.5 py-2 text-left',
                 theme === 'dark'
-                  ? 'border-white/10 bg-white/[0.05] text-stone-200 hover:bg-white/[0.08] focus-visible:border-emerald-500 focus-visible:ring-2 focus-visible:ring-emerald-500/20'
-                  : 'border-stone-200/90 bg-white text-stone-800 hover:border-stone-300 focus-visible:border-emerald-600 focus-visible:ring-2 focus-visible:ring-emerald-500/15',
+                  ? 'border-white/10 bg-white/[0.05] text-cream hover:bg-white/[0.08] focus-visible:border-white/20 focus-visible:ring-3 focus-visible:ring-brand-500/20'
+                  : 'border-ink/8 bg-white/70 text-ink hover:border-ink/14 focus-visible:border-ink/20 focus-visible:bg-white focus-visible:ring-3 focus-visible:ring-brand-500/12',
               ),
           disabled && 'opacity-60 cursor-not-allowed pointer-events-none',
           className,
@@ -481,13 +478,13 @@ export function CustomSelect({
           role="listbox"
           tabIndex={-1}
           className={cn(
-            'absolute z-50 max-h-60 overflow-y-auto rounded-2xl border p-1.5 shadow-xl backdrop-blur-md transition-all animate-in fade-in zoom-in-95 duration-100',
+            'absolute z-50 max-h-60 overflow-y-auto rounded-xl border p-1.5 shadow-xl backdrop-blur-md transition-all animate-in fade-in zoom-in-95 duration-100',
             placement === 'top' ? 'bottom-full mb-1.5 origin-bottom' : 'top-full mt-1.5 origin-top',
             align === 'right' ? 'right-0' : 'left-0',
             variant === 'pill' ? 'min-w-[12rem]' : 'w-full min-w-[10rem]',
             theme === 'dark'
-              ? 'bg-[#1a1d21]/95 border-white/10 text-stone-200 shadow-black/60 custom-scrollbar-dark'
-              : 'bg-white/95 border-stone-200/90 text-stone-800 shadow-stone-900/10 custom-scrollbar',
+              ? 'bg-ink-soft/95 border-white/10 text-cream shadow-black/60 custom-scrollbar-dark'
+              : 'bg-white/95 border-ink/8 text-stone-800 shadow-ink/10 custom-scrollbar',
             menuClassName,
           )}
         >
@@ -516,30 +513,23 @@ export function CustomSelect({
                     if (!option.disabled) setHighlightedIndex(index);
                   }}
                   className={cn(
-                    'flex w-full items-center justify-between gap-2.5 rounded-xl px-3 py-2 text-xs sm:text-sm font-medium transition-colors text-left cursor-pointer',
+                    'flex w-full items-center justify-between gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium transition-colors text-left cursor-pointer',
                     isSelected
                       ? theme === 'dark'
-                        ? 'bg-emerald-500/20 text-emerald-300 font-semibold'
-                        : 'bg-emerald-50 text-emerald-900 font-semibold'
+                        ? 'bg-white/[0.08] text-white font-semibold'
+                        : 'bg-brand-500/10 text-ink font-semibold'
                       : isHighlighted
                         ? theme === 'dark'
                           ? 'bg-white/[0.08] text-white'
-                          : 'bg-stone-100/90 text-stone-900'
+                          : 'bg-ink/5 text-ink'
                         : theme === 'dark'
-                          ? 'text-stone-300 hover:bg-white/[0.08] hover:text-white'
-                          : 'text-stone-700 hover:bg-stone-100/80 hover:text-stone-900',
+                          ? 'text-cream/65 hover:bg-white/[0.08] hover:text-white'
+                          : 'text-stone-600 hover:bg-ink/5 hover:text-ink',
                     option.disabled && 'opacity-40 cursor-not-allowed pointer-events-none',
                   )}
                 >
                   <span className="truncate">{option.label}</span>
-                  {isSelected && (
-                    <Check
-                      className={cn(
-                        'size-4 shrink-0',
-                        theme === 'dark' ? 'text-emerald-400' : 'text-emerald-700',
-                      )}
-                    />
-                  )}
+                  {isSelected && <Check className={cn('size-4 shrink-0', 'text-brand-500')} />}
                 </button>
               );
             })
@@ -569,18 +559,16 @@ export class ErrorBoundary extends Component<
   render() {
     if (this.state.hasError) {
       return (
-        <div className="grid min-h-dvh place-items-center bg-[#f8fafc] p-6 text-stone-800">
-          <div className="w-full max-w-md rounded-3xl border border-stone-200/90 bg-white p-7 sm:p-9 shadow-xl">
-            <h1 className="text-xl font-bold tracking-tight text-stone-900">
-              Something went wrong
-            </h1>
+        <div className="grid min-h-dvh place-items-center bg-canvas p-6 text-stone-800">
+          <div className="card w-full max-w-md p-7 sm:p-9">
+            <h1 className="page-title">Something went wrong</h1>
             <p className="mt-2 text-sm text-stone-500 leading-relaxed">
               {this.state.error?.message ||
                 'An unexpected error occurred while rendering the workspace.'}
             </p>
             <div className="mt-6 flex flex-col gap-2">
               <button
-                className="btn btn-primary rounded-full w-full"
+                className="btn btn-primary w-full"
                 onClick={() => {
                   this.setState({ hasError: false, error: null });
                   window.location.reload();
@@ -590,7 +578,7 @@ export class ErrorBoundary extends Component<
               </button>
               <button
                 type="button"
-                className="btn btn-quiet rounded-full w-full text-xs text-stone-500 hover:text-stone-700"
+                className="btn btn-quiet w-full text-xs text-stone-500 hover:text-stone-700"
                 onClick={() => {
                   try {
                     localStorage.removeItem('orderly.company');

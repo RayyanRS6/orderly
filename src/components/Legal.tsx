@@ -7,7 +7,7 @@ const documents: Record<LegalKind, { title: string; intro: string; sections: [st
     privacy: {
       title: 'Privacy Policy',
       intro:
-        'Orderly helps businesses receive customer messages, answer questions, and manage orders. This policy explains how information is handled when a business uses Orderly.',
+        'Orderly operates this service for connected businesses. The business you message controls its menu, customer relationships and use of your order information; Orderly processes that information to provide the service. Orderly manages its own account, support and security records. Our public contact is waytogalaxy999@gmail.com.',
       sections: [
         [
           'Information we process',
@@ -19,11 +19,11 @@ const documents: Record<LegalKind, { title: string; intro: string; sections: [st
         ],
         [
           'Service providers',
-          'Orderly uses service providers selected by the platform operator or connected business, including Meta and WhatsApp, hosting and database providers, AI providers, and Google Sheets. Each provider processes information under its own terms and privacy policy. Orderly does not sell personal information.',
+          'Cloudflare hosts the website. Supabase provides authentication, the database and backend functions. Meta delivers WhatsApp messages. The business’s chosen AI provider (OpenAI, Google Gemini or Anthropic) receives message content and relevant business context to interpret requests. Google receives order data when Sheets is connected. Providers may process data outside Pakistan under their own terms. The business must review its provider’s tier and data-use settings before enabling AI. Orderly does not sell personal information or use customer chats to train its own models.',
         ],
         [
           'Retention and security',
-          'Information is retained only while needed to provide the service, meet legitimate operational needs, or satisfy legal obligations. Access is restricted by business membership, and integration credentials are encrypted at rest.',
+          'There is no automatic customer-data expiry enabled by default. Businesses should choose a retention period appropriate to their needs and use the deletion controls or contact Orderly for cleanup. Authorized owners can export and delete a customer’s conversations and orders from the active database after pausing processing. Anonymous usage accounting and administrative audit events are retained for billing and security. Copies in Google Sheets, WhatsApp, AI providers, downloaded exports and backups have separate retention and must be handled separately. Deleted data may remain in provider backups until their expiry. Access is restricted by business membership, API credentials are encrypted at rest, and traffic uses HTTPS.',
         ],
         [
           'Your choices',
@@ -31,7 +31,7 @@ const documents: Record<LegalKind, { title: string; intro: string; sections: [st
         ],
         [
           'Contact',
-          'For privacy questions or deletion requests, contact the business that gave you access to Orderly or use the existing support channel through which your Orderly workspace was provided.',
+          'Contact Orderly at waytogalaxy999@gmail.com for privacy questions, access, correction or deletion requests. Include the business name and relevant account or phone number. You may also contact the restaurant directly. We verify identity and authorization before acting, and explain any applicable retention restriction. Do not send passwords or access tokens.',
         ],
       ],
     },
@@ -69,7 +69,7 @@ const documents: Record<LegalKind, { title: string; intro: string; sections: [st
       sections: [
         [
           'Request deletion',
-          'Contact the business that provided your Orderly workspace through your existing support channel. Identify the workspace and the account or phone number whose data should be deleted. Do not send passwords, access tokens, or verification codes.',
+          'Email Orderly at waytogalaxy999@gmail.com or contact the business you messaged. Identify the workspace and the account or phone number whose data should be deleted. Owners can also use Security & privacy in the workspace to export or delete customer records after verifying the request. Do not send passwords, access tokens, or verification codes.',
         ],
         [
           'Disconnect Meta access',
@@ -86,48 +86,48 @@ const documents: Record<LegalKind, { title: string; intro: string; sections: [st
 export function LegalPage({ kind }: { kind: LegalKind }) {
   const document = documents[kind];
   return (
-    <div className="min-h-dvh bg-[#f8fafc] px-4 py-10 text-stone-800 sm:py-16">
-      <article className="mx-auto max-w-3xl rounded-3xl border border-stone-200/90 bg-white p-7 sm:p-12 shadow-sm">
+    <div className="min-h-dvh bg-canvas px-4 py-10 text-stone-800 sm:py-16">
+      <article className="card mx-auto max-w-3xl p-7 sm:p-12">
         <a
-          className="inline-flex items-center gap-2.5 text-2xl font-bold tracking-tight text-stone-900"
+          className="inline-flex items-center gap-3 font-serif text-[21px] font-bold tracking-[-0.3px] text-ink"
           href="/"
         >
-          <span className="relative flex size-8.5 items-center justify-center rounded-xl bg-emerald-600 text-white shadow-sm shadow-emerald-700/20">
+          <span className="relative flex size-10 items-center justify-center rounded-[11px] bg-[linear-gradient(to_bottom,var(--color-canvas)_50%,var(--color-brand-500)_50%)] text-ink">
             <MessageCircle className="size-5" strokeWidth={2.5} />
-            <span className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-white ring-2 ring-emerald-600" />
+            <span className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-brand-500 ring-2 ring-canvas" />
           </span>
-          orderly<span className="self-end pb-0.5 text-emerald-500 font-extrabold">.</span>
+          orderly<span className="self-end pb-0.5 text-brand-500 font-extrabold">.</span>
         </a>
-        <h1 className="mt-10 text-3xl font-bold tracking-tight text-stone-900 sm:text-4xl">
+        <h1 className="mt-10 font-serif text-3xl font-bold tracking-[-0.4px] text-ink sm:text-4xl">
           {document.title}
         </h1>
         <p className="mt-4 leading-7 text-stone-600">{document.intro}</p>
         <p className="mt-3 text-xs font-semibold text-stone-400 uppercase tracking-wider">
-          Effective 15 September 2026
+          Effective 16 September 2026
         </p>
         <div className="mt-10 space-y-8">
           {document.sections.map(([title, copy]) => (
             <section key={title}>
-              <h2 className="text-lg font-bold text-stone-900">{title}</h2>
+              <h2 className="panel-title">{title}</h2>
               <p className="mt-2 leading-7 text-stone-600">{copy}</p>
             </section>
           ))}
         </div>
-        <nav className="mt-12 flex flex-wrap gap-2 border-t border-stone-100 pt-6 text-sm">
+        <nav className="mt-12 flex flex-wrap gap-2 border-t border-ink/[0.06] pt-6 text-sm">
           <a
-            className="rounded-full border border-stone-200 bg-stone-50 px-4 py-1.5 text-xs font-semibold text-stone-700 hover:bg-stone-100 transition-all"
+            className="rounded-[9px] border border-ink/8 bg-white/70 px-4 py-1.5 text-xs font-semibold text-stone-700 hover:bg-white hover:text-ink transition-all"
             href="/privacy"
           >
             Privacy Policy
           </a>
           <a
-            className="rounded-full border border-stone-200 bg-stone-50 px-4 py-1.5 text-xs font-semibold text-stone-700 hover:bg-stone-100 transition-all"
+            className="rounded-[9px] border border-ink/8 bg-white/70 px-4 py-1.5 text-xs font-semibold text-stone-700 hover:bg-white hover:text-ink transition-all"
             href="/terms"
           >
             Terms of Service
           </a>
           <a
-            className="rounded-full border border-stone-200 bg-stone-50 px-4 py-1.5 text-xs font-semibold text-stone-700 hover:bg-stone-100 transition-all"
+            className="rounded-[9px] border border-ink/8 bg-white/70 px-4 py-1.5 text-xs font-semibold text-stone-700 hover:bg-white hover:text-ink transition-all"
             href="/data-deletion"
           >
             Data Deletion

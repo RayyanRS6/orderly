@@ -3,6 +3,8 @@ import ReactDOM from 'react-dom/client';
 import App from './App';
 import { LegalPage } from './components/Legal';
 import { ErrorBoundary } from './components/ui';
+import { Landing, Contact, NotFound } from './components/Public';
+import { parseRoute } from './lib/routes';
 import './index.css';
 
 const legalPages = {
@@ -14,19 +16,28 @@ const legalPages = {
 function getLegalKind(): 'privacy' | 'terms' | 'data-deletion' | undefined {
   if (typeof window === 'undefined') return undefined;
   const pathname = window.location.pathname.replace(/\/+$/, '') || '/';
-  if (pathname.endsWith('/privacy')) return 'privacy';
-  if (pathname.endsWith('/terms')) return 'terms';
-  if (pathname.endsWith('/data-deletion')) return 'data-deletion';
   return legalPages[pathname as keyof typeof legalPages];
 }
 
 const legalKind = getLegalKind();
+const pathname = window.location.pathname.replace(/\/+$/, '') || '/';
+const content = legalKind ? (
+  <LegalPage kind={legalKind} />
+) : pathname === '/' ? (
+  <Landing />
+) : pathname === '/contact' ? (
+  <Contact />
+) : parseRoute(pathname).valid ? (
+  <App />
+) : (
+  <NotFound />
+);
 const rootElement = typeof document !== 'undefined' ? document.getElementById('root') : null;
 
 if (rootElement) {
   ReactDOM.createRoot(rootElement).render(
     <React.StrictMode>
-      <ErrorBoundary>{legalKind ? <LegalPage kind={legalKind} /> : <App />}</ErrorBoundary>
+      <ErrorBoundary>{content}</ErrorBoundary>
     </React.StrictMode>,
   );
 }

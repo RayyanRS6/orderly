@@ -53,9 +53,11 @@ export function Settings() {
   const [saved, setSaved] = useState(false);
   const canEdit = data.role !== 'staff';
   const usage = data.usage || [];
-  const recordedSpend = data.summary?.monthlySpend ?? usage
-    .filter((u) => u.createdAt?.startsWith(new Date().toISOString().slice(0, 7)))
-    .reduce((sum, u) => sum + (u.costUsd || 0), 0);
+  const recordedSpend =
+    data.summary?.monthlySpend ??
+    usage
+      .filter((u) => u.createdAt?.startsWith(new Date().toISOString().slice(0, 7)))
+      .reduce((sum, u) => sum + (u.costUsd || 0), 0);
   const update = (values: Partial<Company>) => {
     setSaved(false);
     setDraft((d) => ({ ...d, ...values }));
@@ -78,8 +80,8 @@ export function Settings() {
         <fieldset disabled={!canEdit || busy} className="space-y-6 disabled:opacity-70">
           <section className="card p-6">
             <div className="mb-6 flex items-center gap-3">
-              <Building2 className="size-5 text-emerald-800" />
-              <h2 className="font-semibold">Business details</h2>
+              <Building2 className="size-5 text-brand-500" />
+              <h2 className="panel-title">Business details</h2>
             </div>
             <div className="grid gap-5 sm:grid-cols-2">
               <Field label="Business name">
@@ -160,15 +162,15 @@ export function Settings() {
                       <label
                         key={day}
                         className={cn(
-                          'flex min-h-9 items-center gap-2 rounded-full border px-3.5 text-xs font-semibold cursor-pointer transition-all',
+                          'flex min-h-9 items-center gap-2 rounded-[9px] border px-3.5 text-xs font-semibold cursor-pointer transition-all',
                           openDays.includes(i)
-                            ? 'border-emerald-800 bg-emerald-50 text-emerald-900 shadow-2xs'
-                            : 'border-stone-200 bg-white text-stone-600 hover:bg-stone-50',
+                            ? 'border-brand-500/40 bg-brand-500/10 text-ink'
+                            : 'border-ink/8 bg-white/70 text-stone-600 hover:bg-white',
                         )}
                       >
                         <input
                           type="checkbox"
-                          className="accent-emerald-700"
+                          className="accent-brand-500"
                           checked={openDays.includes(i)}
                           onChange={(e) =>
                             update({
@@ -191,7 +193,7 @@ export function Settings() {
           </section>
           <section className="card p-6">
             <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
-              <h2 className="font-semibold">Delivery areas</h2>
+              <h2 className="panel-title">Delivery areas</h2>
               <button
                 className="btn"
                 type="button"
@@ -208,7 +210,7 @@ export function Settings() {
               with cash payment.
             </p>
             {!(draft.deliveryZones || []).length && (
-              <p className="rounded-lg bg-stone-50 p-4 text-sm text-stone-500">
+              <p className="rounded-[10px] border border-white/60 bg-white/40 p-4 text-[13px] text-stone-500">
                 Pickup only. Add an area to offer delivery.
               </p>
             )}
@@ -255,7 +257,9 @@ export function Settings() {
                     type="button"
                     aria-label={`Remove delivery area ${zone.name || i + 1}`}
                     onClick={() =>
-                      update({ deliveryZones: (draft.deliveryZones || []).filter((_, j) => j !== i) })
+                      update({
+                        deliveryZones: (draft.deliveryZones || []).filter((_, j) => j !== i),
+                      })
                     }
                   >
                     <Trash2 className="size-4" />
@@ -266,11 +270,15 @@ export function Settings() {
           </section>
           <section className="card p-6">
             <div className="mb-6 flex items-center gap-3">
-              <Bot className="size-5 text-emerald-800" />
-              <h2 className="font-semibold">Assistant & menu</h2>
+              <Bot className="size-5 text-brand-500" />
+              <h2 className="panel-title">Assistant & menu</h2>
             </div>
             <div className="grid gap-5 sm:grid-cols-2">
-              <div className="sm:col-span-2"><button type="button" className="btn" onClick={()=>navigate('bot')}>Open bot behavior & model settings</button></div>
+              <div className="sm:col-span-2">
+                <button type="button" className="btn" onClick={() => navigate('bot')}>
+                  Open bot behavior & model settings
+                </button>
+              </div>
               <Field
                 label="Menu source"
                 hint="One source controls item prices and availability for this business."
@@ -284,7 +292,7 @@ export function Settings() {
                   ]}
                 />
               </Field>
-              <label className="flex items-center gap-3 self-start rounded-2xl border border-stone-200/90 p-4 text-sm">
+              <label className="flex items-center gap-3 self-start rounded-xl border border-white bg-white/50 p-4 text-[13px]">
                 <input
                   type="checkbox"
                   checked={draft.botEnabled}
@@ -298,16 +306,16 @@ export function Settings() {
                 </span>
               </label>
             </div>
-            <div className="mt-6 rounded-2xl border border-emerald-200/80 bg-emerald-50/80 p-4 sm:p-5 text-sm leading-relaxed text-emerald-900">
+            <div className="notice mt-6 p-4 sm:p-5 text-[13px] leading-relaxed">
               The ordering rules stay the same whichever model you choose: check the menu, calculate
               the price, ask for confirmation, then save a pending order for staff.
             </div>
           </section>
           <section className="card p-6">
             <div className="mb-2 flex items-center justify-between gap-3">
-              <h2 className="font-semibold">Common questions</h2>
+              <h2 className="panel-title">Common questions</h2>
               <button
-                className="btn rounded-full shadow-xs"
+                className="btn"
                 type="button"
                 onClick={() =>
                   update({ faqs: [...(draft.faqs || []), { question: '', answer: '' }] })
@@ -322,10 +330,7 @@ export function Settings() {
             </p>
             <div className="space-y-5">
               {(draft.faqs || []).map((faq, i) => (
-                <div
-                  key={i}
-                  className="rounded-2xl border border-stone-200/90 p-4 sm:p-5 bg-stone-50/40"
-                >
+                <div key={i} className="rounded-xl border border-white p-4 sm:p-5 bg-white/50">
                   <div className="mb-3 flex gap-2">
                     <div className="flex-1">
                       <Field label="Question">
@@ -344,12 +349,10 @@ export function Settings() {
                       </Field>
                     </div>
                     <button
-                      className="icon-btn self-end rounded-full"
+                      className="icon-btn self-end"
                       type="button"
                       aria-label={`Remove question ${i + 1}`}
-                      onClick={() =>
-                        update({ faqs: (draft.faqs || []).filter((_, j) => j !== i) })
-                      }
+                      onClick={() => update({ faqs: (draft.faqs || []).filter((_, j) => j !== i) })}
                     >
                       <Trash2 className="size-4" />
                     </button>
@@ -373,10 +376,10 @@ export function Settings() {
             </div>
           </section>
           <div className="flex items-center justify-end gap-4">
-            <span role="status" className="text-sm font-medium text-emerald-800">
+            <span role="status" className="text-[13px] font-medium text-success-700">
               {saved ? 'Settings saved.' : !canEdit ? 'Only an owner can edit settings.' : ''}
             </span>
-            <button className="btn btn-primary rounded-full px-6 shadow-sm">
+            <button className="btn btn-primary px-6">
               <Save className="size-4" />
               {busy ? 'Saving…' : 'Save settings'}
             </button>
@@ -384,7 +387,7 @@ export function Settings() {
         </fieldset>
       </form>
       <section className="card mt-6 p-6">
-        <h2 className="font-semibold">AI usage this month</h2>
+        <h2 className="panel-title">AI usage this month</h2>
         <p className="mt-3 text-2xl font-semibold tabular-nums">
           ${recordedSpend.toFixed(4)}
           <span className="ml-2 text-sm font-normal text-stone-500">
@@ -397,7 +400,9 @@ export function Settings() {
           are separate.
         </p>
       </section>
-      <button className="btn mt-6" onClick={()=>navigate('security')}>Manage team, security & privacy</button>
+      <button className="btn mt-6" onClick={() => navigate('security')}>
+        Manage team, security & privacy
+      </button>
     </>
   );
 }
@@ -460,7 +465,7 @@ const integrationInfo: Record<
 };
 
 export function Integrations() {
-  const [disconnecting,setDisconnecting]=useState<Integration>();
+  const [disconnecting, setDisconnecting] = useState<Integration>();
   const { data, mutate, busy, navigate } = useWorkspace();
   const [editing, setEditing] = useState<Integration | null>(null);
   const [config, setConfig] = useState<Record<string, string>>({});
@@ -476,18 +481,33 @@ export function Integrations() {
   };
   return (
     <>
-      <ConfirmDialog open={!!disconnecting} onOpenChange={v=>{if(!v)setDisconnecting(undefined);}} title="Disconnect this integration?" description="Automation will pause, Orderly will delete the stored credential and cancel pending delivery work for this integration. Revoke Orderly access or the API key in the provider account separately. Existing provider data is kept." confirmLabel="Disconnect" busy={busy} onConfirm={()=>{if(disconnecting)void mutate(`/integrations/${disconnecting.kind}`,undefined,'DELETE').then(()=>setDisconnecting(undefined)).catch(()=>{});}}/>
+      <ConfirmDialog
+        open={!!disconnecting}
+        onOpenChange={(v) => {
+          if (!v) setDisconnecting(undefined);
+        }}
+        title="Disconnect this integration?"
+        description="Automation will pause, Orderly will delete the stored credential and cancel pending delivery work for this integration. Revoke Orderly access or the API key in the provider account separately. Existing provider data is kept."
+        confirmLabel="Disconnect"
+        busy={busy}
+        onConfirm={() => {
+          if (disconnecting)
+            void mutate(`/integrations/${disconnecting.kind}`, undefined, 'DELETE')
+              .then(() => setDisconnecting(undefined))
+              .catch(() => {});
+        }}
+      />
       <PageHeading
         title="Everything, connected."
         description="Choose the tools behind your business. Each connection belongs to this workspace."
       />
-      <div className="mb-7 flex items-start gap-3.5 rounded-2xl sm:rounded-3xl border border-emerald-200/80 bg-emerald-50/70 p-5 sm:p-6 shadow-2xs">
-        <ShieldCheck className="mt-0.5 size-5 shrink-0 text-emerald-800" />
+      <div className="notice mb-7 flex items-start gap-3.5 rounded-[18px] p-5 sm:p-6">
+        <ShieldCheck className="mt-0.5 size-5 shrink-0 text-brand-500" />
         <div>
-          <h2 className="text-sm font-bold text-emerald-950 tracking-tight">
+          <h2 className="font-serif text-[17px] font-bold text-cream">
             Your keys stay on the server.
           </h2>
-          <p className="mt-1 text-sm leading-relaxed text-emerald-900">
+          <p className="mt-1 text-[13px] leading-relaxed text-cream/65">
             Credentials are encrypted before storage. The local playground works without keys; live
             WhatsApp requires the deployed backend and Meta setup.
           </p>
@@ -497,14 +517,14 @@ export function Integrations() {
       {notice && (
         <p
           role="status"
-          className="mb-5 rounded-2xl border border-emerald-200/80 bg-emerald-50 p-4 text-sm text-emerald-800"
+          className="mb-5 rounded-xl border border-success-700/15 bg-success-700/[0.07] p-4 text-[13px] text-success-800"
         >
           {notice}
         </p>
       )}
       <section className="card mb-6 p-6">
         <div className="flex items-center justify-between gap-3">
-          <h2 className="font-semibold">Selected AI connection</h2>
+          <h2 className="panel-title">Selected AI connection</h2>
           <Status value={data.aiConnection?.configured ? 'configured' : 'disconnected'} />
         </div>
         {(() => {
@@ -563,12 +583,12 @@ export function Integrations() {
           return (
             <section key={integration.kind} className="card flex flex-col p-6">
               <div className="mb-5 flex items-center justify-between gap-3">
-                <div className="flex size-11 items-center justify-center rounded-xl bg-stone-100">
-                  <info.icon className="size-5 text-stone-700" />
+                <div className="flex size-11 items-center justify-center rounded-xl bg-ink text-brand-500">
+                  <info.icon className="size-5" />
                 </div>
                 <Status value={integration.status} />
               </div>
-              <h2 className="text-lg font-semibold">{info.title}</h2>
+              <h2 className="panel-title">{info.title}</h2>
               <p className="mb-6 mt-2 text-sm leading-relaxed text-stone-500">{info.description}</p>
               {integration.error && (
                 <p className="mb-4 text-xs text-red-700">{integration.error}</p>
@@ -610,7 +630,15 @@ export function Integrations() {
                   </button>
                 )}
               </div>
-              {integration.configured && <button disabled={!canEdit || busy} className="btn mt-3 text-red-700" onClick={()=>setDisconnecting(integration)}>Disconnect</button>}
+              {integration.configured && (
+                <button
+                  disabled={!canEdit || busy}
+                  className="btn mt-3 text-red-700"
+                  onClick={() => setDisconnecting(integration)}
+                >
+                  Disconnect
+                </button>
+              )}
               {integration.checkedAt && (
                 <p className="mt-4 text-xs text-stone-400">
                   Last checked {new Date(integration.checkedAt).toLocaleString()}
@@ -621,7 +649,7 @@ export function Integrations() {
         })}
       </div>
       <section className="card mt-6 p-6">
-        <h2 className="font-semibold">Before connecting a restaurant number</h2>
+        <h2 className="panel-title">Before connecting a restaurant number</h2>
         <div className="mt-4 grid gap-6 text-sm leading-relaxed text-stone-500 md:grid-cols-2">
           <div>
             <p className="font-medium text-stone-800">Customers stay in WhatsApp.</p>
@@ -742,7 +770,7 @@ export function Integrations() {
               )}
             </Field>
             {editing.kind === 'sheets' && (
-              <p className="rounded-2xl border border-stone-200/80 bg-stone-50/80 p-3.5 text-xs leading-relaxed text-stone-600">
+              <p className="rounded-xl border border-white bg-white/60 p-3.5 text-xs leading-relaxed text-stone-600">
                 Create separate Menu and Orders tabs. Share this spreadsheet with the service
                 account email as Editor. Menu columns: id, name, description, category, price,
                 available, emoji, aliases, variants, modifiers. Prices in the sheet use PKR rupees.
@@ -777,7 +805,7 @@ export function Businesses() {
         description="Each workspace has its own menu, conversations, orders, and connections."
       >
         {data.role === 'admin' && (
-          <button className="btn btn-primary rounded-full shadow-xs" onClick={() => setOpen(true)}>
+          <button className="btn btn-primary" onClick={() => setOpen(true)}>
             <Plus className="size-4" />
             Add business
           </button>
@@ -785,12 +813,9 @@ export function Businesses() {
       </PageHeading>
       <div className="grid gap-5 md:grid-cols-2">
         {data.companies.map((company) => (
-          <section
-            key={company.id}
-            className="card p-6 sm:p-7 rounded-3xl border border-stone-200/80 bg-white shadow-xs hover:border-stone-300 transition-all"
-          >
+          <section key={company.id} className="card p-6 sm:p-7">
             <div className="flex items-start justify-between gap-3">
-              <div className="flex size-12 items-center justify-center rounded-2xl bg-emerald-50 font-bold text-emerald-800 ring-1 ring-emerald-200/70">
+              <div className="flex size-12 items-center justify-center rounded-xl bg-ink-soft font-semibold text-brand-500">
                 {initials(company.name)}
               </div>
               {company.id === data.company.id && (
@@ -800,7 +825,7 @@ export function Businesses() {
                 </Badge>
               )}
             </div>
-            <h2 className="mt-5 text-lg font-bold text-stone-900 tracking-tight">{company.name}</h2>
+            <h2 className="panel-title mt-5">{company.name}</h2>
             <p className="mt-2 min-h-10 text-sm text-stone-500">
               {company.address || 'Add a pickup address in Settings.'}
             </p>
@@ -812,7 +837,7 @@ export function Businesses() {
               </Badge>
             </div>
             <button
-              className="btn rounded-full w-full shadow-xs"
+              className="btn w-full"
               disabled={company.id === data.company.id || busy}
               onClick={() => switchCompany(company.id)}
             >
@@ -823,7 +848,7 @@ export function Businesses() {
         ))}
       </div>
       <div className="mt-7 flex gap-3 text-sm text-stone-500">
-        <ShieldCheck className="size-5 shrink-0 text-emerald-800" />
+        <ShieldCheck className="size-5 shrink-0 text-brand-500" />
         <p>
           Access is checked for each request. Owners manage their business; staff handle
           conversations and orders. Only the platform administrator can add businesses.
@@ -851,7 +876,7 @@ export function Businesses() {
         >
           <Field label="Business name">
             <input
-              className="input rounded-xl"
+              className="input"
               required
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -859,21 +884,17 @@ export function Businesses() {
             />
           </Field>
           <Field label="Pickup address">
-            <input
-              className="input rounded-xl"
-              value={address}
-              onChange={(e) => setAddress(e.target.value)}
-            />
+            <input className="input" value={address} onChange={(e) => setAddress(e.target.value)} />
           </Field>
           <Field label="Contact number">
             <input
-              className="input rounded-xl"
+              className="input"
               type="tel"
               value={phone}
               onChange={(e) => setPhone(e.target.value)}
             />
           </Field>
-          <button className="btn btn-primary rounded-full w-full shadow-xs" disabled={busy}>
+          <button className="btn btn-primary w-full" disabled={busy}>
             <Plus className="size-4" />
             Create workspace
           </button>
@@ -888,15 +909,15 @@ function Team() {
   return (
     <section className="card mt-6 p-6">
       <div className="flex items-center gap-3">
-        <ShieldCheck className="size-5 text-emerald-800" />
-        <h2 className="font-semibold">Team access</h2>
+        <ShieldCheck className="size-5 text-brand-500" />
+        <h2 className="panel-title">Team access</h2>
       </div>
       <p className="mt-3 text-sm leading-relaxed text-stone-500">
         Your role is {label(data.role).toLowerCase()}. In live mode, the platform administrator
         creates Supabase accounts and assigns owner or staff membership to this company. Staff can
         manage orders and reply to customers. Owners can also change menus and connections.
       </p>
-      <p className="mt-3 break-all rounded-2xl border border-stone-200/80 bg-stone-50/80 p-3.5 font-mono text-xs text-stone-500">
+      <p className="mt-3 break-all rounded-xl border border-white bg-white/60 p-3.5 font-mono text-xs text-stone-500">
         Company ID: {data.company.id}
       </p>
     </section>

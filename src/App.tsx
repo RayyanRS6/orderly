@@ -82,10 +82,16 @@ export default function App() {
   const [config, setConfig] = useState<Configuration | null>(null);
   const [client, setClient] = useState<SupabaseClient | null>(null);
   const [authenticated, setAuthenticated] = useState(false);
+  const [mfaFactor, setMfaFactor] = useState<string>();
+  const [passwordRecovery, setPasswordRecovery] = useState(
+    () =>
+      typeof window !== 'undefined' &&
+      /type=(recovery|invite)|flow=recovery/.test(window.location.hash + window.location.search),
+  );
   const [companyId, setCompanyId] = useState(getStoredCompany);
   const [data, setData] = useState<Bootstrap | null>(null);
-  const route=useRoute();
-  const page=route.page;
+  const route = useRoute();
+  const page = route.page;
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [mobile, setMobile] = useState(false);
@@ -109,13 +115,40 @@ export default function App() {
         const { createClient } = await import('@supabase/supabase-js');
         const auth = createClient(result.supabaseUrl, result.supabaseAnonKey);
         setClient(auth);
+        const acceptSession = async (present: boolean) => {
+          if (!present) {
+            if (active) {
+              setAuthenticated(false);
+              setData(null);
+              setMfaFactor(undefined);
+            }
+            return;
+          }
+          const assurance = await auth.auth.mfa.getAuthenticatorAssuranceLevel();
+          if (assurance.error) throw assurance.error;
+          if (!active) return;
+          if (assurance.data.nextLevel === 'aal2' && assurance.data.currentLevel !== 'aal2') {
+            const factors = await auth.auth.mfa.listFactors();
+            if (active) {
+              setMfaFactor(factors.data?.totp.find((f) => f.status === 'verified')?.id);
+              setAuthenticated(false);
+            }
+          } else {
+            setMfaFactor(undefined);
+            setAuthenticated(true);
+          }
+        };
         const session = await auth.auth.getSession();
         if (!active) return;
         setAccessToken(session.data.session?.access_token);
-        setAuthenticated(Boolean(session.data.session));
+        await acceptSession(Boolean(session.data.session));
         const { data: subscription } = auth.auth.onAuthStateChange((_event, value) => {
           setAccessToken(value?.access_token);
-          setAuthenticated(Boolean(value));
+          if (_event === 'PASSWORD_RECOVERY') setPasswordRecovery(true);
+          // Auth callbacks must not await another Supabase auth operation while its lock is held.
+          setTimeout(() => {
+            void acceptSession(Boolean(value)).catch((e) => setError(e.message));
+          }, 0);
           if (!value) setData(null);
         });
         unsubscribe = () => subscription.subscription.unsubscribe();
@@ -136,7 +169,7 @@ export default function App() {
     );
     setData((current) => (current?.company.id === result.company.id ? result : current));
     setStoredCompany(result.company.id);
-  }, [companyId,route.slug]);
+  }, [companyId, route.slug]);
 
   useEffect(() => {
     if (!authenticated) return;
@@ -150,7 +183,7 @@ export default function App() {
         if (active) {
           setData(result);
           setStoredCompany(result.company.id);
-          if(!route.slug)go(workspacePath(result.company.slug,page),true);
+          if (!route.slug) go(workspacePath(result.company.slug, page), true);
         }
       })
       .catch((e) => {
@@ -171,12 +204,24 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, [authenticated, companyId,route.slug]);
+  }, [authenticated, companyId, route.slug]);
 
   useEffect(() => {
-    if (!authenticated || !data || !['overview', 'orders', 'inbox','activity'].includes(page)) return;
+    if (!authenticated || !data || !['overview', 'orders', 'inbox', 'activity'].includes(page))
+      return;
     const timer = setInterval(() => {
-      if (!document.hidden && !busy) void api<Pick<Bootstrap,'summary'|'traces'|'jobs'>>('/activity',data.company.id).then(activity=>{setData(current=>current?.company.id===data.company.id?{...current,...activity}:current);setError('');}).catch(e=>setError(`Updates delayed: ${e.message}`));
+      if (!document.hidden && !busy)
+        void api<Pick<Bootstrap, 'summary' | 'traces' | 'jobs' | 'orders'>>(
+          '/activity',
+          data.company.id,
+        )
+          .then((activity) => {
+            setData((current) =>
+              current?.company.id === data.company.id ? { ...current, ...activity } : current,
+            );
+            setError('');
+          })
+          .catch((e) => setError(`Updates delayed: ${e.message}`));
     }, 15000);
     return () => clearInterval(timer);
   }, [authenticated, !!data, page, busy, refresh]);
@@ -204,17 +249,38 @@ export default function App() {
     setData(null);
     setError('');
     setCompanyId(id);
-    const company=data?.companies.find(c=>c.id===id);
-    if(company)go(workspacePath(company.slug,page));
+    const company = data?.companies.find((c) => c.id === id);
+    if (company) go(workspacePath(company.slug, page));
     setMobile(false);
   }
-  function navigate(value: Page,id?:string) {
-    if(data)go(workspacePath(data.company.slug,value,id));
+  function navigate(value: Page, id?: string) {
+    if (data) go(workspacePath(data.company.slug, value, id));
     setMobile(false);
     setError('');
     window.scrollTo(0, 0);
   }
 
+  if (client && mfaFactor)
+    return (
+      <AccountChallenge
+        client={client}
+        factorId={mfaFactor}
+        onDone={() => {
+          setMfaFactor(undefined);
+          setAuthenticated(true);
+        }}
+      />
+    );
+  if (client && authenticated && passwordRecovery)
+    return (
+      <AccountChallenge
+        client={client}
+        onDone={() => {
+          setPasswordRecovery(false);
+          go('/app', true);
+        }}
+      />
+    );
   if (config?.mode === 'live' && !authenticated && client) return <Login client={client} />;
   if (!data && firstBusiness)
     return (
@@ -226,16 +292,21 @@ export default function App() {
         }}
       />
     );
-  if (!data)
+  if (!data || (route.slug && route.slug !== data.company.slug))
     return (
-      <div className="grid min-h-dvh place-items-center p-6">
+      <div className="grid min-h-dvh place-items-center bg-canvas p-6">
         <div className="w-full max-w-md">
           <Brand dark={false} />
           <div className="mt-8 space-y-4">
-            <div className="h-8 w-2/3 rounded-lg bg-stone-200" />
-            <div className="h-32 rounded-xl bg-stone-100" />
+            <div className="h-8 w-2/3 rounded-lg bg-ink/[0.06]" />
+            <div className="h-32 rounded-[18px] border border-white/80 bg-white/65" />
             <p className="text-sm text-stone-500">Opening your workspace…</p>
             <ErrorNotice message={error} />
+            {error && (
+              <a className="btn" href="/app">
+                Open my workspace
+              </a>
+            )}
             {error && (
               <button className="btn" onClick={() => window.location.reload()}>
                 Try again
@@ -260,27 +331,27 @@ export default function App() {
   };
 
   const sidebar = (
-    <div className="flex h-full flex-col overflow-hidden bg-[#121417] px-4 pb-5 pt-6 text-stone-400 border-r border-white/5">
+    <div className="flex h-full flex-col overflow-hidden bg-ink px-4 pb-6 pt-7 text-cream/65 border-r border-white/[0.06]">
       <div className="shrink-0">
         <div className="px-2 shrink-0">
           <Brand />
         </div>
 
-        <div className="mt-5 px-1 flex items-center gap-2 shrink-0">
+        <div className="mt-6 px-1 flex items-center gap-2 shrink-0">
           <div className="relative flex-1">
-            <Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-stone-500" />
+            <Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-cream/35" />
             <input
               type="text"
               aria-label="Search navigation"
               value={navSearch}
               onChange={(e) => setNavSearch(e.target.value)}
               placeholder="Search..."
-              className="h-9 w-full rounded-full border border-white/10 bg-white/[0.05] pl-9 pr-7 text-xs text-stone-200 placeholder:text-stone-500 transition-all focus:border-emerald-500 focus:bg-white/[0.08] focus:outline-none"
+              className="h-9 w-full rounded-[9px] border border-white/[0.08] bg-white/[0.05] pl-9 pr-7 text-[13px] text-cream placeholder:text-cream/35 transition-all focus:border-white/20 focus:bg-white/[0.08] focus:outline-none"
             />
             {navSearch && (
               <button
                 type="button"
-                className="absolute right-2.5 top-2.5 text-stone-400 hover:text-white"
+                className="absolute right-2.5 top-2.5 text-cream/40 hover:text-white"
                 onClick={() => setNavSearch('')}
                 aria-label="Clear search"
               >
@@ -290,7 +361,7 @@ export default function App() {
           </div>
           <button
             type="button"
-            className="flex size-9 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/[0.05] text-stone-400 hover:bg-white/10 hover:text-white transition-all"
+            className="flex size-9 shrink-0 items-center justify-center rounded-[9px] border border-white/[0.08] bg-white/[0.05] text-cream/50 hover:bg-white/10 hover:text-white transition-all"
             title="Getting started"
             aria-label="Getting started"
             onClick={() => {
@@ -302,61 +373,65 @@ export default function App() {
           </button>
         </div>
 
-        <div className="my-5 rounded-2xl border border-white/10 bg-white/[0.03] p-3.5 backdrop-blur-xs shrink-0">
-          <p className="text-[10px] font-bold tracking-widest text-stone-400 uppercase">
+        <div className="my-5 rounded-xl border border-white/[0.06] bg-white/[0.03] p-3 shrink-0">
+          <p className="text-[11px] font-semibold tracking-[1px] text-cream/35 uppercase">
             YOUR WORKSPACE
           </p>
-          <p className="mt-1 truncate text-sm font-semibold text-white">{data.company.name}</p>
+          <p className="mt-1 truncate text-[13px] font-semibold text-cream">{data.company.name}</p>
         </div>
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar-dark pr-1 -mr-1">
-        <nav aria-label="Main navigation" className="space-y-1.5">
+        <nav aria-label="Main navigation" className="space-y-[3px]">
           {filteredNav.map((item) => (
             <button
               key={item.id}
               aria-current={page === item.id ? 'page' : undefined}
               className={cn(
-                'flex min-h-11 w-full items-center gap-3 rounded-full px-4 text-left text-sm font-medium transition-all',
+                'flex min-h-10 w-full items-center gap-3 rounded-[9px] px-3 text-left text-[13.5px] font-medium transition-all duration-150',
                 page === item.id
-                  ? 'bg-emerald-600 text-white font-semibold shadow-md shadow-emerald-950/40'
-                  : 'text-stone-400 hover:bg-white/[0.06] hover:text-white',
+                  ? 'bg-white/[0.08] text-white font-semibold'
+                  : 'text-cream/65 hover:bg-white/5 hover:text-white',
               )}
               onClick={() => handleNavClick(item.id)}
             >
-              <item.icon className="size-4.5 shrink-0" />
+              <item.icon
+                className={cn('size-[17px] shrink-0', page === item.id && 'text-brand-500')}
+              />
               <span className="truncate">{item.label}</span>
               {item.id === 'orders' && pending > 0 && (
-                <span className="ml-auto rounded-full bg-white/20 px-2 py-0.5 text-[11px] font-bold tabular-nums text-white">
+                <span className="ml-auto rounded-md bg-brand-500/20 px-[7px] py-0.5 text-[11px] font-semibold tabular-nums text-brand-500">
                   {pending}
                 </span>
               )}
               {item.id === 'playground' && (
-                <span className="ml-auto size-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]" />
+                <span className="ml-auto size-2 rounded-full bg-brand-500" />
               )}
             </button>
           ))}
         </nav>
 
         {filteredManage.length > 0 && (
-          <div className="mt-6">
-            <p className="mb-2 px-4 text-[10px] font-bold tracking-widest text-stone-400 uppercase">
+          <div className="mt-7">
+            <p className="mb-2 px-3 text-[11px] font-semibold tracking-[1px] text-cream/35 uppercase">
               MANAGE
             </p>
-            <nav aria-label="Workspace management" className="space-y-1.5">
+            <nav aria-label="Workspace management" className="space-y-[3px]">
               {filteredManage.map((item) => (
                 <button
                   key={item.id}
                   aria-current={page === item.id ? 'page' : undefined}
                   className={cn(
-                    'flex min-h-11 w-full items-center gap-3 rounded-full px-4 text-left text-sm font-medium transition-all',
+                    'flex min-h-10 w-full items-center gap-3 rounded-[9px] px-3 text-left text-[13.5px] font-medium transition-all duration-150',
                     page === item.id
-                      ? 'bg-emerald-600 text-white font-semibold shadow-md shadow-emerald-950/40'
-                      : 'text-stone-400 hover:bg-white/[0.06] hover:text-white',
+                      ? 'bg-white/[0.08] text-white font-semibold'
+                      : 'text-cream/65 hover:bg-white/5 hover:text-white',
                   )}
                   onClick={() => handleNavClick(item.id)}
                 >
-                  <item.icon className="size-4.5 shrink-0" />
+                  <item.icon
+                    className={cn('size-[17px] shrink-0', page === item.id && 'text-brand-500')}
+                  />
                   <span className="truncate">{item.label}</span>
                 </button>
               ))}
@@ -365,11 +440,11 @@ export default function App() {
         )}
 
         {filteredNav.length === 0 && filteredManage.length === 0 && (
-          <div className="py-6 text-center text-xs text-stone-500">
+          <div className="py-6 text-center text-xs text-cream/40">
             <p>No matching pages</p>
             <button
               type="button"
-              className="mt-2 font-semibold text-emerald-400 underline"
+              className="mt-2 font-semibold text-brand-500 underline"
               onClick={() => setNavSearch('')}
             >
               Clear search
@@ -379,31 +454,31 @@ export default function App() {
       </div>
 
       <div className="mt-auto pt-4 shrink-0">
-        <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 shadow-xs">
-          <div className="mb-1.5 flex items-center gap-2 text-xs font-semibold text-stone-100">
-            <MessageCircle className="size-4 text-emerald-400 shrink-0" />
+        <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
+          <div className="mb-1.5 flex items-center gap-2 text-[13px] font-semibold text-cream">
+            <MessageCircle className="size-4 text-brand-500 shrink-0" />
             Made for the conversation.
           </div>
-          <p className="text-xs leading-relaxed text-stone-400">
+          <p className="text-[11px] leading-relaxed text-cream/40">
             Your menu. Your customers.
             <br />
             One less thing on your plate.
           </p>
         </div>
         <button
-          className="mt-3 flex min-h-9 w-full items-center gap-2.5 rounded-full px-3.5 text-xs font-medium text-stone-300 hover:bg-white/[0.06] hover:text-white transition-all"
+          className="mt-3 flex min-h-9 w-full items-center gap-2.5 rounded-[9px] px-3 text-xs font-medium text-cream/65 hover:bg-white/5 hover:text-white transition-all"
           onClick={() => {
             setHelp(true);
             setMobile(false);
           }}
         >
-          <CircleHelp className="size-4 text-stone-400" />
+          <CircleHelp className="size-4 text-cream/40" />
           Getting started
           <ArrowRight className="ml-auto size-3.5" />
         </button>
         {client && (
           <button
-            className="mt-2.5 flex min-h-9.5 w-full items-center justify-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-4 py-2 text-xs font-semibold text-stone-300 hover:bg-white/10 hover:text-red-400 transition-all"
+            className="mt-2.5 flex min-h-9.5 w-full items-center justify-center gap-2 rounded-[9px] border border-white/[0.06] bg-white/[0.03] px-4 py-2 text-xs font-semibold text-cream/65 hover:bg-white/[0.06] hover:text-red-400 transition-all"
             onClick={() => void client.auth.signOut()}
           >
             <LogOut className="size-3.5" />
@@ -426,22 +501,26 @@ export default function App() {
         switchCompany,
         refresh,
         mutate,
-        detailId:route.id,
-        auth:client??undefined,
+        detailId: route.id,
+        auth: client ?? undefined,
       }}
     >
-      <div className="min-h-dvh bg-[#f8fafc]">
+      <div className="min-h-dvh bg-canvas">
         <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 lg:block">{sidebar}</aside>
-        <Dialog.Root open={mobile} onOpenChange={setMobile}><Dialog.Portal>
+        <Dialog.Root open={mobile} onOpenChange={setMobile}>
+          <Dialog.Portal>
             <Dialog.Overlay
-              className="fixed inset-0 bg-stone-950/60 backdrop-blur-xs transition-opacity"
+              className="fixed inset-0 bg-ink/60 backdrop-blur-xs transition-opacity"
               onClick={() => setMobile(false)}
             />
-            <Dialog.Content aria-describedby={undefined} className="fixed inset-y-0 left-0 z-50 w-72 max-w-[85vw] bg-[#121417] shadow-2xl flex flex-col">
+            <Dialog.Content
+              aria-describedby={undefined}
+              className="fixed inset-y-0 left-0 z-50 w-72 max-w-[85vw] bg-ink shadow-2xl flex flex-col"
+            >
               <Dialog.Title className="sr-only">Workspace navigation</Dialog.Title>
               <div className="absolute right-3 top-4 z-10">
                 <button
-                  className="flex size-8 items-center justify-center rounded-full text-stone-400 hover:text-white hover:bg-white/10 transition-colors"
+                  className="flex size-8 items-center justify-center rounded-lg text-cream/50 hover:text-white hover:bg-white/10 transition-colors"
                   aria-label="Close navigation"
                   onClick={() => setMobile(false)}
                 >
@@ -450,12 +529,13 @@ export default function App() {
               </div>
               {sidebar}
             </Dialog.Content>
-        </Dialog.Portal></Dialog.Root>
+          </Dialog.Portal>
+        </Dialog.Root>
         <div className="lg:pl-64">
-          <header className="sticky top-0 z-20 flex min-h-16 items-center justify-between gap-3 border-b border-stone-200/80 bg-white/95 px-4 backdrop-blur-md sm:px-8 lg:px-10">
+          <header className="sticky top-0 z-20 flex min-h-[72px] items-center justify-between gap-3 border-b border-ink/5 bg-canvas/75 px-4 backdrop-blur-[14px] sm:px-8 lg:px-10">
             <div className="flex min-w-0 items-center gap-2.5 sm:gap-3">
               <button
-                className="icon-btn lg:hidden rounded-full"
+                className="icon-btn-glass lg:hidden"
                 aria-label="Open navigation"
                 onClick={() => setMobile(true)}
               >
@@ -465,17 +545,17 @@ export default function App() {
                 Workspace
               </span>
               <span className="hidden text-stone-300 sm:block">/</span>
-              <span className="truncate text-sm font-bold text-stone-900 tracking-tight">
+              <span className="truncate text-sm font-semibold text-ink">
                 {[...navigation, ...manage].find((n) => n.id === page)?.label}
               </span>
             </div>
             <div className="flex items-center gap-2 sm:gap-3 shrink-0">
               <button
                 type="button"
-                className="hidden md:inline-flex items-center gap-1.5 rounded-full border border-stone-200/80 bg-stone-50/80 px-3 py-1.5 text-xs font-semibold text-stone-700 hover:bg-stone-100 hover:border-stone-300 transition-all shadow-2xs"
+                className="hidden md:inline-flex h-[38px] items-center gap-1.5 rounded-[9px] border border-white/80 bg-white/65 px-3.5 text-[13px] font-semibold text-stone-700 hover:bg-white hover:text-ink transition-all"
                 onClick={() => setHelp(true)}
               >
-                <Sparkles className="size-3.5 text-emerald-600" />
+                <Sparkles className="size-3.5 text-brand-500" />
                 Getting started
               </button>
               <div className="relative">
@@ -496,20 +576,20 @@ export default function App() {
                   className="max-w-36 sm:max-w-56"
                 />
               </div>
-              <div className="h-5 w-px bg-stone-200 hidden sm:block" />
+              <div className="h-5 w-px bg-ink/10 hidden sm:block" />
               <div className="flex items-center gap-2">
-                <div className="hidden sm:flex size-8.5 shrink-0 items-center justify-center rounded-full bg-emerald-700 text-xs font-bold text-white shadow-2xs ring-2 ring-emerald-600/20">
+                <div className="hidden sm:flex size-[34px] shrink-0 items-center justify-center rounded-lg bg-ink-soft text-[13px] font-semibold text-brand-500">
                   {initials(data.company.name)}
                 </div>
                 <div className="hidden text-xs xl:block">
-                  <p className="font-bold text-stone-800">{label(data.role)}</p>
+                  <p className="text-[13px] font-semibold text-ink">{label(data.role)}</p>
                   <p className="text-[11px] text-stone-400">
                     {data.mode === 'demo' ? 'Demo workspace' : 'Team workspace'}
                   </p>
                 </div>
                 {client && (
                   <button
-                    className="icon-btn rounded-full hover:text-stone-800"
+                    className="icon-btn-glass"
                     aria-label="Sign out"
                     onClick={() => void client.auth.signOut()}
                   >
@@ -520,14 +600,14 @@ export default function App() {
             </div>
           </header>
           {data.mode === 'demo' && (
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-stone-200 bg-stone-100/90 px-4 py-2 text-xs text-stone-600 sm:px-8 lg:px-10">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.06] bg-ink px-4 py-2 text-xs text-cream/60 sm:px-8 lg:px-10">
               <span>
-                <span className="font-semibold text-stone-800">Sample workspace</span>
+                <span className="font-semibold text-cream">Sample workspace</span>
                 <span className="mx-2">·</span>Changes saved on this local server. No real messages
                 are sent.
               </span>
               <button
-                className="font-semibold text-emerald-800 hover:text-emerald-950 transition-colors"
+                className="font-semibold text-brand-500 hover:text-brand-400 transition-colors"
                 onClick={() => navigate('playground')}
               >
                 Try an order <span aria-hidden>↗</span>
@@ -551,9 +631,13 @@ export default function App() {
               {page === 'activity' && <Activity />}
               {page === 'security' && <SecuritySettings />}
             </div>
-            <footer className="mt-10 flex flex-wrap justify-between gap-2 border-t border-stone-200 pt-5 text-xs text-stone-400">
+            <footer className="mt-10 flex flex-wrap justify-between gap-2 border-t border-ink/[0.06] pt-5 text-xs text-stone-400">
               <span>Orderly · Conversations to orders</span>
-              <nav className="flex flex-wrap gap-3"><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="/contact">Support</a></nav>
+              <nav className="flex flex-wrap gap-3">
+                <a href="/privacy">Privacy</a>
+                <a href="/terms">Terms</a>
+                <a href="/contact">Support</a>
+              </nav>
               <span>
                 {data.company?.currency || 'PKR'} · {data.company?.timezone || 'Asia/Karachi'}
               </span>
@@ -584,7 +668,7 @@ export default function App() {
             ],
           ].map(([title, copy], index) => (
             <li key={title} className="flex gap-3">
-              <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-emerald-50 text-xs font-semibold text-emerald-800">
+              <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-brand-500/12 text-xs font-semibold text-brand-600">
                 {index + 1}
               </span>
               <div>
@@ -595,7 +679,7 @@ export default function App() {
           ))}
         </ol>
         <button
-          className="btn btn-primary mt-7 w-full rounded-full"
+          className="btn btn-primary mt-7 w-full"
           onClick={() => {
             setHelp(false);
             navigate('playground');
@@ -613,15 +697,15 @@ function Brand({ dark = true }: { dark?: boolean }) {
   return (
     <div
       className={cn(
-        'flex items-center gap-2.5 text-2xl font-bold tracking-tight',
-        dark ? 'text-white' : 'text-stone-900',
+        'flex items-center gap-3 font-serif text-[21px] font-bold tracking-[-0.3px]',
+        dark ? 'text-cream' : 'text-ink',
       )}
     >
-      <span className="relative flex size-8.5 items-center justify-center rounded-xl bg-emerald-600 text-white shadow-sm shadow-emerald-700/20">
+      <span className="relative flex size-10 items-center justify-center rounded-[11px] bg-[linear-gradient(to_bottom,var(--color-canvas)_50%,var(--color-brand-500)_50%)] text-ink">
         <MessageCircle className="size-5" strokeWidth={2.5} />
-        <span className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-white ring-2 ring-emerald-600" />
+        <span className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-brand-500 ring-2 ring-canvas" />
       </span>
-      orderly<span className="self-end pb-0.5 text-emerald-500 font-extrabold">.</span>
+      orderly<span className="self-end pb-0.5 text-brand-500 font-extrabold">.</span>
     </div>
   );
 }
@@ -631,11 +715,11 @@ function FirstBusiness({ onCreated }: { onCreated: (id: string) => void }) {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   return (
-    <div className="grid min-h-dvh place-items-center bg-[#f8fafc] px-4 py-8">
+    <div className="grid min-h-dvh place-items-center bg-canvas px-4 py-8">
       <div className="w-full max-w-md">
         <Brand dark={false} />
         <form
-          className="card mt-8 space-y-5 rounded-3xl border border-stone-200/90 bg-white p-7 sm:p-9 shadow-xl"
+          className="card mt-8 space-y-5 p-7 sm:p-9"
           onSubmit={async (e) => {
             e.preventDefault();
             setBusy(true);
@@ -650,22 +734,20 @@ function FirstBusiness({ onCreated }: { onCreated: (id: string) => void }) {
             }
           }}
         >
-          <h1 className="text-2xl font-bold tracking-tight text-stone-900">
-            Add your first business.
-          </h1>
-          <p className="text-sm text-stone-500 leading-relaxed">
+          <h1 className="page-title">Add your first business.</h1>
+          <p className="text-[13.5px] text-stone-500 leading-relaxed">
             Your administrator account is ready. Create an empty workspace to begin.
           </p>
           <Field label="Business name">
             <input
-              className="input rounded-xl"
+              className="input"
               required
               value={name}
               onChange={(e) => setName(e.target.value)}
             />
           </Field>
           <ErrorNotice message={error} />
-          <button className="btn btn-primary rounded-full w-full" disabled={busy}>
+          <button className="btn btn-primary w-full" disabled={busy}>
             Create workspace
             <Plus className="size-4" />
           </button>
@@ -680,13 +762,14 @@ function Login({ client }: { client: SupabaseClient }) {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState('');
   return (
-    <div className="grid min-h-dvh place-items-center bg-[#f8fafc] px-4 py-8">
+    <div className="grid min-h-dvh place-items-center bg-canvas px-4 py-8">
       <div className="w-full max-w-md">
         <Brand dark={false} />
-        <div className="card mt-8 rounded-3xl border border-stone-200/90 bg-white p-7 sm:p-9 shadow-xl">
-          <h1 className="text-2xl font-bold tracking-tight text-stone-900">Welcome back.</h1>
-          <p className="mb-7 mt-2 text-sm text-stone-500 leading-relaxed">
+        <div className="card mt-8 p-7 sm:p-9">
+          <h1 className="page-title">Welcome back.</h1>
+          <p className="mb-7 mt-2 text-[13.5px] text-stone-500 leading-relaxed">
             Sign in to your restaurant workspace.
           </p>
           <form
@@ -707,7 +790,7 @@ function Login({ client }: { client: SupabaseClient }) {
           >
             <Field label="Email address">
               <input
-                className="input rounded-xl"
+                className="input"
                 type="email"
                 value={email}
                 required
@@ -717,7 +800,7 @@ function Login({ client }: { client: SupabaseClient }) {
             </Field>
             <Field label="Password">
               <input
-                className="input rounded-xl"
+                className="input"
                 type="password"
                 value={password}
                 required
@@ -726,17 +809,106 @@ function Login({ client }: { client: SupabaseClient }) {
               />
             </Field>
             <ErrorNotice message={error} />
-            <button className="btn btn-primary rounded-full w-full" disabled={busy}>
+            {notice && (
+              <p role="status" className="text-sm text-stone-600">
+                {notice}
+              </p>
+            )}
+            <button className="btn btn-primary w-full" disabled={busy}>
               {busy ? 'Signing in…' : 'Sign in'}
               <ArrowRight className="size-4" />
             </button>
           </form>
+          <button
+            className="btn btn-quiet mt-4 w-full"
+            disabled={busy || !email}
+            onClick={async () => {
+              setError('');
+              setBusy(true);
+              try {
+                const result = await client.auth.resetPasswordForEmail(email, {
+                  redirectTo: `${window.location.origin}/login?flow=recovery`,
+                });
+                if (result.error) throw result.error;
+                setNotice('If this account exists, a password-reset link has been sent.');
+              } catch (e) {
+                setError((e as Error).message);
+              } finally {
+                setBusy(false);
+              }
+            }}
+          >
+            Send password reset link
+          </button>
           <p className="mt-6 text-xs leading-relaxed text-stone-400">
             Workspace access is managed by your administrator. Contact them if you need an account
-            or password reset.
+            access. Enter your email above to request a password reset.
           </p>
         </div>
       </div>
     </div>
+  );
+}
+
+function AccountChallenge({
+  client,
+  factorId,
+  onDone,
+}: {
+  client: SupabaseClient;
+  factorId?: string;
+  onDone: () => void;
+}) {
+  const [value, setValue] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  return (
+    <main className="grid min-h-dvh place-items-center p-5">
+      <form
+        className="card w-full max-w-md space-y-5 p-6"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          setBusy(true);
+          setError('');
+          try {
+            const result = factorId
+              ? await client.auth.mfa.challengeAndVerify({ factorId, code: value })
+              : await client.auth.updateUser({ password: value });
+            if (result.error) throw result.error;
+            onDone();
+          } catch (e) {
+            setError((e as Error).message);
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        <h1 className="page-title">{factorId ? 'Verify your sign-in' : 'Set your password'}</h1>
+        <Field label={factorId ? 'Authenticator code' : 'New password (at least 12 characters)'}>
+          <input
+            className="input"
+            type={factorId ? 'text' : 'password'}
+            inputMode={factorId ? 'numeric' : undefined}
+            autoComplete={factorId ? 'one-time-code' : 'new-password'}
+            minLength={factorId ? 6 : 12}
+            maxLength={factorId ? 6 : 128}
+            required
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+          />
+        </Field>
+        <ErrorNotice message={error} />
+        <button disabled={busy} className="btn btn-primary w-full">
+          {busy ? 'Checking…' : 'Continue'}
+        </button>
+        <button type="button" className="btn w-full" onClick={() => void client.auth.signOut()}>
+          Sign out
+        </button>
+        <p className="text-xs text-stone-500">
+          Lost your authenticator? Contact Orderly support for identity verification and account
+          recovery.
+        </p>
+      </form>
+    </main>
   );
 }

@@ -231,7 +231,7 @@ describe('Full Component Rendering with Workspace.Provider', () => {
     const htmlEmpty = renderToStaticMarkup(
       createElement(Workspace.Provider, { value: emptyContext }, createElement(Inbox)),
     );
-    expect(htmlEmpty).toContain('Your inbox is ready');
+    expect(htmlEmpty).toContain('No conversations');
   });
 
   it('renders Playground page cleanly', () => {
@@ -258,7 +258,7 @@ describe('Full Component Rendering with Workspace.Provider', () => {
     const htmlSettings = renderToStaticMarkup(
       createElement(Workspace.Provider, { value: settingsContext }, createElement(Settings)),
     );
-    expect(htmlSettings).toContain('A bot that knows your business.');
+    expect(htmlSettings).toContain('Business settings');
 
     const businessesContext = createMockWorkspaceContext(normalData, 'businesses');
     const htmlBusinesses = renderToStaticMarkup(
@@ -348,7 +348,7 @@ describe('React Hook Order Rules across src/', () => {
   it('specifically verifies App.tsx has navSearch declared unconditionally before early returns', () => {
     const appContent = readFileSync(join(process.cwd(), 'src/App.tsx'), 'utf8');
     const navSearchIndex = appContent.indexOf('const [navSearch, setNavSearch] = useState');
-    const firstEarlyReturnIndex = appContent.indexOf('if (!data)');
+    const firstEarlyReturnIndex = appContent.search(/if\s*\(!data\s*(?:\)|\|\|)/);
 
     expect(navSearchIndex).toBeGreaterThan(-1);
     expect(firstEarlyReturnIndex).toBeGreaterThan(-1);

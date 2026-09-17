@@ -184,12 +184,12 @@ export function WhatsAppSignup() {
     );
   }
   return (
-    <section className="card mb-6 p-6 sm:p-7 rounded-3xl border border-stone-200/80 bg-white shadow-xs">
+    <section className="card mb-6 p-6 sm:p-7">
       <div className="flex items-center gap-3">
-        <div className="flex size-9 items-center justify-center rounded-xl bg-emerald-50 text-emerald-800">
+        <div className="flex size-9 items-center justify-center rounded-[10px] bg-ink text-brand-500">
           <Link2 className="size-5" />
         </div>
-        <h2 className="font-bold text-stone-900 tracking-tight">Connect with Facebook</h2>
+        <h2 className="panel-title">Connect with Facebook</h2>
       </div>
       <p className="mt-3 text-sm leading-relaxed text-stone-500">
         The restaurant signs in with Meta and grants access to its WhatsApp account. Use an Embedded
@@ -199,7 +199,7 @@ export function WhatsAppSignup() {
         <div className="mt-5 space-y-4">
           <label className="flex items-start gap-2.5 text-sm cursor-pointer">
             <input
-              className="mt-1 accent-emerald-700"
+              className="mt-1 accent-brand-500"
               type="checkbox"
               checked={coexistence}
               disabled={working}
@@ -221,7 +221,7 @@ export function WhatsAppSignup() {
                 hint="For a new Cloud API number. Store this PIN securely; the app will not keep a copy."
               >
                 <input
-                  className="input rounded-xl"
+                  className="input"
                   type="password"
                   inputMode="numeric"
                   pattern="[0-9]{6}"
@@ -234,7 +234,7 @@ export function WhatsAppSignup() {
             </div>
           )}
           <button
-            className="btn btn-primary rounded-full shadow-xs"
+            className="btn btn-primary"
             disabled={!ready || busy || working || (!coexistence && !!pin && pin.length !== 6)}
             onClick={launch}
           >
@@ -243,7 +243,7 @@ export function WhatsAppSignup() {
           </button>
           {working && (
             <button
-              className="btn btn-quiet rounded-full ml-2"
+              className="btn btn-quiet ml-2"
               onClick={() => {
                 clearPendingSignupTimer();
                 session.current.active = false;
@@ -255,7 +255,7 @@ export function WhatsAppSignup() {
           )}
         </div>
       ) : (
-        <p className="mt-4 rounded-2xl border border-stone-200/80 bg-stone-50/80 p-4 text-xs leading-relaxed text-stone-500">
+        <p className="mt-4 rounded-xl border border-white bg-white/60 p-4 text-xs leading-relaxed text-stone-500">
           Available after the live backend is configured with your Meta app and Embedded Signup
           configuration. You can also connect a test number with its access token below.
         </p>
@@ -263,7 +263,7 @@ export function WhatsAppSignup() {
       <div className="mt-4">
         <ErrorNotice message={error} />
         {notice && (
-          <p role="status" className="text-sm text-emerald-800">
+          <p role="status" className="text-[13px] text-success-700">
             {notice}
           </p>
         )}

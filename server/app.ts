@@ -150,7 +150,21 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
         const numberId = String(value.metadata?.phone_number_id ?? '');
         const company = await repo.findCompanyByPhoneNumberId(numberId);
         if (!company) continue;
-        for (const status of value.statuses ?? [])
+        for (const status of value.statuses ?? []) {
+          if (
+            ['sent', 'delivered', 'read', 'failed'].includes(status.status) &&
+            typeof status.id === 'string'
+          )
+            await repo.recordDelivery(
+              company.id,
+              status.id,
+              status.status,
+              undefined,
+              undefined,
+              status.errors?.length
+                ? `Meta delivery error ${Number(status.errors[0].code) || 'unknown'}. Check the business number and account health.`
+                : undefined,
+            );
           await repo.addTrace({
             id: randomUUID(),
             companyId: company.id,
@@ -158,6 +172,7 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
             detail: `Meta message ${String(status.id).slice(0, 150)}`,
             createdAt: new Date().toISOString(),
           });
+        }
         if (change.field === 'smb_message_echoes') {
           for (const echo of value.message_echoes ?? []) {
             if (typeof echo.id !== 'string' || typeof echo.to !== 'string') continue;
@@ -240,17 +255,31 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
       });
       const { data, error } = await client.auth.getUser(bearer);
       if (error || !data.user) throw new PublicError('Your session expired. Sign in again.', 401);
+      if (data.user.factors?.some((f) => f.status === 'verified')) {
+        let assurance = '';
+        try {
+          assurance = JSON.parse(Buffer.from(bearer.split('.')[1], 'base64url').toString()).aal;
+        } catch {}
+        // getUser above verifies this token with Supabase before claims are inspected.
+        if (assurance !== 'aal2')
+          throw new PublicError(
+            'Complete authenticator verification to access this workspace.',
+            403,
+          );
+      }
       userId = data.user.id;
-      if (!await repo.consumeRateLimit(`user:${userId}`,180)) {
-        c.header('Retry-After','60');
-        throw new PublicError('Too many requests. Please wait a minute.',429);
+      if (!(await repo.consumeRateLimit(`user:${userId}`, 180))) {
+        c.header('Retry-After', '60');
+        throw new PublicError('Too many requests. Please wait a minute.', 429);
       }
       allowed = await repo.listAllowedCompanies(userId);
     }
     c.set('userId', userId);
     c.set('allowedCompanies', allowed);
     const slug = c.req.query('companySlug');
-    const companyId = slug ? allowed.find(x=>x.slug===slug)?.id : c.req.query('companyId') || c.req.header('x-company-id') || allowed[0]?.id;
+    const companyId = slug
+      ? allowed.find((x) => x.slug === slug)?.id
+      : c.req.query('companyId') || c.req.header('x-company-id') || allowed[0]?.id;
     const company = allowed.find((x) => x.id === companyId);
     // The first platform administrator may create a business in an empty live database.
     if (!company) {
@@ -273,10 +302,14 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
     c.set('company', company);
     c.set('role', role);
     await next();
-    if (c.res.ok && !['GET','OPTIONS'].includes(c.req.method) && c.req.path !== '/api/chat')
-      await repo.audit(company.id,userId,`${c.req.method} ${c.req.path.replace(/\/[a-f0-9-]{36}(?=\/|$)/g,'/:id')}`);
+    if (c.res.ok && !['GET', 'OPTIONS'].includes(c.req.method) && c.req.path !== '/api/chat')
+      await repo.audit(
+        company.id,
+        userId,
+        `${c.req.method} ${c.req.path.replace(/\/[a-f0-9-]{36}(?=\/|$)/g, '/:id')}`,
+      );
   });
-  app.route('/api',managementRoutes(repo));
+  app.route('/api', managementRoutes(repo));
   app.get('/api/account', async (c) =>
     c.json({
       isAdmin: appMode() === 'demo' || (await repo.isAdmin(c.get('userId'))),
@@ -285,15 +318,16 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
   );
   app.get('/api/bootstrap', async (c) => {
     const company = c.get('company');
-    const [products, orderPage, conversationPage, integrations, summary, traces, checks] = await Promise.all([
-      repo.listProducts(company.id),
-      repo.queryOrders(company.id,{pageSize:50,sandbox:appMode()==='demo'}),
-      repo.queryConversations(company.id,{pageSize:50,sandbox:appMode()==='demo'}),
-      repo.getIntegrations(company.id),
-      repo.getSummary(company.id,appMode()==='demo'),
-      repo.listTraces(company.id),
-      readiness(repo,company),
-    ]);
+    const [products, orderPage, conversationPage, integrations, summary, traces, checks] =
+      await Promise.all([
+        repo.listProducts(company.id),
+        repo.queryOrders(company.id, { pageSize: 50, sandbox: appMode() === 'demo' }),
+        repo.queryConversations(company.id, { pageSize: 50, sandbox: appMode() === 'demo' }),
+        repo.getIntegrations(company.id),
+        repo.getSummary(company.id, appMode() === 'demo'),
+        repo.listTraces(company.id),
+        readiness(repo, company),
+      ]);
     const allIntegrations = kindSchema.options.map(
       (kind) =>
         integrations.find((i) => i.kind === kind) ?? {
@@ -318,17 +352,17 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
       company,
       companies: c.get('allowedCompanies'),
       products,
-      orders:orderPage.items,
-      conversations:conversationPage.items,
+      orders: orderPage.items,
+      conversations: conversationPage.items,
       integrations: allIntegrations,
       aiConnection: {
         provider: company.ai.provider,
         keyMode: company.ai.keyMode,
         configured: aiKeyConfigured,
       },
-      usage:[],
+      usage: [],
       summary,
-      readiness:checks,
+      readiness: checks,
       traces,
     });
   });
@@ -380,7 +414,8 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
     };
     if (
       c.get('role') !== 'admin' &&
-      company.ai.keyMode === 'platform' && company.ai.monthlyBudgetUsd > c.get('company').ai.monthlyBudgetUsd
+      company.ai.keyMode === 'platform' &&
+      company.ai.monthlyBudgetUsd > c.get('company').ai.monthlyBudgetUsd
     )
       throw new PublicError('Ask the platform administrator to raise your AI budget.', 403);
     if (
@@ -393,12 +428,24 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
         403,
       );
     validateModelConfiguration(company);
-    if (c.get('role') !== 'admin' && company.ai.keyMode === 'platform' && JSON.stringify(company.ai.pricing)!==JSON.stringify(c.get('company').ai.pricing))
-      throw new PublicError('Only the platform administrator can change rates for platform-funded AI.',403);
-    if (JSON.stringify(company.ai)!==JSON.stringify(c.get('company').ai)) company.modelVerification=undefined;
-    if (appMode()==='live' && company.botEnabled) {
-      const missing=(await readiness(repo,company)).filter(check=>!check.ready);
-      if(missing.length)throw new PublicError(`Before enabling automation: ${missing.map(check=>check.label).join('; ')}.`,409);
+    if (
+      c.get('role') !== 'admin' &&
+      company.ai.keyMode === 'platform' &&
+      JSON.stringify(company.ai.pricing) !== JSON.stringify(c.get('company').ai.pricing)
+    )
+      throw new PublicError(
+        'Only the platform administrator can change rates for platform-funded AI.',
+        403,
+      );
+    if (JSON.stringify(company.ai) !== JSON.stringify(c.get('company').ai))
+      company.modelVerification = undefined;
+    if (appMode() === 'live' && company.botEnabled) {
+      const missing = (await readiness(repo, company)).filter((check) => !check.ready);
+      if (missing.length)
+        throw new PublicError(
+          `Before enabling automation: ${missing.map((check) => check.label).join('; ')}.`,
+          409,
+        );
     }
     await repo.saveCompany(company);
     return c.json(company);
@@ -539,6 +586,7 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
         ? [
             makeJob(conversation.companyId, 'whatsapp_send', {
               conversationId: conversation.id,
+              messageId: next.messages.at(-1)?.id,
               text,
             }),
           ]
@@ -575,20 +623,35 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
         throw new PublicError('That WhatsApp number is already assigned to another company.');
     }
     if (kind === 'whatsapp') {
-      const token=body.secret || decryptSecret((await repo.getSecret(c.get('company').id,kind)) || '');
-      const adapter=new WhatsAppAdapter(integration,token);
+      const token =
+        body.secret || decryptSecret((await repo.getSecret(c.get('company').id, kind)) || '');
+      const adapter = new WhatsAppAdapter(integration, token);
       await adapter.verifyOwnership();
       await adapter.test();
       await adapter.subscribe();
-      integration.config.ownershipVerifiedAt=new Date().toISOString();
-      integration.status='connected';integration.checkedAt=new Date().toISOString();
+      integration.config.ownershipVerifiedAt = new Date().toISOString();
+      integration.status = 'connected';
+      integration.checkedAt = new Date().toISOString();
     }
+    if (kind === c.get('company').ai.provider || kind === 'whatsapp')
+      await repo.saveCompany({
+        ...c.get('company'),
+        botEnabled: false,
+        modelVerification: undefined,
+        privacy:
+          kind === c.get('company').ai.provider
+            ? {
+                ...c.get('company').privacy,
+                aiDataApproved: false,
+                retentionDays: c.get('company').privacy?.retentionDays ?? 0,
+              }
+            : c.get('company').privacy,
+      });
     await repo.saveIntegration(
       c.get('company').id,
       integration,
       body.secret ? encryptSecret(body.secret) : undefined,
     );
-    if (kind===c.get('company').ai.provider || kind==='whatsapp') await repo.saveCompany({...c.get('company'),botEnabled:false,modelVerification:undefined});
     return c.json(integration);
   });
   app.post('/api/integrations/:kind/test', async (c) => {

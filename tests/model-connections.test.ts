@@ -30,6 +30,7 @@ beforeEach(() => {
   company = structuredClone(seedCompanies[0]);
   vi.spyOn(repo, 'isAdmin').mockResolvedValue(false);
   vi.spyOn(repo, 'getRole').mockResolvedValue('owner');
+  vi.spyOn(repo, 'listAllowedCompanies').mockImplementation(() => repo.listCompanies());
   vi.stubEnv('APP_MODE', 'live');
   vi.stubEnv('ORDERLY_RUNTIME', '');
   vi.stubEnv('VERCEL', '');

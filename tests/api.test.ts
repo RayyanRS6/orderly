@@ -108,6 +108,18 @@ describe('HTTP and service behavior', () => {
     ).toBe(404);
     expect(
       (await request(`/orders/${placed.order!.id}/status`, { status: 'accepted' })).status,
+    ).toBe(409);
+    expect(
+      (
+        await request(`/orders/${placed.order!.id}/call`, {
+          outcome: 'confirmed',
+          addressVerified: false,
+          note: 'Confirmed by phone',
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (await request(`/orders/${placed.order!.id}/status`, { status: 'accepted' })).status,
     ).toBe(200);
     expect(
       (await request(`/orders/${placed.order!.id}/status`, { status: 'completed' })).status,
@@ -145,6 +157,7 @@ describe('HTTP and service behavior', () => {
   });
   it('enforces staff permissions and company membership for authenticated requests', async () => {
     vi.stubEnv('APP_MODE', 'live');
+    vi.spyOn(repo, 'listAllowedCompanies').mockResolvedValue([company]);
     vi.spyOn(repo, 'getRole').mockImplementation(async (_user, id) =>
       id === company.id ? 'staff' : null,
     );
@@ -293,7 +306,7 @@ describe('HTTP and service behavior', () => {
   it.each(['human takeover', 'company pause'])(
     'respects %s for customer cancellation',
     async (reason) => {
-      const { conversation, order } = await pendingOrder();
+      const { conversation, order } = await pendingOrder('whatsapp');
       if (reason === 'human takeover') {
         await repo.saveConversation({ ...conversation, mode: 'human', version: 2 }, 1);
       } else {

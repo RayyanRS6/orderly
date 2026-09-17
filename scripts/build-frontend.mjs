@@ -17,3 +17,4 @@ for (const script of ['node_modules/typescript/bin/tsc', 'node_modules/vite/bin/
   });
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
+await import('./prerender-public.mjs');

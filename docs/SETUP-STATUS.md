@@ -1,4 +1,10 @@
-# Account setup status — September 13, 2026
+# Account setup status
+
+## Update — September 17, 2026
+
+The audit fixes and UI from `Claude-UI-Rayyan` are deployed on the existing Cloudflare/Supabase stack. Both launch migrations are applied; 17 application tables have RLS enabled. Laziza remains paused with no integrations and no live orders. The scheduler is configured. No paid plans or domain were purchased. See the [implementation report](ORDERLY-IMPLEMENTATION-2026-09-17.md) for verification, current capabilities and remaining provider/onboarding work.
+
+## Historical setup record — September 13, 2026
 
 - Cloudflare + Supabase architecture is deployed. Backend bundle (1.37 MB) runs in the hosted Deno runtime; 132 tests and TypeScript checks pass. Scheduler migration is applied and Vault worker credentials are configured. No paid upgrades purchased.
 - Cloudflare account `05bf42b85732aa69af0da89eaa4c871f` under `waytogalaxy999@gmail.com` authorized Wrangler through device sign-in. Frontend: `https://orderly.waytogalaxy999.workers.dev`, version `d99ab118-2bf5-4a0a-a554-5edbd161835f`. Backend: `https://zygsuxgqkeedgcbjhfzx.supabase.co/functions/v1/orderly`. Auth site/redirect URL and exact-origin CORS point to this frontend. Live login page visibly loads. Supabase deployment access was supplied through a loopback-only token form and is stored in ignored `.local/deploy.env`.
