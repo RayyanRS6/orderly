@@ -111,8 +111,13 @@ Follow [the deployment guide](docs/DEPLOYMENT.md) for Supabase, Cloudflare, Meta
 
 ## Scope and next milestones
 
-This is a pilot foundation. Live-account verification remains necessary. Team accounts and membership are founder-managed in Supabase; there is no self-service invitation or subscription billing flow yet. The dashboard loads up to 500 recent orders and 200 recent conversations. Older orders remain in the database; pagination and aggregate reporting are the next scaling work. Conversation messages are currently stored in JSON snapshots and should move to a paginated message table before high-volume rollout.
+Live-account verification remains necessary. Owners can invite and manage team members in Security & privacy; subscription billing is not implemented. Orders and conversations support pagination and aggregate reporting, and older messages are stored in a paginated archive. The header bell reports unresolved live orders, handoffs and failed jobs. Browser alerts work while the app is open; external email/phone-push escalation is not configured. Opt-in retention is available in Security & privacy and starts disabled.
 
 Coexistence currently handles new staff echoes, including edit/delete notices. Historical chat imports, contact synchronization, full media rendering, voice-note transcription, payments, precise inventory reservations, delivery tracking, and arbitrary workflow building are outside this version. Media requests go to staff. Availability is an item on/off flag, not a stock count. Very large quotes that cannot fit a complete WhatsApp review are held for staff rather than truncated.
 
-External APIs cannot guarantee exactly-once side effects after an ambiguous network timeout. Orders are deduplicated internally; spreadsheet retries reconcile by order ID. A WhatsApp reply may still be repeated if Meta accepted it but the response was lost. Monitor traces and failed jobs during the pilot. Add cursor-based history, retention controls and load testing before expanding beyond a small founder-managed restaurant pilot.
+External APIs cannot guarantee exactly-once side effects after an ambiguous network timeout. Orders are deduplicated internally; spreadsheet retries reconcile by order ID. A WhatsApp reply may still be repeated if Meta accepted it but the response was lost. Monitor traces and failed jobs during the pilot. Complete the documented provider onboarding, owned-number end-to-end test, backup/restore drill and representative load testing before expanding beyond a small founder-managed restaurant pilot.
+
+
+## Current launch status (September 18)
+
+See the [audit closure](docs/ORDERLY-AUDIT-CLOSURE-2026-09-18.md) for implemented findings and remaining live checks, and the [step-by-step launch guide](docs/ORDERLY-LAUNCH-STEPS-2026-09-18.md) for operator and client setup. The original audit remains a point-in-time record.

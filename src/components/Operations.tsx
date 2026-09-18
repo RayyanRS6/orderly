@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { RetentionSettings } from './RetentionSettings';
 import type { TeamMember, Job } from '../shared/types';
 import { api } from '../lib/api';
 import { useWorkspace } from '../lib/workspace';
@@ -436,6 +437,7 @@ export function SecuritySettings() {
               Bot controls
             </button>
           </section>
+          <RetentionSettings />
           <section className="card p-5 sm:p-6">
             <h2 className="panel-title">Retention and support</h2>
             <p className="mt-3 text-sm leading-6 text-stone-500">

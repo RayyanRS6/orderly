@@ -21,6 +21,30 @@ import { SupabaseRepository } from './storage/supabase';
 import { appMode } from './config';
 
 export interface Repository {
+  platformBudget(): Promise<import('../src/shared/types').PlatformBudget>;
+  configurePlatformBudget(limit: number): Promise<import('../src/shared/types').PlatformBudget>;
+  alertPreferences(
+    companyId: string,
+    userId: string,
+  ): Promise<import('../src/shared/types').AlertPreferences>;
+  configureAlerts(
+    companyId: string,
+    userId: string,
+    enabled: boolean,
+    minutes: number,
+  ): Promise<import('../src/shared/types').AlertPreferences>;
+  alertRecipient(companyId: string, userId: string): Promise<string | null>;
+  hasOverdueAttention(companyId: string, minutes: number): Promise<boolean>;
+  staffAttention(companyId: string): Promise<import('../src/shared/types').StaffAttention>;
+  retentionStatus(
+    companyId: string,
+    previewDays: number,
+  ): Promise<import('../src/shared/types').RetentionStatus>;
+  configureRetention(
+    companyId: string,
+    days: number,
+    actorId: string,
+  ): Promise<import('../src/shared/types').RetentionStatus>;
   recordDelivery(
     companyId: string,
     externalId: string,

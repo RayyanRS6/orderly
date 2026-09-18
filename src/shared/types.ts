@@ -14,7 +14,12 @@ export interface BotConfig {
   fulfillment: 'both' | 'pickup' | 'delivery';
   requirePhoneConfirmation: boolean;
 }
-export interface BotVersion { version: number; config: BotConfig; publishedAt: string; publishedBy: string }
+export interface BotVersion {
+  version: number;
+  config: BotConfig;
+  publishedAt: string;
+  publishedBy: string;
+}
 export interface BotSettings {
   draft: BotConfig;
   published?: BotVersion;
@@ -38,7 +43,13 @@ export interface Company {
   openingHours: { start: string; end: string; days: number[] };
   deliveryZones: DeliveryZone[];
   faqs: { question: string; answer: string }[];
-  ai: { provider: Provider; model: string; keyMode: 'platform' | 'own'; monthlyBudgetUsd: number; pricing?: [number, number] };
+  ai: {
+    provider: Provider;
+    model: string;
+    keyMode: 'platform' | 'own';
+    monthlyBudgetUsd: number;
+    pricing?: [number, number];
+  };
   catalogSyncedAt?: string;
   createdAt: string;
   bot?: BotSettings;
@@ -150,7 +161,13 @@ export interface Order {
   updatedAt: string;
   sandbox?: boolean;
   phoneConfirmationRequired?: boolean;
-  phoneConfirmation?: { outcome: 'confirmed' | 'unreachable' | 'declined'; addressVerified: boolean; note: string; at: string; actorId: string };
+  phoneConfirmation?: {
+    outcome: 'confirmed' | 'unreachable' | 'declined';
+    addressVerified: boolean;
+    note: string;
+    at: string;
+    actorId: string;
+  };
 }
 export interface Trace {
   id: string;
@@ -166,6 +183,7 @@ export interface Trace {
   code?: string;
 }
 export interface Usage {
+  funding?: 'platform' | 'own';
   id: string;
   companyId: string;
   provider: Provider;
@@ -178,12 +196,80 @@ export interface Usage {
   sandbox?: boolean;
   estimated?: boolean;
 }
-export interface PageResult<T> { items: T[]; total: number; page: number; pageSize: number }
-export interface ListFilter { page?: number; pageSize?: number; search?: string; status?: string; sandbox?: boolean; from?: string; to?: string }
-export interface WorkspaceSummary { orders: number; pending: number; value: number; conversations: number; needsStaff: number; monthlySpend: number; daily: { date: string; count: number }[] }
-export interface ReadinessCheck { id: string; label: string; ready: boolean }
-export interface ModelOption { id: string; name: string; available: boolean; priced: boolean; inputRate?: number; outputRate?: number; verified?: boolean }
-export interface TeamMember { userId: string; role: 'owner' | 'staff'; email?: string }
+export interface PageResult<T> {
+  items: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+export interface ListFilter {
+  page?: number;
+  pageSize?: number;
+  search?: string;
+  status?: string;
+  sandbox?: boolean;
+  from?: string;
+  to?: string;
+}
+export interface WorkspaceSummary {
+  orders: number;
+  pending: number;
+  value: number;
+  conversations: number;
+  needsStaff: number;
+  monthlySpend: number;
+  daily: { date: string; count: number }[];
+}
+export interface ReadinessCheck {
+  id: string;
+  label: string;
+  ready: boolean;
+}
+export interface ModelOption {
+  id: string;
+  name: string;
+  available: boolean;
+  priced: boolean;
+  inputRate?: number;
+  outputRate?: number;
+  verified?: boolean;
+}
+export interface TeamMember {
+  userId: string;
+  role: 'owner' | 'staff';
+  email?: string;
+}
+export interface RetentionStatus {
+  days: number;
+  eligibleAfter: string | null;
+  lastRunAt: string | null;
+  lastDeleted: number;
+  eligibleConversations: number;
+}
+export interface StaffAttention {
+  total: number;
+  orders: number;
+  handoffs: number;
+  failures: number;
+  budgets: number;
+  items: {
+    id: string;
+    kind: 'order' | 'handoff' | 'job' | 'budget';
+    entityId: string;
+    createdAt: string;
+  }[];
+}
+export interface AlertPreferences {
+  enabled: boolean;
+  responseMinutes: number;
+  emailVerified: boolean;
+  available?: boolean;
+}
+export interface PlatformBudget {
+  limitUsd: number;
+  spentUsd: number;
+  reservedUsd: number;
+}
 export type IntegrationKind = 'whatsapp' | 'sheets' | 'openai' | 'anthropic' | 'gemini';
 export interface Integration {
   kind: IntegrationKind;
@@ -255,7 +341,7 @@ export interface TurnResult {
 export interface Job {
   id: string;
   companyId: string;
-  kind: 'incoming' | 'whatsapp_send' | 'sheet_sync';
+  kind: 'incoming' | 'whatsapp_send' | 'sheet_sync' | 'staff_alert';
   payload: Record<string, unknown>;
   status: 'pending' | 'processing' | 'done' | 'failed';
   attempts: number;

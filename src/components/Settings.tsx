@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { PlatformBudgetSettings } from './PlatformBudgetSettings';
 import {
   ArrowRight,
   Bot,
@@ -811,6 +812,7 @@ export function Businesses() {
           </button>
         )}
       </PageHeading>
+      {data.role === 'admin' && <PlatformBudgetSettings />}
       <div className="grid gap-5 md:grid-cols-2">
         {data.companies.map((company) => (
           <section key={company.id} className="card p-6 sm:p-7">

@@ -9,6 +9,7 @@ export function PublicHeader() {
       </a>
       <nav className="flex flex-wrap items-center gap-4 text-sm">
         <a href="/#how-it-works">How it works</a>
+        <a href="/pricing">Pricing</a>
         <a href="/contact">Contact</a>
         <a href="/login" className="btn">
           Sign in
@@ -188,6 +189,66 @@ export function NotFound() {
           </a>
         </div>
       </main>
+    </div>
+  );
+}
+
+export function Pricing() {
+  return (
+    <div className="min-h-dvh bg-canvas">
+      <PublicHeader />
+      <main className="mx-auto max-w-4xl px-5 py-12 sm:px-8">
+        <p className="text-xs font-semibold uppercase tracking-wider text-brand-800">
+          Managed restaurant onboarding
+        </p>
+        <h1 className="mt-4 font-serif text-4xl font-bold">
+          Clear costs, agreed before you start.
+        </h1>
+        <p className="mt-6 max-w-2xl text-base leading-8 text-stone-600">
+          Your quote separates Orderly's setup and service fee from the WhatsApp and AI usage you
+          pay to your providers. We agree the scope, support hours and usage expectations before
+          connecting your business.
+        </p>
+        <div className="mt-9 grid gap-5 md:grid-cols-3">
+          {[
+            [
+              'One-time setup',
+              'Workspace, menu, delivery rules, bot configuration, supported account connections and an owned-number acceptance test. Your quote defines the included setup and training.',
+            ],
+            [
+              'Monthly Orderly service',
+              'Access to the dashboard, order workflow and agreed support. Higher order volumes, extra branches or custom features may need a different quote.',
+            ],
+            [
+              'Provider usage',
+              'Your own AI API key and WhatsApp business account are billed separately by those providers. Usage, model, message category and destination affect their charges.',
+            ],
+          ].map(([title, text]) => (
+            <section key={title} className="card p-6">
+              <h2 className="panel-title">{title}</h2>
+              <p className="mt-4 text-sm leading-7 text-stone-600">{text}</p>
+            </section>
+          ))}
+        </div>
+        <section className="mt-9 space-y-4 rounded-2xl border border-ink/10 p-6">
+          <h2 className="panel-title">What to include in your request</h2>
+          <p className="text-sm leading-7 text-stone-600">
+            Tell us your restaurant name, number of branches, approximate monthly WhatsApp
+            conversations, menu size and whether you already have a WhatsApp Business account. Do
+            not send API keys or passwords by email.
+          </p>
+          <a className="btn btn-primary" href="/contact">
+            Request a written quote <ArrowRight className="size-4" />
+          </a>
+        </section>
+        <p className="mt-7 text-sm leading-7 text-stone-500">
+          Meta eligibility and approval are separate from Orderly's fees. A connection is activated
+          after setup checks and a real test. Staff still confirm orders by phone and manage
+          preparation and dispatch. Payments, rider tracking and arbitrary workflow building are not
+          included in the current ordering service.
+        </p>
+      </main>
+      <PublicFooter />
     </div>
   );
 }

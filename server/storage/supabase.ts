@@ -38,6 +38,58 @@ const jobRow = (job: Job) => ({
 
 /** All methods run on the server using the service role; API authorization is required. */
 export class SupabaseRepository implements Repository {
+  platformBudget() {
+    return this.rpc<import('../../src/shared/types').PlatformBudget>('platform_budget', {});
+  }
+  configurePlatformBudget(limit: number) {
+    return this.rpc<import('../../src/shared/types').PlatformBudget>('configure_platform_budget', {
+      p_limit: limit,
+    });
+  }
+  alertPreferences(companyId: string, userId: string) {
+    return this.rpc<import('../../src/shared/types').AlertPreferences>('alert_preferences', {
+      p_company_id: companyId,
+      p_user_id: userId,
+    });
+  }
+  configureAlerts(companyId: string, userId: string, enabled: boolean, minutes: number) {
+    return this.rpc<import('../../src/shared/types').AlertPreferences>('configure_alerts', {
+      p_company_id: companyId,
+      p_user_id: userId,
+      p_enabled: enabled,
+      p_minutes: minutes,
+    });
+  }
+  alertRecipient(companyId: string, userId: string) {
+    return this.rpc<string | null>('alert_recipient', {
+      p_company_id: companyId,
+      p_user_id: userId,
+    });
+  }
+  hasOverdueAttention(companyId: string, minutes: number) {
+    return this.rpc<boolean>('has_overdue_attention', {
+      p_company_id: companyId,
+      p_minutes: minutes,
+    });
+  }
+  staffAttention(companyId: string) {
+    return this.rpc<import('../../src/shared/types').StaffAttention>('staff_attention', {
+      p_company_id: companyId,
+    });
+  }
+  retentionStatus(companyId: string, previewDays: number) {
+    return this.rpc<import('../../src/shared/types').RetentionStatus>('retention_status', {
+      p_company_id: companyId,
+      p_preview_days: previewDays,
+    });
+  }
+  configureRetention(companyId: string, days: number, actorId: string) {
+    return this.rpc<import('../../src/shared/types').RetentionStatus>('configure_retention', {
+      p_company_id: companyId,
+      p_days: days,
+      p_actor_id: actorId,
+    });
+  }
   async recordDelivery(
     companyId: string,
     externalId: string,

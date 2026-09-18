@@ -44,6 +44,35 @@ function request(
   });
 }
 describe('launch safety and management', () => {
+  it('does not resurrect a deleted conversation from a stale worker snapshot', async () => {
+    const conversation = (await repo.listConversations(company.id))[0];
+    vi.spyOn(repo, 'getConversation').mockResolvedValue(undefined);
+    await expect(
+      handleTurn(
+        repo,
+        company,
+        { ...conversation, version: 1 },
+        { messageId: 'after-delete', text: 'hello', now: new Date().toISOString() },
+      ),
+    ).rejects.toThrow('conversation was deleted');
+  });
+  it('requires explicit retention confirmation and validates the retention period', async () => {
+    expect((await request('/privacy/retention')).status).toBe(200);
+    expect((await request('/privacy/retention', { days: 30 }, 'PUT')).status).toBe(400);
+    expect((await request('/privacy/retention', { days: 3, confirmed: true }, 'PUT')).status).toBe(
+      400,
+    );
+    const response = await request('/privacy/retention', { days: 60, confirmed: true }, 'PUT');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ days: 60, lastDeleted: 0 });
+  });
+  it('does not include sandbox orders or other businesses in staff alerts', async () => {
+    const response = await request('/attention');
+    expect(response.status).toBe(200);
+    const result = await response.json();
+    expect(result.orders).toBe(0);
+    expect(JSON.stringify(result)).not.toContain('customerPhone');
+  });
   it('pauses and clears approval before replacing an active provider key', async () => {
     await repo.saveCompany({
       ...company,

@@ -3,7 +3,7 @@ import ReactDOM from 'react-dom/client';
 import App from './App';
 import { LegalPage } from './components/Legal';
 import { ErrorBoundary } from './components/ui';
-import { Landing, Contact, NotFound } from './components/Public';
+import { Landing, Contact, NotFound, Pricing } from './components/Public';
 import { parseRoute } from './lib/routes';
 import './index.css';
 
@@ -25,6 +25,8 @@ const content = legalKind ? (
   <LegalPage kind={legalKind} />
 ) : pathname === '/' ? (
   <Landing />
+) : pathname === '/pricing' ? (
+  <Pricing />
 ) : pathname === '/contact' ? (
   <Contact />
 ) : parseRoute(pathname).valid ? (

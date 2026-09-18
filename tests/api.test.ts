@@ -168,6 +168,47 @@ describe('HTTP and service behavior', () => {
       'Content-Type': 'application/json',
     };
     expect((await app.request('http://localhost/api/bootstrap', { headers })).status).toBe(200);
+    expect((await app.request('http://localhost/api/attention', { headers })).status).toBe(200);
+    expect((await app.request('http://localhost/api/platform/budget', { headers })).status).toBe(
+      403,
+    );
+    expect(
+      (
+        await app.request('http://localhost/api/platform/budget', {
+          headers,
+          method: 'PUT',
+          body: JSON.stringify({ limitUsd: 500 }),
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await app.request('http://localhost/api/notifications', {
+          headers,
+          method: 'PUT',
+          body: JSON.stringify({ enabled: true, responseMinutes: 10, userId: 'someone-else' }),
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await app.request('http://localhost/api/attention', {
+          headers: { ...headers, 'x-company-id': other.id },
+        })
+      ).status,
+    ).toBe(403);
+    expect((await app.request('http://localhost/api/privacy/retention', { headers })).status).toBe(
+      403,
+    );
+    expect(
+      (
+        await app.request('http://localhost/api/privacy/retention', {
+          method: 'PUT',
+          headers,
+          body: JSON.stringify({ days: 30, confirmed: true }),
+        })
+      ).status,
+    ).toBe(403);
     expect(
       (
         await app.request('http://localhost/api/bootstrap', {

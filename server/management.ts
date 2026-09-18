@@ -12,6 +12,7 @@ import { createConversation } from '../src/domain/engine';
 import { readiness } from './readiness';
 import { appMode } from './config';
 import { createClient } from '@supabase/supabase-js';
+import { emailAlertsAvailable } from './integrations/alerts';
 
 export type AppEnv = {
   Variables: { company: Company; role: Role; userId: string; allowedCompanies: Company[] };
@@ -21,6 +22,63 @@ export function managementRoutes(repo: Repository) {
   const owner = (role: Role) => {
     if (role === 'staff') throw new PublicError('Only an owner can manage this setting.', 403);
   };
+  app.get('/platform/budget', async (c) => {
+    if (c.get('role') !== 'admin')
+      throw new PublicError('Platform administrator access required.', 403);
+    return c.json(await repo.platformBudget());
+  });
+  app.put('/platform/budget', async (c) => {
+    if (c.get('role') !== 'admin')
+      throw new PublicError('Platform administrator access required.', 403);
+    const { limitUsd } = z
+      .object({ limitUsd: z.number().min(0).max(100000) })
+      .strict()
+      .parse(await c.req.json());
+    return c.json(await repo.configurePlatformBudget(limitUsd));
+  });
+  app.get('/notifications', async (c) =>
+    c.json({
+      ...(await repo.alertPreferences(c.get('company').id, c.get('userId'))),
+      available: emailAlertsAvailable(),
+    }),
+  );
+  app.put('/notifications', async (c) => {
+    const { enabled, responseMinutes } = z
+      .object({ enabled: z.boolean(), responseMinutes: z.number().int().min(5).max(120) })
+      .strict()
+      .parse(await c.req.json());
+    if (enabled && !emailAlertsAvailable())
+      throw new PublicError(
+        'Email alerts require a configured mail service and verified sender.',
+        409,
+      );
+    return c.json({
+      ...(await repo.configureAlerts(
+        c.get('company').id,
+        c.get('userId'),
+        enabled,
+        responseMinutes,
+      )),
+      available: emailAlertsAvailable(),
+    });
+  });
+  app.get('/attention', async (c) => c.json(await repo.staffAttention(c.get('company').id)));
+  const retentionDays = z
+    .number()
+    .int()
+    .refine((n) => n === 0 || (n >= 30 && n <= 3650), 'Choose 0 (off) or 30–3650 days.');
+  app.get('/privacy/retention', async (c) => {
+    owner(c.get('role'));
+    const days = retentionDays.parse(Number(c.req.query('days') ?? 0));
+    return c.json(await repo.retentionStatus(c.get('company').id, days));
+  });
+  app.put('/privacy/retention', async (c) => {
+    owner(c.get('role'));
+    const { days } = z
+      .object({ days: retentionDays, confirmed: z.literal(true) })
+      .parse(await c.req.json());
+    return c.json(await repo.configureRetention(c.get('company').id, days, c.get('userId')));
+  });
   const filterSchema = z.object({
     page: z.coerce.number().int().min(1).max(100000).default(1),
     pageSize: z.coerce.number().int().min(1).max(100).default(50),

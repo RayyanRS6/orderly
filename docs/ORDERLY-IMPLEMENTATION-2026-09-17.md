@@ -5,11 +5,11 @@ Updated 17 September 2026. This supplements the point-in-time [audit](ORDERLY-AU
 ## Deployed result
 
 - Frontend and public website: https://orderly.waytogalaxy999.workers.dev
-- Verified Cloudflare deployment: `b12769bb-e647-41c3-8296-ab678ca64681`. The live app bundle matches the final local production build.
+- Verified Cloudflare deployment: `c8673e02-7a73-41bc-8c36-ad60e62b7e03`. The live app bundle matches the final local production build.
 - Backend, authentication and database: existing Supabase project `zygsuxgqkeedgcbjhfzx`.
 - Laziza's bot page: https://orderly.waytogalaxy999.workers.dev/app/laziza-22d292/bot
 - Laziza remains **paused**, with no WhatsApp, AI or Sheet integrations connected and no live orders. No subscription or domain was purchased.
-- The `Claude-UI-Rayyan` visual changes at `21c3169` were brought into the current `feat-UI-Rayyan` working tree using a three-way content merge. Warm colors, typography, cards and the dark sidebar are preserved; accessibility and responsive fixes were added. The named source branch was not overwritten.
+- The `Claude-UI-Rayyan` visual changes at `21c3169` were brought into the current `feat-UI-Rayyan` working tree using a three-way content merge. Warm colors, typography, cards and the dark sidebar are preserved; accessibility and responsive fixes were added. The named source branch was not overwritten. The completed UI and audit changes were merged into `main`; follow-up work is also maintained on `main`.
 
 ## What changed
 
@@ -25,7 +25,7 @@ Updated 17 September 2026. This supplements the point-in-time [audit](ORDERLY-AU
 | Operations          | Paginated/searchable order and conversation lists, full matching CSV export, archived message history, live/sandbox filters, aggregated totals, scoped polling, visible refresh failures, activity/error view and failed-job retries.                                                  |
 | Message delivery    | Accepted/sent/delivered/read/failed receipts associated with messages; out-of-order callbacks cannot downgrade a read receipt. Accepted Meta IDs are checkpointed so bookkeeping retries do not resend an already accepted message.                                                    |
 | WhatsApp connection | Validates that the selected phone belongs to the authorized WhatsApp Business account before replacing local credentials; subscription must succeed first. Local disconnect pauses automation and cancels relevant local work.                                                         |
-| Privacy operations  | Owner-only customer export/deletion, paused-processing guard, job cleanup, webhook deduplication tombstones and explicit handling of external copies. There is no automatic expiry enabled; retention cleanup is a manual operational responsibility.                                  |
+| Privacy operations  | Owner-only customer export/deletion, paused-processing guard, job cleanup, webhook deduplication tombstones and explicit handling of external copies. Opt-in automatic retention with preview, confirmation, a 24-hour grace period and protected active work; disabled by default.    |
 | Account security    | MFA enrollment and challenge, opt-in MFA enforcement in the API and database reads, password recovery, password change, global sign-out, staff invitations/access management, last-owner protection, distributed API rate limits and immutable actor-attributed administrative events. |
 | Hosting security    | CSP, frame restrictions, nosniff, referrer policy, HSTS and permissions restrictions; private app pages marked noindex. API secrets remain on the backend.                                                                                                                             |
 | Worker safety       | Eight-minute leases cover the documented paid Supabase runtime; database and provider calls have deadlines. Sandbox work is isolated from external delivery jobs.                                                                                                                      |
@@ -76,10 +76,10 @@ Infrastructure is shared across your clients. The first client's service fee wou
 
 ## Verification completed
 
-- **178 automated tests across 11 files passed**, including PostgreSQL migration/transaction tests, cross-business isolation, MFA reads, archival history, phone confirmation, sandbox isolation, model discovery, credential-change approval and receipt retry handling.
+- **194 automated tests across 12 files passed**, including PostgreSQL migration/transaction tests, cross-business isolation, MFA reads, archival history, phone confirmation, sandbox isolation, model discovery, credential-change approval and receipt retry handling.
 - TypeScript production build passed. The actual Supabase bundle started in Deno, answered health checks and rejected anonymous access.
 - Dependency audit returned **zero known vulnerabilities** at the time checked; this is not a proof that the application has no vulnerabilities.
-- Both launch migrations applied atomically to the existing Supabase project. All **17 application tables have row-level security enabled**. Existing replaced function definitions were saved in ignored local deployment records.
+- Both launch migrations applied atomically to the existing Supabase project. All **20 application tables have row-level security enabled**, including the opt-in retention policy table. Existing replaced function definitions were saved in ignored local deployment records.
 - Live repository reads verified summaries, pagination and integration state. The scheduler reports configured credentials and scheduled recovery.
 - Live HTTP checks: landing/contact/legal pages and dashboard deep links return 200; an unknown public route returns 404; public pages carry CSP; backend health reports live mode; anonymous bootstrap returns 401.
 - The existing authenticated browser session loaded Laziza's live bot settings and readiness checks successfully.
@@ -90,17 +90,35 @@ Desktop viewport emulation does not prove every physical phone, on-screen keyboa
 
 ## Before accepting real customers
 
-1. **Resolve the Meta account/setup prerequisites.** The earlier setup record reports a Facebook business-portfolio restriction; this code deployment cannot remove Meta's restriction or grant app approval. Complete the business/number onboarding with authorized accounts.
+1. **Complete client Meta onboarding later.** On September 18 you reported the account is ready; you deferred onboarding until the client is present. App/number approval and actual delivery still require the checks in the launch guide.
 2. Configure Laziza's actual menu, delivery rules, Sheet, API key and data-use approval. Publish the bot and pass the exact model test. Leave it paused until these are complete.
 3. With your own test WhatsApp number, demonstrate one real order, a delivered reply, a Sheet row, a staff takeover, the confirmation call, dispatch and a retry/recovery case. Do not infer readiness from credential checks alone.
 4. Choose appropriate Supabase capacity and backup retention, configure production Auth email delivery, enable operator MFA, and run a restore drill. Paid subscriptions were not purchased here.
-5. Assign a staff member to watch the inbox during ordering hours. There is no outbound email/push escalation service configured. The in-app handoff and failure views require an operator to monitor them.
-6. Set a written customer-data retention schedule and perform authorized cleanup. Export/deletion affects the active Orderly database; separately handle Sheet copies, WhatsApp, AI providers, downloads and backup expiry. Local disconnect does not revoke a shared provider token for other apps; revoke access in the provider when appropriate.
+5. Assign a staff member to watch the inbox during ordering hours. The header bell reports pending live orders, human handoffs and failed jobs across dashboard pages. Optional browser notifications work while the app is open and the browser permits them. An external email or phone-push service is still not configured; browser notifications do not replace staffed monitoring.
+6. Choose a written customer-data retention schedule. Automatic cleanup is implemented but remains off until an owner previews and explicitly saves a period in Security & privacy. Export/deletion affects the active Orderly database; separately handle Sheet copies, WhatsApp, AI providers, downloads and backup expiry. Local disconnect does not revoke a shared provider token for other apps; revoke access in the provider when appropriate.
 
-An external send can remain ambiguous if a process dies after Meta accepts it but before the provider ID is durably saved. Check the provider/inbox before manually replaying uncertain sends; the implementation does not claim exactly-once external delivery. Published model prices and usage estimates are not provider invoices. Automatic retention, external staff alerts, a general-purpose flow builder and multi-model task routing remain separate product extensions.
+An external send can remain ambiguous if a process dies after Meta accepts it but before the provider ID is durably saved. Check the provider/inbox before manually replaying uncertain sends; the implementation does not claim exactly-once external delivery. Published model prices and usage estimates are not provider invoices. Opt-in email escalation is now implemented but requires a verified sender and server configuration. Native phone-push, a general-purpose flow builder and multi-model task routing remain separate extensions. In-app/browser alerts and opt-in automatic retention are implemented.
 
 ## Deployment maintenance
 
 Use `npm run build:cloudflare` with `VITE_API_BASE_URL` set to the Supabase function base, then `wrangler deploy`. The hosted build generates the public HTML, headers and app-route rewrites. Do not deploy a plain Vite build with the production 404 routing configuration.
 
 Use `npm run build:edge` before deploying the Supabase function. Apply SQL migrations before code that uses their RPCs. Earlier migrations were applied through the SQL editor/management API and do not have complete Supabase CLI migration-history records; reconcile that history before a future blanket `supabase db push`. Keep `.env`, `.local` and service-role/provider credentials out of source control.
+
+## Follow-up: retention and staff alerts
+
+- **Security & privacy > Automatic data retention:** choose off (0) or 30-3650 days, preview the next batch, then explicitly confirm. A changed enabled policy waits 24 hours. Unchanged policy saves do not restart that clock. Turning off stops future runs, not records already removed.
+- An hourly Supabase cron processes up to 20 opted-in workspaces and 100 conversations per workspace per run. It rotates by last attempt to avoid starving other workspaces. A busy workspace is skipped. A failure is recorded in administrative activity and does not stop other workspaces in the batch.
+- Only inactive bot-mode conversations qualify. Pending/nonterminal orders, recently updated completed orders, human handoffs, recent inbound messages, processing leases and outstanding matching jobs protect the record. These protections can retain a record beyond the chosen period until staff resolve the work.
+- Cleanup deletes associated finished orders, active and archived messages, receipts and conversation traces, removes usage associations, and scrubs completed job payloads/errors while preserving dedupe tombstones. Anonymous accounting and administrative audit events remain. Third-party copies and backups are outside this cleanup.
+- Retention configuration and execution RPCs are server-only. Owners/admins configure policy through the authenticated API; staff cannot. Policy changes and cleanup counts are audited. No production policy was enabled during deployment.
+- **Header bell:** live pending orders, WhatsApp human handoffs and failed processing jobs, with links to the relevant record or activity view. Resolving the underlying work removes its alert. Sandbox/legacy sample orders are excluded. Counts cover all matching rows; the list shows the latest 30. Alerts are scoped to the currently selected business.
+- Browser notifications are opt-in per browser and show generic text without customer names, phone numbers or message content. Polling runs about every 20 seconds while Orderly is open. Closed/suspended tabs, browser permissions and OS limits can prevent notifications. No email, mobile push subscription or real WhatsApp message was sent by this pass.
+- Tests cover grace/disable controls, batch bounds, protected live work, tenant isolation, archive/receipt cleanup, tombstones, staff permissions, stale worker snapshots and resolving alerts. The 320px UI check confirmed the alert dialog and retention preview/confirmation fit without horizontal document overflow. The actual Deno bundle smoke and Cloudflare production build passed.
+
+The follow-up deployment verified both new server RPCs against each live workspace, the active hourly scheduler, the authenticated Laziza privacy/alert screens, public routes and anonymous API rejection. All retention policies remained off. Manual customer erasure also now scrubs provider error text from preserved job tombstones.
+
+
+## September 18 completion update
+
+See the [audit closure](ORDERLY-AUDIT-CLOSURE-2026-09-18.md) and [exact setup guide](ORDERLY-LAUNCH-STEPS-2026-09-18.md). The deployed additions include opt-in email escalation, 80% workspace budget warnings, a shared platform-funded cap and a public pricing page. Email subscriptions remain empty, retention remains off and Laziza remains paused. The current Cloudflare version is `36bf2967-dd9c-414f-827e-15fc4fd498b8`.

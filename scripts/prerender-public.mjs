@@ -24,6 +24,7 @@ await writeFile(
 const pages = {
   '/': 'Conversations to orders',
   '/contact': 'Contact',
+  '/pricing': 'Pricing',
   '/privacy': 'Privacy Policy',
   '/terms': 'Terms of Service',
   '/data-deletion': 'Data deletion',
@@ -63,9 +64,6 @@ await writeFile(
   'dist/_headers',
   `/*\n  Content-Security-Policy: ${csp}\n  X-Content-Type-Options: nosniff\n  X-Frame-Options: DENY\n  Referrer-Policy: strict-origin-when-cross-origin\n  Permissions-Policy: camera=(), microphone=(), geolocation=()\n  Strict-Transport-Security: max-age=31536000\n/app*\n  X-Robots-Tag: noindex, nofollow\n/login\n  X-Robots-Tag: noindex, nofollow\n/assets/*\n  Cache-Control: public, max-age=31536000, immutable\n`,
 );
-await writeFile(
-  'dist/_redirects',
-  '/login /app 200\n/app/* /app 200\n',
-);
+await writeFile('dist/_redirects', '/login /app 200\n/app/* /app 200\n');
 await writeFile('dist/robots.txt', 'User-agent: *\nDisallow: /app\nDisallow: /login\n');
 console.log('Generated public pages, app deep links, security headers and a public 404 page.');

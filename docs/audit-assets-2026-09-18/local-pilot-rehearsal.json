@@ -1,0 +1,15 @@
+{
+  "checkedAt": "2026-09-18T14:59:40.385Z",
+  "scope": "Local in-memory ordering service; not a production/provider load test",
+  "customers": 100,
+  "concurrency": 10,
+  "turns": 500,
+  "orders": 100,
+  "replaysIgnored": 100,
+  "externalAttempts": 0,
+  "queuedJobs": 0,
+  "modelUsageRecords": 0,
+  "elapsedMs": 2907,
+  "conversationP50Ms": 276,
+  "conversationP95Ms": 485
+}

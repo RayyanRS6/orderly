@@ -31,6 +31,7 @@ import { PublicError } from '../security';
 import { orderMatches, pageOf, summaryOf } from '../queries';
 
 interface Reservation {
+  funding?: 'own' | 'platform';
   id: string;
   companyId: string;
   amountUsd: number;
@@ -39,6 +40,8 @@ interface Reservation {
   settled: boolean;
 }
 interface State {
+  platformLimit: number;
+  retention: Record<string, import('../../src/shared/types').RetentionStatus>;
   companies: Company[];
   products: Product[];
   conversations: Conversation[];
@@ -55,6 +58,8 @@ interface State {
 }
 const copy = <T>(value: T): T => structuredClone(value);
 const freshState = (seed: boolean): State => ({
+  platformLimit: 100,
+  retention: {},
   companies: seed ? copy(seedCompanies) : [],
   products: seed ? copy(seedProducts) : [],
   conversations: seed ? copy(seedConversations) : [],
@@ -183,6 +188,186 @@ function incomingHeads(jobs: Job[]): Set<string> {
 
 /** Development/test store. Every write commits a cloned snapshot, avoiding mutation leaks. */
 export class MemoryRepository implements Repository {
+  platformBudget() {
+    return this.read((s) => {
+      const month = new Date().toISOString().slice(0, 7);
+      return {
+        limitUsd: s.platformLimit,
+        spentUsd: s.usage
+          .filter((u) => u.funding !== 'own' && u.createdAt.startsWith(month))
+          .reduce((n, u) => n + u.costUsd, 0),
+        reservedUsd: s.reservations
+          .filter(
+            (r) =>
+              r.funding !== 'own' && !r.settled && (r.createdAt ?? r.expiresAt).startsWith(month),
+          )
+          .reduce((n, r) => n + r.amountUsd, 0),
+      };
+    });
+  }
+  async configurePlatformBudget(limit: number) {
+    if (!Number.isFinite(limit) || limit < 0 || limit > 100000)
+      throw new PublicError('Invalid platform budget.', 400);
+    await this.mutate((s) => {
+      s.platformLimit = limit;
+    });
+    return this.platformBudget();
+  }
+  async alertPreferences(_companyId: string, _userId: string) {
+    return { enabled: false, responseMinutes: 10, emailVerified: false };
+  }
+  async configureAlerts(
+    _companyId: string,
+    _userId: string,
+    _enabled: boolean,
+    _minutes: number,
+  ): Promise<import('../../src/shared/types').AlertPreferences> {
+    throw new PublicError('Email subscriptions require a hosted verified account.', 409);
+  }
+  async alertRecipient(_companyId: string, _userId: string): Promise<string | null> {
+    return null;
+  }
+  async hasOverdueAttention(companyId: string, minutes: number) {
+    const alerts = await this.staffAttention(companyId);
+    return alerts.items.some((a) => Date.parse(a.createdAt) < Date.now() - minutes * 60000);
+  }
+  staffAttention(companyId: string) {
+    return this.read((s) => {
+      const items: import('../../src/shared/types').StaffAttention['items'] = [
+        ...s.orders
+          .filter((o) => o.companyId === companyId && o.sandbox === false && o.status === 'pending')
+          .map((o) => ({
+            id: `order:${o.id}`,
+            kind: 'order' as const,
+            entityId: o.id,
+            createdAt: o.createdAt,
+          })),
+        ...s.conversations
+          .filter(
+            (c) =>
+              c.companyId === companyId &&
+              c.channel === 'whatsapp' &&
+              c.mode === 'human' &&
+              c.messages.at(-1)?.role !== 'staff',
+          )
+          .map((c) => ({
+            id: `handoff:${c.id}`,
+            kind: 'handoff' as const,
+            entityId: c.id,
+            createdAt: c.updatedAt,
+          })),
+        ...s.jobs
+          .filter((j) => j.companyId === companyId && j.status === 'failed')
+          .map((j) => ({
+            id: `job:${j.id}`,
+            kind: 'job' as const,
+            entityId: j.id,
+            createdAt: j.createdAt,
+          })),
+      ];
+      const month = new Date().toISOString().slice(0, 7);
+      const budget = s.companies.find((c) => c.id === companyId)?.ai.monthlyBudgetUsd ?? 0;
+      const spent =
+        s.usage
+          .filter((u) => u.companyId === companyId && u.createdAt.startsWith(month))
+          .reduce((n, u) => n + u.costUsd, 0) +
+        s.reservations
+          .filter(
+            (r) =>
+              r.companyId === companyId &&
+              !r.settled &&
+              (r.createdAt ?? r.expiresAt).startsWith(month),
+          )
+          .reduce((n, r) => n + r.amountUsd, 0);
+      if (budget > 0 && spent >= budget * 0.8)
+        items.push({
+          id: `budget:${companyId}:${month}`,
+          kind: 'budget',
+          entityId: companyId,
+          createdAt: month + '-01T00:00:00.000Z',
+        });
+      return {
+        total: items.length,
+        orders: items.filter((a) => a.kind === 'order').length,
+        handoffs: items.filter((a) => a.kind === 'handoff').length,
+        failures: items.filter((a) => a.kind === 'job').length,
+        budgets: items.filter((a) => a.kind === 'budget').length,
+        items: items
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id))
+          .slice(0, 30),
+      };
+    });
+  }
+  retentionStatus(companyId: string, previewDays: number) {
+    return this.read((s) => {
+      const cutoff = Date.now() - previewDays * 86400000;
+      const eligible = s.conversations.filter(
+        (c) =>
+          c.companyId === companyId &&
+          previewDays >= 30 &&
+          c.mode === 'bot' &&
+          Date.parse(c.updatedAt) < cutoff &&
+          Date.parse(c.lastInboundAt ?? c.updatedAt) < cutoff &&
+          !s.orders.some(
+            (o) =>
+              o.companyId === companyId &&
+              o.conversationId === c.id &&
+              (!['completed', 'rejected', 'cancelled'].includes(o.status) ||
+                Date.parse(o.updatedAt) >= cutoff),
+          ) &&
+          !s.locks.some(
+            (l) =>
+              l.companyId === companyId &&
+              l.conversationId === c.id &&
+              Date.parse(l.leaseUntil) > Date.now(),
+          ) &&
+          !s.jobs.some(
+            (j) =>
+              j.companyId === companyId &&
+              j.status !== 'done' &&
+              (j.payload.conversationId === c.id ||
+                j.payload.phone === c.customerPhone ||
+                s.orders.some(
+                  (o) =>
+                    o.companyId === companyId &&
+                    o.conversationId === c.id &&
+                    o.id === j.payload.orderId,
+                )),
+          ),
+      );
+      return {
+        ...(s.retention[companyId] ?? {
+          days: 0,
+          eligibleAfter: null,
+          lastRunAt: null,
+          lastDeleted: 0,
+        }),
+        eligibleConversations: Math.min(100, eligible.length),
+      };
+    });
+  }
+  async configureRetention(companyId: string, days: number, actorId: string) {
+    if (!Number.isInteger(days) || !(days === 0 || (days >= 30 && days <= 3650)))
+      throw new PublicError('Invalid retention period.', 400);
+    await this.mutate((s) => {
+      companyExists(s, companyId);
+      const old = s.retention[companyId];
+      s.retention[companyId] = {
+        days,
+        eligibleAfter:
+          old?.days === days
+            ? old.eligibleAfter
+            : days
+              ? new Date(Date.now() + 86400000).toISOString()
+              : null,
+        lastRunAt: old?.lastRunAt ?? null,
+        lastDeleted: old?.lastDeleted ?? 0,
+        eligibleConversations: 0,
+      };
+    });
+    await this.audit(companyId, actorId, `privacy.retention_days.${days}`);
+    return this.retentionStatus(companyId, days);
+  }
   private receipts = new Map<
     string,
     {
@@ -341,7 +526,7 @@ export class MemoryRepository implements Repository {
         (j) =>
           j.companyId === companyId &&
           ((kind === 'sheets' && j.kind === 'sheet_sync') ||
-            (kind === 'whatsapp' && j.kind !== 'sheet_sync')),
+            (kind === 'whatsapp' && ['incoming', 'whatsapp_send'].includes(j.kind))),
       )) {
         j.status = 'done';
         j.payload = {};
@@ -859,6 +1044,19 @@ export class MemoryRepository implements Repository {
       )
         return false;
       const month = now.toISOString().slice(0, 7);
+      const funding = s.companies.find((c) => c.id === companyId)!.ai.keyMode;
+      if (funding === 'platform') {
+        const platformSpent = s.usage
+          .filter((u) => u.funding !== 'own' && u.createdAt.startsWith(month))
+          .reduce((n, u) => n + u.costUsd, 0);
+        const platformHeld = s.reservations
+          .filter(
+            (r) =>
+              r.funding !== 'own' && !r.settled && (r.createdAt ?? r.expiresAt).startsWith(month),
+          )
+          .reduce((n, r) => n + r.amountUsd, 0);
+        if (platformSpent + platformHeld + amountUsd > s.platformLimit + 1e-9) return false;
+      }
       const spent = s.usage
         .filter((u) => u.companyId === companyId && u.createdAt.slice(0, 7) === month)
         .reduce((sum, u) => sum + u.costUsd, 0);
@@ -876,6 +1074,7 @@ export class MemoryRepository implements Repository {
       )
         return false;
       s.reservations.push({
+        funding,
         id: reservationId,
         companyId,
         amountUsd,
@@ -892,7 +1091,7 @@ export class MemoryRepository implements Repository {
       if (!reservation || reservation.companyId !== usage.companyId || usage.id !== reservationId)
         throw new Error('Invalid budget settlement.');
       if (reservation.settled) return;
-      putUsage(s, usage);
+      putUsage(s, { ...usage, funding: reservation.funding ?? 'platform' });
       reservation.settled = true;
     });
   }

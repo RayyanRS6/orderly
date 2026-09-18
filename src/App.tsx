@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { StaffAlerts } from './components/StaffAlerts';
 import * as Dialog from '@radix-ui/react-dialog';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
@@ -550,6 +551,7 @@ export default function App() {
               </span>
             </div>
             <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+              <StaffAlerts />
               <button
                 type="button"
                 className="hidden md:inline-flex h-[38px] items-center gap-1.5 rounded-[9px] border border-white/80 bg-white/65 px-3.5 text-[13px] font-semibold text-stone-700 hover:bg-white hover:text-ink transition-all"

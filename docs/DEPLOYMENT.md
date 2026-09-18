@@ -6,13 +6,9 @@ Orderly uses Cloudflare Workers Static Assets for the dashboard and Supabase Edg
 
 Create one Supabase project for the platform. The existing Orderly project is in Sydney. Companies are isolated within it using `company_id`, membership checks and RLS. See `SETUP-STATUS.md` before applying migrations to an existing project.
 
-Run these files in order in the Supabase SQL editor:
+For a new installation, apply every file in `supabase/migrations` in filename order. The existing Orderly project already has migrations through `202609180003_platform_budget.sql`. Earlier SQL-editor/management-API execution did not populate complete CLI migration history; reconcile it before using `supabase db push`, and do not reapply existing migrations blindly. All application tables use RLS; mutation RPCs and secrets are server-only.
 
-1. `supabase/migrations/202609090001_initial.sql`
-2. `supabase/migrations/202609090002_order_transitions.sql`
-3. `supabase/migrations/202609110001_job_dispatch.sql`
-
-For the existing Orderly project, the first two migrations are already applied through the SQL editor: apply only the new job-dispatch migration. SQL-editor execution does not populate CLI migration history; do not blindly run `supabase db push`. All mutating RPCs require the server service-role key. Browser users have tenant-scoped reads; they cannot call the write RPCs or read the secrets table.
+Use the [exact launch guide](ORDERLY-LAUNCH-STEPS-2026-09-18.md) for current client setup and the [audit closure](ORDERLY-AUDIT-CLOSURE-2026-09-18.md) for verified status.
 
 Create the founder’s email/password user in Supabase Authentication, then grant platform administration in SQL. Replace the placeholder with that user’s actual UUID:
 
@@ -21,7 +17,7 @@ insert into public.platform_admins(user_id)
 values ('FOUNDER_AUTH_USER_UUID');
 ```
 
-After signing into Orderly, the founder can create the first company. For each restaurant, create its owner/staff users through Supabase Auth and assign their existing user IDs:
+After signing into Orderly, the founder can create the first company. For each restaurant, prefer invitations from Orderly’s Security page. For controlled administrative bootstrapping only, existing Auth users can be assigned by ID:
 
 ```sql
 insert into public.company_memberships(company_id, user_id, role)
@@ -29,7 +25,7 @@ values ('COMPANY_ID_FROM_SETTINGS', 'EXISTING_AUTH_USER_UUID', 'owner')
 on conflict(company_id, user_id) do update set role=excluded.role;
 ```
 
-Use `staff` for employees who only handle orders and conversations. Owners can manage their own menu and connections. Only the founder creates companies, raises AI allowances, or grants access to platform-owned model keys. Manage passwords and account recovery in Supabase for this pilot.
+Use `staff` for employees who only handle orders and conversations. Owners can manage their own menu and connections. Only the founder creates companies, raises AI allowances, or grants access to platform-owned model keys. Use Orderly’s Security page for team invitations and MFA, and its password-recovery flow. Configure production Auth SMTP before client invitations.
 
 ## 2. Supabase backend and Cloudflare frontend
 
@@ -87,9 +83,9 @@ After the new SQL migration and backend are deployed, configure Vault using the 
 node scripts/configure-scheduler.mjs .local/supabase.env
 ```
 
-The helper sends the worker URL and `CRON_SECRET` to a service-role-only RPC and prints readiness flags, never keys. The scheduler checks due jobs in Postgres every minute and dispatches at most 20; idle checks invoke no Edge Functions. Incoming messages dispatch immediately, and completion notifies the next message from the same customer. Sheet catalogs refresh before bot turns and on the owner's sync action, avoiding idle sweeps of every restaurant.
+The helper sends the worker URL and `CRON_SECRET` to a service-role-only RPC and prints readiness flags, never keys. The scheduler checks due jobs in Postgres every minute and dispatches at most 20; idle checks invoke no Edge Functions. Incoming messages dispatch immediately, and completion notifies the next message from the same customer. Sheet catalogs use a 60-second cache on bot turns and refresh on the owner’s sync action, avoiding idle sweeps of every restaurant.
 
-Inspect `/functions/v1/orderly/api/health`, sign-in, first-company creation and a demo order after deployment. Confirm worker requests return 202, jobs finish, a temporary integration failure retries, and a stale fifth attempt is held for staff. Job and conversation leases are 180 seconds to outlive the Free worker's 150-second lifetime; review them before upgrading to a plan with a longer runtime. These are bounded free-tier workers, not continuously running servers. [Supabase deployment](https://supabase.com/docs/guides/functions/deploy), [runtime limits](https://supabase.com/docs/guides/functions/limits).
+Inspect `/functions/v1/orderly/api/health`, sign-in, first-company creation and a demo order after deployment. Confirm worker requests return 202, jobs finish, a temporary integration failure retries, and a stale fifth attempt is held for staff. Job and conversation leases are 480 seconds, covering the supported paid-worker lifetime with headroom. These are bounded workers, not continuously running servers. [Supabase deployment](https://supabase.com/docs/guides/functions/deploy), [runtime limits](https://supabase.com/docs/guides/functions/limits).
 
 ## 3. Models
 
@@ -115,7 +111,7 @@ https://YOUR_PROJECT_REF.supabase.co/functions/v1/orderly/api/webhooks/whatsapp
 
 Use the same `META_VERIFY_TOKEN` as on the server. Subscribe to the `messages` webhook field. Meta POST requests must include a valid `X-Hub-Signature-256` calculated with your app secret. Map each restaurant’s phone number ID to exactly one company.
 
-The WABA must subscribe to your app. Embedded Signup does this automatically. For a manually connected account, invoke the authenticated `POST /api/whatsapp/subscribe` endpoint after credentials are saved, or subscribe through the corresponding Meta account setup. Initial test credentials may be temporary; use the appropriate production business/system-user access token and permissions before operating for customers.
+The WABA must subscribe to your app. Embedded Signup does this automatically. Manual credential saves also validate ownership and subscribe the WABA before persistence. Failed validation does not save a connection. Initial test credentials may be temporary; use the appropriate production business/system-user access token and permissions before operating for customers.
 
 ### Client onboarding
 

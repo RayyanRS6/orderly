@@ -1,8 +1,12 @@
 # Account setup status
 
-## Update — September 17, 2026
+## Update — September 18, 2026
 
-The audit fixes and UI from `Claude-UI-Rayyan` are deployed on the existing Cloudflare/Supabase stack. Both launch migrations are applied; 17 application tables have RLS enabled. Laziza remains paused with no integrations and no live orders. The scheduler is configured. No paid plans or domain were purchased. See the [implementation report](ORDERLY-IMPLEMENTATION-2026-09-17.md) for verification, current capabilities and remaining provider/onboarding work.
+You reported that Meta is ready for onboarding and deferred the client connection until you are together. This supersedes the historical restriction below as your current report; Meta approval and real message delivery have not been independently reverified. The latest deployment has 194 passing tests, 20 RLS-protected application tables, opt-in staff email support, budget warnings/shared cap and `/pricing`. No email recipients were enabled. Laziza remains disconnected and paused; all retention policies remain off. Follow the [exact launch steps](ORDERLY-LAUNCH-STEPS-2026-09-18.md) and [audit closure](ORDERLY-AUDIT-CLOSURE-2026-09-18.md).
+
+## Previous update — September 17, 2026
+
+The audit fixes and UI from `Claude-UI-Rayyan` are deployed on the existing Cloudflare/Supabase stack. Launch and operations migrations are applied; all 18 application tables have RLS enabled. The header alert bell and optional browser alerts are deployed. Hourly retention is installed but remains disabled for every workspace until an owner explicitly enables it. The 187-test suite, production build and Deno runtime checks passed. Laziza remains paused with no integrations and no live orders. The scheduler is configured. No paid plans or domain were purchased. See the [implementation report](ORDERLY-IMPLEMENTATION-2026-09-17.md) for verification, current capabilities and remaining provider/onboarding work.
 
 ## Historical setup record — September 13, 2026
 

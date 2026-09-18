@@ -16,6 +16,7 @@ import { decryptSecret, PublicError } from './security.js';
 import { sanitizeError } from './security.js';
 import { botConfig, configuredCompany } from '../src/shared/bot.js';
 import { dispatchJob, makeJob } from './jobs.js';
+import { sendStaffAlert } from './integrations/alerts.js';
 
 // Paid Supabase workers have a 400s maximum lifetime. Include an 80s margin;
 // bounded upstream requests and database requests cannot survive this lease.
@@ -109,7 +110,10 @@ export async function handleTurn(
     );
   try {
     company = selectConfig((await repo.getCompany(company.id)) ?? company);
-    conversation = (await repo.getConversation(company.id, conversation.id)) ?? conversation;
+    const storedConversation = await repo.getConversation(company.id, conversation.id);
+    if (!storedConversation && conversation.version > 0)
+      throw new PublicError('This conversation was deleted. Start a new conversation.', 409);
+    conversation = storedConversation ?? conversation;
     if (conversation.messages.some((m) => m.id === input.messageId))
       return {
         conversation,
@@ -460,6 +464,8 @@ export async function processJob(repo: Repository, id: string) {
               : (job.payload.action as BotAction | undefined),
           now: job.createdAt,
         });
+    } else if (job.kind === 'staff_alert') {
+      await sendStaffAlert(repo, job);
     } else if (job.kind === 'sheet_sync') {
       const sheetLock = `sheet:${company.id}`;
       if (

@@ -55,18 +55,25 @@ async function commit(
 
 beforeAll(async () => {
   await db.exec(
-    `create role anon; create role authenticated; create role service_role bypassrls; create schema auth; create table auth.users(id uuid primary key); create table auth.mfa_factors(id uuid primary key,user_id uuid,status text); create function auth.jwt() returns jsonb language sql stable as $$ select coalesce(nullif(current_setting('request.jwt.claims',true),'')::jsonb,'{"aal":"aal1"}') $$; create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$; grant usage on schema auth to authenticated,service_role; grant execute on function auth.uid() to authenticated,service_role;`,
+    `create role anon; create role authenticated; create role service_role bypassrls; create schema auth; create table auth.users(id uuid primary key,email text,email_confirmed_at timestamptz); create table auth.mfa_factors(id uuid primary key,user_id uuid,status text); create function auth.jwt() returns jsonb language sql stable as $$ select coalesce(nullif(current_setting('request.jwt.claims',true),'')::jsonb,'{"aal":"aal1"}') $$; create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$; grant usage on schema auth to authenticated,service_role; grant execute on function auth.uid() to authenticated,service_role;`,
   );
   for (const migration of [
     '202609090001_initial.sql',
     '202609090002_order_transitions.sql',
     '202609160001_launch_hardening.sql',
     '202609160002_message_delivery.sql',
+    '202609170001_retention.sql',
+    '202609170003_staff_attention.sql',
+    '202609180001_email_alerts.sql',
+    '202609180003_platform_budget.sql',
   ])
     await db.exec(readFileSync(`supabase/migrations/${migration}`, 'utf8'));
   await db.query('insert into auth.users(id) values($1),($2)', [ownerId, outsiderId]);
 }, 30000);
 beforeEach(async () => {
+  await db.exec(
+    'reset role; update auth.users set email=null,email_confirmed_at=null; update platform_limits set monthly_budget_usd=100',
+  );
   await db.exec(
     "reset role; truncate public.companies cascade; delete from public.platform_admins; delete from auth.mfa_factors; select set_config('request.jwt.claims','',false);",
   );
@@ -81,6 +88,271 @@ beforeEach(async () => {
 });
 afterAll(async () => {
   await db.close();
+});
+
+describe('opt-in retention and staff attention', () => {
+  it('enforces a shared platform allowance while keeping client-funded spending separate', async () => {
+    await rpc('configure_platform_budget', [5]);
+    const expiry = new Date(Date.now() + 60000).toISOString();
+    expect(await rpc('reserve_budget', [company.id, 'platform-a', 4, expiry])).toBe(true);
+    expect(await rpc('reserve_budget', [company.id, 'platform-b', 2, expiry])).toBe(false);
+    expect(await rpc('reserve_budget', [other.id, 'own-key', 4, expiry])).toBe(true);
+    await rpc('settle_budget', [
+      'own-key',
+      { id: 'own-key', companyId: other.id, costUsd: 3, createdAt: now() },
+    ]);
+    expect(await rpc('platform_budget', [])).toMatchObject({
+      limitUsd: 5,
+      reservedUsd: 4,
+      spentUsd: 0,
+    });
+    await db.query(
+      "update companies set data=jsonb_set(data,'{ai,keyMode}','\"own\"') where id=$1",
+      [company.id],
+    );
+    await rpc('settle_budget', [
+      'platform-a',
+      { id: 'platform-a', companyId: company.id, costUsd: 2, createdAt: now() },
+    ]);
+    expect(await rpc('platform_budget', [])).toMatchObject({ reservedUsd: 0, spentUsd: 2 });
+    expect(
+      await scalar("select data->>'funding' value from usage_events where id='platform-a'"),
+    ).toBe('platform');
+  });
+  it('queues email only for a subscribed verified member with overdue work and throttles reminders', async () => {
+    await db.query("insert into company_memberships values($1,$2,'staff')", [company.id, ownerId]);
+    await expect(rpc('configure_alerts', [company.id, ownerId, true, 10])).rejects.toThrow(
+      'Verified',
+    );
+    await db.query(
+      "update auth.users set email='staff@example.test',email_confirmed_at=now() where id=$1",
+      [ownerId],
+    );
+    expect(await rpc('configure_alerts', [company.id, ownerId, true, 10])).toMatchObject({
+      enabled: true,
+      emailVerified: true,
+    });
+    await expect(rpc('configure_alerts', [other.id, ownerId, true, 10])).rejects.toThrow(
+      'Membership',
+    );
+    expect(await rpc('queue_staff_alerts', [])).toBe(0);
+    const { conversation, order } = pendingOrder();
+    await commit(conversation, order);
+    await db.query("update orders set created_at=now()-interval '20 minutes' where id=$1", [
+      order.id,
+    ]);
+    expect(await rpc('queue_staff_alerts', [])).toBe(1);
+    expect(await rpc('queue_staff_alerts', [])).toBe(0);
+    expect(await rpc('alert_recipient', [company.id, ownerId])).toBe('staff@example.test');
+    expect(
+      await scalar("select count(*)::int value from jobs where data->>'kind'='staff_alert'"),
+    ).toBe(1);
+    await db.query('delete from company_memberships where company_id=$1 and user_id=$2', [
+      company.id,
+      ownerId,
+    ]);
+    expect(await rpc('alert_recipient', [company.id, ownerId])).toBeNull();
+  });
+  it('shows budget warnings at 80 percent including unsettled usage holds', async () => {
+    const budget = company.ai.monthlyBudgetUsd;
+    expect(await rpc('company_budget_warning', [company.id])).toBe(false);
+    await rpc('reserve_budget', [
+      company.id,
+      'held-budget',
+      budget * 0.81,
+      new Date(Date.now() + 60000).toISOString(),
+    ]);
+    expect(await rpc('company_budget_warning', [company.id])).toBe(true);
+    expect(await rpc('staff_attention', [company.id])).toMatchObject({ budgets: 1, total: 1 });
+    expect(await rpc('has_overdue_attention', [company.id, 10])).toBe(true);
+    expect(await rpc('staff_attention', [other.id])).toMatchObject({ budgets: 0 });
+  });
+  async function oldConversation(withOrder = false) {
+    const pair = pendingOrder();
+    await commit(pair.conversation, withOrder ? pair.order : undefined);
+    await db.query(
+      "update conversations set updated_at=now()-interval '120 days',data=data||jsonb_build_object('updatedAt',now()-interval '120 days','lastInboundAt',now()-interval '120 days') where id=$1",
+      [pair.conversation.id],
+    );
+    return pair;
+  }
+  async function activate() {
+    await rpc('configure_retention', [company.id, 30, ownerId]);
+    await db.query(
+      "update retention_policies set eligible_after=now()-interval '1 minute' where company_id=$1",
+      [company.id],
+    );
+  }
+  it('starts disabled, previews without deleting, and enforces a 24-hour grace period', async () => {
+    await oldConversation();
+    expect(await rpc('retention_status', [company.id, 30])).toMatchObject({
+      days: 0,
+      eligibleConversations: 1,
+    });
+    expect(await rpc('run_retention', [company.id])).toBe(0);
+    const policy = (await rpc('configure_retention', [company.id, 30, ownerId])) as {
+      eligibleAfter: string;
+    };
+    expect(Date.parse(policy.eligibleAfter) - Date.now()).toBeGreaterThan(86300000);
+    expect(await rpc('run_retention', [company.id])).toBe(0);
+    await expect(rpc('configure_retention', [company.id, 1, ownerId])).rejects.toThrow(
+      'Invalid retention',
+    );
+    await activate();
+    await rpc('configure_retention', [company.id, 0, ownerId]);
+    expect(await rpc('run_retention', [company.id])).toBe(0);
+  });
+  it('protects unfinished orders, recent completed orders, handoffs, incoming jobs and processing locks', async () => {
+    const { conversation, order } = await oldConversation(true);
+    await activate();
+    expect(await rpc('run_retention', [company.id])).toBe(0);
+    await db.query(
+      "update orders set data=jsonb_set(data,'{status}','\"completed\"') where id=$1",
+      [order.id],
+    );
+    expect(await rpc('run_retention', [company.id])).toBe(0);
+    await db.query(
+      "update orders set updated_at=now()-interval '120 days',created_at=now()-interval '120 days' where id=$1",
+      [order.id],
+    );
+    await db.query(
+      "update conversations set data=jsonb_set(data,'{mode}','\"human\"') where id=$1",
+      [conversation.id],
+    );
+    expect(await rpc('run_retention', [company.id])).toBe(0);
+    await db.query("update conversations set data=jsonb_set(data,'{mode}','\"bot\"') where id=$1", [
+      conversation.id,
+    ]);
+    const job = makeJob(company.id, 'incoming', { phone: conversation.customerPhone });
+    await rpc('insert_job', [job]);
+    expect(await rpc('run_retention', [company.id])).toBe(0);
+    await db.query(
+      "update jobs set status='done',data=jsonb_set(data,'{status}','\"done\"') where id=$1",
+      [job.id],
+    );
+    await rpc('acquire_conversation_lock', [
+      company.id,
+      conversation.id,
+      'worker',
+      new Date(Date.now() + 60000).toISOString(),
+    ]);
+    expect(await rpc('run_retention', [company.id])).toBe(0);
+    await rpc('release_conversation_lock', [company.id, conversation.id, 'worker']);
+    expect(await rpc('run_retention', [company.id])).toBe(1);
+    expect(await scalar('select count(*)::int value from orders where id=$1', [order.id])).toBe(0);
+  });
+  it('removes history and receipts, preserves dedupe tombstones, and respects workspace boundaries', async () => {
+    const { conversation } = await oldConversation();
+    const otherConvo = createConversation(
+      other.id,
+      conversation.customerPhone,
+      'whatsapp',
+      new Date(Date.now() - 120 * 86400000).toISOString(),
+    );
+    otherConvo.version = 1;
+    await rpc('commit_turn', [other.id, otherConvo, 0, null, [], null]);
+    const job = {
+      ...makeJob(company.id, 'incoming', {
+        phone: conversation.customerPhone,
+        text: 'private text',
+      }),
+      status: 'done',
+      error: 'private error',
+    };
+    await rpc('insert_job', [job]);
+    await rpc('record_delivery', [company.id, 'receipt', 'sent', conversation.id, 'm', null]);
+    await activate();
+    expect(await rpc('run_retention_batch', [])).toBe(1);
+    expect(
+      await scalar('select count(*)::int value from conversations where company_id=$1', [other.id]),
+    ).toBe(1);
+    expect(
+      await scalar('select count(*)::int value from conversation_messages where company_id=$1', [
+        company.id,
+      ]),
+    ).toBe(0);
+    expect(
+      await scalar('select count(*)::int value from message_deliveries where company_id=$1', [
+        company.id,
+      ]),
+    ).toBe(0);
+    const tombstone = await scalar('select data value from jobs where id=$1', [job.id]);
+    expect(tombstone).toMatchObject({ status: 'done', payload: {} });
+    expect(tombstone).not.toHaveProperty('error');
+    expect(await rpc('retention_status', [company.id, 30])).toMatchObject({
+      lastDeleted: 1,
+      eligibleConversations: 0,
+    });
+  });
+  it('never deletes recently active conversations and bounds each batch', async () => {
+    const { conversation } = await oldConversation();
+    await activate();
+    await db.query(
+      "update conversations set data=jsonb_set(data,'{lastInboundAt}',to_jsonb(now())) where id=$1",
+      [conversation.id],
+    );
+    expect(await rpc('run_retention', [company.id])).toBe(0);
+    for (let i = 0; i < 103; i++) {
+      const c = createConversation(
+        company.id,
+        `batch-${i}`,
+        'demo',
+        new Date(Date.now() - 120 * 86400000).toISOString(),
+      );
+      c.version = 1;
+      await rpc('commit_turn', [company.id, c, 0, null, [], null]);
+    }
+    expect(await rpc('retention_status', [company.id, 30])).toMatchObject({
+      eligibleConversations: 100,
+    });
+    expect(await rpc('run_retention', [company.id])).toBe(100);
+    expect(await rpc('run_retention', [company.id])).toBe(3);
+  });
+  it('reports tenant-scoped live alerts and clears resolved work', async () => {
+    const { conversation, order } = pendingOrder();
+    await commit(conversation, order);
+    await db.query(
+      "update conversations set data=jsonb_set(data,'{mode}','\"human\"') where id=$1",
+      [conversation.id],
+    );
+    const failed = {
+      ...makeJob(company.id, 'sheet_sync', { orderId: order.id }),
+      status: 'failed',
+    };
+    await rpc('insert_job', [failed]);
+    const alerts = await rpc('staff_attention', [company.id]);
+    expect(alerts).toMatchObject({ total: 3, orders: 1, handoffs: 1, failures: 1 });
+    expect(JSON.stringify(alerts)).not.toContain(conversation.customerPhone);
+    expect(await rpc('staff_attention', [other.id])).toMatchObject({ total: 0, items: [] });
+    await db.query(
+      "update orders set data=jsonb_set(data,'{status}','\"cancelled\"') where id=$1",
+      [order.id],
+    );
+    await db.query("update conversations set data=jsonb_set(data,'{mode}','\"bot\"') where id=$1", [
+      conversation.id,
+    ]);
+    await db.query(
+      "update jobs set status='pending',data=jsonb_set(data,'{status}','\"pending\"') where id=$1",
+      [failed.id],
+    );
+    expect(await rpc('staff_attention', [company.id])).toMatchObject({ total: 0 });
+  });
+  it('denies browser roles direct access to policies and operations RPCs', async () => {
+    await db.exec('set role authenticated');
+    await expect(rpc('configure_retention', [company.id, 30, ownerId])).rejects.toThrow(
+      'permission denied',
+    );
+    await expect(rpc('run_retention', [company.id])).rejects.toThrow('permission denied');
+    await expect(rpc('staff_attention', [company.id])).rejects.toThrow('permission denied');
+    await expect(rpc('configure_alerts', [company.id, ownerId, true, 10])).rejects.toThrow(
+      'permission denied',
+    );
+    await expect(rpc('alert_recipient', [company.id, ownerId])).rejects.toThrow(
+      'permission denied',
+    );
+    await expect(rpc('configure_platform_budget', [500])).rejects.toThrow('permission denied');
+    await expect(db.query('select * from retention_policies')).rejects.toThrow('permission denied');
+  });
 });
 
 describe('launch migration safeguards', () => {
@@ -230,6 +502,7 @@ describe('launch migration safeguards', () => {
       messageId: 'pii-test',
       text: 'private customer text',
     });
+    job.error = 'Provider error containing private customer text';
     await rpc('insert_job', [job, 'dedupe-erased']);
     await expect(rpc('erase_customer', [company.id, conversation.customerPhone])).rejects.toThrow(
       'Pause automation',
@@ -243,6 +516,9 @@ describe('launch migration safeguards', () => {
     expect(await scalar("select data->'payload' as value from jobs where id=$1", [job.id])).toEqual(
       {},
     );
+    expect(
+      await scalar("select data->'error' as value from jobs where id=$1", [job.id]),
+    ).toBeNull();
     expect(await rpc('insert_job', [{ ...job, id: randomUUID() }, 'dedupe-erased'])).toBe(false);
   });
   it('enforces opt-in MFA on direct database reads', async () => {
