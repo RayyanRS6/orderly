@@ -115,10 +115,22 @@ export function Playground() {
   const [address, setAddress] = useState('');
   const [zone, setZone] = useState(data.company.deliveryZones?.[0]?.name || '');
   const conversation = latest;
-  const [useLiveModel, setUseLiveModel] = useState(false);
-  const [useDraft, setUseDraft] = useState(true);
+  const [testTarget, setTestTarget] = useState<'draft' | 'published'>('draft');
   const [details, setDetails] = useState(false);
-  async function send(message: string, action?: BotAction) {
+  useEffect(() => {
+    setId(undefined);
+    setLatest(undefined);
+    setError('');
+  }, [
+    data.company.id,
+    data.company.ai?.provider,
+    data.company.ai?.model,
+    data.company.ai?.keyMode,
+    data.company.catalogSource,
+    data.company.bot?.revision,
+    data.company.bot?.published?.version,
+  ]);
+  async function send(message: string) {
     if (busy) return false;
     setError('');
     try {
@@ -126,9 +138,7 @@ export function Playground() {
         conversationId: id,
         text: message,
         messageId: crypto.randomUUID(),
-        action,
-        useLiveModel,
-        useDraft,
+        testTarget,
       });
       setId(result.conversation.id);
       setLatest(result.conversation);
@@ -165,38 +175,44 @@ export function Playground() {
           New conversation
         </button>
       </PageHeading>
-      <div className="notice mb-4 flex flex-wrap gap-x-6 gap-y-4 p-4 text-[13px] text-cream">
-        <label className="flex cursor-pointer items-center gap-2.5">
-          <input
-            className="toggle"
-            type="checkbox"
-            checked={useDraft}
-            onChange={(e) => {
-              setUseDraft(e.target.checked);
+      <div className="notice mb-4 grid gap-4 p-4 text-[13px] text-cream sm:grid-cols-[minmax(12rem,18rem)_1fr] sm:items-end">
+        <Field label="Configuration to test">
+          <CustomSelect
+            value={testTarget}
+            onChange={(value) => {
+              setTestTarget(value as 'draft' | 'published');
               setId(undefined);
               setLatest(undefined);
+              setError('');
             }}
+            options={[
+              {
+                value: 'draft',
+                label: `Saved draft · revision ${data.company.bot?.revision ?? 0}`,
+              },
+              {
+                value: 'published',
+                label: `Published · version ${data.company.bot?.published?.version ?? 'none'}`,
+                disabled: !data.company.bot?.published,
+              },
+            ]}
           />
-          Use saved draft
-        </label>
-        <label className="flex cursor-pointer items-center gap-2.5">
-          <input
-            className="toggle"
-            type="checkbox"
-            checked={useLiveModel}
-            onChange={(e) => setUseLiveModel(e.target.checked)}
-            disabled={data.company.ai?.provider === 'mock'}
-          />
-          Use selected AI model (API charges apply)
-        </label>
-        <span className="w-full text-xs text-cream/50">
-          Sandbox only: no WhatsApp sends or Sheet writes. Use fictional details.
-          <span className="hidden sm:inline">
-            {' '}
-            Free local rules test structured buttons; enable AI to test natural language, goal and
-            instructions.
-          </span>
-        </span>
+        </Field>
+        <div className="space-y-1 text-xs text-cream/60">
+          <p>
+            AI: <strong className="text-cream">{data.company.ai?.model || 'Not connected'}</strong>
+            {' · '}Menu:{' '}
+            <strong className="text-cream">
+              {data.company.catalogSource === 'sheets' ? 'Google Sheet' : 'In-app catalog'}
+            </strong>
+          </p>
+          <p>
+            {data.company.catalogSyncedAt
+              ? `Menu refreshed ${new Date(data.company.catalogSyncedAt).toLocaleString('en-PK')}. `
+              : ''}
+            API charges apply. No WhatsApp messages or order-Sheet rows are created.
+          </p>
+        </div>
       </div>
       <div className="grid gap-5 xl:grid-cols-3">
         <div className="card flex h-[calc(100dvh-29rem)] min-h-[20rem] max-h-[44rem] flex-col overflow-hidden sm:h-[calc(100dvh-23rem)] xl:col-span-2">
@@ -212,7 +228,9 @@ export function Playground() {
                 </p>
               </div>
             </div>
-            <Badge tone="green">{useLiveModel ? data.company.ai?.model : 'Local rules'}</Badge>
+            <Badge tone={data.company.ai?.provider === 'mock' ? 'amber' : 'green'}>
+              {data.company.ai?.provider === 'mock' ? 'AI not connected' : data.company.ai?.model}
+            </Badge>
           </div>
           <Messages conversation={conversation} waiting={busy} />
           {conversation?.mode === 'human' && (
@@ -228,16 +246,12 @@ export function Playground() {
           )}
           <div className="border-t border-ink/[0.06] p-4 sm:p-5">
             <div className="mb-3 flex flex-wrap gap-2">
-              {[
-                ['Show menu', { type: 'menu' }],
-                ['Review order', { type: 'review' }],
-                ['Talk to staff', { type: 'handoff' }],
-              ].map(([title, action]) => (
+              {['Show menu', 'Review order', 'Talk to staff'].map((title) => (
                 <button
                   key={String(title)}
                   className="rounded-[9px] border border-ink/8 bg-white/70 hover:bg-white hover:border-ink/14 px-3.5 py-1.5 text-xs font-semibold text-stone-700 hover:text-ink transition-all disabled:opacity-50"
                   disabled={busy}
-                  onClick={() => void send(String(title), action as BotAction)}
+                  onClick={() => void send(title)}
                 >
                   {String(title)}
                 </button>
@@ -312,12 +326,7 @@ export function Playground() {
                           className="text-stone-400 hover:text-red-600"
                           aria-label={`Remove ${product?.name}`}
                           disabled={busy}
-                          onClick={() =>
-                            void send(`Remove ${product?.name}`, {
-                              type: 'remove_item',
-                              productId: item.productId,
-                            })
-                          }
+                          onClick={() => void send(`Remove ${product?.name}`)}
                         >
                           <X className="size-4" />
                         </button>
@@ -367,12 +376,7 @@ export function Playground() {
                     <button
                       className="btn btn-primary mt-2 w-full"
                       disabled={busy}
-                      onClick={() =>
-                        void send('Confirm order', {
-                          type: 'confirm',
-                          revision: conversation.cart.reviewedRevision,
-                        })
-                      }
+                      onClick={() => void send('Confirm order')}
                     >
                       <Check className="size-4" />
                       Confirm order
@@ -427,12 +431,11 @@ export function Playground() {
             if (fulfillment === 'delivery' && (!zone.trim() || !address.trim())) {
               return;
             }
-            const saved = await send('Here are my order details', {
-              type: 'set_details',
-              customerName: name,
-              fulfillment,
-              ...(fulfillment === 'delivery' ? { address, zone } : {}),
-            });
+            const saved = await send(
+              fulfillment === 'delivery'
+                ? `My name is ${name}. I want delivery. My area is ${zone}. Address: ${address}`
+                : `My name is ${name}. I want pickup.`,
+            );
             if (saved) setDetails(false);
           }}
         >
@@ -489,7 +492,19 @@ export function Playground() {
           busy={busy}
           close={() => setSelected(undefined)}
           add={async (action) => {
-            if (await send(`Add ${selected.name}`, action)) setSelected(undefined);
+            const variant = selected.variants.find((item) => item.id === action.variantId)?.name;
+            const extras = selected.modifiers
+              .filter((item) => action.modifierIds?.includes(item.id))
+              .map((item) => item.name);
+            const message = [
+              `Add ${action.quantity} ${selected.name}`,
+              variant ? `option ${variant}` : '',
+              extras.length ? `with ${extras.join(' and ')}` : '',
+              action.notes ? `note: ${action.notes}` : '',
+            ]
+              .filter(Boolean)
+              .join(', ');
+            if (await send(message)) setSelected(undefined);
           }}
         />
       )}
@@ -505,7 +520,7 @@ function AddItem({
   product: Product;
   busy: boolean;
   close: () => void;
-  add: (action: BotAction) => Promise<void>;
+  add: (action: Extract<BotAction, { type: 'add_item' }>) => Promise<void>;
 }) {
   const [quantity, setQuantity] = useState(1);
   const [variant, setVariant] = useState(product.variants[0]?.id || '');

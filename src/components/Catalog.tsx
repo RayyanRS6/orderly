@@ -283,6 +283,18 @@ function ProductEditor({ product, onDone }: { product?: Product; onDone: () => v
   const [variants, setVariants] = useState<ProductOption[]>(product?.variants || []);
   const [modifiers, setModifiers] = useState<ProductOption[]>(product?.modifiers || []);
   const [error, setError] = useState('');
+  const sharedAliases = aliases
+    .split(',')
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean)
+    .filter((alias, index, values) => values.indexOf(alias) === index)
+    .filter((alias) =>
+      data.products.some(
+        (item) =>
+          item.id !== product?.id &&
+          [item.name, ...item.aliases].some((value) => value.trim().toLowerCase() === alias),
+      ),
+    );
   return (
     <form
       className="space-y-5"
@@ -376,7 +388,7 @@ function ProductEditor({ product, onDone }: { product?: Product; onDone: () => v
       </div>
       <Field
         label="Other names, separated by commas"
-        hint="Add Urdu and Roman Urdu names to help the bot recognize this item."
+        hint="Optional: add Urdu, Roman Urdu, or special local names. Common spelling mistakes are matched automatically."
       >
         <input
           className="input"
@@ -384,6 +396,12 @@ function ProductEditor({ product, onDone }: { product?: Product; onDone: () => v
           placeholder="biryani, بریانی, chicken rice"
           onChange={(e) => setAliases(e.target.value)}
         />
+        {sharedAliases.length > 0 && (
+          <p className="mt-2 text-xs text-amber-700">
+            Shared with another item: {sharedAliases.join(', ')}. The bot will ask the customer to
+            choose instead of guessing.
+          </p>
+        )}
       </Field>
       <OptionEditor
         title="Variants"

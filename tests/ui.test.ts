@@ -20,6 +20,7 @@ import { Catalog } from '../src/components/Catalog';
 import { Inbox, Playground } from '../src/components/Conversations';
 import { Businesses, Integrations, Settings } from '../src/components/Settings';
 import { WhatsAppSignup } from '../src/components/WhatsAppSignup';
+import { BotSettings } from '../src/components/BotSettings';
 import App from '../src/App';
 import { initials, label, shortDate } from '../src/lib/utils';
 import { seedCompanies, seedProducts, seedOrders, seedConversations } from '../src/shared/seed';
@@ -241,6 +242,17 @@ describe('Full Component Rendering with Workspace.Provider', () => {
     );
     expect(html).toContain('Test your bot');
     expect(html).toContain('Show menu');
+    expect(html).toContain('Configuration to test');
+    expect(html).not.toContain('Use selected AI model');
+  });
+
+  it('renders behavior rules without the removed collection-flow control', () => {
+    const context = createMockWorkspaceContext(normalData, 'bot');
+    const html = renderToStaticMarkup(
+      createElement(Workspace.Provider, { value: context }, createElement(BotSettings)),
+    );
+    expect(html).toContain('Behavior rules');
+    expect(html).not.toContain('Order collection flow');
   });
 
   it('renders Integrations, Settings, and Businesses pages cleanly', () => {

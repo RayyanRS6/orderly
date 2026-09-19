@@ -21,16 +21,16 @@ The fictional Dastarkhwan and Bun & Co. workspaces have separate menus, sample o
 
 ### Try the full flow
 
-1. Choose Dastarkhwan and open **Test your bot**.
-2. Send `menu`, then `2 chicken biryani`.
-3. Use **Add order details** to enter a name and pickup or delivery details.
-4. Check the total, then **Confirm order**.
-5. Open **Orders**, select the new order, and **Accept order**.
-6. Switch to Bun & Co. to see its separate records.
+1. In **Bot settings**, select a live AI provider/model, approve its data terms, save it, and run the generation test.
+2. Save a behavior draft, then open **Test your bot** and choose Draft or Published.
+3. Send `menu`, then `2 chicken biryani` (or a spelling such as `2 biriyani`).
+4. Use **Add order details** to send a name and pickup or delivery details through the same text path as WhatsApp.
+5. Check the total, then **Confirm order**.
+6. Open **Orders**, select the new order, and **Accept order**.
 
-Try `mujhe 2 biryani chahiye`, `مینو`, a sold-out item, or **Talk to staff**. The free demo uses a deliberately limited parser. Natural-language understanding beyond its supported patterns requires a configured model. The same ordering rules validate both paths.
+Try `mujhe 2 biryani chahiye`, `مینو`, a sold-out item, an ambiguous family such as `lassi`, or **Talk to staff**. The customer-facing tester always uses the selected model and never silently falls back to local canned rules. Provider usage charges and quotas apply.
 
-**Test your bot creates demo conversations, even on a live deployment.** These never send WhatsApp messages. If you connect a real Sheet, confirmed demo orders can enter that Sheet through the sync queue: use a dedicated test workspace and spreadsheet.
+**Test your bot creates demo conversations, even on a live deployment.** These never send WhatsApp messages or write order rows to Sheets. A Sheet-backed menu is refreshed for testing, so the simulated customer sees the current catalog.
 
 Local demo mode does not automatically dispatch cloud queue jobs. Use **Integrations → Retry failed jobs** to process pending Sheet jobs locally after configuring a test spreadsheet. Hosted automatic processing requires the Supabase worker and Vault-backed scheduler configuration.
 
@@ -116,7 +116,6 @@ Live-account verification remains necessary. Owners can invite and manage team m
 Coexistence currently handles new staff echoes, including edit/delete notices. Historical chat imports, contact synchronization, full media rendering, voice-note transcription, payments, precise inventory reservations, delivery tracking, and arbitrary workflow building are outside this version. Media requests go to staff. Availability is an item on/off flag, not a stock count. Very large quotes that cannot fit a complete WhatsApp review are held for staff rather than truncated.
 
 External APIs cannot guarantee exactly-once side effects after an ambiguous network timeout. Orders are deduplicated internally; spreadsheet retries reconcile by order ID. A WhatsApp reply may still be repeated if Meta accepted it but the response was lost. Monitor traces and failed jobs during the pilot. Complete the documented provider onboarding, owned-number end-to-end test, backup/restore drill and representative load testing before expanding beyond a small founder-managed restaurant pilot.
-
 
 ## Current launch status (September 18)
 

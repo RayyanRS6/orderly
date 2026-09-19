@@ -1,13 +1,47 @@
 import { z } from 'zod';
 const text = (max: number) => z.string().trim().max(max);
-export const botSchema = z.object({
-  name: text(80).min(1), personality: z.enum(['warm', 'professional', 'concise']),
-  language: z.enum(['auto', 'en', 'ur', 'roman-ur']), goal: text(1500).min(1),
-  instructions: text(4000), knowledge: z.array(z.object({ question: text(250).min(1), answer: text(1500).min(1) })).max(30),
-  greeting: text(500), handoffMessage: text(500),
-  steps: z.array(z.enum(['items', 'fulfillment', 'name', 'address'])).length(4).refine(v => new Set(v).size === 4, 'Include each step once.'),
-  fulfillment: z.enum(['both', 'pickup', 'delivery']), requirePhoneConfirmation: z.boolean(),
-});
+export const behaviorRuleSchema = z
+  .object({
+    id: text(80).min(1),
+    enabled: z.boolean(),
+    when: text(500).min(1),
+    action: z.enum(['continue', 'reply', 'handoff']),
+    response: text(1500),
+    responseMode: z.enum(['exact', 'adaptive']),
+  })
+  .superRefine((rule, ctx) => {
+    if (rule.responseMode === 'exact' && !rule.response)
+      ctx.addIssue({
+        code: 'custom',
+        path: ['response'],
+        message: 'Exact rules require reply text.',
+      });
+  });
+export const botSchema = z
+  .object({
+    name: text(80).min(1),
+    personality: z.enum(['warm', 'professional', 'concise']),
+    language: z.enum(['auto', 'en', 'ur', 'roman-ur']),
+    goal: text(1500).min(1),
+    instructions: text(4000),
+    knowledge: z.array(z.object({ question: text(250).min(1), answer: text(1500).min(1) })).max(30),
+    greeting: text(500),
+    handoffMessage: text(500),
+    behaviorRules: z.array(behaviorRuleSchema).max(30).default([]),
+    // Accepted temporarily so old saved versions can be restored, then stripped.
+    steps: z.array(z.enum(['items', 'fulfillment', 'name', 'address'])).optional(),
+    fulfillment: z.enum(['both', 'pickup', 'delivery']),
+    requirePhoneConfirmation: z.boolean(),
+  })
+  .transform(({ steps: _legacySteps, ...config }) => config)
+  .superRefine((config, ctx) => {
+    if (new Set(config.behaviorRules.map((rule) => rule.id)).size !== config.behaviorRules.length)
+      ctx.addIssue({
+        code: 'custom',
+        path: ['behaviorRules'],
+        message: 'Behavior rule IDs must be unique.',
+      });
+  });
 export const optionSchema = z.object({
   id: text(80).min(1),
   name: text(100).min(1),
@@ -43,7 +77,11 @@ export const companySchema = z
   .object({
     id: z.string().uuid().optional(),
     name: text(120).min(1),
-    slug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(140).optional(),
+    slug: z
+      .string()
+      .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/)
+      .max(140)
+      .optional(),
     address: text(500),
     phone: text(40),
     timezone: z.string().refine((v) => {
@@ -71,11 +109,18 @@ export const companySchema = z
       model: text(120),
       keyMode: z.enum(['platform', 'own']),
       monthlyBudgetUsd: z.number().min(0).max(10000),
-      pricing: z.tuple([z.number().positive().max(1000), z.number().positive().max(1000)]).optional(),
+      pricing: z
+        .tuple([z.number().positive().max(1000), z.number().positive().max(1000)])
+        .optional(),
     }),
     catalogSyncedAt: z.string().datetime().optional(),
     createdAt: z.string().datetime().optional(),
-    privacy: z.object({ aiDataApproved: z.boolean(), retentionDays: z.union([z.literal(0), z.number().int().min(30).max(3650)]) }).optional(),
+    privacy: z
+      .object({
+        aiDataApproved: z.boolean(),
+        retentionDays: z.union([z.literal(0), z.number().int().min(30).max(3650)]),
+      })
+      .optional(),
   })
   .superRefine((company, ctx) => {
     if (
@@ -111,6 +156,14 @@ export const actionSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('cancel') }),
   z.object({ type: z.literal('new_order') }),
   z.object({ type: z.literal('handoff') }),
+  z.object({
+    type: z.literal('clarify_item'),
+    candidateProductIds: z.array(text(100)).min(2).max(12),
+    quantity: z.number().int().min(1).max(50),
+    requestedOptionNames: z.array(text(100)).max(20).optional(),
+    notes: text(300).optional(),
+    originalText: text(2000).optional(),
+  }),
   z.object({ type: z.literal('answer'), text: text(2000) }),
 ]);
 export const chatSchema = z.object({
@@ -118,7 +171,16 @@ export const chatSchema = z.object({
   text: text(2000).default(''),
   messageId: text(150).min(1),
   action: actionSchema.optional(),
-  useLiveModel: z.boolean().default(false),
-  useDraft: z.boolean().default(true),
+  testTarget: z.enum(['draft', 'published']).default('draft'),
 });
-export const modelOutputSchema = z.object({ actions: z.array(actionSchema).min(1).max(6) });
+export const modelOutputSchema = z.object({
+  actions: z.array(actionSchema).min(1).max(6),
+  response: z
+    .object({
+      text: text(2000),
+      askFor: z.enum(['items', 'fulfillment', 'name', 'zone', 'address', 'anything_else', 'none']),
+      matchedRuleId: text(80).optional(),
+      groundingIds: z.array(text(120)).max(20).optional(),
+    })
+    .optional(),
+});

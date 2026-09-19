@@ -429,56 +429,178 @@ export function BotSettings() {
               onChange={(e) => update({ handoffMessage: e.target.value })}
             />
           </Field>
-          <div>
-            <h3 className="field-label">Order collection flow</h3>
-            <p className="mb-3 text-sm text-stone-500">
-              Reorder the questions. Details already supplied are remembered. Delivery address and
-              area are required only for delivery.
-            </p>
-            <ol className="space-y-2">
-              {draft.steps.map((step, i) => (
-                <li
-                  key={step}
-                  className="flex items-center gap-3 rounded-[10px] border border-white/60 bg-white/40 p-3 text-[13px]"
-                >
-                  <span className="text-stone-400">{i + 1}</span>
-                  <span className="min-w-0 flex-1">
-                    {
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 className="field-label">Behavior rules</h3>
+                <p className="text-sm text-stone-500">
+                  Rules run from top to bottom. The first matching rule controls what the bot does.
+                </p>
+              </div>
+              <button
+                className="btn"
+                disabled={draft.behaviorRules.length >= 30}
+                onClick={() =>
+                  update({
+                    behaviorRules: [
+                      ...draft.behaviorRules,
                       {
-                        items: 'Menu items',
-                        fulfillment: 'Pickup or delivery',
-                        name: 'Customer name',
-                        address: 'Delivery address and area',
-                      }[step]
+                        id: crypto.randomUUID(),
+                        enabled: true,
+                        when: '',
+                        action: 'continue',
+                        response: '',
+                        responseMode: 'adaptive',
+                      },
+                    ],
+                  })
+                }
+              >
+                <Plus className="size-4" />
+                Add rule
+              </button>
+            </div>
+            {draft.behaviorRules.length === 0 && (
+              <p className="rounded-xl border border-dashed border-ink/10 p-4 text-sm text-stone-500">
+                No special rules yet. Goal and Additional instructions still guide the bot.
+              </p>
+            )}
+            {draft.behaviorRules.map((rule, i) => (
+              <div
+                key={rule.id}
+                className="space-y-4 rounded-xl border border-white bg-white/50 p-4"
+              >
+                <div className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    className="size-4 accent-brand-500"
+                    checked={rule.enabled}
+                    aria-label={`Enable rule ${i + 1}`}
+                    onChange={(event) =>
+                      update({
+                        behaviorRules: draft.behaviorRules.map((item, index) =>
+                          index === i ? { ...item, enabled: event.target.checked } : item,
+                        ),
+                      })
                     }
-                  </span>
+                  />
+                  <strong className="min-w-0 flex-1 text-sm">Rule {i + 1}</strong>
                   <button
                     className="icon-btn"
                     disabled={i === 0}
-                    aria-label={`Move ${step} up`}
+                    aria-label={`Move rule ${i + 1} up`}
                     onClick={() => {
-                      const steps = [...draft.steps];
-                      [steps[i - 1], steps[i]] = [steps[i], steps[i - 1]];
-                      update({ steps });
+                      const behaviorRules = [...draft.behaviorRules];
+                      [behaviorRules[i - 1], behaviorRules[i]] = [
+                        behaviorRules[i]!,
+                        behaviorRules[i - 1]!,
+                      ];
+                      update({ behaviorRules });
                     }}
                   >
                     <ArrowUp className="size-4" />
                   </button>
                   <button
                     className="icon-btn"
-                    disabled={i === draft.steps.length - 1}
-                    aria-label={`Move ${step} down`}
+                    disabled={i === draft.behaviorRules.length - 1}
+                    aria-label={`Move rule ${i + 1} down`}
                     onClick={() => {
-                      const steps = [...draft.steps];
-                      [steps[i + 1], steps[i]] = [steps[i], steps[i + 1]];
-                      update({ steps });
+                      const behaviorRules = [...draft.behaviorRules];
+                      [behaviorRules[i + 1], behaviorRules[i]] = [
+                        behaviorRules[i]!,
+                        behaviorRules[i + 1]!,
+                      ];
+                      update({ behaviorRules });
                     }}
                   >
                     <ArrowDown className="size-4" />
                   </button>
-                </li>
-              ))}
-            </ol>
+                  <button
+                    className="icon-btn"
+                    aria-label={`Remove rule ${i + 1}`}
+                    onClick={() =>
+                      update({
+                        behaviorRules: draft.behaviorRules.filter((_, index) => index !== i),
+                      })
+                    }
+                  >
+                    <Trash2 className="size-4" />
+                  </button>
+                </div>
+                <Field label="When this happens">
+                  <textarea
+                    className="input min-h-20"
+                    maxLength={500}
+                    required
+                    placeholder="For example: the customer changes the subject while an order is in progress"
+                    value={rule.when}
+                    onChange={(event) =>
+                      update({
+                        behaviorRules: draft.behaviorRules.map((item, index) =>
+                          index === i ? { ...item, when: event.target.value } : item,
+                        ),
+                      })
+                    }
+                  />
+                </Field>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Field label="Then">
+                    <CustomSelect
+                      value={rule.action}
+                      onChange={(value) =>
+                        update({
+                          behaviorRules: draft.behaviorRules.map((item, index) =>
+                            index === i ? { ...item, action: value as typeof rule.action } : item,
+                          ),
+                        })
+                      }
+                      options={[
+                        { value: 'continue', label: 'Continue the order' },
+                        { value: 'reply', label: 'Reply only' },
+                        { value: 'handoff', label: 'Hand off to staff' },
+                      ]}
+                    />
+                  </Field>
+                  <Field label="Wording">
+                    <CustomSelect
+                      value={rule.responseMode}
+                      onChange={(value) =>
+                        update({
+                          behaviorRules: draft.behaviorRules.map((item, index) =>
+                            index === i
+                              ? { ...item, responseMode: value as typeof rule.responseMode }
+                              : item,
+                          ),
+                        })
+                      }
+                      options={[
+                        { value: 'adaptive', label: 'Let AI adapt it' },
+                        { value: 'exact', label: 'Use exact words' },
+                      ]}
+                    />
+                  </Field>
+                </div>
+                <Field label={rule.responseMode === 'exact' ? 'Exact reply' : 'Response guidance'}>
+                  <textarea
+                    className="input min-h-20"
+                    maxLength={1500}
+                    value={rule.response}
+                    placeholder={
+                      rule.responseMode === 'exact'
+                        ? 'Text sent exactly to the customer'
+                        : 'Explain how the bot should respond'
+                    }
+                    onChange={(event) =>
+                      update({
+                        behaviorRules: draft.behaviorRules.map((item, index) =>
+                          index === i ? { ...item, response: event.target.value } : item,
+                        ),
+                      })
+                    }
+                  />
+                </Field>
+              </div>
+            ))}
           </div>
           <label className="flex items-start gap-3 text-sm">
             <input

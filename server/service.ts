@@ -8,8 +8,14 @@ import type {
   Order,
   TurnInput,
 } from '../src/shared/types.js';
-import { createConversation, processTurn, transitionOrder } from '../src/domain/engine.js';
-import { AiModelAdapter } from './integrations/models.js';
+import {
+  createConversation,
+  parseActions,
+  processTurn,
+  transitionOrder,
+} from '../src/domain/engine.js';
+import { AiModelAdapter, providerKey } from './integrations/models.js';
+import { modelFingerprint } from './integrations/model-catalog.js';
 import { GoogleSheetsAdapter } from './integrations/sheets.js';
 import { WhatsAppAdapter } from './integrations/whatsapp.js';
 import { decryptSecret, PublicError } from './security.js';
@@ -58,11 +64,6 @@ export async function refreshCatalog(repo: Repository, company: Company): Promis
   await repo.saveCompany({ ...latest, catalogSyncedAt: new Date().toISOString() });
   return products.length;
 }
-const simpleMessage = (text: string) =>
-  /^(menu|hi|hello|salam|assalam.*|مینو|سلام|ہیلو|confirm|yes|yes confirm|confirm order|جی|ہاں|تصدیق|haan|han|ji|cancel|cancel order|order cancel|منسوخ|review|checkout|total|new order|staff|help)$/i.test(
-    text.trim(),
-  );
-
 export async function handleTurn(
   repo: Repository,
   company: Company,
@@ -72,7 +73,13 @@ export async function handleTurn(
   const sandbox = conversation.channel === 'demo';
   const selectConfig = (value: Company): Company => {
     if (!sandbox) return configuredCompany(value);
-    const selected = botConfig(value, input.useDraft !== false);
+    if (input.testTarget === 'published' && !value.bot?.published)
+      throw new PublicError(
+        'Publish a bot configuration before testing the published version.',
+        409,
+      );
+    const useDraft = input.testTarget !== 'published';
+    const selected = botConfig(value, useDraft);
     const preview = {
       ...value,
       botEnabled: true,
@@ -81,19 +88,14 @@ export async function handleTurn(
         history: [],
         revision: value.bot?.revision ?? 0,
         published: {
-          version: input.useDraft !== false ? 0 : (value.bot?.published?.version ?? 0),
+          version: useDraft ? 0 : (value.bot?.published?.version ?? 0),
           config: selected,
           publishedAt: input.now,
           publishedBy: 'sandbox',
         },
       },
     };
-    return configuredCompany({
-      ...preview,
-      ai: input.useLiveModel
-        ? value.ai
-        : { ...value.ai, provider: 'mock', model: 'deterministic-demo' },
-    });
+    return configuredCompany(preview);
   };
   const lockId = randomUUID();
   if (
@@ -114,6 +116,24 @@ export async function handleTurn(
     if (!storedConversation && conversation.version > 0)
       throw new PublicError('This conversation was deleted. Start a new conversation.', 409);
     conversation = storedConversation ?? conversation;
+    if (sandbox && storedConversation?.testContext) {
+      const expected = {
+        target: input.testTarget ?? 'draft',
+        configRevision:
+          input.testTarget === 'published'
+            ? (company.bot?.published?.version ?? 0)
+            : (company.bot?.revision ?? 0),
+        provider: company.ai.provider,
+        model: company.ai.model,
+        keyMode: company.ai.keyMode,
+        catalogSource: company.catalogSource,
+      };
+      if (JSON.stringify(storedConversation.testContext) !== JSON.stringify(expected))
+        throw new PublicError(
+          'The tested bot configuration changed. Start a new test conversation.',
+          409,
+        );
+    }
     if (conversation.messages.some((m) => m.id === input.messageId))
       return {
         conversation,
@@ -136,7 +156,6 @@ export async function handleTurn(
       );
     // A sheet-backed catalog is refreshed before any potentially mutating bot turn.
     if (
-      !sandbox &&
       company.catalogSource === 'sheets' &&
       conversation.mode === 'bot' &&
       company.botEnabled &&
@@ -145,6 +164,11 @@ export async function handleTurn(
       try {
         await refreshCatalog(repo, company);
       } catch (error) {
+        if (sandbox)
+          throw new PublicError(
+            `Could not refresh the connected menu Sheet: ${sanitizeError(error)}`,
+            503,
+          );
         return await saveHandoff(
           repo,
           company,
@@ -157,21 +181,59 @@ export async function handleTurn(
     }
     const products = await repo.listProducts(company.id);
     let actions: BotAction[] | undefined;
+    let modelResponse: import('../src/shared/types.js').ModelResponse | undefined;
+    const submittedCancellation =
+      Boolean(conversation.cart.orderId) &&
+      /^(cancel|cancel order|منسوخ|order cancel)$/i.test(input.text.trim());
+    if (sandbox && !input.action && company.ai.provider === 'mock' && !submittedCancellation)
+      throw new PublicError(
+        'Connect and select an AI model in Bot settings before testing customer messages.',
+        409,
+      );
+    if (sandbox && !input.action && company.ai.provider !== 'mock' && !submittedCancellation) {
+      const key = await providerKey(repo, company);
+      if (company.modelVerification?.fingerprint !== modelFingerprint(company, key))
+        throw new PublicError(
+          'Run the selected model generation test in Bot settings before testing conversations.',
+          409,
+        );
+    }
+    const deterministic = !input.action
+      ? parseActions(company, products, conversation, input.text)
+      : undefined;
     if (
       !input.action &&
+      (conversation.pendingItemChoice || deterministic?.[0]?.type === 'clarify_item')
+    )
+      actions = deterministic;
+    if (
+      !input.action &&
+      !actions &&
+      !submittedCancellation &&
       company.ai.provider !== 'mock' &&
-      !simpleMessage(input.text) &&
       conversation.mode === 'bot' &&
       company.botEnabled
     ) {
       try {
-        actions = await new AiModelAdapter(repo).interpret(
+        const interpretation = await new AiModelAdapter(repo).interpret(
           company,
           products,
           conversation,
           input.text,
         );
+        const matchedRule = botConfig(company).behaviorRules.find(
+          (rule) => rule.enabled && rule.id === interpretation.response?.matchedRuleId,
+        );
+        actions =
+          matchedRule?.action === 'handoff'
+            ? [{ type: 'handoff' }]
+            : matchedRule?.action === 'reply'
+              ? [{ type: 'answer', text: interpretation.response?.text ?? matchedRule.response }]
+              : interpretation.actions;
+        modelResponse = interpretation.response;
       } catch (error) {
+        if (sandbox)
+          throw error instanceof PublicError ? error : new PublicError(sanitizeError(error), 503);
         return await saveHandoff(
           repo,
           company,
@@ -215,7 +277,7 @@ export async function handleTurn(
         return { conversation: c, order: cancelled, reply, traces: ['order_cancelled'] };
       }
     }
-    const result = processTurn(company, products, conversation, input, actions);
+    const result = processTurn(company, products, conversation, input, actions, modelResponse);
     result.conversation.lastInboundAt = new Date(
       Math.max(Date.parse(conversation.lastInboundAt), Date.parse(input.now)),
     ).toISOString();

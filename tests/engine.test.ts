@@ -3,11 +3,13 @@ import {
   createConversation,
   emptyCart,
   isOpen,
+  parseActions,
   processTurn,
   quoteCart,
   transitionOrder,
 } from '../src/domain/engine';
 import { seedCompanies, seedProducts } from '../src/shared/seed';
+import { defaultBot } from '../src/shared/bot';
 import type { BotAction, Company, Conversation, Product } from '../src/shared/types';
 
 const now = '2026-09-09T13:30:00.000Z';
@@ -234,6 +236,199 @@ describe('authoritative ordering', () => {
       customerName: 'Ali',
     }).conversation;
     expect(turn(c, 'confirm').order?.submissionKey).not.toBe(first.order?.submissionKey);
+  });
+});
+
+describe('menu recognition and clarification', () => {
+  it.each(['biryani', 'biriyani', 'baryani', 'biriyanii'])(
+    'recognizes %s as Chicken Biryani',
+    (spelling) => {
+      const actions = parseActions(company, products, fresh(), `2 ${spelling}`);
+      expect(actions).toContainEqual({
+        type: 'add_item',
+        productId: biryani.id,
+        quantity: 2,
+        modifierIds: [],
+      });
+    },
+  );
+
+  it('asks which lassi, preserves quantity, and adds only the selected choice', () => {
+    const mango: Product = {
+      ...biryani,
+      id: '33333333-3333-4333-a333-000000000071',
+      name: 'Mango Lassi',
+      aliases: ['mango lassi'],
+      variants: [],
+      modifiers: [],
+    };
+    const strawberry: Product = {
+      ...mango,
+      id: '33333333-3333-4333-a333-000000000072',
+      name: 'Strawberry Lassi',
+      aliases: ['strawberry lassi'],
+    };
+    const plain: Product = {
+      ...mango,
+      id: '33333333-3333-4333-a333-000000000073',
+      name: 'Plain Lassi',
+      aliases: ['lassi', 'plain lassi'],
+    };
+    const catalog = [mango, strawberry, plain];
+    const asked = turn(fresh(), '2 lassi', undefined, catalog);
+    expect(asked.conversation.cart.items).toEqual([]);
+    expect(asked.conversation.pendingItemChoice).toMatchObject({
+      candidateProductIds: [mango.id, strawberry.id, plain.id],
+      quantity: 2,
+    });
+    expect(asked.reply).toContain('Strawberry Lassi');
+
+    const selected = turn(asked.conversation, '2', undefined, catalog);
+    expect(selected.conversation.pendingItemChoice).toBeUndefined();
+    expect(selected.conversation.cart.items).toEqual([
+      expect.objectContaining({ productId: strawberry.id, quantity: 2 }),
+    ]);
+  });
+
+  it('uses a distinguishing flavor without asking about the lassi family', () => {
+    const mango: Product = {
+      ...biryani,
+      id: '33333333-3333-4333-a333-000000000074',
+      name: 'Mango Lassi',
+      aliases: ['mango lassi'],
+      variants: [],
+      modifiers: [],
+    };
+    const strawberry: Product = {
+      ...mango,
+      id: '33333333-3333-4333-a333-000000000075',
+      name: 'Strawberry Lassi',
+      aliases: ['strawberry lassi'],
+    };
+    const result = turn(fresh(), 'mango lassi', undefined, [mango, strawberry]);
+    expect(result.conversation.pendingItemChoice).toBeUndefined();
+    expect(result.conversation.cart.items[0]?.productId).toBe(mango.id);
+  });
+
+  it('treats a duplicate alias as a choice instead of adding both products', () => {
+    const first: Product = {
+      ...biryani,
+      id: '33333333-3333-4333-a333-000000000076',
+      name: 'Mango Shake',
+      aliases: ['shake'],
+      variants: [],
+      modifiers: [],
+    };
+    const second: Product = {
+      ...first,
+      id: '33333333-3333-4333-a333-000000000077',
+      name: 'Strawberry Shake',
+    };
+    expect(parseActions(company, [first, second], fresh(), 'one shake')).toEqual([
+      expect.objectContaining({
+        type: 'clarify_item',
+        candidateProductIds: [first.id, second.id],
+        quantity: 1,
+      }),
+    ]);
+  });
+
+  it('keeps quantity and a shared requested variant through clarification', () => {
+    const mango: Product = {
+      ...biryani,
+      id: '33333333-3333-4333-a333-000000000078',
+      name: 'Mango Lassi',
+      aliases: ['mango lassi'],
+      variants: [{ id: 'large-mango', name: 'Large', price: 35000 }],
+      modifiers: [],
+    };
+    const strawberry: Product = {
+      ...mango,
+      id: '33333333-3333-4333-a333-000000000079',
+      name: 'Strawberry Lassi',
+      aliases: ['strawberry lassi'],
+      variants: [{ id: 'large-strawberry', name: 'Large', price: 36000 }],
+    };
+    const asked = turn(fresh(), '2 large lassi', undefined, [mango, strawberry]);
+    expect(asked.conversation.pendingItemChoice).toMatchObject({
+      quantity: 2,
+      requestedOptionNames: ['Large'],
+    });
+    const selected = turn(asked.conversation, 'mango', undefined, [mango, strawberry]);
+    expect(selected.conversation.cart.items[0]).toMatchObject({
+      productId: mango.id,
+      quantity: 2,
+      variantId: 'large-mango',
+    });
+  });
+
+  it('reports a uniquely matched unavailable typo without substituting another item', () => {
+    const unavailable = { ...biryani, available: false };
+    const result = turn(fresh(), '2 baryani', undefined, [unavailable]);
+    expect(result.conversation.cart.items).toEqual([]);
+    expect(result.reply).toContain('unavailable');
+  });
+});
+
+describe('configured response control', () => {
+  it('uses exact matched-rule wording and records the rule', () => {
+    const rule = {
+      id: 'interruptions',
+      enabled: true,
+      when: 'The customer interrupts an order with an unrelated question.',
+      action: 'reply' as const,
+      response: 'I saved your cart. We can continue whenever you are ready.',
+      responseMode: 'exact' as const,
+    };
+    const configured: Company = {
+      ...company,
+      bot: {
+        draft: { ...defaultBot, behaviorRules: [rule] },
+        revision: 1,
+        history: [],
+        published: {
+          version: 1,
+          config: { ...defaultBot, behaviorRules: [rule] },
+          publishedAt: now,
+          publishedBy: 'test',
+        },
+      },
+    };
+    const result = processTurn(
+      configured,
+      products,
+      fresh(),
+      { messageId: 'rule-turn', text: 'Can we talk about this later?', now },
+      [{ type: 'answer', text: 'Model wording' }],
+      {
+        text: 'Model wording',
+        askFor: 'none',
+        matchedRuleId: rule.id,
+        groundingIds: [rule.id],
+      },
+    );
+    expect(result.reply).toBe(rule.response);
+    expect(result.traces).toContain(`behavior_rule:${rule.id}`);
+  });
+
+  it('hands unknown local input to staff without the removed canned sentence', () => {
+    const result = turn(fresh(), 'something unrelated');
+    expect(result.conversation.mode).toBe('human');
+    expect(result.reply).not.toContain('I can help with the menu');
+  });
+
+  it('ignores a model question for a detail that the same turn already collected', () => {
+    const result = processTurn(
+      company,
+      products,
+      fresh(),
+      { messageId: 'invalid-next-question', text: 'one biryani', now },
+      [{ type: 'add_item', productId: biryani.id, quantity: 1 }],
+      { text: 'Which menu item would you like?', askFor: 'items' },
+    );
+    expect(result.reply).not.toContain('Which menu item');
+    expect(result.reply).toContain('Chicken Biryani');
+    expect(result.traces).toContain('invalid_model_prompt_ignored');
   });
 });
 

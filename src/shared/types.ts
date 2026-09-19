@@ -1,6 +1,14 @@
 export type Language = 'en' | 'ur' | 'roman-ur';
 export type Provider = 'mock' | 'openai' | 'anthropic' | 'gemini';
 export type Role = 'admin' | 'owner' | 'staff';
+export interface BehaviorRule {
+  id: string;
+  enabled: boolean;
+  when: string;
+  action: 'continue' | 'reply' | 'handoff';
+  response: string;
+  responseMode: 'exact' | 'adaptive';
+}
 export interface BotConfig {
   name: string;
   personality: 'warm' | 'professional' | 'concise';
@@ -10,7 +18,7 @@ export interface BotConfig {
   knowledge: { question: string; answer: string }[];
   greeting: string;
   handoffMessage: string;
-  steps: ('items' | 'fulfillment' | 'name' | 'address')[];
+  behaviorRules: BehaviorRule[];
   fulfillment: 'both' | 'pickup' | 'delivery';
   requirePhoneConfirmation: boolean;
 }
@@ -113,6 +121,21 @@ export interface Conversation {
   mode: 'bot' | 'human';
   messages: Message[];
   cart: Cart;
+  pendingItemChoice?: {
+    candidateProductIds: string[];
+    quantity: number;
+    requestedOptionNames: string[];
+    notes: string;
+    originalText: string;
+  };
+  testContext?: {
+    target: 'draft' | 'published';
+    configRevision: number;
+    provider: Provider;
+    model: string;
+    keyMode: 'platform' | 'own';
+    catalogSource: 'app' | 'sheets';
+  };
   version: number;
   updatedAt: string;
   lastInboundAt: string;
@@ -323,14 +346,31 @@ export type BotAction =
   | { type: 'cancel' }
   | { type: 'new_order' }
   | { type: 'handoff' }
+  | {
+      type: 'clarify_item';
+      candidateProductIds: string[];
+      quantity: number;
+      requestedOptionNames?: string[];
+      notes?: string;
+      originalText?: string;
+    }
   | { type: 'answer'; text: string };
+export interface ModelResponse {
+  text: string;
+  askFor?: 'items' | 'fulfillment' | 'name' | 'zone' | 'address' | 'anything_else' | 'none';
+  matchedRuleId?: string;
+  groundingIds?: string[];
+}
+export interface ModelInterpretation {
+  actions: BotAction[];
+  response?: ModelResponse;
+}
 export interface TurnInput {
   messageId: string;
   text: string;
   action?: BotAction;
   now: string;
-  useLiveModel?: boolean;
-  useDraft?: boolean;
+  testTarget?: 'draft' | 'published';
 }
 export interface TurnResult {
   conversation: Conversation;

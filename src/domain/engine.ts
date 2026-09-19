@@ -5,6 +5,7 @@ import type {
   Company,
   Conversation,
   Language,
+  ModelResponse,
   Order,
   OrderLine,
   OrderStatus,
@@ -13,6 +14,7 @@ import type {
   TurnResult,
 } from '../shared/types';
 import { money } from '../shared/types';
+import { resolveItemMention, resolvePendingItemChoice } from './menu-resolver';
 
 /** Pure application rules. Models can suggest tools, never calculate or commit orders. */
 export const emptyCart = (): Cart => ({ items: [], revision: 0, status: 'building' });
@@ -197,44 +199,41 @@ export function quoteCart(company: Company, products: Product[], cart: Cart): Ca
 }
 
 function missingDetails(company: Company, cart: Cart, lang: Language): string | undefined {
-  const config = botConfig(company);
-  for (const step of config.steps) {
-    if (step === 'items' && !cart.items.length)
-      return say(
-        lang,
-        'Your cart is empty. Choose something from the menu first.',
-        'آپ کی ٹوکری خالی ہے۔ پہلے مینو سے کوئی چیز چنیں۔',
-        'Aap ka cart khaali hai. Pehle menu se koi cheez chunain.',
-      );
-    if (step === 'fulfillment' && !cart.fulfillment)
-      return say(
-        lang,
-        'Would you like pickup or delivery?',
-        'آپ پک اپ کریں گے یا ڈیلیوری چاہیے؟',
-        'Aap pickup karenge ya delivery chahiye?',
-      );
-    if (step === 'name' && !cart.customerName?.trim())
-      return say(
-        lang,
-        'What name should I put on the order? Reply “My name is Ali”.',
-        'آرڈر کے لیے آپ کا نام کیا ہے؟ لکھیں: میرا نام علی ہے',
-        'Order ke liye aap ka naam? Likhein: Mera naam Ali hai.',
-      );
-    if (step === 'address' && cart.fulfillment === 'delivery' && !cart.zone)
-      return say(
-        lang,
-        `Which delivery area? ${company.deliveryZones.map((z) => z.name).join(', ')}.`,
-        `ڈیلیوری کا علاقہ بتائیں: ${company.deliveryZones.map((z) => z.name).join('، ')}۔`,
-        `Delivery ka ilaqa batayein: ${company.deliveryZones.map((z) => z.name).join(', ')}.`,
-      );
-    if (step === 'address' && cart.fulfillment === 'delivery' && !cart.address?.trim())
-      return say(
-        lang,
-        'Please send your complete address: “Address: house, street, area”.',
-        'مکمل پتہ لکھیں: پتہ: گھر، گلی، علاقہ',
-        'Mukammal pata likhein: Address: ghar, gali, ilaqa.',
-      );
-  }
+  if (!cart.items.length)
+    return say(
+      lang,
+      'What would you like to order?',
+      'آپ کیا آرڈر کرنا چاہیں گے؟',
+      'Aap kya order karna chahenge?',
+    );
+  if (!cart.fulfillment)
+    return say(
+      lang,
+      'Would you like pickup or delivery?',
+      'آپ پک اپ کریں گے یا ڈیلیوری چاہیے؟',
+      'Aap pickup karenge ya delivery chahiye?',
+    );
+  if (!cart.customerName?.trim())
+    return say(
+      lang,
+      'What name should I put on the order?',
+      'آرڈر کے لیے آپ کا نام کیا ہے؟',
+      'Order ke liye aap ka naam kya hai?',
+    );
+  if (cart.fulfillment === 'delivery' && !cart.zone)
+    return say(
+      lang,
+      `Which delivery area? ${company.deliveryZones.map((z) => z.name).join(', ')}.`,
+      `ڈیلیوری کا علاقہ بتائیں: ${company.deliveryZones.map((z) => z.name).join('، ')}۔`,
+      `Delivery ka ilaqa batayein: ${company.deliveryZones.map((z) => z.name).join(', ')}.`,
+    );
+  if (cart.fulfillment === 'delivery' && !cart.address?.trim())
+    return say(
+      lang,
+      'Please send your complete delivery address.',
+      'مکمل ڈیلیوری پتہ لکھیں۔',
+      'Mukammal delivery address bhejein.',
+    );
 }
 
 function review(company: Company, products: Product[], cart: Cart, lang: Language): string {
@@ -312,7 +311,21 @@ const affirmative = (text: string) =>
   );
 function contains(text: string, phrase: string): boolean {
   const p = normalize(phrase).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`(^|[^\\p{L}\\p{N}])${p}(?=$|[^\\p{L}\\p{N}])`, 'u').test(text);
+  return new RegExp(`(^|[^\\p{L}\\p{N}])${p}(?=$|[^\\p{L}\\p{N}])`, 'u').test(normalize(text));
+}
+const unsafeModelText = (text: string) =>
+  /(?:\b(?:rs\.?|pkr|total|price)\b|\b(?:order\s+)?(?:accepted|approved|submitted|placed|confirmed|delivered|dispatched|completed)\b)/iu.test(
+    text,
+  );
+function requestedOptions(products: Product[], text: string): string[] {
+  return [
+    ...new Set(
+      products
+        .flatMap((product) => [...product.variants, ...product.modifiers])
+        .filter((option) => contains(text, option.name))
+        .map((option) => option.name),
+    ),
+  ];
 }
 
 /** Deliberately bounded simulator. Production adapters may extract the same actions. */
@@ -323,6 +336,41 @@ export function parseActions(
   text: string,
 ): BotAction[] {
   const value = normalize(text);
+  if (conversation.pendingItemChoice) {
+    const selected = resolvePendingItemChoice(
+      products,
+      company.id,
+      conversation.pendingItemChoice,
+      text,
+    );
+    if (selected) {
+      const requested = conversation.pendingItemChoice.requestedOptionNames;
+      return [
+        {
+          type: 'add_item',
+          productId: selected.id,
+          quantity: conversation.pendingItemChoice.quantity,
+          variantId: selected.variants.find((option) =>
+            requested.some((name) => contains(name, option.name)),
+          )?.id,
+          modifierIds: selected.modifiers
+            .filter((option) => requested.some((name) => contains(name, option.name)))
+            .map((option) => option.id),
+          notes: conversation.pendingItemChoice.notes,
+        },
+      ];
+    }
+    return [
+      {
+        type: 'clarify_item',
+        candidateProductIds: conversation.pendingItemChoice.candidateProductIds,
+        quantity: conversation.pendingItemChoice.quantity,
+        requestedOptionNames: conversation.pendingItemChoice.requestedOptionNames,
+        notes: conversation.pendingItemChoice.notes,
+        originalText: conversation.pendingItemChoice.originalText,
+      },
+    ];
+  }
   if (affirmative(value)) return [{ type: 'confirm' }];
   if (/^(new order|start over|restart|naya order|نیا آرڈر)[.!،۔\s]*$/u.test(value))
     return [{ type: 'new_order' }];
@@ -336,6 +384,17 @@ export function parseActions(
     )
   )
     return [{ type: 'menu' }];
+  const earlyResolution = resolveItemMention(products, company.id, text);
+  if (earlyResolution.kind === 'ambiguous')
+    return [
+      {
+        type: 'clarify_item',
+        candidateProductIds: earlyResolution.products.slice(0, 12).map((product) => product.id),
+        quantity: earlyResolution.quantity,
+        requestedOptionNames: requestedOptions(earlyResolution.products, text),
+        originalText: text,
+      },
+    ];
   const actions: BotAction[] = [];
   const matches = products
     .filter((p) => p.companyId === company.id)
@@ -347,6 +406,59 @@ export function parseActions(
     }))
     .filter((m): m is { product: Product; alias: string } => !!m.alias)
     .sort((a, b) => value.indexOf(normalize(a.alias)) - value.indexOf(normalize(b.alias)));
+  if (!matches.length) {
+    const detailLike =
+      /(?:my name is|name\s*:|mera naam|mera nam|میرا نام|نام\s*:|address\s*:|pata\s*:|پتہ\s*:|پتا\s*:|\bpickup\b|\bdelivery\b|پک اپ|ڈیلیوری|ڈلیوری)/iu.test(
+        text,
+      );
+    const resolution = detailLike
+      ? ({ kind: 'none', quantity: 1 } as const)
+      : resolveItemMention(products, company.id, text);
+    if (resolution.kind === 'ambiguous')
+      return [
+        {
+          type: 'clarify_item',
+          candidateProductIds: resolution.products.slice(0, 12).map((product) => product.id),
+          quantity: resolution.quantity,
+          requestedOptionNames: requestedOptions(resolution.products, text),
+          originalText: text,
+        },
+      ];
+    if (resolution.kind === 'unique') {
+      if (
+        /^(?:what|how much|is |are |do you have|tell me|kitna|kya)|(?:\bprice\b|\bavailable\b|کتنے|قیمت|دستیاب)/u.test(
+          value,
+        )
+      )
+        return [{ type: 'menu', query: resolution.product.name }];
+      return [
+        {
+          type: 'add_item',
+          productId: resolution.product.id,
+          quantity: resolution.quantity,
+          modifierIds: [],
+        },
+      ];
+    }
+  }
+  const sameMention = matches.filter(
+    (match) =>
+      value.indexOf(normalize(match.alias)) === value.indexOf(normalize(matches[0]?.alias ?? '')) &&
+      normalize(match.alias) === normalize(matches[0]?.alias ?? ''),
+  );
+  if (sameMention.length > 1)
+    return [
+      {
+        type: 'clarify_item',
+        candidateProductIds: sameMention.slice(0, 12).map((match) => match.product.id),
+        quantity: resolveItemMention(products, company.id, text).quantity,
+        requestedOptionNames: requestedOptions(
+          sameMention.map((match) => match.product),
+          text,
+        ),
+        originalText: text,
+      },
+    ];
   if (
     matches.length &&
     /^(?:what|how much|is |are |do you have|tell me|kitna|kya)|(?:\bprice\b|\bavailable\b|کتنے|قیمت|دستیاب)/u.test(
@@ -444,6 +556,7 @@ export function processTurn(
   conversation: Conversation,
   input: TurnInput,
   actions?: BotAction[],
+  modelResponse?: ModelResponse,
 ): TurnResult {
   if (conversation.companyId !== company.id) throw new Error('Company access denied.');
   if (!Number.isFinite(new Date(input.now).getTime()))
@@ -460,6 +573,18 @@ export function processTurn(
   next.language = languageOf(input.text, next.language);
   if (configuration.language !== 'auto') next.language = configuration.language;
   next.botVersion = company.bot?.published?.version;
+  if (next.channel === 'demo')
+    next.testContext = {
+      target: input.testTarget ?? 'draft',
+      configRevision:
+        input.testTarget === 'published'
+          ? (company.bot?.published?.version ?? 0)
+          : (company.bot?.revision ?? 0),
+      provider: company.ai.provider,
+      model: company.ai.model,
+      keyMode: company.ai.keyMode,
+      catalogSource: company.catalogSource,
+    };
   next.messages.push({
     id: input.messageId,
     role: 'customer',
@@ -479,11 +604,78 @@ export function processTurn(
   let reply = '',
     order: Order | undefined;
   const finish = (): TurnResult => {
+    const validGrounding = new Set([
+      ...products
+        .filter((product) => product.companyId === company.id)
+        .map((product) => product.id),
+      ...company.faqs.map((_, index) => `faq:${index}`),
+      ...configuration.behaviorRules.map((rule) => rule.id),
+    ]);
+    const grounded =
+      !modelResponse?.groundingIds?.length ||
+      modelResponse.groundingIds.every((id) => validGrounding.has(id));
+    const validAskFor =
+      !modelResponse?.askFor ||
+      modelResponse.askFor === 'none' ||
+      (modelResponse.askFor === 'items' && !cart.items.length) ||
+      (modelResponse.askFor === 'anything_else' && cart.items.length > 0) ||
+      (modelResponse.askFor === 'fulfillment' && !cart.fulfillment) ||
+      (modelResponse.askFor === 'name' && !cart.customerName?.trim()) ||
+      (modelResponse.askFor === 'zone' && cart.fulfillment === 'delivery' && !cart.zone) ||
+      (modelResponse.askFor === 'address' &&
+        cart.fulfillment === 'delivery' &&
+        !cart.address?.trim());
+    const matchedRule = configuration.behaviorRules.find(
+      (rule) => rule.enabled && rule.id === modelResponse?.matchedRuleId,
+    );
+    if (matchedRule) traces.push(`behavior_rule:${matchedRule.id}`);
+    const transactional = traces.some((trace) =>
+      [
+        'add_item',
+        'remove_item',
+        'set_details',
+        'review',
+        'confirm',
+        'cancel',
+        'new_order',
+        'menu',
+        'clarify_item',
+      ].includes(trace),
+    );
+    if (matchedRule?.action === 'handoff') next.mode = 'human';
+    if (matchedRule?.responseMode === 'exact' && matchedRule.response)
+      reply = transactional && reply ? `${reply}\n\n${matchedRule.response}` : matchedRule.response;
+    else if (
+      grounded &&
+      validAskFor &&
+      modelResponse?.text.trim() &&
+      !unsafeModelText(modelResponse.text)
+    )
+      reply =
+        transactional && reply
+          ? `${reply}\n\n${modelResponse.text.trim()}`
+          : modelResponse.text.trim();
+    if (modelResponse?.askFor && !validAskFor) traces.push('invalid_model_prompt_ignored');
+    if (!reply && next.mode === 'bot') {
+      reply =
+        missingDetails(company, cart, lang) ??
+        say(
+          lang,
+          'Your details are saved. Ask to review the order when you are ready.',
+          'آپ کی تفصیلات محفوظ ہیں۔ تیار ہوں تو آرڈر کا جائزہ مانگیں۔',
+          'Aap ki details save hain. Tayyar hon to order review karne ko kahein.',
+        );
+      traces.push('response_fallback');
+    }
+    if (
+      traces.includes('handoff') &&
+      configuration.handoffMessage &&
+      !(matchedRule?.responseMode === 'exact' && matchedRule.response)
+    )
+      reply = configuration.handoffMessage;
     if (company.bot?.published && reply) {
       if (/^(hi|hello|salam|سلام|ہیلو)$/iu.test(input.text.trim()) && configuration.greeting)
-        reply = `${configuration.greeting}\n\n${missingDetails(company, cart, lang) ?? reply}`;
-      else if (configuration.personality === 'warm' && lang === 'en' && traces.includes('add_item'))
-        reply = `Happy to help. ${reply}`;
+        reply = configuration.greeting;
     }
     if (reply)
       next.messages.push({
@@ -526,6 +718,28 @@ export function processTurn(
         if (configuration.handoffMessage) reply = configuration.handoffMessage;
         break;
       }
+      if (action.type === 'clarify_item') {
+        const candidates = action.candidateProductIds
+          .map((id) =>
+            products.find((product) => product.companyId === company.id && product.id === id),
+          )
+          .filter((product): product is Product => Boolean(product));
+        if (candidates.length < 2) throw new Error('That menu choice is no longer available.');
+        next.pendingItemChoice = {
+          candidateProductIds: candidates.map((product) => product.id),
+          quantity: action.quantity,
+          requestedOptionNames: action.requestedOptionNames ?? [],
+          notes: action.notes ?? '',
+          originalText: action.originalText ?? input.text,
+        };
+        reply = `Which one would you like?\n${candidates
+          .map(
+            (product, index) =>
+              `${index + 1}. ${product.name}${product.available ? '' : ' · Unavailable'}`,
+          )
+          .join('\n')}`;
+        continue;
+      }
       if (action.type === 'menu') {
         reply = menu(company, products, lang, action.query);
         continue;
@@ -537,6 +751,7 @@ export function processTurn(
           (key) => delete (cart as unknown as Record<string, unknown>)[key],
         );
         Object.assign(cart, emptyCart(), { revision });
+        delete next.pendingItemChoice;
         reply = say(
           lang,
           'Started a new cart. What would you like?',
@@ -575,15 +790,21 @@ export function processTurn(
             normalize(input.text).includes(normalize(f.question)) ||
             (action.text === f.answer && f.answer.trim()),
         );
-        reply =
-          faq?.answer ??
-          say(
-            lang,
-            'I can help with the menu, pickup or delivery orders, and restaurant information. Tell me an item and quantity, or send “menu”. For anything else, send “staff”.',
-            'میں مینو، پک اپ اور ڈیلیوری آرڈرز میں مدد کر سکتا ہوں۔ چیز اور تعداد بتائیں یا “مینو” لکھیں۔ دوسری مدد کے لیے “عملہ” لکھیں۔',
-            'Main menu, pickup aur delivery orders mein madad kar sakta hoon. Item aur quantity batayein ya “menu” likhein. Aur madad ke liye “staff” likhein.',
-          );
-        traces.push(faq ? 'approved_faq' : 'unverified_model_answer_ignored');
+        const proposed = action.text.trim();
+        const unsafeClaim = unsafeModelText(proposed);
+        reply = faq?.answer ?? (unsafeClaim ? '' : proposed);
+        if (!reply) {
+          next.mode = 'human';
+          reply =
+            configuration.handoffMessage ||
+            say(
+              lang,
+              'I’m not certain about that, so I’ve asked a staff member to help.',
+              'مجھے اس بارے میں یقین نہیں، اس لیے عملے سے مدد مانگی ہے۔',
+              'Mujhe is baat ka yaqeen nahi, is liye staff se madad mangi hai.',
+            );
+        }
+        traces.push(faq ? 'approved_faq' : 'grounded_model_answer');
         continue;
       }
       if (cart.status === 'submitted') {
@@ -628,16 +849,19 @@ export function processTurn(
         // Validate all lines without requiring delivery details during cart building.
         quoteCart(company, products, { ...trial, fulfillment: 'pickup' });
         cart.items = trial.items;
+        delete next.pendingItemChoice;
         invalidate(cart);
         const product = products.find(
           (p) => p.id === action.productId && p.companyId === company.id,
         )!;
-        reply = say(
-          lang,
-          `Added ${action.quantity} × ${product.name}. Add anything else, or send “review”.`,
-          `${action.quantity} × ${product.name} شامل کر دیا۔ مزید چیز بتائیں یا “جائزہ” لکھیں۔`,
-          `${action.quantity} × ${product.name} add kar diya. Aur kuch chahiye, ya “review” likhein.`,
-        );
+        reply = modelResponse
+          ? `${action.quantity} × ${product.name} added.`
+          : say(
+              lang,
+              `Added ${action.quantity} × ${product.name}. Add anything else, or send “review”.`,
+              `${action.quantity} × ${product.name} شامل کر دیا۔ مزید چیز بتائیں یا “جائزہ” لکھیں۔`,
+              `${action.quantity} × ${product.name} add kar diya. Aur kuch chahiye, ya “review” likhein.`,
+            );
         continue;
       }
       if (action.type === 'remove_item') {
@@ -708,7 +932,9 @@ export function processTurn(
           JSON.stringify([details.fulfillment, details.customerName, details.address, details.zone])
         )
           invalidate(cart);
-        reply = missingDetails(company, cart, lang) ?? review(company, products, cart, lang);
+        reply = modelResponse
+          ? ''
+          : (missingDetails(company, cart, lang) ?? review(company, products, cart, lang));
         continue;
       }
       if (action.type === 'review') {

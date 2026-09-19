@@ -9,6 +9,7 @@ import { handleTurn, processJob } from '../server/service';
 import { encryptSecret } from '../server/security';
 import { makeJob } from '../server/jobs';
 import { availableModels } from '../server/integrations/model-catalog';
+import { GoogleSheetsAdapter } from '../server/integrations/sheets';
 import { parseRoute, workspacePath } from '../src/lib/routes';
 import type { BotAction, TurnResult } from '../src/shared/types';
 let repo: MemoryRepository;
@@ -205,6 +206,37 @@ describe('launch safety and management', () => {
     expect(cancel.status).toBe(200);
     expect((await cancel.json()).order.status).toBe('cancelled');
   });
+  it('refreshes a Sheet-backed menu for sandbox turns without creating external jobs', async () => {
+    const sheetProduct = {
+      ...seedProducts[0],
+      id: '33333333-3333-4333-a333-000000000099',
+      name: 'Fresh Sheet Special',
+      aliases: ['sheet special'],
+    };
+    await repo.saveCompany({ ...company, catalogSource: 'sheets', catalogSyncedAt: undefined });
+    await repo.saveIntegration(
+      company.id,
+      {
+        kind: 'sheets',
+        configured: true,
+        status: 'connected',
+        config: { spreadsheetId: 'test-spreadsheet-id', catalogSheet: 'Menu' },
+      },
+      encryptSecret('unused-private-key'),
+    );
+    vi.spyOn(GoogleSheetsAdapter.prototype, 'readCatalog').mockResolvedValue([sheetProduct]);
+    const response = await request('/chat', {
+      messageId: randomUUID(),
+      text: 'Show menu',
+      action: { type: 'menu' },
+    });
+    expect(response.status).toBe(200);
+    expect((await response.json()).reply).toContain('Fresh Sheet Special');
+    expect((await repo.listProducts(company.id)).map((product) => product.name)).toEqual([
+      'Fresh Sheet Special',
+    ]);
+    expect(await repo.listCompanyJobs(company.id)).toEqual([]);
+  });
   it('saves drafts with a revision guard and publishes or restores without enabling automation', async () => {
     await repo.saveCompany({ ...company, botEnabled: false });
     const config = {
@@ -229,18 +261,71 @@ describe('launch safety and management', () => {
     expect(saved.bot?.published?.version).toBe(3);
     expect(saved.bot?.published?.config.name).toBe('Laziza assistant');
   });
-  it('uses the draft collection sequence and greeting in sandbox only', async () => {
+  it('uses the exact draft greeting in sandbox only', async () => {
     const draft = {
       ...defaultBot,
       greeting: 'Welcome to our test kitchen.',
-      steps: ['name', 'items', 'fulfillment', 'address'] as typeof defaultBot.steps,
     };
     await request('/bot/draft', { config: draft, revision: 0 }, 'PUT');
-    const response = await request('/chat', { messageId: randomUUID(), text: 'hello' });
+    const response = await request('/chat', {
+      messageId: randomUUID(),
+      text: 'hello',
+      action: { type: 'menu' },
+    });
     const r = await response.json();
-    expect(r.reply).toContain('Welcome to our test kitchen.');
-    expect(r.reply.toLowerCase()).toContain('name');
+    expect(r.reply).toBe('Welcome to our test kitchen.');
     expect((await repo.getCompany(company.id))?.bot?.published).toBeUndefined();
+  });
+  it('selects draft or published behavior without changing the AI connection', async () => {
+    const saved = (await repo.getCompany(company.id))!;
+    await repo.saveCompany({
+      ...saved,
+      bot: {
+        draft: { ...defaultBot, greeting: 'Draft greeting.' },
+        published: {
+          version: 3,
+          config: { ...defaultBot, greeting: 'Published greeting.' },
+          publishedAt: new Date().toISOString(),
+          publishedBy: 'test',
+        },
+        history: [],
+        revision: 4,
+      },
+    });
+    const draft = await request('/chat', {
+      messageId: randomUUID(),
+      text: 'hello',
+      action: { type: 'menu' },
+      testTarget: 'draft',
+    });
+    const published = await request('/chat', {
+      messageId: randomUUID(),
+      text: 'hello',
+      action: { type: 'menu' },
+      testTarget: 'published',
+    });
+    const draftResult = await draft.json();
+    expect(draftResult.reply).toBe('Draft greeting.');
+    expect((await published.json()).reply).toBe('Published greeting.');
+    const crossed = await request('/chat', {
+      conversationId: draftResult.conversation.id,
+      messageId: randomUUID(),
+      text: 'hello',
+      action: { type: 'menu' },
+      testTarget: 'published',
+    });
+    expect(crossed.status).toBe(409);
+    expect((await crossed.json()).error).toContain('Start a new test conversation');
+    expect((await repo.getCompany(company.id))?.ai).toEqual(saved.ai);
+  });
+  it('does not silently use local rules for customer text in the tester', async () => {
+    const response = await request('/chat', {
+      messageId: randomUUID(),
+      text: '2 biryani',
+      testTarget: 'draft',
+    });
+    expect(response.status).toBe(409);
+    expect((await response.json()).error).toContain('Connect and select an AI model');
   });
   it('rejects a WhatsApp number outside the token’s WABA without replacing a saved mapping', async () => {
     const old = {
@@ -357,14 +442,29 @@ describe('launch safety and management', () => {
     expect(String(vi.mocked(fetch).mock.calls[1][0])).toContain('pageToken=next');
     expect(c.ai.model).toBe('gemini-2.5-flash-lite');
   });
-  it('serializes rate allowance and rejects an unsafe bot flow', async () => {
+  it('serializes rate allowance and rejects an incomplete behavior rule', async () => {
     expect(await repo.consumeRateLimit('sample', 1)).toBe(true);
     expect(await repo.consumeRateLimit('sample', 1)).toBe(false);
     expect(
       (
         await request(
           '/bot/draft',
-          { config: { ...defaultBot, steps: ['items', 'items', 'name', 'address'] }, revision: 0 },
+          {
+            config: {
+              ...defaultBot,
+              behaviorRules: [
+                {
+                  id: 'blank-rule',
+                  enabled: true,
+                  when: '',
+                  action: 'reply',
+                  response: 'Hello',
+                  responseMode: 'exact',
+                },
+              ],
+            },
+            revision: 0,
+          },
           'PUT',
         )
       ).status,
