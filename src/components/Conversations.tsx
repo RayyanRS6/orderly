@@ -17,6 +17,7 @@ import {
 import type { BotAction, Conversation, Product, TurnResult } from '../shared/types';
 import { money } from '../shared/types';
 import { api } from '../lib/api';
+import { readTestChat, saveTestChat, testChatMatches } from '../lib/test-chat';
 import type { PageResult, Message } from '../shared/types';
 import { quoteCart } from '../domain/engine';
 import { useWorkspace } from '../lib/workspace';
@@ -103,9 +104,10 @@ function Messages({ conversation, waiting }: { conversation?: Conversation; wait
   );
 }
 
-export function Playground() {
+export function Playground({ active = true }: { active?: boolean }) {
   const { data, mutate, busy, navigate } = useWorkspace();
-  const [id, setId] = useState<string>();
+  const [saved] = useState(() => readTestChat(data.company.id));
+  const [id, setId] = useState<string | undefined>(saved.conversationId);
   const [latest, setLatest] = useState<Conversation>();
   const [text, setText] = useState('');
   const [error, setError] = useState('');
@@ -115,23 +117,60 @@ export function Playground() {
   const [address, setAddress] = useState('');
   const [zone, setZone] = useState(data.company.deliveryZones?.[0]?.name || '');
   const conversation = latest;
-  const [testTarget, setTestTarget] = useState<'draft' | 'published'>('draft');
+  const [testTarget, setTestTarget] = useState<'draft' | 'published'>(saved.target);
+  const [restoring, setRestoring] = useState(!!saved.conversationId);
+  const restoreGeneration = useRef(0);
   const [details, setDetails] = useState(false);
   useEffect(() => {
+    if (!saved.conversationId) return;
+    let mounted = true;
+    const generation = restoreGeneration.current;
+    void api<Conversation>(`/conversations/${saved.conversationId}`, data.company.id)
+      .then((result) => {
+        if (!mounted || generation !== restoreGeneration.current) return;
+        if (result.companyId !== data.company.id || result.channel !== 'demo')
+          throw new Error('This saved chat is not a test conversation for this restaurant.');
+        setLatest(result);
+      })
+      .catch((reason) => {
+        if (mounted && generation === restoreGeneration.current)
+          setError(
+            `Could not restore the saved chat: ${(reason as Error).message} Refresh chat to start a new test.`,
+          );
+      })
+      .finally(() => {
+        if (mounted && generation === restoreGeneration.current) setRestoring(false);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [data.company.id, saved.conversationId]);
+  useEffect(() => {
+    if (!active) {
+      setDetails(false);
+      setSelected(undefined);
+    }
+  }, [active]);
+  const stale = !!latest && !testChatMatches(data.company, latest, testTarget);
+  const blocked = busy || restoring || stale || (!!id && !latest);
+  function resetChat(target = testTarget) {
+    restoreGeneration.current++;
+    saveTestChat(data.company.id, { target });
+    setTestTarget(target);
     setId(undefined);
     setLatest(undefined);
+    setRestoring(false);
     setError('');
-  }, [
-    data.company.id,
-    data.company.ai?.provider,
-    data.company.ai?.model,
-    data.company.ai?.keyMode,
-    data.company.catalogSource,
-    data.company.bot?.revision,
-    data.company.bot?.published?.version,
-  ]);
+    setText('');
+    setName('');
+    setAddress('');
+    setFulfillment('pickup');
+    setZone(data.company.deliveryZones?.[0]?.name || '');
+    setSelected(undefined);
+    setDetails(false);
+  }
   async function send(message: string) {
-    if (busy) return false;
+    if (blocked) return false;
     setError('');
     try {
       const result = await mutate<TurnResult>('/chat', {
@@ -140,6 +179,7 @@ export function Playground() {
         messageId: crypto.randomUUID(),
         testTarget,
       });
+      saveTestChat(data.company.id, { conversationId: result.conversation.id, target: testTarget });
       setId(result.conversation.id);
       setLatest(result.conversation);
       setText('');
@@ -162,28 +202,18 @@ export function Playground() {
         title="Test your bot"
         description="Try the complete ordering experience before connecting your number."
       >
-        <button
-          className="btn"
-          disabled={busy}
-          onClick={() => {
-            setId(undefined);
-            setLatest(undefined);
-            setError('');
-          }}
-        >
+        <button className="btn" disabled={busy} onClick={() => resetChat()}>
           <RotateCcw className="size-4" />
-          New conversation
+          Refresh chat
         </button>
       </PageHeading>
       <div className="notice mb-4 grid gap-4 p-4 text-[13px] text-cream sm:grid-cols-[minmax(12rem,18rem)_1fr] sm:items-end">
         <Field label="Configuration to test">
           <CustomSelect
             value={testTarget}
+            disabled={busy || restoring}
             onChange={(value) => {
-              setTestTarget(value as 'draft' | 'published');
-              setId(undefined);
-              setLatest(undefined);
-              setError('');
+              resetChat(value as 'draft' | 'published');
             }}
             options={[
               {
@@ -228,10 +258,27 @@ export function Playground() {
                 </p>
               </div>
             </div>
-            <Badge tone={data.company.ai?.provider === 'mock' ? 'amber' : 'green'}>
-              {data.company.ai?.provider === 'mock' ? 'AI not connected' : data.company.ai?.model}
-            </Badge>
+            <div className="flex items-center gap-2">
+              <Badge tone={data.company.ai?.provider === 'mock' ? 'amber' : 'green'}>
+                {data.company.ai?.provider === 'mock' ? 'AI not connected' : data.company.ai?.model}
+              </Badge>
+              <button
+                type="button"
+                className="btn px-3"
+                disabled={busy}
+                onClick={() => resetChat()}
+                aria-label="Refresh chat — start a new test conversation"
+                title="Refresh chat — start a new test conversation"
+              >
+                <RotateCcw className="size-4" />
+              </button>
+            </div>
           </div>
+          {restoring && (
+            <p role="status" className="px-5 py-3 text-sm text-stone-500">
+              Restoring your saved test conversation…
+            </p>
+          )}
           <Messages conversation={conversation} waiting={busy} />
           {conversation?.mode === 'human' && (
             <div className="border-t border-white/[0.06] bg-ink px-5 py-3 text-xs text-cream/75 font-medium">
@@ -246,11 +293,11 @@ export function Playground() {
           )}
           <div className="border-t border-ink/[0.06] p-4 sm:p-5">
             <div className="mb-3 flex flex-wrap gap-2">
-              {['Show menu', 'Review order', 'Talk to staff'].map((title) => (
+              {['Show menu', 'Repeat my order', 'Review order', 'Talk to staff'].map((title) => (
                 <button
                   key={String(title)}
                   className="rounded-[9px] border border-ink/8 bg-white/70 hover:bg-white hover:border-ink/14 px-3.5 py-1.5 text-xs font-semibold text-stone-700 hover:text-ink transition-all disabled:opacity-50"
-                  disabled={busy}
+                  disabled={blocked}
                   onClick={() => void send(title)}
                 >
                   {String(title)}
@@ -258,6 +305,13 @@ export function Playground() {
               ))}
             </div>
             <ErrorNotice message={error} />
+            <ErrorNotice
+              message={
+                stale
+                  ? 'The bot configuration changed. Your previous chat is preserved. Refresh chat to test the new settings.'
+                  : ''
+              }
+            />
             <form
               className="mt-2 flex gap-2"
               onSubmit={(e) => {
@@ -280,13 +334,13 @@ export function Playground() {
               <button
                 className="btn btn-primary px-4"
                 aria-label="Send message"
-                disabled={busy || !text.trim()}
+                disabled={blocked || !text.trim()}
               >
                 <Send className="size-4" />
               </button>
             </form>
             <p className="mt-2 text-center text-[10px] font-medium text-stone-400">
-              English · اردو · Roman Urdu
+              English · اردو · Roman Urdu · Chat stays saved until you refresh it
             </p>
           </div>
         </div>

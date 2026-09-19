@@ -1,5 +1,7 @@
 import type { BotConfig, Company } from './types';
 
+export const MAX_BOT_INSTRUCTIONS = 20_000;
+
 export const defaultBot: BotConfig = {
   name: 'Order assistant',
   personality: 'warm',

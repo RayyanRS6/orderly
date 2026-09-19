@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MAX_BOT_INSTRUCTIONS } from '../src/shared/bot.js';
 const text = (max: number) => z.string().trim().max(max);
 export const behaviorRuleSchema = z
   .object({
@@ -23,7 +24,7 @@ export const botSchema = z
     personality: z.enum(['warm', 'professional', 'concise']),
     language: z.enum(['auto', 'en', 'ur', 'roman-ur']),
     goal: text(1500).min(1),
-    instructions: text(4000),
+    instructions: text(MAX_BOT_INSTRUCTIONS),
     knowledge: z.array(z.object({ question: text(250).min(1), answer: text(1500).min(1) })).max(30),
     greeting: text(500),
     handoffMessage: text(500),
@@ -152,6 +153,7 @@ export const actionSchema = z.discriminatedUnion('type', [
     zone: text(100).optional(),
   }),
   z.object({ type: z.literal('review') }),
+  z.object({ type: z.literal('cart_summary') }),
   z.object({ type: z.literal('confirm'), revision: z.number().int().min(0).optional() }),
   z.object({ type: z.literal('cancel') }),
   z.object({ type: z.literal('new_order') }),

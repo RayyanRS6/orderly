@@ -7,7 +7,7 @@ import type {
   ModelOption,
   Provider,
 } from '../shared/types';
-import { botConfig } from '../shared/bot';
+import { botConfig, MAX_BOT_INSTRUCTIONS } from '../shared/bot';
 import { useWorkspace } from '../lib/workspace';
 import { api } from '../lib/api';
 import { label, shortDate } from '../lib/utils';
@@ -404,14 +404,18 @@ export function BotSettings() {
           </Field>
           <Field
             label="Additional instructions"
-            hint="For example: ask one question at a time, explain lunch specials, and escalate allergy questions to staff."
+            hint="Define your flow, wording and interruptions. Answer customer questions first, then resume ordering. Up to 20,000 characters."
           >
             <textarea
               className="input min-h-32"
-              maxLength={4000}
+              maxLength={MAX_BOT_INSTRUCTIONS}
               value={draft.instructions}
               onChange={(e) => update({ instructions: e.target.value })}
             />
+            <p className="mt-1 text-right text-xs text-stone-500" aria-live="polite">
+              {draft.instructions.length.toLocaleString()} / {MAX_BOT_INSTRUCTIONS.toLocaleString()}{' '}
+              characters
+            </p>
           </Field>
           <Field label="Greeting (optional)">
             <textarea

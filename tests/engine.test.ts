@@ -237,6 +237,21 @@ describe('authoritative ordering', () => {
     }).conversation;
     expect(turn(c, 'confirm').order?.submissionKey).not.toBe(first.order?.submissionKey);
   });
+  it('provides a cart summary recap even when checkout details are missing', () => {
+    let c = turn(fresh(), '2 chicken biryani').conversation;
+    const recap = turn(c, 'repeat my order');
+    expect(recap.reply).toContain('Your order so far:');
+    expect(recap.reply).toContain('2 × Chicken Biryani');
+    expect(recap.reply).toContain('Items subtotal: Rs. 900');
+    expect(recap.order).toBeUndefined();
+  });
+  it('shows cart summary along with missing details prompt on review', () => {
+    let c = turn(fresh(), '1 chicken biryani').conversation;
+    const rev = turn(c, 'review');
+    expect(rev.reply).toContain('Your order so far:');
+    expect(rev.reply).toContain('1 × Chicken Biryani');
+    expect(rev.reply).toContain('pickup or delivery');
+  });
 });
 
 describe('menu recognition and clarification', () => {

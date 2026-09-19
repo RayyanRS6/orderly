@@ -236,9 +236,63 @@ function missingDetails(company: Company, cart: Cart, lang: Language): string | 
     );
 }
 
+/** Read-only recap: missing checkout details must never hide the customer's cart. */
+function cartSummary(company: Company, products: Product[], cart: Cart, lang: Language): string {
+  if (!cart.items.length)
+    return say(lang, 'Your cart is empty.', 'آپ کی ٹوکری خالی ہے۔', 'Aap ka cart khali hai.');
+  const title = say(lang, 'Your order so far:', 'اب تک آپ کا آرڈر:', 'Ab tak aap ka order:');
+  try {
+    const quote = quoteCart(company, products, { ...cart, fulfillment: 'pickup' });
+    const lines = quote.items.map(
+      (item) =>
+        `${item.quantity} × ${item.name}${item.variant ? ` (${item.variant})` : ''}${item.modifiers.length ? ` + ${item.modifiers.join(', ')}` : ''} — ${money(item.total)}${item.notes ? `\n  ${item.notes}` : ''}`,
+    );
+    lines.push(
+      `${say(lang, 'Items subtotal', 'اشیاء کی رقم', 'Items subtotal')}: ${money(quote.subtotal)}`,
+    );
+    if (cart.fulfillment === 'delivery') {
+      const zone = company.deliveryZones.find(
+        (z) => normalize(z.name) === normalize(cart.zone ?? ''),
+      );
+      if (zone) {
+        lines.push(
+          `${say(lang, 'Delivery fee', 'ڈیلیوری فیس', 'Delivery fee')}: ${money(zone.fee)}`,
+        );
+        lines.push(`${say(lang, 'Total', 'کل رقم', 'Total')}: ${money(quote.subtotal + zone.fee)}`);
+      } else
+        lines.push(
+          say(
+            lang,
+            'Delivery fee depends on your area.',
+            'ڈیلیوری فیس علاقے کے مطابق ہوگی۔',
+            'Delivery fee aap ke ilaqe ke mutabiq hogi.',
+          ),
+        );
+    }
+    return `${title}\n${lines.join('\n')}`;
+  } catch {
+    // Keep selections visible even if the catalog changed. Do not invent a price.
+    return `${title}\n${cart.items
+      .map((item) => {
+        const product = products.find((p) => p.companyId === company.id && p.id === item.productId);
+        return `${item.quantity} × ${product?.name ?? 'Item no longer on the menu'}${product && !product.available ? ' · Unavailable' : ''}${item.notes ? `\n  ${item.notes}` : ''}`;
+      })
+      .join(
+        '\n',
+      )}\n\n${say(lang, 'Some selections need checking against the current menu before a total can be confirmed.', 'کل رقم بتانے سے پہلے کچھ اشیاء موجودہ مینو سے چیک کرنا ضروری ہیں۔', 'Total batane se pehle kuch items current menu se check karne honge.')}`;
+  }
+}
+
+export function isCartSummaryRequest(text: string): boolean {
+  const value = normalize(text);
+  return /\b(?:repeat|recap|summari[sz]e|show|read(?: back)?)\b.*\b(?:order|cart|selections)\b|\bwhat (?:have i|did i|i have) (?:ordered|order)|\b(?:mera|meri) (?:order|cart).*\b(?:batao|bataye|dikhao|dohrao)|(?:میرا|میرے)\s*آرڈر.*(?:بتا|دکھا|دہرا)/u.test(
+    value,
+  );
+}
+
 function review(company: Company, products: Product[], cart: Cart, lang: Language): string {
   const missing = missingDetails(company, cart, lang);
-  if (missing) return missing;
+  if (missing) return `${cartSummary(company, products, cart, lang)}\n\n${missing}`;
   const quote = quoteCart(company, products, cart);
   const lines = quote.items
     .map(
@@ -342,6 +396,7 @@ export function parseActions(
   text: string,
 ): BotAction[] {
   const value = normalize(text);
+  if (isCartSummaryRequest(text)) return [{ type: 'cart_summary' }];
   // Interruptions and browsing are not answers to an outstanding item choice.
   if (/^(new order|start over|restart|naya order|نیا آرڈر)[.!،۔\s]*$/u.test(value))
     return [{ type: 'new_order' }];
@@ -709,6 +764,7 @@ export function processTurn(
         'remove_item',
         'set_details',
         'review',
+        'cart_summary',
         'confirm',
         'cancel',
         'new_order',
@@ -803,6 +859,18 @@ export function processTurn(
   let requested = input.action
     ? [input.action]
     : (actions ?? parseActions(company, products, next, input.text));
+  // A recap is a read, not a checkout attempt. Correct a model that only repeats
+  // the next form question, while leaving explicit owner rules/handoffs intact.
+  if (
+    !input.action &&
+    isCartSummaryRequest(input.text) &&
+    !configuration.behaviorRules.some(
+      (rule) => rule.enabled && rule.id === modelResponse?.matchedRuleId,
+    ) &&
+    requested.every((action) => ['answer', 'review', 'cart_summary'].includes(action.type))
+  ) {
+    requested = [{ type: 'cart_summary' }];
+  }
   if (
     !input.action &&
     actions &&
@@ -889,6 +957,10 @@ export function processTurn(
       }
       if (action.type === 'menu') {
         reply = menu(company, products, lang, action.query, !!modelResponse);
+        continue;
+      }
+      if (action.type === 'cart_summary') {
+        reply = cartSummary(company, products, cart, lang);
         continue;
       }
       if (action.type === 'new_order') {

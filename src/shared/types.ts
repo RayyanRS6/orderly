@@ -342,6 +342,7 @@ export type BotAction =
       zone?: string;
     }
   | { type: 'review' }
+  | { type: 'cart_summary' }
   | { type: 'confirm'; revision?: number }
   | { type: 'cancel' }
   | { type: 'new_order' }

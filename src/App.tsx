@@ -625,7 +625,9 @@ export default function App() {
               {page === 'orders' && <Orders />}
               {page === 'menu' && <Catalog />}
               {page === 'inbox' && <Inbox />}
-              {page === 'playground' && <Playground />}
+              <div hidden={page !== 'playground'}>
+                <Playground active={page === 'playground'} />
+              </div>
               {page === 'integrations' && <Integrations />}
               {page === 'settings' && <Settings />}
               {page === 'businesses' && <Businesses />}
