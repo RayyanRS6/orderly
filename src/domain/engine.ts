@@ -14,7 +14,7 @@ import type {
   TurnResult,
 } from '../shared/types';
 import { money } from '../shared/types';
-import { resolveItemMention, resolvePendingItemChoice } from './menu-resolver';
+import { quantityFromText, resolveItemMention, resolvePendingItemChoice } from './menu-resolver';
 
 /** Pure application rules. Models can suggest tools, never calculate or commit orders. */
 export const emptyCart = (): Cart => ({ items: [], revision: 0, status: 'building' });
@@ -268,7 +268,13 @@ function review(company: Company, products: Product[], cart: Cart, lang: Languag
   return text;
 }
 
-function menu(company: Company, products: Product[], lang: Language, query?: string) {
+function menu(
+  company: Company,
+  products: Product[],
+  lang: Language,
+  query?: string,
+  guided = false,
+) {
   const own = products.filter(
     (p) =>
       p.companyId === company.id &&
@@ -302,7 +308,7 @@ function menu(company: Company, products: Product[], lang: Language, query?: str
     if (lines.join('\n').length + line.length > 2800 || lines.length >= 12) break;
     lines.push(line);
   }
-  return `${company.name}\n${lines.join('\n')}${lines.length < own.length ? `\n\nShowing ${lines.length} of ${own.length} items. Ask for a category or item name to narrow the menu.` : ''}\n\n${say(lang, 'Tell me the item and quantity, for example “2 chicken biryani”.', 'چیز کا نام اور تعداد بتائیں، جیسے “2 چکن بریانی”۔', 'Item aur quantity batayein, jaise “2 chicken biryani”.')}`;
+  return `${company.name}\n${lines.join('\n')}${lines.length < own.length ? `\n\nShowing ${lines.length} of ${own.length} items. Ask for a category or item name to narrow the menu.` : ''}${guided ? '' : `\n\n${say(lang, 'Tell me the item and quantity, for example “2 chicken biryani”.', 'چیز کا نام اور تعداد بتائیں، جیسے “2 چکن بریانی”۔', 'Item aur quantity batayein, jaise “2 chicken biryani”.')}`}`;
 }
 
 const affirmative = (text: string) =>
@@ -314,7 +320,7 @@ function contains(text: string, phrase: string): boolean {
   return new RegExp(`(^|[^\\p{L}\\p{N}])${p}(?=$|[^\\p{L}\\p{N}])`, 'u').test(normalize(text));
 }
 const unsafeModelText = (text: string) =>
-  /(?:\b(?:rs\.?|pkr|total|price)\b|\b(?:order\s+)?(?:accepted|approved|submitted|placed|confirmed|delivered|dispatched|completed)\b)/iu.test(
+  /(?:\b(?:rs\.?|pkr)\s*[\d۰-۹٠-٩]|\b(?:total|price|cost)\s*(?:(?:is|of|:|=)\s*)?[\d۰-۹٠-٩]|\b(?:order\s+)?(?:accepted|approved|submitted|placed|confirmed|delivered|dispatched|completed)\b)/iu.test(
     text,
   );
 function requestedOptions(products: Product[], text: string): string[] {
@@ -336,7 +342,42 @@ export function parseActions(
   text: string,
 ): BotAction[] {
   const value = normalize(text);
-  if (conversation.pendingItemChoice) {
+  // Interruptions and browsing are not answers to an outstanding item choice.
+  if (/^(new order|start over|restart|naya order|نیا آرڈر)[.!،۔\s]*$/u.test(value))
+    return [{ type: 'new_order' }];
+  if (/^(cancel(?: order)?|cancel karo|cancel kardo|منسوخ|آرڈر منسوخ)[.!،۔\s]*$/u.test(value))
+    return [{ type: 'cancel' }];
+  if (/\b(human|staff|manager|person|insaan)\b|عملہ|انسان|مینیجر/u.test(value))
+    return [{ type: 'handoff' }];
+  if (/\b(?:do not|don't|dont|not|no)\s+(?:want|add|need)|نہیں چاہیے|nahi chahiye/u.test(value))
+    return [{ type: 'answer', text: '' }];
+  if (
+    /^(menu|show menu|show me (?:the )?menu|مینو|menu dikhao|menu bhej(?: do)?)[.!،۔\s]*$/u.test(
+      value,
+    )
+  )
+    return [{ type: 'menu' }];
+  const earlyResolution = resolveItemMention(products, company.id, text);
+  const browsing =
+    /^(?:what|which|how much|is |are |do you have|tell me|kitna|kya)|(?:\bprice\b|\bavailable\b|کتنے|قیمت|دستیاب)/u.test(
+      value,
+    );
+  if (browsing && earlyResolution.kind !== 'none') {
+    const candidates =
+      earlyResolution.kind === 'unique' ? [earlyResolution.product] : earlyResolution.products;
+    const query =
+      candidates.length === 1
+        ? candidates[0]!.name
+        : value
+            .split(/\s+/)
+            .find(
+              (word) =>
+                word.length >= 3 &&
+                candidates.every((p) => contains(`${p.name} ${p.aliases.join(' ')}`, word)),
+            );
+    return [{ type: 'menu', query }];
+  }
+  if (conversation.pendingItemChoice && !browsing) {
     const selected = resolvePendingItemChoice(
       products,
       company.id,
@@ -344,15 +385,27 @@ export function parseActions(
       text,
     );
     if (selected) {
-      const requested = conversation.pendingItemChoice.requestedOptionNames;
+      const requested = [
+        ...conversation.pendingItemChoice.requestedOptionNames,
+        ...requestedOptions([selected], text),
+      ];
+      const explicitQuantity =
+        !/^option\b/u.test(value) &&
+        /(?:^|\s)(?:\d{1,2}|one|two|three|four|five|ek|aik|do|teen|char|panch|ایک|دو|تین|چار|پانچ)\s+\p{L}/u.test(
+          value,
+        );
       return [
         {
           type: 'add_item',
           productId: selected.id,
-          quantity: conversation.pendingItemChoice.quantity,
-          variantId: selected.variants.find((option) =>
-            requested.some((name) => contains(name, option.name)),
-          )?.id,
+          quantity: explicitQuantity
+            ? quantityFromText(text)
+            : conversation.pendingItemChoice.quantity,
+          variantId:
+            selected.variants.find((option) => contains(text, option.name))?.id ??
+            selected.variants.find((option) =>
+              requested.some((name) => contains(name, option.name)),
+            )?.id,
           modifierIds: selected.modifiers
             .filter((option) => requested.some((name) => contains(name, option.name)))
             .map((option) => option.id),
@@ -360,32 +413,45 @@ export function parseActions(
         },
       ];
     }
-    return [
-      {
-        type: 'clarify_item',
-        candidateProductIds: conversation.pendingItemChoice.candidateProductIds,
-        quantity: conversation.pendingItemChoice.quantity,
-        requestedOptionNames: conversation.pendingItemChoice.requestedOptionNames,
-        notes: conversation.pendingItemChoice.notes,
-        originalText: conversation.pendingItemChoice.originalText,
-      },
-    ];
+    if (/^(?:option\s*)?\d+[.!\s]*$/u.test(value))
+      return [
+        {
+          type: 'clarify_item',
+          candidateProductIds: conversation.pendingItemChoice.candidateProductIds,
+          quantity: conversation.pendingItemChoice.quantity,
+          requestedOptionNames: conversation.pendingItemChoice.requestedOptionNames,
+          notes: conversation.pendingItemChoice.notes,
+          originalText: conversation.pendingItemChoice.originalText,
+        },
+      ];
   }
   if (affirmative(value)) return [{ type: 'confirm' }];
-  if (/^(new order|start over|restart|naya order|نیا آرڈر)[.!،۔\s]*$/u.test(value))
-    return [{ type: 'new_order' }];
-  if (/^(cancel(?: order)?|cancel karo|cancel kardo|منسوخ|آرڈر منسوخ)[.!،۔\s]*$/u.test(value))
-    return [{ type: 'cancel' }];
-  if (/\b(human|staff|manager|person|insaan)\b|عملہ|انسان|مینیجر/u.test(value))
-    return [{ type: 'handoff' }];
   if (
     /^(menu|show menu|show me (?:the )?menu|مینو|menu dikhao|menu bhej(?: do)?|salam|salaam|hello|hi|السلام علیکم)[.!،۔\s]*$/u.test(
       value,
     )
   )
     return [{ type: 'menu' }];
-  const earlyResolution = resolveItemMention(products, company.id, text);
-  if (earlyResolution.kind === 'ambiguous')
+  const explicitProducts = products.filter(
+    (p) =>
+      p.companyId === company.id && [p.name, ...p.aliases].some((label) => contains(value, label)),
+  );
+  const distinctMentions =
+    explicitProducts.length > 1 &&
+    explicitProducts.every((p) =>
+      [p.name, ...p.aliases].some(
+        (label) =>
+          contains(value, label) &&
+          !explicitProducts.some(
+            (other) =>
+              other.id !== p.id &&
+              [other.name, ...other.aliases].some(
+                (otherLabel) => normalize(otherLabel) === normalize(label),
+              ),
+          ),
+      ),
+    );
+  if (earlyResolution.kind === 'ambiguous' && !distinctMentions)
     return [
       {
         type: 'clarify_item',
@@ -603,13 +669,21 @@ export function processTurn(
   };
   let reply = '',
     order: Order | undefined;
+  const cartFacts: string[] = [];
+  let correctedInterpretation = false;
   const finish = (): TurnResult => {
+    if (traces.includes('human_mode_message_saved'))
+      return { conversation: next, reply: '', traces };
     const validGrounding = new Set([
       ...products
         .filter((product) => product.companyId === company.id)
         .map((product) => product.id),
       ...company.faqs.map((_, index) => `faq:${index}`),
       ...configuration.behaviorRules.map((rule) => rule.id),
+      'business:hours',
+      'business:address',
+      'business:phone',
+      'business:delivery',
     ]);
     const grounded =
       !modelResponse?.groundingIds?.length ||
@@ -642,10 +716,27 @@ export function processTurn(
         'clarify_item',
       ].includes(trace),
     );
+    const protectedReply =
+      correctedInterpretation ||
+      traces.some(
+        (trace) =>
+          trace.startsWith('validation_failed:') ||
+          [
+            'duplicate_submission_prevented',
+            'unconfirmed_model_action_rejected',
+            'fresh_confirmation_required',
+            'review',
+            'confirm',
+          ].includes(trace),
+      ) ||
+      cart.status === 'cancelled';
+    if (cartFacts.length) reply = [cartFacts.join('\n'), reply].filter(Boolean).join('\n\n');
     if (matchedRule?.action === 'handoff') next.mode = 'human';
-    if (matchedRule?.responseMode === 'exact' && matchedRule.response)
+    if (!protectedReply && matchedRule?.responseMode === 'exact' && matchedRule.response)
       reply = transactional && reply ? `${reply}\n\n${matchedRule.response}` : matchedRule.response;
     else if (
+      !protectedReply &&
+      next.mode === 'bot' &&
       grounded &&
       validAskFor &&
       modelResponse?.text.trim() &&
@@ -653,9 +744,26 @@ export function processTurn(
     )
       reply =
         transactional && reply
-          ? `${reply}\n\n${modelResponse.text.trim()}`
+          ? traces.includes('menu') || traces.includes('clarify_item')
+            ? `${modelResponse.text.trim()}\n\n${reply}`
+            : `${reply}\n\n${modelResponse.text.trim()}`
           : modelResponse.text.trim();
+    if (modelResponse && !grounded) traces.push('invalid_model_grounding_ignored');
+    if (modelResponse?.text && unsafeModelText(modelResponse.text))
+      traces.push('unsafe_model_response_ignored');
     if (modelResponse?.askFor && !validAskFor) traces.push('invalid_model_prompt_ignored');
+    if (!reply && traces.includes('answer')) {
+      next.mode = 'human';
+      traces.push('handoff');
+      reply =
+        configuration.handoffMessage ||
+        say(
+          lang,
+          'I’m not certain about that, so I’ve asked a staff member to help.',
+          'مجھے اس بارے میں یقین نہیں، اس لیے عملے سے مدد مانگی ہے۔',
+          'Mujhe is baat ka yaqeen nahi, is liye staff se madad mangi hai.',
+        );
+    }
     if (!reply && next.mode === 'bot') {
       reply =
         missingDetails(company, cart, lang) ??
@@ -673,7 +781,7 @@ export function processTurn(
       !(matchedRule?.responseMode === 'exact' && matchedRule.response)
     )
       reply = configuration.handoffMessage;
-    if (company.bot?.published && reply) {
+    if (company.bot?.published && reply && !matchedRule && !protectedReply && next.mode === 'bot') {
       if (/^(hi|hello|salam|سلام|ہیلو)$/iu.test(input.text.trim()) && configuration.greeting)
         reply = configuration.greeting;
     }
@@ -692,9 +800,48 @@ export function processTurn(
     traces.push('human_mode_message_saved');
     return finish();
   }
-  const requested = input.action
+  let requested = input.action
     ? [input.action]
     : (actions ?? parseActions(company, products, next, input.text));
+  if (
+    !input.action &&
+    actions &&
+    requested.some((action) => action.type === 'add_item' || action.type === 'clarify_item')
+  ) {
+    const deterministic = parseActions(company, products, next, input.text);
+    const first = deterministic[0];
+    if (first?.type === 'clarify_item' && requested.some((action) => action.type === 'add_item')) {
+      requested = deterministic;
+      correctedInterpretation = true;
+      traces.push('ambiguous_addition_prevented');
+    } else if (
+      first?.type === 'add_item' &&
+      deterministic.length === 1 &&
+      (requested.some((action) => action.type === 'clarify_item') || next.pendingItemChoice)
+    ) {
+      // A specific name/ordinal resolves the outstanding choice; keep its options and quantity.
+      requested = requested.map((action) => {
+        if (action.type === 'clarify_item') return first;
+        if (action.type === 'add_item' && action.productId === first.productId)
+          return {
+            ...first,
+            variantId: action.variantId ?? first.variantId,
+            modifierIds: action.modifierIds?.length ? action.modifierIds : first.modifierIds,
+            notes: action.notes?.trim() ? action.notes : first.notes,
+          };
+        return action;
+      });
+      if (actions.some((action) => action.type === 'clarify_item')) correctedInterpretation = true;
+      traces.push('item_choice_resolved');
+    } else if (
+      first?.type === 'menu' &&
+      requested.some((action) => action.type === 'add_item' || action.type === 'clarify_item')
+    ) {
+      requested = deterministic;
+      correctedInterpretation = true;
+      traces.push('browse_cart_mutation_prevented');
+    }
+  }
   if (requested.length > 8) {
     reply = say(
       lang,
@@ -741,7 +888,7 @@ export function processTurn(
         continue;
       }
       if (action.type === 'menu') {
-        reply = menu(company, products, lang, action.query);
+        reply = menu(company, products, lang, action.query, !!modelResponse);
         continue;
       }
       if (action.type === 'new_order') {
@@ -761,6 +908,7 @@ export function processTurn(
         continue;
       }
       if (action.type === 'cancel') {
+        delete next.pendingItemChoice;
         if (cart.status === 'submitted') {
           traces.push(`cancel_submitted:${cart.orderId}`);
           next.mode = 'human';
@@ -792,18 +940,11 @@ export function processTurn(
         );
         const proposed = action.text.trim();
         const unsafeClaim = unsafeModelText(proposed);
-        reply = faq?.answer ?? (unsafeClaim ? '' : proposed);
-        if (!reply) {
-          next.mode = 'human';
-          reply =
-            configuration.handoffMessage ||
-            say(
-              lang,
-              'I’m not certain about that, so I’ve asked a staff member to help.',
-              'مجھے اس بارے میں یقین نہیں، اس لیے عملے سے مدد مانگی ہے۔',
-              'Mujhe is baat ka yaqeen nahi, is liye staff se madad mangi hai.',
-            );
-        }
+        if (modelResponse && !modelResponse.text.trim() && proposed && !unsafeClaim)
+          modelResponse = { ...modelResponse, text: proposed };
+        // Structured response metadata is validated in finish before deciding
+        // whether a handoff is needed. An empty answer action is not a failure.
+        reply = faq?.answer ?? (modelResponse || unsafeClaim ? '' : proposed);
         traces.push(faq ? 'approved_faq' : 'grounded_model_answer');
         continue;
       }
@@ -847,21 +988,30 @@ export function processTurn(
         if (same) same.quantity += line.quantity;
         else trial.items.push(line);
         // Validate all lines without requiring delivery details during cart building.
-        quoteCart(company, products, { ...trial, fulfillment: 'pickup' });
+        const quote = quoteCart(company, products, { ...trial, fulfillment: 'pickup' });
         cart.items = trial.items;
         delete next.pendingItemChoice;
         invalidate(cart);
         const product = products.find(
           (p) => p.id === action.productId && p.companyId === company.id,
         )!;
-        reply = modelResponse
-          ? `${action.quantity} × ${product.name} added.`
-          : say(
+        if (modelResponse) {
+          const quoted = quote.items[same ? trial.items.indexOf(same) : trial.items.length - 1]!;
+          cartFacts.push(
+            say(
               lang,
-              `Added ${action.quantity} × ${product.name}. Add anything else, or send “review”.`,
-              `${action.quantity} × ${product.name} شامل کر دیا۔ مزید چیز بتائیں یا “جائزہ” لکھیں۔`,
-              `${action.quantity} × ${product.name} add kar diya. Aur kuch chahiye, ya “review” likhein.`,
-            );
+              `Added ${action.quantity} × ${product.name}${quoted.variant ? ` (${quoted.variant})` : ''}${quoted.modifiers.length ? ` + ${quoted.modifiers.join(', ')}` : ''} — ${money(quoted.unitPrice)} each.${line.notes ? ` Notes: ${line.notes}` : ''}`,
+              `${action.quantity} × ${product.name} شامل کر دیا — فی عدد ${money(quoted.unitPrice)}۔`,
+              `${action.quantity} × ${product.name} add kar diya — ${money(quoted.unitPrice)} each.`,
+            ),
+          );
+        } else
+          reply = say(
+            lang,
+            `Added ${action.quantity} × ${product.name}. Add anything else, or send “review”.`,
+            `${action.quantity} × ${product.name} شامل کر دیا۔ مزید چیز بتائیں یا “جائزہ” لکھیں۔`,
+            `${action.quantity} × ${product.name} add kar diya. Aur kuch chahiye, ya “review” likhein.`,
+          );
         continue;
       }
       if (action.type === 'remove_item') {
@@ -932,9 +1082,8 @@ export function processTurn(
           JSON.stringify([details.fulfillment, details.customerName, details.address, details.zone])
         )
           invalidate(cart);
-        reply = modelResponse
-          ? ''
-          : (missingDetails(company, cart, lang) ?? review(company, products, cart, lang));
+        if (!modelResponse)
+          reply = missingDetails(company, cart, lang) ?? review(company, products, cart, lang);
         continue;
       }
       if (action.type === 'review') {
@@ -1045,13 +1194,21 @@ export function processTurn(
       break;
     }
   }
-  if (!reply)
-    reply = say(
-      lang,
-      'Send “menu” to get started.',
-      'شروع کرنے کے لیے “مینو” لکھیں۔',
-      'Shuru karne ke liye “menu” likhein.',
+  if (
+    cartFacts.length &&
+    cart.items.length &&
+    !traces.some((trace) => trace.startsWith('validation_failed:'))
+  ) {
+    const quote = quoteCart(company, products, { ...cart, fulfillment: 'pickup' });
+    cartFacts.push(
+      say(
+        lang,
+        `Items subtotal: ${money(quote.subtotal)}.`,
+        `اشیاء کی رقم: ${money(quote.subtotal)}۔`,
+        `Items subtotal: ${money(quote.subtotal)}.`,
+      ),
     );
+  }
   return finish();
 }
 

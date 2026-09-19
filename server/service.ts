@@ -8,12 +8,7 @@ import type {
   Order,
   TurnInput,
 } from '../src/shared/types.js';
-import {
-  createConversation,
-  parseActions,
-  processTurn,
-  transitionOrder,
-} from '../src/domain/engine.js';
+import { createConversation, processTurn, transitionOrder } from '../src/domain/engine.js';
 import { AiModelAdapter, providerKey } from './integrations/models.js';
 import { modelFingerprint } from './integrations/model-catalog.js';
 import { GoogleSheetsAdapter } from './integrations/sheets.js';
@@ -206,14 +201,8 @@ export async function handleTurn(
           409,
         );
     }
-    const deterministic = !input.action
-      ? parseActions(company, products, conversation, input.text)
-      : undefined;
-    if (
-      !input.action &&
-      (conversation.pendingItemChoice || deterministic?.[0]?.type === 'clarify_item')
-    )
-      actions = deterministic;
+    // Pending choices are conversation context, not a reason to bypass the
+    // configured model/rules. Validate proposed cart edits in the domain engine.
     if (
       !input.action &&
       !actions &&

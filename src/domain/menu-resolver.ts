@@ -31,6 +31,23 @@ const STOP_WORDS = new Set([
   'want',
   'with',
   'you',
+  'i',
+  'id',
+  'd',
+  'like',
+  'to',
+  'a',
+  'an',
+  'one',
+  'two',
+  'three',
+  'what',
+  'which',
+  'on',
+  'is',
+  'there',
+  'me',
+  'some',
 ]);
 
 export function normalizeCatalogText(text: string): string {
@@ -117,16 +134,26 @@ export function resolveItemMention(
   const own = products.filter((product) => product.companyId === companyId);
   const inputTokens = value.split(' ').filter(Boolean);
   if (!value || !own.length) return { kind: 'none', quantity };
+  const labelsById = new Map(
+    own.map((product) => [
+      product.id,
+      [product.name, ...product.aliases].map(normalizeCatalogText).filter(Boolean),
+    ]),
+  );
+  const tokenOwners = new Map<string, Set<string>>();
+  for (const product of own)
+    for (const label of labelsById.get(product.id)!) {
+      for (const token of label.split(' ')) {
+        if (!tokenOwners.has(token)) tokenOwners.set(token, new Set());
+        tokenOwners.get(token)!.add(product.id);
+      }
+    }
 
   // A generic one-word family name (for example "lassi") must not silently select
   // a plain item when flavored products share the same term.
   const meaningful = inputTokens.filter((token) => !STOP_WORDS.has(token) && !/^\d+$/.test(token));
   for (const token of meaningful) {
-    const family = own.filter((product) =>
-      [product.name, ...product.aliases]
-        .flatMap((label) => normalizeCatalogText(label).split(' '))
-        .includes(token),
-    );
+    const family = own.filter((product) => tokenOwners.get(token)?.has(product.id));
     if (family.length > 1 && meaningful.length === 1)
       return { kind: 'ambiguous', products: family, quantity };
   }
@@ -134,27 +161,29 @@ export function resolveItemMention(
   const scored = own
     .map((product) => {
       let score = 0;
-      const labels = [product.name, ...product.aliases].map(normalizeCatalogText).filter(Boolean);
+      const labels = labelsById.get(product.id)!;
       for (const label of labels) {
-        if (containsPhrase(value, label)) {
+        const labelTokens = [...new Set(label.split(' '))];
+        const sharedTerm = labelTokens.length === 1 && (tokenOwners.get(label)?.size ?? 0) > 1;
+        if (containsPhrase(value, label) && !sharedTerm) {
           score = Math.max(score, 1000 + label.split(' ').length * 100 + label.length);
-          continue;
         }
-        const labelTokens = label.split(' ');
-        for (const input of meaningful) {
-          if (labelTokens.includes(input)) score = Math.max(score, 500 + input.length);
-          if (input.length < 4) continue;
-          const limit = input.length >= 8 ? 2 : 1;
-          for (const candidate of labelTokens) {
+        // Combine distinct word evidence. A shared "chicken" must not outweigh
+        // "chicken biryyani" matching both words of Chicken Biryani.
+        let labelScore = 0;
+        for (const candidate of labelTokens) {
+          let tokenScore = 0;
+          for (const input of meaningful) {
+            if (candidate === input) tokenScore = Math.max(tokenScore, 500);
+            if (input.length < 4) continue;
+            const limit = input.length >= 8 ? 2 : 1;
             if (candidate.length < 4 || Math.abs(candidate.length - input.length) > limit) continue;
             const distance = editDistance(input, candidate);
-            if (distance <= limit)
-              score = Math.max(
-                score,
-                300 - distance * 20 + Math.min(input.length, candidate.length),
-              );
+            if (distance <= limit) tokenScore = Math.max(tokenScore, 300 - distance * 20);
           }
+          labelScore += tokenScore;
         }
+        score = Math.max(score, labelScore);
       }
       return { product, score };
     })
@@ -174,13 +203,17 @@ export function resolvePendingItemChoice(
   pending: NonNullable<Conversation['pendingItemChoice']>,
   text: string,
 ): Product | undefined {
-  const candidates = products.filter(
-    (product) =>
-      product.companyId === companyId && pending.candidateProductIds.includes(product.id),
+  // Ordinals refer to the displayed list, not repository/catalog ordering.
+  const candidates = pending.candidateProductIds.map((id) =>
+    products.find((product) => product.companyId === companyId && product.id === id),
   );
   const value = normalizeCatalogText(text);
   const ordinal = value.match(/^(?:option\s*)?(\d{1,2})$/)?.[1];
   if (ordinal) return candidates[Number(ordinal) - 1];
-  const resolution = resolveItemMention(candidates, companyId, text);
+  const resolution = resolveItemMention(
+    candidates.filter((p): p is Product => !!p),
+    companyId,
+    text,
+  );
   return resolution.kind === 'unique' ? resolution.product : undefined;
 }
