@@ -128,7 +128,15 @@ export async function handleTurn(
         keyMode: company.ai.keyMode,
         catalogSource: company.catalogSource,
       };
-      if (JSON.stringify(storedConversation.testContext) !== JSON.stringify(expected))
+      const current = storedConversation.testContext;
+      if (
+        current.target !== expected.target ||
+        current.configRevision !== expected.configRevision ||
+        current.provider !== expected.provider ||
+        current.model !== expected.model ||
+        current.keyMode !== expected.keyMode ||
+        current.catalogSource !== expected.catalogSource
+      )
         throw new PublicError(
           'The tested bot configuration changed. Start a new test conversation.',
           409,

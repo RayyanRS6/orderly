@@ -318,6 +318,40 @@ describe('launch safety and management', () => {
     expect((await crossed.json()).error).toContain('Start a new test conversation');
     expect((await repo.getCompany(company.id))?.ai).toEqual(saved.ai);
   });
+  it('continues a test conversation when json storage reorders context fields', async () => {
+    const first = await request('/chat', {
+      messageId: randomUUID(),
+      text: 'menu',
+      action: { type: 'menu' },
+      testTarget: 'draft',
+    });
+    expect(first.status).toBe(200);
+    const firstResult = (await first.json()) as TurnResult;
+    const stored = (await repo.getConversation(company.id, firstResult.conversation.id))!;
+    const context = stored.testContext!;
+    await repo.saveConversation({
+      ...stored,
+      // PostgreSQL jsonb does not preserve JavaScript object insertion order.
+      testContext: {
+        catalogSource: context.catalogSource,
+        keyMode: context.keyMode,
+        model: context.model,
+        provider: context.provider,
+        configRevision: context.configRevision,
+        target: context.target,
+      },
+    });
+
+    const second = await request('/chat', {
+      conversationId: stored.id,
+      messageId: randomUUID(),
+      text: 'menu again',
+      action: { type: 'menu' },
+      testTarget: 'draft',
+    });
+    expect(second.status).toBe(200);
+    expect(((await second.json()) as TurnResult).conversation.id).toBe(stored.id);
+  });
   it('does not silently use local rules for customer text in the tester', async () => {
     const response = await request('/chat', {
       messageId: randomUUID(),
