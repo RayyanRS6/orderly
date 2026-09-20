@@ -4,6 +4,7 @@ import type { Integration } from '../../src/shared/types';
 import { requiredEnv } from '../config';
 import { encryptSecret, PublicError } from '../security';
 import { WhatsAppAdapter } from './whatsapp';
+import { requireMeta, metaConfigurationBoundary } from '../whatsapp/connections';
 
 export const signupSchema = z.object({
   code: z.string().min(1).max(5000),
@@ -20,6 +21,7 @@ export async function finishSignup(
   companyId: string,
   body: z.infer<typeof signupSchema>,
 ) {
+  await requireMeta(repo, companyId);
   const existing = await repo.findCompanyByPhoneNumberId(body.phoneNumberId);
   if (existing && existing.id !== companyId)
     throw new PublicError('That number already belongs to another workspace.', 409);
@@ -69,6 +71,7 @@ export async function finishSignup(
   // Activate only after all requested external steps succeed. A failed attempt
   // must not replace an already working workspace connection.
   integration.config.ownershipVerifiedAt = new Date().toISOString();
+  await metaConfigurationBoundary(repo, companyId, body.phoneNumberId);
   await repo.saveIntegration(companyId, integration, encryptSecret(result.access_token));
   return {
     integration,

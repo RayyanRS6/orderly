@@ -19,6 +19,7 @@ import type {
 } from '../../src/shared/types';
 import type { Repository } from '../repository';
 import { PublicError } from '../security';
+import { env } from '../config';
 
 type Result<T> = { data: T | null; error: { message: string } | null };
 function unwrap<T>(result: Result<T>): T | null {
@@ -38,6 +39,63 @@ const jobRow = (job: Job) => ({
 
 /** All methods run on the server using the service role; API authorization is required. */
 export class SupabaseRepository implements Repository {
+  consumeGatewayNonce(nonce: string) {
+    return this.rpc<boolean>('consume_gateway_nonce', { p_nonce: nonce });
+  }
+  async getWhatsAppConnection(companyId: string) {
+    const result = await this.client
+      .from('whatsapp_connections')
+      .select('data')
+      .eq('company_id', companyId)
+      .maybeSingle();
+    // The existing deployment workflow does not apply migrations. Keep legacy
+    // Meta running until the operator migrates, but never bypass other failures.
+    if (
+      env('WHATSAPP_GATEWAY_ENABLED') !== 'true' &&
+      ['42P01', 'PGRST205'].includes(result.error?.code ?? '')
+    )
+      return;
+    const row = unwrap(result) as {
+      data: import('../../src/shared/whatsapp').WhatsAppConnection;
+    } | null;
+    return row?.data;
+  }
+  findWhatsAppConnection(id: string) {
+    return this.get<import('../../src/shared/whatsapp').WhatsAppConnection>(
+      'whatsapp_connections',
+      id,
+    );
+  }
+  async saveWhatsAppConnection(
+    connection: import('../../src/shared/whatsapp').WhatsAppConnection,
+    expectedRevision: number,
+  ) {
+    const result = await this.client.rpc('save_whatsapp_connection', {
+      p_connection: connection,
+      p_expected_revision: expectedRevision,
+    });
+    if (['PGRST202', '42883', '42P01'].includes(result.error?.code ?? ''))
+      throw new PublicError(
+        'Apply the WhatsApp gateway database migration before changing connection methods.',
+        503,
+      );
+    return unwrap(result) as boolean;
+  }
+  async findWhatsAppConversation(
+    companyId: string,
+    address: import('../../src/shared/whatsapp').WhatsAppAddress,
+  ) {
+    const row = unwrap(
+      await this.client
+        .from('conversations')
+        .select('data')
+        .eq('company_id', companyId)
+        .eq('channel', 'whatsapp')
+        .contains('data', { whatsappAddress: address })
+        .maybeSingle(),
+    ) as { data: Conversation } | null;
+    return row?.data;
+  }
   platformBudget() {
     return this.rpc<import('../../src/shared/types').PlatformBudget>('platform_budget', {});
   }
@@ -352,6 +410,8 @@ export class SupabaseRepository implements Repository {
         .eq('company_id', companyId)
         .eq('customer_phone', phone)
         .eq('channel', channel)
+        .order('updated_at', { ascending: false })
+        .limit(1)
         .maybeSingle(),
     ) as { data: Conversation } | null;
     return row?.data as Conversation | undefined;

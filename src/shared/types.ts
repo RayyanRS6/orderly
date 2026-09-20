@@ -112,6 +112,7 @@ export interface Message {
   externalId?: string;
 }
 export interface Conversation {
+  whatsappAddress?: import('./whatsapp').WhatsAppAddress;
   id: string;
   companyId: string;
   customerPhone: string;

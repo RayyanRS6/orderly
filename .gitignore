@@ -13,3 +13,7 @@ supabase/.temp/
 supabase/functions/orderly/index.js
 # Downloaded Google service-account keys must never enter source control.
 gen-lang-client-*.json
+gateway/data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

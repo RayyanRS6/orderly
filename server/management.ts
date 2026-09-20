@@ -13,6 +13,7 @@ import { readiness } from './readiness';
 import { appMode } from './config';
 import { createClient } from '@supabase/supabase-js';
 import { emailAlertsAvailable } from './integrations/alerts';
+import { disconnectGateway } from './whatsapp/connections';
 
 export type AppEnv = {
   Variables: { company: Company; role: Role; userId: string; allowedCompanies: Company[] };
@@ -256,6 +257,7 @@ export function managementRoutes(repo: Repository) {
     const kind = z
       .enum(['whatsapp', 'sheets', 'openai', 'gemini', 'anthropic'])
       .parse(c.req.param('kind'));
+    if (kind === 'whatsapp') await disconnectGateway(repo, c.get('company').id);
     await repo.disconnectIntegration(c.get('company').id, kind);
     await repo.audit(c.get('company').id, c.get('userId'), `integration.${kind}.disconnected`);
     return c.json({ ok: true, providerRevocationRequired: true });

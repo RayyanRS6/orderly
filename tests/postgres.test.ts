@@ -66,6 +66,7 @@ beforeAll(async () => {
     '202609170003_staff_attention.sql',
     '202609180001_email_alerts.sql',
     '202609180003_platform_budget.sql',
+    '202609200001_whatsapp_gateway.sql',
   ])
     await db.exec(readFileSync(`supabase/migrations/${migration}`, 'utf8'));
   await db.query('insert into auth.users(id) values($1),($2)', [ownerId, outsiderId]);
@@ -91,6 +92,59 @@ afterAll(async () => {
 });
 
 describe('opt-in retention and staff attention', () => {
+  it('isolates native identities and connection generations in PostgreSQL, with server-only connection writes', async () => {
+    const id = randomUUID();
+    const connection = {
+      id,
+      companyId: company.id,
+      provider: 'baileys',
+      generation: 1,
+      revision: 1,
+      status: 'connected',
+      accountJid: '923000000000@s.whatsapp.net',
+      updatedAt: now(),
+    };
+    expect(await rpc('save_whatsapp_connection', [connection, 0])).toBe(true);
+    expect(await rpc('save_whatsapp_connection', [{ ...connection, revision: 2 }, 0])).toBe(false);
+    const first = {
+      ...createConversation(company.id, '', 'whatsapp', now()),
+      whatsappAddress: {
+        connectionId: id,
+        generation: 1,
+        provider: 'baileys',
+        peer: '100000001@lid',
+      },
+      version: 1,
+    };
+    const second = {
+      ...first,
+      id: randomUUID(),
+      whatsappAddress: { ...first.whatsappAddress, peer: '100000002@lid' },
+    };
+    expect(await rpc('save_conversation', [first, 0])).toBe(true);
+    expect(await rpc('save_conversation', [second, 0])).toBe(true);
+    await expect(
+      rpc('save_conversation', [
+        { ...first, version: 2, whatsappAddress: { ...first.whatsappAddress, generation: 2 } },
+        1,
+      ]),
+    ).rejects.toThrow('Cannot change conversation transport');
+    const a = makeJob(company.id, 'incoming', { phone: '', streamKey: 'native-a' });
+    const b = makeJob(company.id, 'incoming', { phone: '', streamKey: 'native-b' });
+    await rpc('insert_job', [a, null]);
+    await rpc('insert_job', [b, null]);
+    expect((await rpc('list_due_jobs', [10])) as unknown[]).toHaveLength(2);
+    const nonce = randomUUID();
+    expect(await rpc('consume_gateway_nonce', [nonce])).toBe(true);
+    expect(await rpc('consume_gateway_nonce', [nonce])).toBe(false);
+    await db.exec('set role authenticated');
+    await expect(
+      rpc('save_whatsapp_connection', [{ ...connection, revision: 2 }, 1]),
+    ).rejects.toThrow('permission denied');
+    await expect(db.query('select * from whatsapp_connections')).rejects.toThrow(
+      'permission denied',
+    );
+  });
   it('enforces a shared platform allowance while keeping client-funded spending separate', async () => {
     await rpc('configure_platform_budget', [5]);
     const expiry = new Date(Date.now() + 60000).toISOString();

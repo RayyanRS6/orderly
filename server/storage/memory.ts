@@ -29,6 +29,11 @@ import type { Repository } from '../repository';
 import { transitionOrder } from '../../src/domain/engine';
 import { PublicError } from '../security';
 import { orderMatches, pageOf, summaryOf } from '../queries';
+import {
+  sameAddress,
+  type WhatsAppConnection,
+  type WhatsAppAddress,
+} from '../../src/shared/whatsapp';
 
 interface Reservation {
   funding?: 'own' | 'platform';
@@ -40,6 +45,8 @@ interface Reservation {
   settled: boolean;
 }
 interface State {
+  gatewayNonces?: Record<string, number>;
+  whatsappConnections?: WhatsAppConnection[];
   platformLimit: number;
   retention: Record<string, import('../../src/shared/types').RetentionStatus>;
   companies: Company[];
@@ -94,6 +101,12 @@ const validCost = (amount: number) => {
 
 function checkConversation(state: State, conversation: Conversation): void {
   companyExists(state, conversation.companyId);
+  const original = state.conversations.find((c) => c.id === conversation.id);
+  if (
+    original &&
+    JSON.stringify(original.whatsappAddress) !== JSON.stringify(conversation.whatsappAddress)
+  )
+    throw new Error('Cannot change conversation transport');
   assertOwnership(
     state.conversations.find((c) => c.id === conversation.id),
     conversation.companyId,
@@ -102,7 +115,9 @@ function checkConversation(state: State, conversation: Conversation): void {
     state.conversations.some(
       (c) =>
         c.companyId === conversation.companyId &&
-        c.customerPhone === conversation.customerPhone &&
+        (conversation.whatsappAddress
+          ? sameAddress(c.whatsappAddress, conversation.whatsappAddress)
+          : !c.whatsappAddress && c.customerPhone === conversation.customerPhone) &&
         c.channel === conversation.channel &&
         c.id !== conversation.id,
     )
@@ -177,7 +192,7 @@ function incomingHeads(jobs: Job[]): Set<string> {
   const heads = new Set<string>();
   for (const job of jobs) {
     if (job.kind !== 'incoming' || job.status === 'done') continue;
-    const key = JSON.stringify([job.companyId, job.payload.phone]);
+    const key = JSON.stringify([job.companyId, job.payload.streamKey ?? job.payload.phone]);
     if (!seen.has(key)) {
       seen.add(key);
       heads.add(job.id);
@@ -188,6 +203,62 @@ function incomingHeads(jobs: Job[]): Set<string> {
 
 /** Development/test store. Every write commits a cloned snapshot, avoiding mutation leaks. */
 export class MemoryRepository implements Repository {
+  consumeGatewayNonce(nonce: string) {
+    return this.mutate((s) => {
+      const values = (s.gatewayNonces ??= {});
+      for (const [key, expiry] of Object.entries(values))
+        if (expiry < Date.now()) delete values[key];
+      if (values[nonce]) return false;
+      values[nonce] = Date.now() + 120000;
+      return true;
+    });
+  }
+  getWhatsAppConnection(companyId: string) {
+    return this.read((s) => s.whatsappConnections?.find((c) => c.companyId === companyId));
+  }
+  findWhatsAppConnection(id: string) {
+    return this.read((s) => s.whatsappConnections?.find((c) => c.id === id));
+  }
+  saveWhatsAppConnection(connection: WhatsAppConnection, expectedRevision: number) {
+    return this.mutate((s) => {
+      companyExists(s, connection.companyId);
+      const rows = (s.whatsappConnections ??= []);
+      const current = rows.find((c) => c.companyId === connection.companyId);
+      if (
+        (current?.revision ?? 0) !== expectedRevision ||
+        connection.revision !== expectedRevision + 1
+      )
+        return false;
+      assertOwnership(
+        rows.find((c) => c.id === connection.id),
+        connection.companyId,
+      );
+      if (current && (current.id !== connection.id || connection.generation < current.generation))
+        throw new Error('Invalid connection transition');
+      if (
+        connection.accountJid &&
+        rows.some(
+          (c) =>
+            c.companyId !== connection.companyId &&
+            c.accountJid === connection.accountJid &&
+            !['disconnected', 'logged_out'].includes(c.status),
+        )
+      )
+        throw new PublicError('This account is already connected to another restaurant.', 409);
+      put(rows, connection);
+      return true;
+    });
+  }
+  findWhatsAppConversation(companyId: string, address: WhatsAppAddress) {
+    return this.read((s) =>
+      s.conversations.find(
+        (c) =>
+          c.companyId === companyId &&
+          c.channel === 'whatsapp' &&
+          sameAddress(c.whatsappAddress, address),
+      ),
+    );
+  }
   platformBudget() {
     return this.read((s) => {
       const month = new Date().toISOString().slice(0, 7);
@@ -751,7 +822,9 @@ export class MemoryRepository implements Repository {
         s.conversations.some(
           (c) =>
             c.companyId === conversation.companyId &&
-            c.customerPhone === conversation.customerPhone &&
+            (conversation.whatsappAddress
+              ? sameAddress(c.whatsappAddress, conversation.whatsappAddress)
+              : !c.whatsappAddress && c.customerPhone === conversation.customerPhone) &&
             c.channel === conversation.channel &&
             c.id !== conversation.id,
         )

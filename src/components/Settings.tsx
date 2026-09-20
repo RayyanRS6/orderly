@@ -22,6 +22,7 @@ import { useWorkspace } from '../lib/workspace';
 import { cn, initials, label } from '../lib/utils';
 import { Badge, ConfirmDialog, CustomSelect, Empty, Field, Modal, PageHeading, Status } from './ui';
 import { WhatsAppSignup } from './WhatsAppSignup';
+import { WhatsAppConnection } from './WhatsAppConnection';
 
 const providers: Record<Provider, { name: string; model: string }> = {
   mock: { name: 'Local demo · no API calls', model: 'deterministic-demo' },
@@ -419,8 +420,8 @@ const integrationInfo: Record<
   }
 > = {
   whatsapp: {
-    title: 'WhatsApp',
-    description: 'Receive messages and reply from your business number.',
+    title: 'WhatsApp · official Meta',
+    description: 'Saved Meta Cloud API credentials. The connection method above determines which route is active.',
     icon: MessageCircle,
     fields: [
       ['phoneNumberId', 'Phone number ID'],
@@ -510,10 +511,11 @@ export function Integrations() {
           </h2>
           <p className="mt-1 text-[13px] leading-relaxed text-cream/65">
             Credentials are encrypted before storage. The local playground works without keys; live
-            WhatsApp requires the deployed backend and Meta setup.
+            WhatsApp requires the deployed backend and your chosen connection setup.
           </p>
         </div>
       </div>
+      <WhatsAppConnection />
       <WhatsAppSignup />
       {notice && (
         <p

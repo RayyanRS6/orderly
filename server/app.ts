@@ -39,6 +39,17 @@ import { finishSignup, signupSchema } from './integrations/signup.js';
 import { managementRoutes } from './management.js';
 import { readiness } from './readiness.js';
 import { WhatsAppAdapter } from './integrations/whatsapp.js';
+import { whatsappRoutes } from './whatsapp/routes';
+import { gatewaySecret } from './whatsapp/client';
+import { verifySigned } from './whatsapp/signing';
+import { gatewayEventSchema } from '../src/shared/whatsapp';
+import {
+  receiveGatewayEvent,
+  jobAddress,
+  requireMeta,
+  withConnectionLock,
+  metaConfigurationBoundary,
+} from './whatsapp/connections';
 
 type Env = {
   Variables: { company: Company; role: Role; userId: string; allowedCompanies: Company[] };
@@ -107,6 +118,20 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
     }),
   );
   app.get('/api/health', (c) => c.json({ ok: true, mode: appMode() }));
+  app.post('/api/whatsapp/gateway/events', async (c) => {
+    const raw = await c.req.text();
+    const nonce = verifySigned(
+      gatewaySecret(),
+      'event',
+      '/api/whatsapp/gateway/events',
+      raw,
+      c.req.raw.headers,
+    );
+    if (!nonce || !(await repo.consumeGatewayNonce(nonce)))
+      throw new PublicError('Invalid or replayed gateway request.', 401);
+    await receiveGatewayEvent(repo, gatewayEventSchema.parse(JSON.parse(raw)));
+    return c.json({ received: true });
+  });
   app.post('/api/jobs/process', async (c) => {
     if (appMode() !== 'live') throw new PublicError('Hosted workers require live mode.', 503);
     const secret = process.env.CRON_SECRET;
@@ -150,6 +175,25 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
         const numberId = String(value.metadata?.phone_number_id ?? '');
         const company = await repo.findCompanyByPhoneNumberId(numberId);
         if (!company) continue;
+        const connection = await repo.getWhatsAppConnection(company.id);
+        if (
+          connection &&
+          (connection.provider !== 'meta' ||
+            ['disconnected', 'logged_out'].includes(connection.status))
+        )
+          continue;
+        const bindMeta = (peer: string) =>
+          connection
+            ? {
+                whatsappAddress: {
+                  connectionId: connection.id,
+                  generation: connection.generation,
+                  provider: 'meta',
+                  peer,
+                },
+                streamKey: `${connection.id}:${connection.generation}:${peer}`,
+              }
+            : {};
         for (const status of value.statuses ?? []) {
           if (
             ['sent', 'delivered', 'read', 'failed'].includes(status.status) &&
@@ -185,6 +229,7 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
                     : `Staff sent a ${echo.type || 'media'} message in WhatsApp.`),
             ).slice(0, 2000);
             const job = makeJob(company.id, 'incoming', {
+              ...bindMeta(echo.to),
               phone: echo.to,
               messageId: echo.id,
               text,
@@ -215,6 +260,7 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
             action = { type: 'handoff' };
           }
           const job = makeJob(company.id, 'incoming', {
+            ...bindMeta(message.from),
             phone: message.from,
             messageId: message.id,
             text,
@@ -310,6 +356,12 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
       );
   });
   app.route('/api', managementRoutes(repo));
+  for (const path of ['/api/integrations/whatsapp', '/api/whatsapp/signup'])
+    app.use(path, async (c, next) => {
+      if (c.req.method === 'POST') return withConnectionLock(repo, c.get('company').id, next);
+      await next();
+    });
+  app.route('/api/whatsapp', whatsappRoutes(repo));
   app.get('/api/account', async (c) =>
     c.json({
       isAdmin: appMode() === 'demo' || (await repo.isAdmin(c.get('userId'))),
@@ -585,6 +637,7 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
       conversation.channel === 'whatsapp'
         ? [
             makeJob(conversation.companyId, 'whatsapp_send', {
+              ...jobAddress(conversation),
               conversationId: conversation.id,
               messageId: next.messages.at(-1)?.id,
               text,
@@ -623,6 +676,7 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
         throw new PublicError('That WhatsApp number is already assigned to another company.');
     }
     if (kind === 'whatsapp') {
+      await requireMeta(repo, c.get('company').id);
       const token =
         body.secret || decryptSecret((await repo.getSecret(c.get('company').id, kind)) || '');
       const adapter = new WhatsAppAdapter(integration, token);
@@ -647,6 +701,8 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
               }
             : c.get('company').privacy,
       });
+    if (kind === 'whatsapp')
+      await metaConfigurationBoundary(repo, c.get('company').id, integration.config.phoneNumberId);
     await repo.saveIntegration(
       c.get('company').id,
       integration,

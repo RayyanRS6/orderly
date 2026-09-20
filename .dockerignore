@@ -1,0 +1,15 @@
+# Gateway build context is an allowlist; never send local data or secrets to Docker.
+**
+!gateway/
+!gateway/package.json
+!gateway/package-lock.json
+!gateway/tsconfig.json
+!gateway/Dockerfile
+!gateway/src/
+!gateway/src/**
+!src/
+!src/shared/
+!src/shared/whatsapp.ts
+!server/
+!server/whatsapp/
+!server/whatsapp/signing.ts

@@ -1,0 +1,26 @@
+{
+  "name": "orderly-whatsapp-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/gateway/src/index.js",
+    "test": "node --test dist/gateway/src/*.test.js",
+    "version:check": "node dist/gateway/src/version-check.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "6.7.22",
+    "pino": "9.14.0",
+    "qrcode": "1.5.4",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "@types/qrcode": "1.5.6",
+    "typescript": "5.9.3"
+  }
+}

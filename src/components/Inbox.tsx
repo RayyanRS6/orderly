@@ -255,7 +255,7 @@ export function Inbox() {
                     <strong className="block truncate text-sm">
                       {conversation.customerName || 'Customer'}
                     </strong>
-                    <p className="text-xs text-stone-500">{conversation.customerPhone}</p>
+                    <p className="text-xs text-stone-500">{conversation.customerPhone || 'WhatsApp contact · phone number not shared'}</p>
                   </div>
                 </div>
                 <button

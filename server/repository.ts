@@ -21,6 +21,21 @@ import { SupabaseRepository } from './storage/supabase';
 import { appMode } from './config';
 
 export interface Repository {
+  consumeGatewayNonce(nonce: string): Promise<boolean>;
+  getWhatsAppConnection(
+    companyId: string,
+  ): Promise<import('../src/shared/whatsapp').WhatsAppConnection | undefined>;
+  findWhatsAppConnection(
+    id: string,
+  ): Promise<import('../src/shared/whatsapp').WhatsAppConnection | undefined>;
+  saveWhatsAppConnection(
+    connection: import('../src/shared/whatsapp').WhatsAppConnection,
+    expectedRevision: number,
+  ): Promise<boolean>;
+  findWhatsAppConversation(
+    companyId: string,
+    address: import('../src/shared/whatsapp').WhatsAppAddress,
+  ): Promise<Conversation | undefined>;
   platformBudget(): Promise<import('../src/shared/types').PlatformBudget>;
   configurePlatformBudget(limit: number): Promise<import('../src/shared/types').PlatformBudget>;
   alertPreferences(

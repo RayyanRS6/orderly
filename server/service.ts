@@ -18,6 +18,9 @@ import { sanitizeError } from './security.js';
 import { botConfig, configuredCompany } from '../src/shared/bot.js';
 import { dispatchJob, makeJob } from './jobs.js';
 import { sendStaffAlert } from './integrations/alerts.js';
+import { LinkedWhatsAppAdapter } from './integrations/linked-whatsapp';
+import { assertCurrentAddress, jobAddress, requireMeta } from './whatsapp/connections';
+import { sameAddress } from '../src/shared/whatsapp';
 
 // Paid Supabase workers have a 400s maximum lifetime. Include an 80s margin;
 // bounded upstream requests and database requests cannot survive this lease.
@@ -38,6 +41,7 @@ export async function integrationAdapter(
   companyId: string,
   kind: 'sheets' | 'whatsapp',
 ) {
+  if (kind === 'whatsapp') await requireMeta(repo, companyId);
   const integration = (await repo.getIntegrations(companyId)).find((i) => i.kind === kind);
   const secret = await repo.getSecret(companyId, kind);
   if (!integration || !secret)
@@ -289,6 +293,7 @@ export async function handleTurn(
     if (result.reply && conversation.channel === 'whatsapp')
       jobs.push(
         makeJob(company.id, 'whatsapp_send', {
+          ...jobAddress(conversation),
           conversationId: conversation.id,
           messageId: result.conversation.messages.at(-1)?.id,
           text: result.reply,
@@ -349,6 +354,7 @@ async function saveHandoff(
     c.channel === 'whatsapp'
       ? [
           makeJob(company.id, 'whatsapp_send', {
+            ...jobAddress(c),
             conversationId: c.id,
             messageId: c.messages.at(-1)?.id,
             text: reply,
@@ -419,6 +425,7 @@ export async function changeOrderStatus(
   if (conversation?.channel === 'whatsapp')
     jobs.push(
       makeJob(order.companyId, 'whatsapp_send', {
+        ...jobAddress(conversation),
         conversationId: conversation.id,
         text: `Order ${order.reference} is now ${status.replaceAll('_', ' ')}.`,
         orderId: order.id,
@@ -449,6 +456,7 @@ export async function queueReply(
 ) {
   if (conversation.channel !== 'whatsapp') return;
   const job = makeJob(conversation.companyId, 'whatsapp_send', {
+    ...jobAddress(conversation),
     conversationId: conversation.id,
     text,
     ...(order ? { orderId: order.id, reference: order.reference, status: order.status } : {}),
@@ -463,16 +471,37 @@ export async function processJob(repo: Repository, id: string) {
     new Date(Date.now() + WORKER_LEASE_MS).toISOString(),
   );
   if (!job) return;
+  let connectionLocked = false;
   try {
+    if (job.kind === 'incoming' || job.kind === 'whatsapp_send') {
+      connectionLocked = await repo.acquireConversationLock(
+        job.companyId,
+        'whatsapp-connection',
+        job.id,
+        new Date(Date.now() + WORKER_LEASE_MS).toISOString(),
+      );
+      if (!connectionLocked) throw new PublicError('WhatsApp connection is busy.', 409);
+      await assertCurrentAddress(repo, job.companyId, job.payload.whatsappAddress);
+    }
     if (job.attempts > 5)
       throw new PublicError('Repeated worker interruptions require staff review.', 503);
     const company = await repo.getCompany(job.companyId);
     if (!company) throw new PublicError('Job company no longer exists.', 404);
     if (job.kind === 'incoming') {
       const phone = String(job.payload.phone);
-      const existing = await repo.findConversation(company.id, phone, 'whatsapp');
+      const address = await assertCurrentAddress(repo, company.id, job.payload.whatsappAddress);
+      const existing = address
+        ? await repo.findWhatsAppConversation(company.id, address)
+        : await repo.findConversation(company.id, phone, 'whatsapp');
       const conversation = existing ?? {
-        ...createConversation(company.id, phone, 'whatsapp', '1970-01-01T00:00:00.000Z'),
+        ...createConversation(
+          company.id,
+          address ? `${address.connectionId}:${address.generation}:${address.peer}` : phone,
+          'whatsapp',
+          '1970-01-01T00:00:00.000Z',
+        ),
+        customerPhone: phone,
+        ...(address ? { whatsappAddress: address } : {}),
         updatedAt: job.createdAt,
         lastInboundAt: job.createdAt,
       };
@@ -561,7 +590,15 @@ export async function processJob(repo: Repository, id: string) {
         await repo.saveJob({ ...job, status: 'done', leaseUntil: undefined, error: undefined });
         return;
       }
-      const adapter = await integrationAdapter(repo, company.id, 'whatsapp');
+      if (conversation.channel !== 'whatsapp')
+        throw new PublicError('Sandbox cannot send WhatsApp messages.', 422);
+      const address = await assertCurrentAddress(repo, company.id, conversation.whatsappAddress);
+      if (address && !sameAddress(address, job.payload.whatsappAddress as typeof address))
+        throw new PublicError('Queued message destination changed. Staff review required.', 422);
+      const adapter =
+        address?.provider === 'baileys'
+          ? new LinkedWhatsAppAdapter(repo, company.id, job.id)
+          : await integrationAdapter(repo, company.id, 'whatsapp');
       const statusOrder = job.payload.orderId
         ? await repo.getOrder(company.id, String(job.payload.orderId))
         : undefined;
@@ -604,13 +641,13 @@ export async function processJob(repo: Repository, id: string) {
         companyId: company.id,
         conversationId: conversation.id,
         action: 'whatsapp.accepted',
-        detail: `Message accepted by Meta: ${messageId}`,
+        detail: `Message accepted by WhatsApp transport: ${messageId}`,
         createdAt: new Date().toISOString(),
       });
     }
     await repo.saveJob({ ...job, status: 'done', leaseUntil: undefined, error: undefined });
   } catch (error) {
-    const permanent = job.attempts >= 5;
+    const permanent = job.attempts >= 5 || (error instanceof PublicError && error.status === 422);
     await repo.saveJob({
       ...job,
       status: permanent ? 'failed' : 'pending',
@@ -628,11 +665,11 @@ export async function processJob(repo: Repository, id: string) {
     // conversation for staff too, so retrying the stream cannot resume ordering silently.
     let failedConversationId: string | undefined;
     if (permanent && job.kind === 'incoming') {
-      const current = await repo.findConversation(
-        job.companyId,
-        String(job.payload.phone),
-        'whatsapp',
-      );
+      const address = job.payload.whatsappAddress as
+        import('../src/shared/whatsapp').WhatsAppAddress | undefined;
+      const current = address
+        ? await repo.findWhatsAppConversation(job.companyId, address)
+        : await repo.findConversation(job.companyId, String(job.payload.phone), 'whatsapp');
       if (current) {
         failedConversationId = current.id;
         if (current.mode === 'bot')
@@ -657,5 +694,8 @@ export async function processJob(repo: Repository, id: string) {
       createdAt: new Date().toISOString(),
     });
     if (!permanent) throw new PublicError('Background job is waiting to retry.', 503);
+  } finally {
+    if (connectionLocked)
+      await repo.releaseConversationLock(job.companyId, 'whatsapp-connection', job.id);
   }
 }
