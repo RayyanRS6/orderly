@@ -26,6 +26,115 @@ const output = (interpretation: ModelInterpretation) =>
 
 describe('restaurant intent and response regressions', () => {
   it.each([
+    'can you repeat my order for me?',
+    'can you repeat my order first?',
+    'mera order batao',
+    'میرا آرڈر بتائیں',
+  ])('answers a cart recap before asking for fulfillment: %s', (text) => {
+    let c = fresh();
+    const naan = products.find((p) => p.name.includes('Naan'))!;
+    for (const [productId, quantity] of [
+      [biryani.id, 1],
+      [naan.id, 3],
+    ] as const) {
+      c = processTurn(company, products, c, {
+        messageId: productId,
+        text: 'add',
+        now,
+        action: { type: 'add_item', productId, quantity },
+      }).conversation;
+    }
+    const before = structuredClone(c.cart);
+    const result = processTurn(
+      company,
+      products,
+      c,
+      { messageId: text, text, now },
+      [{ type: 'review' }],
+      { text: 'Would you like pickup or delivery?', askFor: 'fulfillment' },
+    );
+    expect(result.reply).toContain('1 × Chicken Biryani');
+    expect(result.reply).toContain('3 × Butter Naan');
+    expect(result.reply).toContain('Rs. 750');
+    expect(result.reply.indexOf('Chicken Biryani')).toBeLessThan(
+      result.reply.indexOf('Would you like pickup'),
+    );
+    expect(result.conversation.cart).toEqual(before);
+    expect(result.order).toBeUndefined();
+    expect(result.traces).toContain('cart_summary');
+  });
+
+  it('shows an incomplete checkout cart before asking for missing details', () => {
+    const c = fresh();
+    c.cart.items = [{ productId: biryani.id, quantity: 2, modifierIds: [], notes: 'no onion' }];
+    const result = processTurn(company, products, c, {
+      messageId: 'checkout',
+      text: 'review order',
+      now,
+      action: { type: 'review' },
+    });
+    expect(result.reply).toContain('2 × Chicken Biryani');
+    expect(result.reply).toContain('no onion');
+    expect(result.reply).toContain('pickup or delivery');
+    expect(result.conversation.cart.status).toBe('building');
+    expect(result.conversation.cart.reviewedRevision).toBeUndefined();
+    expect(
+      processTurn(company, products, result.conversation, {
+        messageId: 'premature',
+        text: 'confirm',
+        now,
+      }).order,
+    ).toBeUndefined();
+  });
+
+  it('does not treat a complete-cart recap as consent or a confirmation review', () => {
+    const c = fresh();
+    c.cart.items = [{ productId: biryani.id, quantity: 1, modifierIds: [], notes: '' }];
+    c.cart.fulfillment = 'pickup';
+    c.cart.customerName = 'Ali';
+    const result = processTurn(company, products, c, {
+      messageId: 'recap',
+      text: 'repeat my order',
+      now,
+    });
+    expect(result.conversation.cart.status).toBe('building');
+    expect(result.conversation.cart.reviewedRevision).toBeUndefined();
+    expect(result.order).toBeUndefined();
+    expect(result.reply).not.toContain('Reply “confirm”');
+  });
+
+  it('honors the configured next question even when checkout is incomplete', () => {
+    const c = fresh();
+    c.cart.items = [{ productId: biryani.id, quantity: 1, modifierIds: [], notes: '' }];
+    const result = processTurn(
+      company,
+      products,
+      c,
+      { messageId: 'name-first-checkout', text: 'checkout please', now },
+      [{ type: 'review' }],
+      { text: 'What name should I put on your order?', askFor: 'name' },
+    );
+    expect(result.reply).toContain('1 × Chicken Biryani');
+    expect(result.reply).toContain('What name should I put on your order?');
+    expect(result.reply).not.toContain('pickup or delivery');
+    expect(result.conversation.cart.status).toBe('building');
+    expect(result.conversation.cart.reviewedRevision).toBeUndefined();
+    expect(result.order).toBeUndefined();
+  });
+
+  it('retains unavailable selections in a recap without inventing a total', () => {
+    const c = fresh();
+    c.cart.items = [{ productId: biryani.id, quantity: 1, modifierIds: [], notes: '' }];
+    const result = processTurn(company, [{ ...biryani, available: false }], c, {
+      messageId: 'unavailable-recap',
+      text: 'repeat my order',
+      now,
+    });
+    expect(result.reply).toContain('Chicken Biryani · Unavailable');
+    expect(result.reply).not.toContain('Rs.');
+    expect(result.conversation.cart).toEqual(c.cart);
+  });
+  it.each([
     'biryani',
     'biriyani',
     'baryani',
@@ -438,6 +547,39 @@ describe('configured model pipeline', () => {
     expect(prompt.history).toHaveLength(4);
     expect(prompt.deterministicResolution).toMatchObject({ kind: 'unique', productId: biryani.id });
     expect(prompt.catalogIndex.every((p: { id?: string }) => p.id)).toBe(true);
+  });
+
+  it('persists the cart without Sheets and restores it through the tenant-scoped read API', async () => {
+    const result = await chat('one biryani', {
+      actions: [{ type: 'add_item', productId: biryani.id, quantity: 1 }],
+      response: { text: 'Would you like anything else?', askFor: 'anything_else' },
+    });
+    const app = createApp(repo);
+    const restored = await app.request(
+      `http://localhost/api/conversations/${result.conversation.id}`,
+      {
+        headers: { 'x-company-id': company.id },
+      },
+    );
+    expect(restored.status).toBe(200);
+    expect((await restored.json()).cart).toEqual(result.conversation.cart);
+    const recap = await chat(
+      'can you repeat my order first?',
+      {
+        actions: [{ type: 'answer', text: '' }],
+        response: { text: 'Would you like pickup or delivery?', askFor: 'fulfillment' },
+      },
+      result.conversation.id,
+    );
+    expect(recap.reply).toContain('1 × Chicken Biryani');
+    expect(await repo.listCompanyJobs(company.id)).toEqual([]);
+    const other = await app.request(
+      `http://localhost/api/conversations/${result.conversation.id}`,
+      {
+        headers: { 'x-company-id': seedCompanies[1]!.id },
+      },
+    );
+    expect(other.status).toBe(404);
   });
 
   it('evaluates owner rules and answers interruptions even while an item choice is pending', async () => {

@@ -726,6 +726,7 @@ export function processTurn(
     order: Order | undefined;
   const cartFacts: string[] = [];
   let correctedInterpretation = false;
+  let incompleteReviewQuestion: string | undefined;
   const finish = (): TurnResult => {
     if (traces.includes('human_mode_message_saved'))
       return { conversation: next, reply: '', traces };
@@ -781,29 +782,35 @@ export function processTurn(
             'duplicate_submission_prevented',
             'unconfirmed_model_action_rejected',
             'fresh_confirmation_required',
-            'review',
             'confirm',
           ].includes(trace),
       ) ||
+      (traces.includes('review') && !incompleteReviewQuestion) ||
       cart.status === 'cancelled';
     if (cartFacts.length) reply = [cartFacts.join('\n'), reply].filter(Boolean).join('\n\n');
     if (matchedRule?.action === 'handoff') next.mode = 'human';
-    if (!protectedReply && matchedRule?.responseMode === 'exact' && matchedRule.response)
+    let configuredResponseUsed = false;
+    if (!protectedReply && matchedRule?.responseMode === 'exact' && matchedRule.response) {
       reply = transactional && reply ? `${reply}\n\n${matchedRule.response}` : matchedRule.response;
-    else if (
+      configuredResponseUsed = true;
+    } else if (
       !protectedReply &&
       next.mode === 'bot' &&
       grounded &&
       validAskFor &&
       modelResponse?.text.trim() &&
       !unsafeModelText(modelResponse.text)
-    )
+    ) {
       reply =
         transactional && reply
           ? traces.includes('menu') || traces.includes('clarify_item')
             ? `${modelResponse.text.trim()}\n\n${reply}`
             : `${reply}\n\n${modelResponse.text.trim()}`
           : modelResponse.text.trim();
+      configuredResponseUsed = true;
+    }
+    if (incompleteReviewQuestion && !configuredResponseUsed)
+      reply = `${reply}\n\n${incompleteReviewQuestion}`;
     if (modelResponse && !grounded) traces.push('invalid_model_grounding_ignored');
     if (modelResponse?.text && unsafeModelText(modelResponse.text))
       traces.push('unsafe_model_response_ignored');
@@ -1167,7 +1174,10 @@ export function processTurn(
           throw new Error(
             `This restaurant currently offers ${configuration.fulfillment} only. Please update your fulfillment choice.`,
           );
-        reply = review(company, products, cart, lang);
+        incompleteReviewQuestion = modelResponse ? missingDetails(company, cart, lang) : undefined;
+        reply = incompleteReviewQuestion
+          ? cartSummary(company, products, cart, lang)
+          : review(company, products, cart, lang);
         continue;
       }
       if (action.type === 'confirm') {

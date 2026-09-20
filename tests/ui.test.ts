@@ -243,6 +243,9 @@ describe('Full Component Rendering with Workspace.Provider', () => {
     expect(html).toContain('Test your bot');
     expect(html).toContain('Show menu');
     expect(html).toContain('Configuration to test');
+    expect(html).toContain('Refresh chat');
+    expect(html).toContain('Repeat my order');
+    expect(html).toContain('Chat stays saved until you refresh it');
     expect(html).not.toContain('Use selected AI model');
   });
 
@@ -252,6 +255,8 @@ describe('Full Component Rendering with Workspace.Provider', () => {
       createElement(Workspace.Provider, { value: context }, createElement(BotSettings)),
     );
     expect(html).toContain('Behavior rules');
+    expect(html).toContain('maxLength="20000"');
+    expect(html).toContain('20,000 characters');
     expect(html).not.toContain('Order collection flow');
   });
 
