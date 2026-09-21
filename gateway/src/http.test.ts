@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { signedHeaders } from '../../server/whatsapp/signing.js';
+import { probeGateway } from './deployment.js';
 
 test('real HTTP gateway boots without sessions, verifies signatures and blocks replays/browser calls', async () => {
   const listener = createServer();
@@ -39,6 +40,7 @@ test('real HTTP gateway boots without sessions, verifies signatures and blocks r
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     assert.ok(ready, 'gateway did not start');
+    assert.deepEqual(await probeGateway(base, secret), { workers: 0, maxSessions: 10 });
     const raw = '{}';
     const headers = signedHeaders(secret, 'command', '/health', raw);
     const health = await fetch(`${base}/health`, { method: 'POST', headers, body: raw });
@@ -70,6 +72,24 @@ test('real HTTP gateway boots without sessions, verifies signatures and blocks r
     });
     assert.equal(missing.status, 409);
     assert.equal((await missing.json()).errorCode, 'STALE_GENERATION');
+    // Keep below the independent 64-connection cap while exhausting the request budget.
+    const overload: Response[] = [];
+    for (let batch = 0; batch < 10; batch++) {
+      const responses = await Promise.all(
+        Array.from({ length: 20 }, async () => {
+          const response = await fetch(`${base}/healthz`, { signal: AbortSignal.timeout(5000) });
+          await response.arrayBuffer();
+          return response;
+        }),
+      );
+      overload.push(...responses);
+    }
+    assert.ok(overload.some((response) => response.status === 429));
+    assert.ok(
+      overload
+        .filter((response) => response.status === 429)
+        .every((response) => response.headers.get('Retry-After') === '1'),
+    );
   } finally {
     await new Promise<void>((resolve) => {
       child.once('exit', () => resolve());

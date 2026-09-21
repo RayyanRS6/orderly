@@ -1,0 +1,51 @@
+{
+	email {$ACME_EMAIL}
+	admin off
+	# Upstream errors can include the request even when access logs are disabled.
+	log default {
+		format filter {
+			wrap json
+			fields {
+				request delete
+				resp_headers delete
+			}
+		}
+	}
+	servers {
+		timeouts {
+			read_header 10s
+			read_body 10s
+			write 30s
+			idle 30s
+		}
+	}
+}
+
+{$GATEWAY_HOSTNAME} {
+	# Intentionally no access logging: signed headers/pairing payloads are private.
+	request_body {
+		max_size 32KB
+	}
+	header {
+		Cache-Control "no-store"
+		X-Content-Type-Options "nosniff"
+		-Server
+	}
+	@health {
+		method GET
+		path /healthz
+	}
+	handle @health {
+		reverse_proxy gateway:8080
+	}
+	@commands {
+		method POST
+		path /health /status /session /send
+	}
+	handle @commands {
+		reverse_proxy gateway:8080
+	}
+	handle {
+		respond 404
+	}
+}

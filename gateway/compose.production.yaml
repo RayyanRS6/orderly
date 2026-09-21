@@ -1,0 +1,42 @@
+# Use WITH compose.yaml, never by itself. No host provisioned by this file.
+services:
+  gateway:
+    # Leave room for Ubuntu, Docker and HTTPS on the recommended 2 GB pilot VPS.
+    mem_limit: 1280m
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
+  https:
+    image: caddy:2.11.4-alpine
+    restart: unless-stopped
+    environment:
+      GATEWAY_HOSTNAME: ${GATEWAY_HOSTNAME:?Set GATEWAY_HOSTNAME in gateway/.env}
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL in gateway/.env}
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - orderly-tls:/data
+      - orderly-proxy-config:/config
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 128m
+    pids_limit: 64
+    depends_on:
+      gateway:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
+volumes:
+  orderly-tls:
+  orderly-proxy-config:

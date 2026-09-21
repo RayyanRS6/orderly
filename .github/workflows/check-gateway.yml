@@ -1,6 +1,7 @@
 name: Check WhatsApp gateway
 on:
   pull_request:
+  workflow_dispatch:
   push:
     branches: [main]
 permissions:
@@ -25,3 +26,14 @@ jobs:
       - run: npm run build
       - run: npm run test:edge-runtime
       - run: docker build -f gateway/Dockerfile -t orderly-gateway:test .
+      - name: Exercise the production container without WhatsApp accounts
+        run: npm run test:container --prefix gateway
+      - name: Validate production Compose and HTTPS configuration without starting services
+        working-directory: gateway
+        env:
+          GATEWAY_HOSTNAME: gateway.example.com
+          ACME_EMAIL: ci@example.com
+        run: |
+          cp .env.example .env
+          docker compose -f compose.yaml -f compose.production.yaml config --quiet
+          docker run --rm -e GATEWAY_HOSTNAME -e ACME_EMAIL -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2.11.4-alpine caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile --validate > /dev/null

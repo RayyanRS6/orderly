@@ -3,10 +3,12 @@ import { ZodError } from 'zod';
 import { loadConfig } from './config.js';
 import { GatewayError, Supervisor } from './supervisor.js';
 import { verifySigned } from '../../server/whatsapp/signing.js';
+import { RequestBudget } from './request-budget.js';
 
 const config = loadConfig();
 const supervisor = new Supervisor(config);
 supervisor.restore();
+const requestBudget = new RequestBudget();
 const server = createServer(async (request, response) => {
   response.setHeader('Content-Type', 'application/json');
   response.setHeader('Cache-Control', 'no-store');
@@ -16,6 +18,12 @@ const server = createServer(async (request, response) => {
     response.end(JSON.stringify(body));
   };
   try {
+    if (!requestBudget.allow()) {
+      response.setHeader('Retry-After', '1');
+      request.resume();
+      reply(429, { errorCode: 'GATEWAY_BUSY' });
+      return;
+    }
     if (request.method === 'GET' && request.url === '/healthz') {
       reply(200, { ok: true });
       return;

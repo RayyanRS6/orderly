@@ -10,7 +10,10 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/gateway/src/index.js",
     "test": "node --test dist/gateway/src/*.test.js",
-    "version:check": "node dist/gateway/src/version-check.js"
+    "version:check": "node dist/gateway/src/version-check.js",
+    "configure": "node dist/gateway/src/configure.js",
+    "doctor": "node dist/gateway/src/doctor.js",
+    "test:container": "node scripts/container-smoke.mjs"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "6.7.22",
