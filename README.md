@@ -1,5 +1,16 @@
 # Orderly
 
+<p>
+  <a href="https://orderly.meerurayyan.workers.dev"><b>Live site</b></a> ·
+  <a href="#run-locally">Run locally</a> ·
+  <a href="docs/DEPLOYMENT.md">Deployment guide</a>
+</p>
+
+[![Deploy Supabase backend](https://github.com/RayyanRS6/orderly/actions/workflows/deploy-backend.yml/badge.svg)](https://github.com/RayyanRS6/orderly/actions/workflows/deploy-backend.yml)
+[![Check WhatsApp gateway](https://github.com/RayyanRS6/orderly/actions/workflows/check-gateway.yml/badge.svg)](https://github.com/RayyanRS6/orderly/actions/workflows/check-gateway.yml)
+
+![Orderly staff dashboard showing the Orders view of a demo restaurant workspace](docs/images/orders.png)
+
 A working local MVP for a WhatsApp restaurant ordering platform. Customers use the restaurant’s WhatsApp number; owners and staff use this dashboard to manage menus, orders, and conversations. The application replaces n8n with its own TypeScript ordering engine.
 
 **Current status (17 September 2026):** deployed on Cloudflare and Supabase, with public pages, workspace URLs, configurable bots/models, security controls and responsive UI based on `Claude-UI-Rayyan`. Laziza remains paused and unconnected. See the [implementation and launch handover](docs/ORDERLY-IMPLEMENTATION-2026-09-17.md), [audit](docs/ORDERLY-AUDIT-2026-09-16.md) and [Pakistan budget](docs/ORDERLY-BUDGET-2026-09-16.md). No real WhatsApp message was sent during this implementation pass.
