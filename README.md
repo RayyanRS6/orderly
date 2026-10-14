@@ -11,9 +11,9 @@
 
 ![Orderly staff dashboard showing the Orders view of a demo restaurant workspace](docs/images/orders.png)
 
-A working local MVP for a WhatsApp restaurant ordering platform. Customers use the restaurant’s WhatsApp number; owners and staff use this dashboard to manage menus, orders, and conversations. The application replaces n8n with its own TypeScript ordering engine.
+A WhatsApp ordering platform for restaurants, in use at **Fries & Buns**. Customers order through the restaurant’s WhatsApp number in English, Urdu or Roman Urdu; owners and staff manage menus, orders and conversations from this dashboard. Orderly replaces n8n with its own TypeScript ordering engine.
 
-**Current status (17 September 2026):** deployed on Cloudflare and Supabase, with public pages, workspace URLs, configurable bots/models, security controls and responsive UI based on `Claude-UI-Rayyan`. Laziza remains paused and unconnected. See the [implementation and launch handover](docs/ORDERLY-IMPLEMENTATION-2026-09-17.md), [audit](docs/ORDERLY-AUDIT-2026-09-16.md) and [Pakistan budget](docs/ORDERLY-BUDGET-2026-09-16.md). No real WhatsApp message was sent during this implementation pass.
+**Status (October 2026):** live on Cloudflare and Supabase and in use at Fries & Buns, with public pages, workspace URLs, configurable bots and models, and security controls. Earlier records from the launch: the [implementation and launch handover](docs/ORDERLY-IMPLEMENTATION-2026-09-17.md), the [audit](docs/ORDERLY-AUDIT-2026-09-16.md) and the [Pakistan budget](docs/ORDERLY-BUDGET-2026-09-16.md).
 
 ## Run locally
 
