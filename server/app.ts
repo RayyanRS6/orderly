@@ -595,7 +595,13 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
         updatedAt: new Date().toISOString(),
         messages: [
           ...conversation.messages,
-          { id: randomUUID(), role: 'staff' as const, text, createdAt: new Date().toISOString() },
+          {
+            id: randomUUID(),
+            role: 'staff' as const,
+            text,
+            createdAt: new Date().toISOString(),
+            notice: true,
+          },
         ],
       };
       await repo.saveConversation(next, conversation.version);
@@ -606,13 +612,15 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
     const { mode } = z.object({ mode: z.enum(['bot', 'human']) }).parse(await c.req.json());
     const conversation = await repo.getConversation(c.get('company').id, c.req.param('id'));
     if (!conversation) throw new PublicError('Conversation not found.', 404);
+    const now = new Date().toISOString();
     const next = {
       ...conversation,
       mode,
       // Staff decided explicitly; the bot must not take the chat back on its own.
       botPausedAt: undefined,
+      botResumedAt: mode === 'bot' ? now : conversation.botResumedAt,
       version: conversation.version + 1,
-      updatedAt: new Date().toISOString(),
+      updatedAt: now,
     };
     if (!(await repo.saveConversation(next, conversation.version)))
       throw new PublicError('Conversation changed. Try again.', 409);

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import pino from 'pino';
 import { makeEventBuffer, proto, type WAMessage } from '@whiskeysockets/baileys';
-import { receiptStatus, upsertedMessages } from './upserts.js';
+import { chatContent, receiptStatus, upsertedMessages } from './upserts.js';
 
 const message = (id: string, fromMe: boolean): WAMessage => ({
   key: { remoteJid: '100000001@lid', id, fromMe },
@@ -58,4 +58,46 @@ test('maps only delivered, read and played ticks; skips placeholder resends', ()
   assert.equal(receiptStatus(Status.PLAYED), 'read');
   assert.equal(receiptStatus(undefined), undefined);
   assert.deepEqual(upsertedMessages({ messages: [message('x', false)], requestId: 'r' }), []);
+});
+
+test('an edit, deletion, reaction or pin is not a new customer message', () => {
+  const { Type } = proto.Message.ProtocolMessage;
+  const edit = {
+    editedMessage: {
+      message: {
+        protocolMessage: { type: Type.MESSAGE_EDIT, editedMessage: { conversation: '3' } },
+      },
+    },
+  };
+  assert.equal(chatContent(edit), undefined);
+  assert.equal(
+    chatContent({ ephemeralMessage: { message: { reactionMessage: { text: '👍' } } } }),
+    undefined,
+  );
+  assert.equal(chatContent({ protocolMessage: { type: Type.REVOKE } }), undefined);
+  assert.equal(chatContent({ pinInChatMessage: {} }), undefined);
+  assert.equal(chatContent(undefined), undefined);
+  // Ordinary text, also inside a disappearing-messages wrapper, is kept.
+  assert.equal(chatContent({ conversation: '2 biryani' })?.conversation, '2 biryani');
+  const wrapped = { ephemeralMessage: { message: { extendedTextMessage: { text: 'menu' } } } };
+  assert.equal(chatContent(wrapped)?.extendedTextMessage?.text, 'menu');
+});
+
+test('an upsert made after the last flush waits in the buffer until flushed again', async () => {
+  // Messages delivered after a reconnect are upserted outside Baileys' per-node flush,
+  // which is why the worker flushes on a timer and before closing or stopping.
+  const { ev, upserts } = capture();
+  ev.buffer();
+  ev.flush();
+  const upsert = ev.createBufferedFunction(async (m: WAMessage) => {
+    ev.emit('messages.upsert', { messages: [m], type: 'append' });
+  });
+  await upsert(message('late-offline', false));
+  assert.equal(upserts.length, 0);
+  assert.equal(ev.isBuffering(), true);
+  ev.flush();
+  assert.deepEqual(
+    upserts.flatMap((u) => upsertedMessages(u)).map((m) => m.key.id),
+    ['late-offline'],
+  );
 });

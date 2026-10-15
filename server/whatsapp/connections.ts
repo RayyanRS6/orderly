@@ -276,7 +276,11 @@ export async function receiveGatewayEvent(repo: Repository, event: GatewayEvent)
   // not pause a conversation staff explicitly resumed afterwards.
   if (event.fromMe) {
     const conversation = await repo.findWhatsAppConversation(current.companyId, address);
+    // A staff message replayed after a reconnect may predate staff handing the chat back.
+    const handedBackLater =
+      !!conversation?.botResumedAt && event.timestamp < conversation.botResumedAt;
     if (
+      !handedBackLater &&
       (conversation?.mode === 'bot' || conversation?.botPausedAt) &&
       !(await repo.saveConversation(
         {

@@ -1,4 +1,4 @@
-import { proto } from '@whiskeysockets/baileys';
+import { normalizeMessageContent, proto } from '@whiskeysockets/baileys';
 
 // The ticks a customer's phone sends back for one of our replies.
 const RECEIPTS: Partial<Record<number, 'delivered' | 'read'>> = {
@@ -14,8 +14,26 @@ export function receiptStatus(status?: number | null): 'delivered' | 'read' | un
 // of its first message, so a customer's live message can arrive labelled 'append' behind
 // our own reply; messages delivered after a reconnect are 'append' too. A delivery tick
 // can also be folded into our reply's upsert instead of arriving as 'messages.update'.
-// So every message is judged on its own, never by the batch type. Only answers to
-// placeholder-resend requests (requestId) are skipped: they repeat messages already seen.
+// So every message is judged on its own, never by the batch type. Answers to
+// placeholder-resend requests (requestId) are still skipped, as before: a JID form that
+// differs from the original would slip past the duplicate check.
 export function upsertedMessages<T>(update: { messages: T[]; requestId?: string }): T[] {
   return update.requestId ? [] : update.messages;
+}
+// Edits, deletions, reactions, pins and poll votes arrive wrapped (editedMessage,
+// ephemeralMessage, ...). They are not new customer messages: judged on the raw message,
+// an edit looked like unsupported media and handed a normal order chat to staff.
+export function chatContent(message?: proto.IMessage | null): proto.IMessage | undefined {
+  const content = normalizeMessageContent(message);
+  if (
+    !content ||
+    content.protocolMessage ||
+    content.reactionMessage ||
+    content.encReactionMessage ||
+    content.pollUpdateMessage ||
+    content.keepInChatMessage ||
+    content.pinInChatMessage
+  )
+    return undefined;
+  return content;
 }

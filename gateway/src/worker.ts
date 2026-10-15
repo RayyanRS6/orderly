@@ -3,7 +3,6 @@ import makeWASocket, {
   BufferJSON,
   initAuthCreds,
   proto,
-  normalizeMessageContent,
   generateMessageIDV2,
   Browsers,
   type AuthenticationState,
@@ -18,7 +17,7 @@ import { loadConfig } from './config.js';
 import { Store } from './store.js';
 import { canonicalJid, phoneFromJid, disconnectPolicy, retryDelay } from './policy.js';
 import { sendOnce, recoverUncertainSends } from './sender.js';
-import { receiptStatus, upsertedMessages } from './upserts.js';
+import { chatContent, receiptStatus, upsertedMessages } from './upserts.js';
 import { signedHeaders } from '../../server/whatsapp/signing.js';
 import {
   sendCommandSchema,
@@ -204,14 +203,8 @@ function mapIdentity(lidValue?: string, pnValue?: string) {
 function incoming(message: WAMessage) {
   const native = canonicalJid(message.key.remoteJid);
   const id = message.key.id;
-  if (
-    !native ||
-    !id ||
-    !message.message ||
-    message.message.protocolMessage ||
-    message.message.reactionMessage
-  )
-    return;
+  const content = chatContent(message.message);
+  if (!native || !id || !content) return;
   if (message.key.fromMe && store.get('own', id)) return;
   const timestamp = Number(message.messageTimestamp) * 1000;
   if (
@@ -228,8 +221,7 @@ function incoming(message: WAMessage) {
   }
   const peer = store.get<string>('route', native) ?? native;
   store.set('route', native, peer);
-  const content = normalizeMessageContent(message.message);
-  const text = (content?.conversation ?? content?.extendedTextMessage?.text ?? '').slice(0, 4000);
+  const text = (content.conversation ?? content.extendedTextMessage?.text ?? '').slice(0, 4000);
   const mapped = store.get<string>('identity', native);
   store.transaction(() => {
     // Durable dedupe and enqueue commit together, before the model can be called.
@@ -296,6 +288,13 @@ async function connect() {
     },
   });
   socket = currentSocket;
+  // Messages delivered after a reconnect are processed outside Baileys' per-node flush,
+  // so the last ones can wait in its event buffer until the next live node, which can be
+  // hours away on a quiet account. Flush it ourselves, and on close (below).
+  const flushTimer = setInterval(() => {
+    if (socket !== currentSocket) clearInterval(flushTimer);
+    else if (currentSocket.ev.isBuffering()) currentSocket.ev.flush();
+  }, 1000);
   currentSocket.ev.on('creds.update', () => guard(persistCreds));
   currentSocket.ev.on('chats.phoneNumberShare', ({ lid, jid }) =>
     guard(() => mapIdentity(lid, jid)),
@@ -360,6 +359,10 @@ async function connect() {
         setStatus('connected');
       }
       if (update.connection === 'close') {
+        // Hand over anything still buffered while this socket is current; a new socket
+        // starts with an empty buffer and WhatsApp will not deliver these again.
+        clearInterval(flushTimer);
+        currentSocket.ev.flush();
         pairing = {};
         const code =
           (update.lastDisconnect?.error as { output?: { statusCode?: number } })?.output
@@ -472,12 +475,15 @@ process.on('message', (message: any) => {
       .catch(() => fail('SEND_HANDLER_FAILURE'));
   }
   if (message.type === 'stop') {
+    // Save anything Baileys still buffers first: incoming() runs as a microtask and
+    // writes to disk synchronously, so it finishes before the exit below.
+    socket?.ev.flush();
     stopped = true;
     clearTimeout(reconnectTimer);
     pairing = {};
     // Closing is not logging out: planned restarts must retain credentials.
     socket?.end(new Error('STOPPED'));
-    process.exit(0);
+    setImmediate(() => process.exit(0));
   }
 });
 setInterval(

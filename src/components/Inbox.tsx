@@ -280,17 +280,35 @@ export function Inbox() {
                     </p>
                   </div>
                 </div>
-                <button
-                  className="btn"
-                  disabled={busy}
-                  onClick={() =>
-                    void act(`/conversations/${conversation.id}/mode`, {
-                      mode: conversation.mode === 'bot' ? 'human' : 'bot',
-                    })
-                  }
-                >
-                  {conversation.mode === 'bot' ? 'Take over' : 'Resume bot'}
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  {conversation.mode === 'human' && conversation.botPausedAt && (
+                    <>
+                      <span className="text-xs text-stone-500">
+                        Waiting for staff while the bot is off. The bot answers again once it is on.
+                      </span>
+                      <button
+                        className="btn"
+                        disabled={busy}
+                        onClick={() =>
+                          void act(`/conversations/${conversation.id}/mode`, { mode: 'human' })
+                        }
+                      >
+                        Keep with staff
+                      </button>
+                    </>
+                  )}
+                  <button
+                    className="btn"
+                    disabled={busy}
+                    onClick={() =>
+                      void act(`/conversations/${conversation.id}/mode`, {
+                        mode: conversation.mode === 'bot' ? 'human' : 'bot',
+                      })
+                    }
+                  >
+                    {conversation.mode === 'bot' ? 'Take over' : 'Resume bot'}
+                  </button>
+                </div>
               </div>
               <div className="min-h-0 flex-1 space-y-4 overflow-y-auto bg-canvas/50 p-4">
                 {hasOlder && (

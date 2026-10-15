@@ -77,6 +77,21 @@ describe('menu replies are never empty', () => {
     expect(unsafe.reply).toContain('We couldn’t find that on the menu.');
     expect(unsafe.reply).not.toContain('confirmed');
   });
+  it('does not let an everyday Urdu or Roman-Urdu word hide a dish', () => {
+    for (const query of [
+      'biryani price batao',
+      'biryani kitne ki hai',
+      'بریانی کی قیمت کیا ہے',
+      'karahi rates btao',
+      'biryani wala',
+    ]) {
+      const { reply } = turn(company, query, [{ type: 'menu', query }]);
+      expect(reply, query).not.toContain('couldn’t find');
+      expect(reply.includes('Chicken Biryani') && reply.includes('Chicken Karahi'), query).toBe(
+        false,
+      );
+    }
+  });
 });
 
 describe('switching the bot off pauses it without losing customers', () => {
@@ -130,13 +145,63 @@ describe('switching the bot off pauses it without losing customers', () => {
     );
     const asked = await say('voice note', whatsapp('923000000888'), { type: 'handoff' });
     expect(asked.conversation.botPausedAt).toBeUndefined();
+    const typed = await say('I want to talk to staff please', whatsapp('923000000999'));
+    expect(typed.conversation.botPausedAt).toBeUndefined();
     await setBot(true);
-    for (const id of [paused.conversation.id, asked.conversation.id]) {
+    for (const id of [paused.conversation.id, asked.conversation.id, typed.conversation.id]) {
       const c = (await repo.getConversation(company.id, id))!;
       const result = await say('menu', c);
       expect(result.reply).toBe('');
       expect(result.conversation.mode).toBe('human');
     }
+  });
+
+  it('an automatic order-status notice does not keep a paused chat from the bot', async () => {
+    await setBot(false);
+    const paused = await say('any update?', whatsapp());
+    const stored = (await repo.getConversation(company.id, paused.conversation.id))!;
+    const notice = {
+      id: 'status-1',
+      role: 'staff' as const,
+      text: 'Order A1 is now accepted.',
+      createdAt: new Date().toISOString(),
+      notice: true,
+    };
+    await repo.saveConversation(
+      { ...stored, version: stored.version + 1, messages: [...stored.messages, notice] },
+      stored.version,
+    );
+    await setBot(true);
+    const latest = (await repo.getConversation(company.id, paused.conversation.id))!;
+    expect((await say('menu', latest)).reply).toContain('Chicken Biryani');
+  });
+
+  it('lets a customer cancel right after the bot takes a paused chat back', async () => {
+    let c = whatsapp('923000000444');
+    const step = (action: BotAction) => {
+      const result = processTurn(company, products, c, {
+        messageId: randomUUID(),
+        text: action.type === 'confirm' ? 'confirm' : 'test',
+        action,
+        now: new Date().toISOString(),
+      });
+      c = result.conversation;
+      return result;
+    };
+    step({ type: 'add_item', productId: products[0]!.id, quantity: 1 });
+    step({ type: 'set_details', customerName: 'Pause Test', fulfillment: 'pickup' });
+    step({ type: 'review' });
+    const placed = step({ type: 'confirm' });
+    c.version = 1;
+    await repo.commitTurn(company.id, c, 0, placed.order);
+    await setBot(false);
+    await say('hello?', c);
+    await setBot(true);
+    const paused = (await repo.getConversation(company.id, c.id))!;
+    expect(paused.botPausedAt).toBeTruthy();
+    const result = await say('cancel', paused);
+    expect(result.order?.status).toBe('cancelled');
+    expect((await repo.getOrder(company.id, placed.order!.id))?.status).toBe('cancelled');
   });
 });
 
@@ -271,6 +336,78 @@ describe('WhatsApp delivery', () => {
     expect((await repo.getJob(second.id))?.status).toBe('done');
   });
 
+  it('does not let a stuck earlier send hold back replies, nor use up their retries', async () => {
+    vi.stubEnv('APP_MODE', 'live');
+    const c = await savedConversation();
+    const reply = (text: string, ago: number) => ({
+      ...makeJob(company.id, 'whatsapp_send', {
+        ...jobAddress(c),
+        conversationId: c.id,
+        text,
+        source: 'notice',
+      }),
+      createdAt: new Date(Date.now() - ago).toISOString(),
+    });
+    const fetch = vi.fn(
+      async () => new Response(JSON.stringify({ messageId: 'wa-ok' }), { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetch);
+    // A worker died mid-send 200 s ago: its job still says 'processing' with a long lease.
+    const abandoned = reply('abandoned', 300000);
+    await repo.insertJob(abandoned);
+    await repo.claimJob(
+      abandoned.id,
+      new Date().toISOString(),
+      new Date(Date.now() + 480000 - 200000).toISOString(),
+    );
+    const next = reply('next', 1000);
+    await repo.insertJob(next);
+    await processJob(repo, next.id);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect((await repo.getJob(next.id))?.status).toBe('done');
+    // An earlier reply that is still queued is waited for, without spending retries.
+    const queued = reply('queued', 2000);
+    await repo.insertJob({ ...queued, nextRunAt: new Date(Date.now() + 600000).toISOString() });
+    const after = reply('after', 0);
+    await repo.insertJob(after);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] });
+    try {
+      const waiting = processJob(repo, after.id);
+      await vi.advanceTimersByTimeAsync(31000);
+      await waiting;
+    } finally {
+      vi.useRealTimers();
+    }
+    const saved = await repo.getJob(after.id);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(saved?.status).toBe('pending');
+    expect(saved?.attempts).toBe(0);
+    expect(saved?.error).toContain('earlier reply');
+  });
+
+  it('keeps a chat with the bot when a replayed staff message predates "Resume bot"', async () => {
+    const c = {
+      ...(await savedConversation()),
+      botResumedAt: new Date().toISOString(),
+      version: 1,
+    };
+    await repo.saveConversation(c, 0);
+    const old = new Date(Date.now() - 5 * 60000).toISOString();
+    await receiveGatewayEvent(
+      repo,
+      event({ fromMe: true, text: 'staff reply from the phone', timestamp: old }),
+    );
+    expect((await repo.getConversation(company.id, c.id))?.mode).toBe('bot');
+    const [echo] = await repo.listCompanyJobs(company.id);
+    await processJob(repo, echo!.id);
+    const after = (await repo.getConversation(company.id, c.id))!;
+    expect(after.mode).toBe('bot');
+    expect(after.messages.at(-1)?.role).toBe('staff');
+    // A newer staff message still takes the chat over.
+    await receiveGatewayEvent(repo, event({ fromMe: true, messageId: 'new', text: 'hi again' }));
+    expect((await repo.getConversation(company.id, c.id))?.mode).toBe('human');
+  });
+
   it('marks a reply that never left as not delivered, with the reason', async () => {
     const message = (id: string): Message => ({
       id,
@@ -294,6 +431,27 @@ describe('WhatsApp delivery', () => {
     expect(afterDrop.delivery).toBe('failed');
     expect(afterDrop.deliveryError).toContain('staff took over');
     expect(afterDrop.externalId).toBeUndefined();
+    // A chat paused because the bot was off is not described as a staff takeover.
+    const paused = {
+      ...createConversation(company.id, '', 'whatsapp', new Date().toISOString()),
+      whatsappAddress: { ...address, peer: '100000008@lid' },
+      mode: 'human' as const,
+      botPausedAt: new Date().toISOString(),
+      messages: [message('paused-reply')],
+    };
+    await repo.saveConversation(paused);
+    const pausedJob = makeJob(company.id, 'whatsapp_send', {
+      ...jobAddress(paused),
+      conversationId: paused.id,
+      messageId: 'paused-reply',
+      text: 'hi',
+      source: 'bot',
+    });
+    await repo.insertJob(pausedJob);
+    await processJob(repo, pausedJob.id);
+    expect(
+      (await repo.getConversation(company.id, paused.id))!.messages[0]!.deliveryError,
+    ).toContain('the bot was switched off');
     // A send that fails for good, here outside WhatsApp's 24-hour reply window.
     const old = {
       ...createConversation(company.id, '', 'whatsapp', '2020-01-01T00:00:00.000Z'),

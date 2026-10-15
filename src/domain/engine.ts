@@ -54,15 +54,18 @@ export function createConversation(
   };
 }
 // A chat that went to staff only because the bot was switched off goes back to the bot
-// once it is on again. Any staff message since then means staff are handling it.
+// once it is on again. Any staff message since then means staff are handling it; an
+// automatic order-status notice does not.
 export function resumesAfterPause(conversation: Conversation): boolean {
   const pausedAt = conversation.botPausedAt;
   return (
     conversation.mode === 'human' &&
     !!pausedAt &&
-    !conversation.messages.some((m) => m.role === 'staff' && m.createdAt >= pausedAt)
+    !conversation.messages.some((m) => m.role === 'staff' && !m.notice && m.createdAt >= pausedAt)
   );
 }
+const asksForPerson = (text: string) =>
+  /\b(human|staff|manager|person|insaan)\b|عملہ|انسان|مینیجر/u.test(normalize(text));
 
 function normalize(text: string): string {
   return text
@@ -388,10 +391,35 @@ const NOT_DISH_WORDS = new Set([
   'ke',
   'bhej',
   'dikhao',
+  'and',
+  'with',
+  'batao',
+  'btao',
+  'bataen',
+  'batayein',
+  'bhejo',
+  'bhejein',
+  'hain',
+  'kitna',
+  'kitne',
+  'kitni',
+  'chahiye',
+  'karo',
+  'aur',
   'مینو',
   'ریٹ',
   'قیمت',
   'قیمتیں',
+  'کی',
+  'کا',
+  'کے',
+  'کیا',
+  'ہے',
+  'ہیں',
+  'میں',
+  'بتائیں',
+  'بتاؤ',
+  'بھیجیں',
 ]);
 const dishWords = (query?: string) =>
   query
@@ -416,12 +444,19 @@ function menu(
       'Abhi menu available nahi hai. Meherbani karke staff se baat karein.',
     );
   const words = dishWords(query);
-  const matching = words.length
-    ? all.filter((p) => {
-        const text = normalize(`${p.name} ${p.category} ${p.aliases.join(' ')}`);
-        return words.every((word) => text.includes(word));
-      })
-    : all;
+  const textOf = (p: Product) => normalize(`${p.name} ${p.category} ${p.aliases.join(' ')}`);
+  const matchingAll = (list: string[]) =>
+    all.filter((p) => list.every((word) => textOf(p).includes(word)));
+  // Prefer dishes matching every word; otherwise ignore words that match no dish at all
+  // (an unlisted filler word must not hide a dish that is on the menu).
+  const known = words.filter((word) => all.some((p) => textOf(p).includes(word)));
+  const matching = !words.length
+    ? all
+    : matchingAll(words).length
+      ? matchingAll(words)
+      : known.length
+        ? matchingAll(known)
+        : [];
   // Never answer a menu request with an empty list: show the menu instead.
   const own = matching.length ? matching : all;
   // Quote only letters and digits, cut by character, and never the AI's text when it
@@ -505,8 +540,7 @@ export function parseActions(
     return [{ type: 'new_order' }];
   if (/^(cancel(?: order)?|cancel karo|cancel kardo|منسوخ|آرڈر منسوخ)[.!،۔\s]*$/u.test(value))
     return [{ type: 'cancel' }];
-  if (/\b(human|staff|manager|person|insaan)\b|عملہ|انسان|مینیجر/u.test(value))
-    return [{ type: 'handoff' }];
+  if (asksForPerson(text)) return [{ type: 'handoff' }];
   if (/\b(?:do not|don't|dont|not|no)\s+(?:want|add|need)|نہیں چاہیے|nahi chahiye/u.test(value))
     return [{ type: 'answer', text: '' }];
   if (
@@ -1047,7 +1081,7 @@ export function processTurn(
     // (see resumesAfterPause), unless the customer asked for a person.
     if (next.mode === 'bot') next.botPausedAt = input.now;
     next.mode = 'human';
-    if (input.action?.type === 'handoff') delete next.botPausedAt;
+    if (input.action?.type === 'handoff' || asksForPerson(input.text)) delete next.botPausedAt;
     traces.push('human_mode_message_saved');
     return finish();
   }

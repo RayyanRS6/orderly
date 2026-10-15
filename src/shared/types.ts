@@ -112,6 +112,8 @@ export interface Message {
   externalId?: string;
   /** Why the bot sent this reply. Present on bot replies written by this version onward. */
   explanation?: TurnExplanation;
+  /** An automatic notice (such as an order status change), not something staff wrote. */
+  notice?: boolean;
 }
 /** Who wrote each part of a bot reply. */
 export type ReplyPart =
@@ -185,6 +187,9 @@ export interface Conversation {
   // Set when the chat went to staff only because the bot was switched off. The bot
   // takes it back once switched on; any staff action or handoff request clears it.
   botPausedAt?: string;
+  // When staff last handed the chat back to the bot. A staff phone message older than this
+  // (replayed after the gateway reconnects) is recorded but does not take the chat back.
+  botResumedAt?: string;
   messages: Message[];
   cart: Cart;
   pendingItemChoice?: {

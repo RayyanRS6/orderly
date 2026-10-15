@@ -162,8 +162,14 @@ export interface Repository {
   settleBudget(reservationId: string, usage: Usage): Promise<void>;
   insertJob(job: Job, dedupeKey?: string): Promise<boolean>;
   getJob(id: string): Promise<Job | undefined>;
-  // Whether a reply written before this one to the same customer is still unsent.
-  hasEarlierSend(companyId: string, conversationId: string, job: Job): Promise<boolean>;
+  // Whether a reply written before this one to the same customer is still unsent: pending,
+  // or processing under a lease that ends after activeLeaseAfter (a recent claim).
+  hasEarlierSend(
+    companyId: string,
+    conversationId: string,
+    job: Job,
+    activeLeaseAfter: string,
+  ): Promise<boolean>;
   listDueJobs(limit: number): Promise<Job[]>;
   claimJob(id: string, now: string, leaseUntil: string): Promise<Job | undefined>;
   saveJob(job: Job): Promise<void>;

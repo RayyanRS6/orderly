@@ -645,14 +645,21 @@ export class SupabaseRepository implements Repository {
   async saveJob(job: Job) {
     unwrap(await this.client.from('jobs').upsert(jobRow(job)));
   }
-  async hasEarlierSend(companyId: string, conversationId: string, job: Job) {
+  async hasEarlierSend(
+    companyId: string,
+    conversationId: string,
+    job: Job,
+    activeLeaseAfter: string,
+  ) {
     const rows =
       unwrap(
         await this.client
           .from('jobs')
           .select('id')
           .eq('company_id', companyId)
-          .in('status', ['pending', 'processing'])
+          .or(
+            `status.eq.pending,and(status.eq.processing,lease_until.gt."${new Date(activeLeaseAfter).toISOString()}")`,
+          )
           .eq('data->>kind', 'whatsapp_send')
           .eq('data->payload->>conversationId', conversationId)
           .lt('created_at', job.createdAt)
