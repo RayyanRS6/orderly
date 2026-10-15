@@ -60,9 +60,13 @@ try {
     'orderly-gateway:test',
   ]);
   stage = 'read published port';
-  const address = docker(['port', name, '8080/tcp']);
-  assert.match(address, /^127\.0\.0\.1:\d+$/);
-  const base = `http://${address}`;
+  // An ephemeral host port can change when the container restarts, so read it each time.
+  const published = () => {
+    const address = docker(['port', name, '8080/tcp']);
+    assert.match(address, /^127\.0\.0\.1:\d+$/);
+    return `http://${address}`;
+  };
+  let base = published();
   stage = 'first /healthz';
   await ready(base);
   stage = 'non-root user';
@@ -82,6 +86,7 @@ try {
   stage = 'restart';
   docker(['restart', '--time', '30', name]);
   stage = '/healthz after restart';
+  base = published();
   await ready(base);
   stage = 'nonce replay after restart';
   assert.equal((await post()).status, 401, 'nonce must survive a container restart');
