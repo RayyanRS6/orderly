@@ -532,6 +532,26 @@ export async function queueReply(
   await repo.insertJob(job);
   await dispatchJob(repo, job);
 }
+// Sends share one lock with pairing and disconnecting, but each send holds it for only
+// a second or two. Waiting here is far faster than a retry, which runs only on the next
+// minute's recovery pass and let later replies overtake earlier ones.
+const CONNECTION_LOCK_WAIT_MS = 30000;
+async function acquireConnectionLock(repo: Repository, companyId: string, owner: string) {
+  const deadline = Date.now() + CONNECTION_LOCK_WAIT_MS;
+  for (;;) {
+    if (
+      await repo.acquireConversationLock(
+        companyId,
+        'whatsapp-connection',
+        owner,
+        new Date(Date.now() + WORKER_LEASE_MS).toISOString(),
+      )
+    )
+      return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+}
 export async function processJob(repo: Repository, id: string) {
   const job = await repo.claimJob(
     id,
@@ -541,16 +561,15 @@ export async function processJob(repo: Repository, id: string) {
   if (!job) return;
   let connectionLocked = false;
   try {
-    if (job.kind === 'incoming' || job.kind === 'whatsapp_send') {
-      connectionLocked = await repo.acquireConversationLock(
-        job.companyId,
-        'whatsapp-connection',
-        job.id,
-        new Date(Date.now() + WORKER_LEASE_MS).toISOString(),
-      );
+    // Only sending talks to WhatsApp. A customer's messages are already processed in
+    // order per customer and under the conversation lock, so they must not hold the
+    // connection while the AI answers: that blocked every reply and other customers.
+    if (job.kind === 'whatsapp_send') {
+      connectionLocked = await acquireConnectionLock(repo, job.companyId, job.id);
       if (!connectionLocked) throw new PublicError('WhatsApp connection is busy.', 409);
-      await assertCurrentAddress(repo, job.companyId, job.payload.whatsappAddress);
     }
+    if (job.kind === 'incoming' || job.kind === 'whatsapp_send')
+      await assertCurrentAddress(repo, job.companyId, job.payload.whatsappAddress);
     if (job.attempts > 5)
       throw new PublicError('Repeated worker interruptions require staff review.', 503);
     const company = await repo.getCompany(job.companyId);
@@ -561,6 +580,13 @@ export async function processJob(repo: Repository, id: string) {
       const existing = address
         ? await repo.findWhatsAppConversation(company.id, address)
         : await repo.findConversation(company.id, phone, 'whatsapp');
+      // A privacy-protected chat can start before WhatsApp shares the customer's number.
+      // Record it once known, so staff can see who they are talking to. Best effort.
+      if (existing && !existing.customerPhone && phone)
+        await repo.saveConversation(
+          { ...existing, customerPhone: phone, version: existing.version + 1 },
+          existing.version,
+        );
       const conversation = existing ?? {
         ...createConversation(
           company.id,

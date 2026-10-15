@@ -41,8 +41,20 @@ let openedAt = 0;
 let codeRequested = false;
 let draining = false;
 let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+let drainAgain = false;
+let prunedAt = 0;
 let auth: AuthenticationState;
 let sendChain = Promise.resolve();
+// WhatsApp asks the sender to resend a message a customer's phone could not decrypt
+// (common for a first message or a new device). Without the original the reply never
+// arrives, although it was accepted. Kept encrypted on disk for three days.
+const SENT_RETENTION_MS = 3 * 86400000;
+const EVENT_BATCH = 50;
+const RECEIPTS: Partial<Record<number, 'delivered' | 'read'>> = {
+  [proto.WebMessageInfo.Status.DELIVERY_ACK]: 'delivered',
+  [proto.WebMessageInfo.Status.READ]: 'read',
+  [proto.WebMessageInfo.Status.PLAYED]: 'read',
+};
 const encode = (value: unknown) => JSON.parse(JSON.stringify(value, BufferJSON.replacer));
 const decode = <T>(value: unknown): T => JSON.parse(JSON.stringify(value), BufferJSON.reviver);
 const snapshot = () => ({
@@ -97,39 +109,88 @@ function setStatus(next: typeof status, code?: string) {
   report();
 }
 async function drain() {
-  if (draining || !store || stopped) return;
+  if (!store || stopped) return;
+  if (draining) {
+    // An event saved during a pass is sent right after it, not on the next 15 s tick.
+    drainAgain = true;
+    return;
+  }
   draining = true;
   try {
-    // Status first so the backend knows the account before accepting messages.
-    const rows = [
-      ...store.list<GatewayEvent>('status-event').map((r) => ({ ...r, namespace: 'status-event' })),
-      ...store.list<GatewayEvent>('events', 50).map((r) => ({ ...r, namespace: 'events' })),
-    ];
-    for (const row of rows) {
-      const raw = JSON.stringify(row.value);
-      let response: Response;
-      try {
-        response = await fetch(config.eventsUrl, {
-          method: 'POST',
-          headers: signedHeaders(config.secret, 'event', '/api/whatsapp/gateway/events', raw),
-          body: raw,
-          signal: AbortSignal.timeout(10000),
-          redirect: 'error',
-        });
-      } catch {
-        break;
-      }
-      if (!response.ok) {
-        // Never silently discard an event or endlessly grow memory. Backend failures
-        // are retried from encrypted disk; an operator can inspect queue counts.
-        break;
-      }
-      if (store.get<GatewayEvent>(row.namespace, row.id)?.eventId === row.value.eventId)
-        store.delete(row.namespace, row.id);
+    let more = true;
+    while (more) {
+      drainAgain = false;
+      const sent = await drainOnce();
+      more = sent !== false && (drainAgain || sent >= EVENT_BATCH);
     }
   } finally {
     draining = false;
   }
+}
+// Returns how many messages were sent, or false when the backend could not take them.
+async function drainOnce(): Promise<number | false> {
+  // Status first so the backend knows the account before accepting messages, and
+  // receipts last: they are informational and must never hold up a customer message.
+  const rows = [
+    ...store.list<GatewayEvent>('status-event').map((r) => ({ ...r, namespace: 'status-event' })),
+    ...store.list<GatewayEvent>('events', EVENT_BATCH).map((r) => ({ ...r, namespace: 'events' })),
+    ...store
+      .list<GatewayEvent>('receipt-events', EVENT_BATCH)
+      .map((r) => ({ ...r, namespace: 'receipt-events' })),
+  ];
+  let messages = 0;
+  for (const row of rows) {
+    const raw = JSON.stringify(row.value);
+    let response: Response;
+    try {
+      response = await fetch(config.eventsUrl, {
+        method: 'POST',
+        headers: signedHeaders(config.secret, 'event', '/api/whatsapp/gateway/events', raw),
+        body: raw,
+        signal: AbortSignal.timeout(10000),
+        redirect: 'error',
+      });
+    } catch {
+      return false;
+    }
+    if (!response.ok) {
+      // A rejected receipt is dropped; it is only a tick in the inbox.
+      if (row.namespace === 'receipt-events' && response.status < 500) {
+        store.delete(row.namespace, row.id);
+        continue;
+      }
+      // Never silently discard a message or endlessly grow memory. Backend failures
+      // are retried from encrypted disk; an operator can inspect queue counts.
+      return false;
+    }
+    if (store.get<GatewayEvent>(row.namespace, row.id)?.eventId === row.value.eventId)
+      store.delete(row.namespace, row.id);
+    if (row.namespace === 'events') messages++;
+  }
+  return messages;
+}
+function receipt(key: proto.IMessageKey, status?: number | null) {
+  const value = status == null ? undefined : RECEIPTS[status];
+  // Only replies this gateway sent; messages staff type on the phone are not tracked.
+  if (!value || !key.fromMe || !key.id || !store.get('own', key.id)) return;
+  const id = `${key.id}:${value}`;
+  if (store.get('receipt-events', id) || store.count('receipt-events') >= 2000) return;
+  store.set('receipt-events', id, {
+    eventId: randomUUID(),
+    connectionId,
+    generation,
+    type: 'receipt',
+    messageId: key.id,
+    receipt: value,
+    timestamp: new Date().toISOString(),
+  } satisfies GatewayEvent);
+  void drain().catch(() => fail('EVENT_STORAGE_FAILURE'));
+}
+function pruneSent() {
+  if (Date.now() - prunedAt < 3600000) return;
+  prunedAt = Date.now();
+  for (const row of store.list<{ at: number }>('sent'))
+    if (Date.now() - row.value.at > SENT_RETENTION_MS) store.delete('sent', row.id);
 }
 function mapIdentity(lidValue?: string, pnValue?: string) {
   const lid = canonicalJid(lidValue);
@@ -228,7 +289,10 @@ async function connect() {
     connectTimeoutMs: 20000,
     defaultQueryTimeoutMs: 15000,
     keepAliveIntervalMs: 20000,
-    getMessage: async () => undefined,
+    getMessage: async (key) => {
+      const saved = key.id ? store.get<{ message: unknown }>('sent', key.id) : undefined;
+      return saved ? decode<proto.IMessage>(saved.message) : undefined;
+    },
   });
   socket = currentSocket;
   currentSocket.ev.on('creds.update', () => guard(persistCreds));
@@ -250,6 +314,12 @@ async function connect() {
       // No history imports or placeholder-resend injections. Only live notify events.
       if (update.type !== 'notify' || update.requestId || currentSocket !== socket) return;
       for (const message of update.messages) incoming(message);
+    }),
+  );
+  currentSocket.ev.on('messages.update', (updates) =>
+    guard(() => {
+      if (currentSocket !== socket) return;
+      for (const { key, update } of updates) receipt(key, update.status);
     }),
   );
   currentSocket.ev.on('connection.update', (update) =>
@@ -321,13 +391,12 @@ async function send(input: unknown) {
   )
     throw new Error('REPLY_WINDOW_CLOSED');
   const messageId = generateMessageIDV2(socket.user?.id);
-  return sendOnce(
-    store,
-    body,
-    messageId,
-    async () =>
-      (await socket!.sendMessage(body.peer, { text: body.text }, { messageId }))?.key.id ?? '',
-  );
+  return sendOnce(store, body, messageId, async () => {
+    const sent = await socket!.sendMessage(body.peer, { text: body.text }, { messageId });
+    if (sent?.key.id && sent.message)
+      store.set('sent', sent.key.id, { at: Date.now(), message: encode(sent.message) });
+    return sent?.key.id ?? '';
+  });
 }
 process.on('message', (message: any) => {
   if (message.type === 'init')
@@ -410,6 +479,7 @@ setInterval(
     guard(async () => {
       if (!store || stopped) return;
       if (status === 'connected') setStatus('connected');
+      pruneSent();
       await drain();
     }),
   15000,

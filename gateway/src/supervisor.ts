@@ -303,6 +303,8 @@ export class Supervisor {
           'seen',
           'own',
           'receipts',
+          'sent',
+          'receipt-events',
         ])
           sessionStore.clear(namespace);
         sessionStore.close();

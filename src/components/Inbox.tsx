@@ -7,6 +7,25 @@ import { cn, shortDate } from '../lib/utils';
 import { CustomSelect, Empty, ErrorNotice, PageHeading, Status } from './ui';
 import { WhyToggle } from './ReplyExplanation';
 
+// The same words and ticks the customer's WhatsApp shows.
+const DELIVERY_LABELS: Record<NonNullable<Message['delivery']>, string> = {
+  accepted: 'Sent ✓',
+  sent: 'Sent ✓',
+  delivered: 'Delivered ✓✓',
+  read: 'Read ✓✓',
+  failed: 'Not delivered',
+};
+export function deliveryLabel(conversation: Conversation, m: Message, now = Date.now()) {
+  if (m.delivery) return DELIVERY_LABELS[m.delivery];
+  // A fresh WhatsApp reply without a receipt is still queued or on its way.
+  if (
+    conversation.channel === 'whatsapp' &&
+    m.role === 'assistant' &&
+    now - Date.parse(m.createdAt) < 120000
+  )
+    return 'Sending…';
+}
+
 export function Inbox() {
   const { data, mutate, busy, navigate, detailId } = useWorkspace();
   const [result, setResult] = useState<PageResult<Conversation>>({
@@ -300,7 +319,7 @@ export function Inbox() {
                     >
                       {m.role === 'staff' ? 'Staff · ' : ''}
                       {shortDate(m.createdAt)}
-                      {m.delivery && ` · ${m.delivery}`}
+                      {deliveryLabel(conversation, m) && ` · ${deliveryLabel(conversation, m)}`}
                     </p>
                     {m.deliveryError && (
                       <p className="mt-2 text-xs text-red-700">{m.deliveryError}</p>

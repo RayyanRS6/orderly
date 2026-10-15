@@ -325,6 +325,44 @@ function review(company: Company, products: Product[], cart: Cart, lang: Languag
   return text;
 }
 
+// Words that ask for the whole menu rather than name a dish. The AI sometimes passes
+// the customer's own word ("menu", "rates") as a search filter, which matches nothing.
+const WHOLE_MENU_WORDS = new Set([
+  'menu',
+  'menus',
+  'full',
+  'whole',
+  'complete',
+  'all',
+  'everything',
+  'item',
+  'items',
+  'food',
+  'foods',
+  'dish',
+  'dishes',
+  'rate',
+  'rates',
+  'price',
+  'prices',
+  'pricing',
+  'list',
+  'card',
+  'the',
+  'your',
+  'our',
+  'mainu',
+  'khana',
+  'مینو',
+  'ریٹ',
+  'قیمت',
+  'قیمتیں',
+]);
+const asksForWholeMenu = (query: string) =>
+  normalize(query)
+    .split(/[^\p{L}\p{N}]+/u)
+    .every((word) => !word || WHOLE_MENU_WORDS.has(word));
+
 function menu(
   company: Company,
   products: Product[],
@@ -332,19 +370,32 @@ function menu(
   query?: string,
   guided = false,
 ) {
-  const own = products.filter(
-    (p) =>
-      p.companyId === company.id &&
-      (!query ||
-        normalize(`${p.name} ${p.category} ${p.aliases.join(' ')}`).includes(normalize(query))),
-  );
-  if (!own.length)
+  const all = products.filter((p) => p.companyId === company.id);
+  if (!all.length)
     return say(
       lang,
-      'No matching menu items. Try “menu” to see everything.',
-      'یہ چیز مینو میں نہیں ملی۔ پورا مینو دیکھنے کے لیے “مینو” لکھیں۔',
-      'Yeh item menu mein nahi mila. Pura menu dekhne ke liye “menu” likhein.',
+      'Our menu is not available right now. Please ask our staff for help.',
+      'ابھی مینو دستیاب نہیں ہے۔ براہ کرم عملے سے رابطہ کریں۔',
+      'Abhi menu available nahi hai. Meherbani karke staff se baat karein.',
     );
+  const filter = query && !asksForWholeMenu(query) ? normalize(query) : '';
+  const matching = filter
+    ? all.filter((p) =>
+        normalize(`${p.name} ${p.category} ${p.aliases.join(' ')}`).includes(filter),
+      )
+    : all;
+  // Never answer a menu request with an empty list: show everything instead.
+  const own = matching.length ? matching : all;
+  const shown = query?.trim().slice(0, 40);
+  const notFound =
+    filter && !matching.length
+      ? `${say(
+          lang,
+          `We couldn’t find “${shown}” on the menu. Here is everything we have:`,
+          `“${shown}” مینو میں نہیں ملا۔ یہ رہا پورا مینو:`,
+          `“${shown}” menu mein nahi mila. Yeh raha pura menu:`,
+        )}\n\n`
+      : '';
   const lines: string[] = [];
   for (const p of own) {
     const line = `${p.emoji} ${p.name} — ${money(p.price)}${p.available ? '' : ' · Unavailable'}${
@@ -365,7 +416,7 @@ function menu(
     if (lines.join('\n').length + line.length > 2800 || lines.length >= 12) break;
     lines.push(line);
   }
-  return `${company.name}\n${lines.join('\n')}${lines.length < own.length ? `\n\nShowing ${lines.length} of ${own.length} items. Ask for a category or item name to narrow the menu.` : ''}${guided ? '' : `\n\n${say(lang, 'Tell me the item and quantity, for example “2 chicken biryani”.', 'چیز کا نام اور تعداد بتائیں، جیسے “2 چکن بریانی”۔', 'Item aur quantity batayein, jaise “2 chicken biryani”.')}`}`;
+  return `${notFound}${company.name}\n${lines.join('\n')}${lines.length < own.length ? `\n\nShowing ${lines.length} of ${own.length} items. Ask for a category or item name to narrow the menu.` : ''}${guided ? '' : `\n\n${say(lang, 'Tell me the item and quantity, for example “2 chicken biryani”.', 'چیز کا نام اور تعداد بتائیں، جیسے “2 چکن بریانی”۔', 'Item aur quantity batayein, jaise “2 chicken biryani”.')}`}`;
 }
 
 const affirmative = (text: string) =>
@@ -941,8 +992,10 @@ export function processTurn(
     };
     return { conversation: next, order, reply, traces, decision };
   };
+  // A switched-off bot only pauses replies. Staff mode is kept for handoffs and staff
+  // takeovers, so a conversation that arrives while the bot is off is answered again
+  // as soon as the bot is switched back on.
   if (next.mode === 'human' || !company.botEnabled) {
-    next.mode = 'human';
     traces.push('human_mode_message_saved');
     return finish();
   }

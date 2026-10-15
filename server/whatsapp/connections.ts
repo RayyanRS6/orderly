@@ -231,6 +231,12 @@ export async function receiveGatewayEvent(repo: Repository, event: GatewayEvent)
     });
     return;
   }
+  if (event.type === 'receipt') {
+    if (!event.messageId || !event.receipt) throw new PublicError('Invalid receipt event.', 400);
+    // Keyed by the WhatsApp message ID the send job saved; arrival order does not matter.
+    await repo.recordDelivery(current.companyId, event.messageId, event.receipt);
+    return;
+  }
   if (!event.peer || !event.messageId || Date.parse(event.timestamp) > Date.now() + 60000)
     throw new PublicError('Invalid message event.', 400);
   const address: WhatsAppAddress = {

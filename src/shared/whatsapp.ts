@@ -44,8 +44,10 @@ export const gatewayEventSchema = z
     eventId: z.string().uuid(),
     connectionId: z.string().uuid(),
     generation: z.number().int().positive(),
-    type: z.enum(['status', 'message']),
+    type: z.enum(['status', 'message', 'receipt']),
     status: connectionStatus.optional(),
+    // A customer's phone confirmed one of our messages (two grey or two blue ticks).
+    receipt: z.enum(['delivered', 'read']).optional(),
     errorCode: z.string().max(80).optional(),
     accountJid: directJidSchema.optional(),
     phoneNumber: z
