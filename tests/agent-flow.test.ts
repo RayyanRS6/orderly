@@ -35,7 +35,7 @@ const nodeIds: FlowNodeId[] = [
   'sheets',
   'staff',
 ];
-const platformSecret = 'sk-test-secret-value';
+const serverSecret = 'sk-test-secret-value';
 const businessSecret = 'sk-business-secret-value';
 let repo: MemoryRepository;
 
@@ -65,10 +65,10 @@ const node = (flow: Flow, id: FlowNodeId): FlowNode => flow.nodes.find((item) =>
 const fact = (item: FlowNode, label: string) => item.facts.find((f) => f.label === label)?.value;
 const step = (flow: Flow, id: string) => flow.setup.find((item) => item.id === id)!;
 const current = async () => (await repo.getCompany(company.id))!;
-async function useHaiku(keyMode: 'own' | 'platform', extra: Partial<Company> = {}) {
+async function useHaiku(extra: Partial<Company> = {}) {
   await repo.saveCompany({
     ...(await current()),
-    ai: { provider: 'anthropic', model: 'claude-haiku-5-5', keyMode, monthlyBudgetUsd: 10 },
+    ai: { provider: 'anthropic', model: 'claude-haiku-5-5', monthlyBudgetUsd: 10 },
     ...extra,
   });
   return current();
@@ -113,7 +113,7 @@ describe('buildAgentFlow', () => {
   });
 
   it('describes Claude Haiku 5.5 with its prices and the missing business key', async () => {
-    const flow = await buildAgentFlow(repo, await useHaiku('own'), 'owner');
+    const flow = await buildAgentFlow(repo, await useHaiku(), 'owner');
     const model = node(flow, 'model');
     expect(model).toMatchObject({
       title: 'Anthropic',
@@ -134,15 +134,21 @@ describe('buildAgentFlow', () => {
     expect(step(flow, 'ai')).toMatchObject({ done: false, page: 'bot' });
   });
 
-  it('marks a tested model ready without exposing the platform key', async () => {
-    vi.stubEnv('ANTHROPIC_API_KEY', platformSecret);
-    const selected = await useHaiku('platform', {
+  it('marks a tested model ready without exposing the business key', async () => {
+    // A server-wide key is never used: only the business's saved key counts.
+    vi.stubEnv('ANTHROPIC_API_KEY', serverSecret);
+    await repo.saveIntegration(
+      company.id,
+      { kind: 'anthropic', configured: true, status: 'connected', config: {} },
+      encryptSecret(businessSecret),
+    );
+    const selected = await useHaiku({
       privacy: { aiDataApproved: true, retentionDays: 0 },
     });
-    const verified = await useHaiku('platform', {
+    const verified = await useHaiku({
       privacy: { aiDataApproved: true, retentionDays: 0 },
       modelVerification: {
-        fingerprint: modelFingerprint(selected, platformSecret),
+        fingerprint: modelFingerprint(selected, businessSecret),
         checkedAt: new Date().toISOString(),
       },
     });
@@ -152,10 +158,28 @@ describe('buildAgentFlow', () => {
     expect(model.todo).toBeUndefined();
     expect(fact(model, 'API key available')).toBe('Yes');
     expect(fact(model, 'Generation test')).toBe('Passed for this exact model and key');
-    expect(fact(model, 'Who pays')).toBe('Orderly platform key');
+    expect(fact(model, 'Who pays')).toBe('This business’s API key');
     expect(step(flow, 'ai').done).toBe(true);
-    expect(flow.platform?.find((check) => check.id === 'anthropic')?.ok).toBe(true);
-    expect(JSON.stringify(flow)).not.toContain(platformSecret);
+    expect(JSON.stringify(flow)).not.toContain(businessSecret);
+    expect(JSON.stringify(flow)).not.toContain(serverSecret);
+  });
+
+  it('does not count a server-wide key as the business’s key', async () => {
+    vi.stubEnv('ANTHROPIC_API_KEY', serverSecret);
+    const selected = await useHaiku({ privacy: { aiDataApproved: true, retentionDays: 0 } });
+    const flow = await buildAgentFlow(
+      repo,
+      await useHaiku({
+        privacy: { aiDataApproved: true, retentionDays: 0 },
+        modelVerification: {
+          fingerprint: modelFingerprint(selected, serverSecret),
+          checkedAt: new Date().toISOString(),
+        },
+      }),
+      'owner',
+    );
+    expect(fact(node(flow, 'model'), 'API key available')).toBe('No');
+    expect(step(flow, 'ai').done).toBe(false);
   });
 
   it('never exposes a saved business key or its encrypted form', async () => {
@@ -165,7 +189,7 @@ describe('buildAgentFlow', () => {
       { kind: 'anthropic', configured: true, status: 'connected', config: {} },
       encrypted,
     );
-    const flow = await buildAgentFlow(repo, await useHaiku('own'), 'owner');
+    const flow = await buildAgentFlow(repo, await useHaiku(), 'owner');
     expect(fact(node(flow, 'model'), 'API key available')).toBe('Yes');
     // A saved key alone is not enough: the step completes only after Connect and test.
     expect(step(flow, 'ai').done).toBe(false);
@@ -180,11 +204,9 @@ describe('buildAgentFlow', () => {
     expect('platform' in staff).toBe(false);
     for (const role of ['owner', 'admin'] as const) {
       const flow = await buildAgentFlow(repo, target, role);
+      // No Orderly-wide AI keys: each business brings its own.
       expect(flow.platform?.map((check) => check.id)).toEqual([
         'mode',
-        'anthropic',
-        'openai',
-        'gemini',
         'gateway',
         'meta',
         'worker',
@@ -192,7 +214,6 @@ describe('buildAgentFlow', () => {
         'email',
       ]);
       expect(flow.platform?.[0]).toMatchObject({ ok: true, detail: 'Local demo: nothing is sent' });
-      expect(flow.platform?.find((check) => check.id === 'anthropic')?.ok).toBe(false);
     }
   });
 
@@ -256,7 +277,7 @@ function bootstrap(overrides: Partial<Bootstrap> = {}): Bootstrap {
     orders: seedOrders,
     conversations: seedConversations,
     integrations: [],
-    aiConnection: { provider: 'mock', keyMode: 'platform', configured: true },
+    aiConnection: { provider: 'mock', configured: true },
     usage: [],
     traces: [],
     ...overrides,
@@ -272,6 +293,7 @@ function workspace(data: Bootstrap): WorkspaceContext {
     navigate: () => {},
     switchCompany: () => {},
     refresh: async () => {},
+    notify: () => {},
     mutate: async <T>() => ({}) as T,
   };
 }

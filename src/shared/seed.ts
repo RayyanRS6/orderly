@@ -39,7 +39,7 @@ export const seedCompanies: Company[] = [
           'Please speak with staff about allergies before ordering. Send “staff” to pause the bot and ask for help.',
       },
     ],
-    ai: { provider: 'mock', model: 'demo-rules', keyMode: 'platform', monthlyBudgetUsd: 10 },
+    ai: { provider: 'mock', model: 'demo-rules', monthlyBudgetUsd: 10 },
     createdAt: date,
   },
   {
@@ -62,7 +62,7 @@ export const seedCompanies: Company[] = [
       { question: 'hours', answer: 'This demo restaurant is open all day for testing.' },
       { question: 'payment', answer: 'Cash payment is available at pickup or on delivery.' },
     ],
-    ai: { provider: 'mock', model: 'demo-rules', keyMode: 'own', monthlyBudgetUsd: 10 },
+    ai: { provider: 'mock', model: 'demo-rules', monthlyBudgetUsd: 10 },
     createdAt: date,
   },
 ];

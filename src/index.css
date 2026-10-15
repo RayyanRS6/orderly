@@ -48,6 +48,15 @@
   --color-success-700: #177c4a;
   --color-success-800: #11613a;
   --color-success-900: #0c4a2c;
+
+  /* Notifications slide up into the bottom-right corner. */
+  --animate-toast-in: toast-in 180ms ease-out;
+  @keyframes toast-in {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+  }
 }
 
 @layer base {
@@ -279,6 +288,10 @@
   .btn:disabled {
     opacity: 0.5;
     pointer-events: none;
+  }
+  /* A button whose own action is running keeps its colour and shows a spinner. */
+  .btn[aria-busy='true'] {
+    cursor: progress;
   }
   .btn-primary {
     border-color: transparent;

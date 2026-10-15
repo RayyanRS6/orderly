@@ -4,7 +4,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRepository } from '../server/repository';
 import { handleTurn } from '../server/service';
-import { PublicError } from '../server/security';
+import { PublicError, encryptSecret } from '../server/security';
 import { modelFingerprint } from '../server/integrations/model-catalog';
 import { createConversation, processTurn } from '../src/domain/engine';
 import { defaultBot } from '../src/shared/bot';
@@ -271,7 +271,6 @@ const explanation = (overrides: Partial<TurnExplanation> = {}): TurnExplanation 
   config: { target: 'draft', revision: 3 },
   provider: 'anthropic',
   model: 'claude-haiku-5-5',
-  keyMode: 'platform',
   catalogSource: 'app',
   ai: { called: true, proposed: [{ type: 'confirm' }] },
   steps: ['confirm', 'order_pending_restaurant_acceptance'],
@@ -430,13 +429,14 @@ describe('explanation wording and flow path', () => {
     expect(describeStep('add_item')).toBe('Added to cart');
     expect(describeStep('unknown_step')).toBe('unknown step');
     expect(describeConfig(explanation())).toBe(
-      'Draft settings (revision 3) · Anthropic claude-haiku-5-5 · Orderly key',
+      'Draft settings (revision 3) · Anthropic claude-haiku-5-5',
     );
-    expect(
-      describeConfig(
-        explanation({ config: { target: 'live', revision: 4, version: 2 }, keyMode: 'own' }),
-      ),
-    ).toBe('Live settings v2 · Anthropic claude-haiku-5-5 · business key');
+    // Replies saved before keys became business-only still carry the old label.
+    const older = { ...explanation(), keyMode: 'platform' } as TurnExplanation;
+    expect(describeConfig(older)).toBe('Draft settings (revision 3) · Anthropic claude-haiku-5-5');
+    expect(describeConfig(explanation({ config: { target: 'live', revision: 4, version: 2 } }))).toBe(
+      'Live settings v2 · Anthropic claude-haiku-5-5',
+    );
     expect(
       describeConfig(explanation({ config: { target: 'live', revision: 0 }, provider: 'mock' })),
     ).toBe('Default settings (nothing published) · no AI model');
@@ -468,9 +468,8 @@ describe('ReplyExplanation component', () => {
     const html = renderToStaticMarkup(createElement(ReplyExplanation, { explanation: value }));
     expect(html).toContain('Written by Orderly’s order engine + the AI model.');
     expect(html).toContain('Settings used');
-    expect(html).toContain(
-      'Draft settings (revision 3) · Anthropic claude-haiku-5-5 · Orderly key',
-    );
+    expect(html).toContain('Draft settings (revision 3) · Anthropic claude-haiku-5-5');
+    expect(html).not.toContain('Orderly key');
     expect(html).toContain(PART_LABELS.engine);
     expect(html).toContain(PART_LABELS.model);
     expect(html).toContain('Add item');
@@ -525,13 +524,17 @@ describe('handleTurn reply explanations', () => {
     vi.stubEnv('ORDERLY_RUNTIME', '');
     vi.stubEnv('VERCEL', '');
     vi.stubEnv('MODEL_PRICING_JSON', '');
-    vi.stubEnv('ANTHROPIC_API_KEY', key);
+    vi.stubEnv('CREDENTIAL_ENCRYPTION_KEY', Buffer.alloc(32, 7).toString('base64'));
+    await repo.saveIntegration(
+      company.id,
+      { kind: 'anthropic', configured: true, status: 'connected', config: {} },
+      encryptSecret(key),
+    );
     const base: Company = {
       ...company,
       ai: {
         provider: 'anthropic',
         model: 'claude-haiku-5-5',
-        keyMode: 'platform',
         monthlyBudgetUsd: 10,
       },
       privacy: { aiDataApproved: true, retentionDays: 0 },
@@ -578,7 +581,6 @@ describe('handleTurn reply explanations', () => {
       config: { target: 'draft', revision: 2 },
       provider: 'anthropic',
       model: 'claude-haiku-5-5',
-      keyMode: 'platform',
       catalogSource: 'app',
       ai: {
         called: true,
@@ -727,7 +729,7 @@ describe('handleTurn reply explanations', () => {
     );
     expect(result.explanation?.config).toEqual({ target: 'published', revision: 3, version: 3 });
     expect(describeConfig(result.explanation!)).toBe(
-      'Published settings v3 · Anthropic claude-haiku-5-5 · Orderly key',
+      'Published settings v3 · Anthropic claude-haiku-5-5',
     );
   });
 

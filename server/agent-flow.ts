@@ -7,7 +7,7 @@ import type {
   RecentReply,
   SetupStep,
 } from '../src/shared/agent-flow.js';
-import { botConfig } from '../src/shared/bot.js';
+import { botConfig, sameBotConfig } from '../src/shared/bot.js';
 import { generationProfile, MODEL_LIMITS, PROVIDER_NAMES } from '../src/shared/models.js';
 import { isOpen } from '../src/domain/engine.js';
 import type { Repository } from './repository.js';
@@ -78,8 +78,7 @@ export async function buildAgentFlow(
   const zones = company.deliveryZones ?? [];
   const enabledRules = published.behaviorRules.filter((rule) => rule.enabled);
   const draftChanged =
-    !!company.bot?.published &&
-    JSON.stringify(company.bot.draft) !== JSON.stringify(company.bot.published.config);
+    !!company.bot?.published && !sameBotConfig(company.bot.draft, company.bot.published.config);
   const heartbeatAge = connection?.lastHeartbeatAt
     ? Math.max(0, Math.round((Date.now() - Date.parse(connection.lastHeartbeatAt)) / 1000))
     : undefined;
@@ -210,9 +209,6 @@ export async function buildAgentFlow(
         value: `${usd(summary.monthlySpend)} of ${usd(ai.monthlyBudgetUsd)}`,
         tone: summary.monthlySpend >= ai.monthlyBudgetUsd * 0.8 ? 'warn' : 'ok',
       },
-      ...(ai.keyMode === 'platform' && usesAi
-        ? [{ label: 'Shared platform cap', value: 'Also applies (Orderly-paid key)' }]
-        : []),
     ],
     affects: [
       'When replies are paused, messages are saved for staff and the bot stays quiet.',
@@ -233,9 +229,7 @@ export async function buildAgentFlow(
   const modelTodo = !usesAi
     ? 'In Bot settings → AI model, choose a provider, paste this business’s API key and click Connect and test.'
     : !keyAvailable
-      ? ai.keyMode === 'own'
-        ? `Paste this business’s ${PROVIDER_NAMES[ai.provider]} API key in Bot settings → AI model and click Connect and test.`
-        : `Ask the platform administrator to add the shared ${PROVIDER_NAMES[ai.provider]} key on the server.`
+      ? `Paste this business’s ${PROVIDER_NAMES[ai.provider]} API key in Bot settings → AI model and click Connect and test.`
       : !rates
         ? 'Enter this model’s token prices under Advanced in Bot settings → AI model.'
         : !approved
@@ -266,10 +260,7 @@ export async function buildAgentFlow(
     facts: [
       { label: 'Provider', value: PROVIDER_NAMES[ai.provider] },
       { label: 'Model', value: ai.model || 'None' },
-      {
-        label: 'Who pays',
-        value: ai.keyMode === 'own' ? 'This business’s API key' : 'Orderly platform key',
-      },
+      { label: 'Who pays', value: 'This business’s API key' },
       { label: 'API key available', value: yes(keyAvailable), tone: keyAvailable ? 'ok' : 'warn' },
       {
         label: 'Generation test',
@@ -807,24 +798,6 @@ function platformChecks(mode: 'demo' | 'live'): PlatformCheck[] {
       label: 'Server mode',
       ok: true,
       detail: mode === 'live' ? 'Live (Supabase)' : 'Local demo: nothing is sent',
-    },
-    {
-      id: 'anthropic',
-      label: 'Anthropic platform key',
-      ok: set('ANTHROPIC_API_KEY'),
-      detail: 'ANTHROPIC_API_KEY, used when a business runs on the Orderly key',
-    },
-    {
-      id: 'openai',
-      label: 'OpenAI platform key',
-      ok: set('OPENAI_API_KEY'),
-      detail: 'OPENAI_API_KEY (optional)',
-    },
-    {
-      id: 'gemini',
-      label: 'Gemini platform key',
-      ok: set('GOOGLE_API_KEY'),
-      detail: 'GOOGLE_API_KEY (optional)',
     },
     {
       id: 'gateway',

@@ -1,5 +1,6 @@
 import {
   Component,
+  type ButtonHTMLAttributes,
   type ErrorInfo,
   useContext,
   useState,
@@ -9,11 +10,124 @@ import {
   type ReactNode,
   type KeyboardEvent as ReactKeyboardEvent,
 } from 'react';
-import { Workspace } from '../lib/workspace';
+import { createPortal } from 'react-dom';
+import { Workspace, type Toast } from '../lib/workspace';
 import * as Dialog from '@radix-ui/react-dialog';
 import * as AlertDialog from '@radix-ui/react-alert-dialog';
-import { AlertCircle, ArrowRight, Check, ChevronDown, X } from 'lucide-react';
+import {
+  AlertCircle,
+  ArrowRight,
+  Check,
+  CheckCircle2,
+  ChevronDown,
+  Info,
+  LoaderCircle,
+  X,
+} from 'lucide-react';
 import { cn, label } from '../lib/utils';
+
+export function Spinner({ className }: { className?: string }) {
+  return (
+    <LoaderCircle aria-hidden="true" className={cn('size-4 shrink-0 animate-spin', className)} />
+  );
+}
+/**
+ * A button that shows its own progress: a spinner and a short label while its action
+ * runs. It keeps its colour, and a second click (or Enter in a form) is ignored until
+ * the action finishes. The rest of the page stays usable.
+ */
+export function ActionButton({
+  loading,
+  loadingLabel,
+  children,
+  className,
+  onClick,
+  ...rest
+}: ButtonHTMLAttributes<HTMLButtonElement> & { loading?: boolean; loadingLabel?: ReactNode }) {
+  return (
+    <button
+      {...rest}
+      className={cn('btn', className)}
+      aria-busy={loading || undefined}
+      onClick={(event) => {
+        if (loading) {
+          event.preventDefault();
+          return;
+        }
+        onClick?.(event);
+      }}
+    >
+      {loading ? (
+        <>
+          <Spinner />
+          {loadingLabel ?? children}
+        </>
+      ) : (
+        children
+      )}
+    </button>
+  );
+}
+/** For a dialog's onInteractOutside: dismissing a notification must not close the dialog. */
+export function keepOpenForToasts(event: { target: EventTarget | null; preventDefault(): void }) {
+  if ((event.target as Element | null)?.closest?.('[data-toaster]')) event.preventDefault();
+}
+/** Bottom-right notifications for saves and errors. */
+export function Toaster({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id: number) => void }) {
+  if (typeof document === 'undefined') return null;
+  return createPortal(
+    // One lasting live region, so screen readers announce each new notification.
+    <div
+      data-toaster=""
+      aria-live="polite"
+      aria-label="Notifications"
+      role="region"
+      className="pointer-events-none fixed inset-x-4 bottom-4 z-[60] flex flex-col gap-2 sm:inset-x-auto sm:right-6 sm:bottom-6 sm:w-[22rem]"
+    >
+      {toasts.map((toast) => (
+        <ToastItem key={toast.id} toast={toast} onDismiss={onDismiss} />
+      ))}
+    </div>,
+    document.body,
+  );
+}
+export function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: (id: number) => void }) {
+  const Icon = toast.tone === 'error' ? AlertCircle : toast.tone === 'info' ? Info : CheckCircle2;
+  return (
+    <div
+      role={toast.tone === 'error' ? 'alert' : undefined}
+      className={cn(
+        'pointer-events-auto flex animate-toast-in items-start gap-2.5 rounded-xl border bg-cream px-4 py-3 text-[13px] shadow-[0_12px_32px_-8px_rgba(14,6,4,0.25)]',
+        toast.tone === 'error'
+          ? 'border-red-600/20 text-red-800'
+          : toast.tone === 'info'
+            ? 'border-ink/10 text-stone-700'
+            : 'border-success-700/20 text-success-800',
+      )}
+    >
+      <Icon
+        aria-hidden="true"
+        className={cn(
+          'mt-0.5 size-4 shrink-0',
+          toast.tone === 'error'
+            ? 'text-red-600'
+            : toast.tone === 'info'
+              ? 'text-stone-500'
+              : 'text-success-700',
+        )}
+      />
+      <p className="min-w-0 flex-1 font-medium leading-relaxed">{toast.message}</p>
+      <button
+        type="button"
+        className="opacity-60 transition-opacity hover:opacity-100"
+        aria-label="Dismiss notification"
+        onClick={() => onDismiss(toast.id)}
+      >
+        <X className="size-4" />
+      </button>
+    </div>
+  );
+}
 
 export function Badge({
   children,
@@ -117,11 +231,20 @@ export function Modal({
   wide?: boolean;
 }) {
   const workspace = useContext(Workspace);
+  const clearError = useRef(workspace?.clearError);
+  useEffect(() => {
+    clearError.current = workspace?.clearError;
+  });
+  // A failure from an earlier dialog must not greet the next one.
+  useEffect(() => {
+    if (open) clearError.current?.();
+  }, [open]);
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-40 bg-ink/45 backdrop-blur-xs transition-opacity" />
         <Dialog.Content
+          onInteractOutside={keepOpenForToasts}
           className={cn(
             'fixed inset-x-4 top-1/2 z-50 mx-auto max-h-[90dvh] -translate-y-1/2 overflow-y-auto rounded-[18px] border border-white/80 bg-cream p-6 sm:p-8 shadow-[0_24px_64px_-12px_rgba(14,6,4,0.25)]',
             wide ? 'max-w-2xl' : 'max-w-lg',
@@ -158,6 +281,8 @@ export function ConfirmDialog({
   description,
   onConfirm,
   busy,
+  busyLabel = 'Working…',
+  error,
   confirmLabel = 'Remove item',
 }: {
   open: boolean;
@@ -165,7 +290,11 @@ export function ConfirmDialog({
   title: string;
   description: string;
   onConfirm: () => void;
+  /** This dialog's own action is running. */
   busy?: boolean;
+  busyLabel?: string;
+  /** Shown inside the dialog: notifications behind an open dialog are hidden from screen readers. */
+  error?: string;
   confirmLabel?: string;
 }) {
   return (
@@ -179,17 +308,21 @@ export function ConfirmDialog({
           <AlertDialog.Description className="mt-3 text-[13.5px] text-stone-500 leading-relaxed">
             {description}
           </AlertDialog.Description>
+          {error && (
+            <div className="mt-4">
+              <ErrorNotice message={error} />
+            </div>
+          )}
           <div className="mt-6 flex justify-end gap-2.5">
-            <AlertDialog.Cancel className="btn" disabled={busy}>
-              Go back
-            </AlertDialog.Cancel>
-            <button
-              className="btn border-red-700 bg-red-700 text-white hover:bg-red-800"
-              disabled={busy}
+            <AlertDialog.Cancel className="btn">Go back</AlertDialog.Cancel>
+            <ActionButton
+              className="border-red-700 bg-red-700 text-white hover:bg-red-800"
+              loading={busy}
+              loadingLabel={busyLabel}
               onClick={onConfirm}
             >
-              {busy ? 'Saving…' : confirmLabel}
-            </button>
+              {confirmLabel}
+            </ActionButton>
           </div>
         </AlertDialog.Content>
       </AlertDialog.Portal>

@@ -40,7 +40,7 @@ function createMockBootstrap(overrides: Partial<Bootstrap> = {}): Bootstrap {
       { kind: 'sheets', configured: false, status: 'disconnected', config: {} },
       { kind: 'openai', configured: true, status: 'configured', config: {} },
     ],
-    aiConnection: { provider: 'mock', keyMode: 'platform', configured: true },
+    aiConnection: { provider: 'mock', configured: true },
     usage: [],
     traces: [],
     ...overrides,
@@ -60,6 +60,7 @@ function createMockWorkspaceContext(
     navigate: () => {},
     switchCompany: () => {},
     refresh: async () => {},
+    notify: () => {},
     mutate: async <T>() => ({}) as T,
   };
 }
@@ -493,7 +494,7 @@ describe('UI Helper Utilities and Edge Case Resilience', () => {
         faqs: [],
         botEnabled: true,
         catalogSource: 'app',
-        ai: { provider: 'mock', model: 'mock', keyMode: 'platform', monthlyBudgetUsd: 10 },
+        ai: { provider: 'mock', model: 'mock', monthlyBudgetUsd: 10 },
         createdAt: '2026-09-16T12:00:00Z',
       },
       companies: [],
@@ -501,7 +502,7 @@ describe('UI Helper Utilities and Edge Case Resilience', () => {
       orders: [],
       conversations: [],
       integrations: [],
-      aiConnection: { provider: 'mock', keyMode: 'platform', configured: true },
+      aiConnection: { provider: 'mock', configured: true },
       usage: [],
       traces: [],
     };

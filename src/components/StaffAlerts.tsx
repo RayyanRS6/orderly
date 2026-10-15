@@ -5,6 +5,7 @@ import { api } from '../lib/api';
 import { useWorkspace } from '../lib/workspace';
 import type { StaffAttention } from '../shared/types';
 import { EmailAlerts } from './EmailAlerts';
+import { keepOpenForToasts } from './ui';
 
 const preferenceKey = 'orderly-browser-alerts';
 function enabledHere() {
@@ -123,7 +124,9 @@ export function StaffAlerts() {
       </Dialog.Trigger>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 z-40 bg-ink/45 backdrop-blur-xs" />
-        <Dialog.Content className="fixed inset-x-3 top-[10dvh] z-50 mx-auto max-h-[80dvh] max-w-xl overflow-y-auto rounded-2xl border border-white bg-cream p-5 shadow-xl sm:p-6">
+        <Dialog.Content
+          onInteractOutside={keepOpenForToasts}
+          className="fixed inset-x-3 top-[10dvh] z-50 mx-auto max-h-[80dvh] max-w-xl overflow-y-auto rounded-2xl border border-white bg-cream p-5 shadow-xl sm:p-6">
           <div className="mb-4 flex items-center justify-between gap-2">
             <Dialog.Title className="panel-title">Staff alerts</Dialog.Title>
             <Dialog.Close className="icon-btn-glass" aria-label="Close staff alerts">

@@ -14,6 +14,7 @@ vi.mock('@supabase/supabase-js', () => ({
 
 let repo: MemoryRepository;
 let company: Company;
+// Each provider's old server-wide key name: Orderly no longer reads these.
 const providers = [
   [
     'gemini',
@@ -36,7 +37,8 @@ beforeEach(() => {
   vi.stubEnv('VERCEL', '');
   vi.stubEnv('APP_URL', 'http://127.0.0.1:5173');
   vi.stubEnv('CREDENTIAL_ENCRYPTION_KEY', Buffer.alloc(32, 7).toString('base64'));
-  for (const [, env] of providers) vi.stubEnv(env, '');
+  // A server-wide key must never answer for a business.
+  for (const [, env] of providers) vi.stubEnv(env, 'server-env-key');
   vi.stubGlobal(
     'fetch',
     vi.fn(() => Promise.reject(new Error('Unexpected network request'))),
@@ -49,10 +51,10 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function select(provider: Provider, keyMode: 'own' | 'platform') {
+async function select(provider: Provider, extra: Record<string, unknown> = {}) {
   company = {
     ...company,
-    ai: { ...company.ai, provider, keyMode, model: modelDefaults[provider] },
+    ai: { ...company.ai, ...extra, provider, model: modelDefaults[provider] },
   };
   await repo.saveCompany(company);
 }
@@ -77,47 +79,21 @@ function request(path: string, body?: unknown, method = body === undefined ? 'GE
 
 describe('selected model connection readiness and key tests', () => {
   it('accepts the current Gemini default without a pricing override', async () => {
-    await select('gemini', 'platform');
+    await select('gemini');
     vi.stubEnv('MODEL_PRICING_JSON', '');
     expect(company.ai.model).toBe('gemini-3.5-flash-lite');
     expect(() => validateModelConfiguration(company)).not.toThrow();
   });
-  it.each(providers)(
-    'uses the selected %s platform key without changing the business key',
-    async (kind, env, header, url) => {
-      await select(kind, 'platform');
-      const original = await saveOwn(kind);
-      vi.stubEnv(env, 'platform-test-key');
-      const bootstrap = await (await request('/bootstrap')).json();
-      expect(bootstrap.aiConnection).toEqual({
-        provider: kind,
-        keyMode: 'platform',
-        configured: true,
-      });
-      expect(JSON.stringify(bootstrap)).not.toContain('platform-test-key');
-      expect(JSON.stringify(bootstrap)).not.toContain('business-test-key');
-      vi.mocked(fetch).mockResolvedValueOnce(Response.json({ data: [] }));
-      const response = await request(`/integrations/${kind}/test`, {});
-      expect(response.status).toBe(200);
-      expect(await response.json()).toMatchObject({ keyMode: 'platform', status: 'connected' });
-      expect(fetch).toHaveBeenCalledWith(
-        url,
-        expect.objectContaining({
-          headers: expect.objectContaining({
-            [header]: kind === 'openai' ? 'Bearer platform-test-key' : 'platform-test-key',
-          }),
-        }),
-      );
-      expect(await repo.getIntegrations(company.id)).toEqual([original]);
-    },
-  );
 
   it.each(providers)(
-    'uses only the business %s key when own mode is selected',
-    async (kind, env, header, url) => {
-      await select(kind, 'own');
+    'tests %s with the business’s own key, never a server key',
+    async (kind, _env, header, url) => {
+      await select(kind);
       await saveOwn(kind);
-      vi.stubEnv(env, 'platform-test-key');
+      const bootstrap = await (await request('/bootstrap')).json();
+      expect(bootstrap.aiConnection).toEqual({ provider: kind, configured: true });
+      expect(JSON.stringify(bootstrap)).not.toContain('business-test-key');
+      expect(JSON.stringify(bootstrap)).not.toContain('server-env-key');
       vi.mocked(fetch).mockResolvedValueOnce(Response.json({ data: [] }));
       const response = await request(`/integrations/${kind}/test`, {});
       expect(response.status).toBe(200);
@@ -133,67 +109,40 @@ describe('selected model connection readiness and key tests', () => {
     },
   );
 
-  it('can explicitly test a saved business key while the selected model uses the platform', async () => {
-    await select('gemini', 'platform');
+  it('ignores an Orderly-key setting left in older saved data', async () => {
+    await select('gemini', { keyMode: 'platform' });
     await saveOwn('gemini');
-    vi.stubEnv('GOOGLE_API_KEY', 'platform-test-key');
     vi.mocked(fetch).mockResolvedValueOnce(Response.json({ models: [] }));
-    expect((await request('/integrations/gemini/test', { keyMode: 'own' })).status).toBe(200);
+    expect((await request('/integrations/gemini/test', {})).status).toBe(200);
     expect(fetch).toHaveBeenCalledWith(
       expect.any(String),
       expect.objectContaining({ headers: { 'x-goog-api-key': 'business-test-key' } }),
     );
   });
 
-  it('reports a missing platform key without falling back to the saved business key', async () => {
-    await select('gemini', 'platform');
-    const original = await saveOwn('gemini');
-    expect((await (await request('/bootstrap')).json()).aiConnection.configured).toBe(false);
-    const response = await request('/integrations/gemini/test', {});
-    expect(response.status).toBe(409);
-    expect((await response.json()).error).toContain('platform gemini API key is not configured');
-    expect(fetch).not.toHaveBeenCalled();
-    expect(await repo.getIntegrations(company.id)).toEqual([original]);
-  });
-
-  it('reports a missing business key without falling back to an available platform key', async () => {
-    await select('gemini', 'own');
-    vi.stubEnv('GOOGLE_API_KEY', 'platform-test-key');
+  it('reports a missing business key instead of falling back to a server key', async () => {
+    await select('gemini');
     expect((await (await request('/bootstrap')).json()).aiConnection.configured).toBe(false);
     expect((await request('/integrations/gemini/test', {})).status).toBe(400);
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it('does not let a company using business keys request a platform-key test', async () => {
-    await select('gemini', 'own');
-    vi.stubEnv('GOOGLE_API_KEY', 'platform-test-key');
-    expect((await request('/integrations/gemini/test', { keyMode: 'platform' })).status).toBe(403);
-    expect(fetch).not.toHaveBeenCalled();
-  });
-
-  it('does not let a platform company test an unselected platform provider', async () => {
-    await select('gemini', 'platform');
-    vi.stubEnv('OPENAI_API_KEY', 'platform-test-key');
-    expect((await request('/integrations/openai/test', { keyMode: 'platform' })).status).toBe(403);
-    expect(fetch).not.toHaveBeenCalled();
-  });
-
-  it('preserves the admin-only switch from business keys to platform keys', async () => {
-    await select('gemini', 'own');
+  it('accepts settings from an older dashboard that still sends an Orderly-key choice', async () => {
+    await select('gemini');
     const response = await request(
       `/companies/${company.id}`,
-      { ...company, ai: { ...company.ai, keyMode: 'platform' } },
+      // Paused, so the live readiness checks for automatic replies do not apply.
+      { ...company, botEnabled: false, ai: { ...company.ai, keyMode: 'platform' } },
       'PUT',
     );
-    expect(response.status).toBe(403);
-    expect((await repo.getCompany(company.id))?.ai.keyMode).toBe('own');
+    expect(response.status).toBe(200);
+    expect((await repo.getCompany(company.id))?.ai).not.toHaveProperty('keyMode', 'platform');
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it('keeps platform tests owner-only and leaves business state unchanged on provider failure', async () => {
-    await select('gemini', 'platform');
-    const original = await saveOwn('gemini');
-    vi.stubEnv('GOOGLE_API_KEY', 'platform-test-key');
+  it('keeps key tests owner-only and hides provider details when a key fails', async () => {
+    await select('gemini');
+    await saveOwn('gemini');
     vi.mocked(repo.getRole).mockResolvedValue('staff');
     expect((await request('/integrations/gemini/test', {})).status).toBe(403);
     expect(fetch).not.toHaveBeenCalled();
@@ -204,6 +153,6 @@ describe('selected model connection readiness and key tests', () => {
     const failed = await request('/integrations/gemini/test', {});
     expect(failed.status).toBe(400);
     expect(await failed.text()).not.toContain('private upstream detail');
-    expect(await repo.getIntegrations(company.id)).toEqual([original]);
+    expect((await repo.getIntegrations(company.id))[0].status).toBe('error');
   });
 });

@@ -24,6 +24,28 @@ export function normalizeBotConfig(value?: Partial<BotConfig> & { steps?: unknow
     behaviorRules: Array.isArray(value?.behaviorRules) ? value.behaviorRules : [],
   };
 }
+// A stable form for comparing configs by meaning. The database returns stored objects with
+// their keys reordered and the server trims text, so comparing raw JSON never matched and
+// the Publish button stayed disabled with "Unsaved changes".
+function canonical(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value && typeof value === 'object')
+    return Object.fromEntries(
+      Object.keys(value)
+        .sort()
+        .map((key) => [key, canonical((value as Record<string, unknown>)[key])]),
+    );
+  return typeof value === 'string' ? value.trim() : value;
+}
+export function sameBotConfig(
+  a?: Partial<BotConfig> & { steps?: unknown },
+  b?: Partial<BotConfig> & { steps?: unknown },
+): boolean {
+  return (
+    JSON.stringify(canonical(normalizeBotConfig(a))) ===
+    JSON.stringify(canonical(normalizeBotConfig(b)))
+  );
+}
 export function botConfig(company: Company, draft = false): BotConfig {
   return structuredClone(
     normalizeBotConfig(draft ? company.bot?.draft : company.bot?.published?.config),

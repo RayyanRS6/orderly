@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRepository } from '../server/repository';
+import { encryptSecret } from '../server/security';
 import { AiModelAdapter, modelDefaults, modelRate } from '../server/integrations/models';
 import {
   generationProfile,
@@ -103,9 +104,7 @@ describe('AiModelAdapter generation settings and usage', () => {
     vi.stubEnv('ORDERLY_RUNTIME', '');
     vi.stubEnv('VERCEL', '');
     vi.stubEnv('MODEL_PRICING_JSON', '');
-    vi.stubEnv('ANTHROPIC_API_KEY', 'fictional-anthropic-key');
-    vi.stubEnv('OPENAI_API_KEY', 'fictional-openai-key');
-    vi.stubEnv('GOOGLE_API_KEY', 'fictional-google-key');
+    vi.stubEnv('CREDENTIAL_ENCRYPTION_KEY', Buffer.alloc(32, 7).toString('base64'));
   });
   afterEach(() => {
     vi.unstubAllEnvs();
@@ -115,10 +114,16 @@ describe('AiModelAdapter generation settings and usage', () => {
   async function configure(provider: Provider, model: string): Promise<Company> {
     const configured: Company = {
       ...company,
-      ai: { provider, model, keyMode: 'platform', monthlyBudgetUsd: 10 },
+      ai: { provider, model, monthlyBudgetUsd: 10 },
       privacy: { aiDataApproved: true, retentionDays: 0 },
     };
     await repo.saveCompany(configured);
+    if (provider !== 'mock')
+      await repo.saveIntegration(
+        company.id,
+        { kind: provider, configured: true, status: 'connected', config: {} },
+        encryptSecret(`fictional-${provider}-key`),
+      );
     return configured;
   }
 

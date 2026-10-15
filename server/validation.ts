@@ -109,7 +109,6 @@ export const companySchema = z
     ai: z.object({
       provider: z.enum(['mock', 'openai', 'anthropic', 'gemini']),
       model: text(120),
-      keyMode: z.enum(['platform', 'own']),
       monthlyBudgetUsd: z.number().min(0).max(10000),
       pricing: z
         .tuple([z.number().positive().max(1000), z.number().positive().max(1000)])

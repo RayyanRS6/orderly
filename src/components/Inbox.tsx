@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowLeft, Send } from 'lucide-react';
 import type { Conversation, Message, PageResult } from '../shared/types';
-import { useWorkspace } from '../lib/workspace';
+import { useAction, useWorkspace } from '../lib/workspace';
 import { api } from '../lib/api';
 import { cn, shortDate } from '../lib/utils';
-import { CustomSelect, Empty, ErrorNotice, PageHeading, Status } from './ui';
+import { ActionButton, CustomSelect, Empty, ErrorNotice, PageHeading, Status } from './ui';
 import { WhyToggle } from './ReplyExplanation';
 
 // The same words and ticks the customer's WhatsApp shows.
@@ -27,7 +27,9 @@ export function deliveryLabel(conversation: Conversation, m: Message, now = Date
 }
 
 export function Inbox() {
+  // `busy` only pauses the background check for new messages while a change saves.
   const { data, mutate, busy, navigate, detailId } = useWorkspace();
+  const { pending, run } = useAction();
   const [result, setResult] = useState<PageResult<Conversation>>({
     items: data.conversations,
     total: data.summary?.conversations ?? data.conversations.length,
@@ -120,18 +122,13 @@ export function Inbox() {
   useEffect(() => {
     end.current?.scrollIntoView({ block: 'nearest' });
   }, [conversation?.messages.at(-1)?.id]);
-  async function act(path: string, body: unknown) {
-    setError('');
-    try {
-      const c = await mutate<Conversation>(path, body);
+  // A failure shows as a notification, so the pressed button only needs its spinner.
+  const act = (key: string, path: string, body: unknown, success?: string) =>
+    run(key, async () => {
+      const c = await mutate<Conversation>(path, body, undefined, { success });
       setConversation(c);
       await refresh();
-      return true;
-    } catch (e) {
-      setError((e as Error).message);
-      return false;
-    }
-  }
+    });
   async function older() {
     if (!conversation) return;
     setLoading(true);
@@ -286,28 +283,38 @@ export function Inbox() {
                       <span className="text-xs text-stone-500">
                         Waiting for staff while the bot is off. The bot answers again once it is on.
                       </span>
-                      <button
-                        className="btn"
-                        disabled={busy}
+                      <ActionButton
+                        loading={pending === 'keep'}
+                        loadingLabel="Saving…"
                         onClick={() =>
-                          void act(`/conversations/${conversation.id}/mode`, { mode: 'human' })
+                          void act(
+                            'keep',
+                            `/conversations/${conversation.id}/mode`,
+                            { mode: 'human' },
+                            'This chat stays with staff.',
+                          ).catch(() => undefined)
                         }
                       >
                         Keep with staff
-                      </button>
+                      </ActionButton>
                     </>
                   )}
-                  <button
-                    className="btn"
-                    disabled={busy}
+                  <ActionButton
+                    loading={pending === 'mode'}
+                    loadingLabel={conversation.mode === 'bot' ? 'Taking over…' : 'Resuming…'}
                     onClick={() =>
-                      void act(`/conversations/${conversation.id}/mode`, {
-                        mode: conversation.mode === 'bot' ? 'human' : 'bot',
-                      })
+                      void act(
+                        'mode',
+                        `/conversations/${conversation.id}/mode`,
+                        { mode: conversation.mode === 'bot' ? 'human' : 'bot' },
+                        conversation.mode === 'bot'
+                          ? 'You’re handling this chat. The bot stays quiet here.'
+                          : 'The bot is answering this chat again.',
+                      ).catch(() => undefined)
                     }
                   >
                     {conversation.mode === 'bot' ? 'Take over' : 'Resume bot'}
-                  </button>
+                  </ActionButton>
                 </div>
               </div>
               <div className="min-h-0 flex-1 space-y-4 overflow-y-auto bg-canvas/50 p-4">
@@ -351,13 +358,14 @@ export function Inbox() {
               </div>
               <form
                 className="border-t border-ink/[0.06] p-4"
-                onSubmit={async (e) => {
+                onSubmit={(e) => {
                   e.preventDefault();
-                  if (
-                    text.trim() &&
-                    (await act(`/conversations/${conversation.id}/reply`, { text }))
-                  )
-                    setText('');
+                  const sent = text;
+                  if (!sent.trim()) return;
+                  void act('reply', `/conversations/${conversation.id}/reply`, { text: sent })
+                    // Keep anything typed while the reply was sending.
+                    .then((ran) => ran && setText((current) => (current === sent ? '' : current)))
+                    .catch(() => undefined);
                 }}
               >
                 <div className="flex gap-2">
@@ -369,13 +377,17 @@ export function Inbox() {
                     maxLength={2000}
                     onChange={(e) => setText(e.target.value)}
                   />
-                  <button
-                    className="btn btn-primary shrink-0"
-                    aria-label="Send staff reply"
-                    disabled={busy || !text.trim()}
+                  <ActionButton
+                    type="submit"
+                    className="btn-primary shrink-0"
+                    aria-label={pending === 'reply' ? 'Sending staff reply' : 'Send staff reply'}
+                    title={!text.trim() ? 'Type a reply first.' : undefined}
+                    disabled={!text.trim() && pending !== 'reply'}
+                    loading={pending === 'reply'}
+                    loadingLabel={<span className="sr-only">Sending</span>}
                   >
                     <Send className="size-4" />
-                  </button>
+                  </ActionButton>
                 </div>
                 <p className="mt-2 text-xs text-stone-500">
                   Replying pauses this conversation’s bot. Free-form WhatsApp replies require an

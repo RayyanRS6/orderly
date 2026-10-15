@@ -25,20 +25,6 @@ export function managementRoutes(repo: Repository) {
   const owner = (role: Role) => {
     if (role === 'staff') throw new PublicError('Only an owner can manage this setting.', 403);
   };
-  app.get('/platform/budget', async (c) => {
-    if (c.get('role') !== 'admin')
-      throw new PublicError('Platform administrator access required.', 403);
-    return c.json(await repo.platformBudget());
-  });
-  app.put('/platform/budget', async (c) => {
-    if (c.get('role') !== 'admin')
-      throw new PublicError('Platform administrator access required.', 403);
-    const { limitUsd } = z
-      .object({ limitUsd: z.number().min(0).max(100000) })
-      .strict()
-      .parse(await c.req.json());
-    return c.json(await repo.configurePlatformBudget(limitUsd));
-  });
   app.get('/notifications', async (c) =>
     c.json({
       ...(await repo.alertPreferences(c.get('company').id, c.get('userId'))),
@@ -146,17 +132,10 @@ export function managementRoutes(repo: Repository) {
     const provider = z
       .enum(['mock', 'openai', 'gemini', 'anthropic'])
       .parse(c.req.query('provider') ?? company.ai.provider);
-    const keyMode = z.enum(['own', 'platform']).parse(c.req.query('keyMode') ?? company.ai.keyMode);
-    if (
-      keyMode === 'platform' &&
-      c.get('role') !== 'admin' &&
-      (provider !== company.ai.provider || company.ai.keyMode !== 'platform')
-    )
-      throw new PublicError('Only an administrator can select another platform provider.', 403);
     return c.json(
       await availableModels(
         repo,
-        { ...company, ai: { ...company.ai, provider, keyMode } },
+        { ...company, ai: { ...company.ai, provider } },
         c.req.query('refresh') === 'true',
       ),
     );
@@ -165,14 +144,15 @@ export function managementRoutes(repo: Repository) {
   // then save the key and switch this business to the new model. Any failure changes nothing.
   app.post('/ai/connect', async (c) => {
     owner(c.get('role'));
-    const role = c.get('role');
     const company = c.get('company');
     const body = z
       .object({
         provider: z.enum(['openai', 'anthropic', 'gemini']),
         model: z.string().trim().min(1).max(120),
         apiKey: z.string().trim().min(10).max(16000).optional(),
-        keyMode: z.enum(['own', 'platform']).default('own'),
+        // Sent by dashboards still open from before every business used its own key.
+        // Accepted and ignored: the business's own key is always used.
+        keyMode: z.enum(['own', 'platform']).optional(),
         approve: z.literal(true, {
           error: 'Tick the agreement to send customer messages to this AI provider.',
         }),
@@ -184,39 +164,18 @@ export function managementRoutes(repo: Repository) {
       .strict()
       .parse(await c.req.json());
     const monthlyBudgetUsd = body.monthlyBudgetUsd ?? company.ai.monthlyBudgetUsd;
-    if (body.keyMode === 'platform') {
-      if (body.apiKey)
-        throw new PublicError('Orderly’s shared key lives on the server. Leave the key box empty.');
-      if (
-        role !== 'admin' &&
-        (company.ai.keyMode !== 'platform' || company.ai.provider !== body.provider)
-      )
-        throw new PublicError(
-          'Only the platform administrator can switch a business to Orderly’s shared key.',
-          403,
-        );
-      if (role !== 'admin' && monthlyBudgetUsd > company.ai.monthlyBudgetUsd)
-        throw new PublicError('Ask the platform administrator to raise your AI budget.', 403);
-      if (role !== 'admin' && JSON.stringify(body.pricing) !== JSON.stringify(company.ai.pricing))
-        throw new PublicError(
-          'Only the platform administrator can change rates for platform-funded AI.',
-          403,
-        );
-    }
     const candidate: Company = {
       ...company,
       ai: {
         provider: body.provider,
         model: body.model,
-        keyMode: body.keyMode,
         monthlyBudgetUsd,
         ...(body.pricing && { pricing: body.pricing }),
       },
       privacy: { aiDataApproved: true, retentionDays: company.privacy?.retentionDays ?? 0 },
     };
     validateModelConfiguration(candidate);
-    const key =
-      body.keyMode === 'own' && body.apiKey ? body.apiKey : await providerKey(repo, candidate);
+    const key = body.apiKey ?? (await providerKey(repo, candidate));
     await verifyProviderKey(body.provider, key);
     try {
       await new AiModelAdapter(repo, key).interpret(
@@ -241,7 +200,7 @@ export function managementRoutes(repo: Repository) {
       );
     }
     const checkedAt = new Date().toISOString();
-    if (body.keyMode === 'own' && body.apiKey) {
+    if (body.apiKey) {
       const previous = (await repo.getIntegrations(company.id)).find(
         (integration) => integration.kind === body.provider,
       );
@@ -272,7 +231,6 @@ export function managementRoutes(repo: Repository) {
       ok: true,
       provider: body.provider,
       model: body.model,
-      keyMode: body.keyMode,
       checkedAt,
     });
   });
@@ -324,16 +282,24 @@ export function managementRoutes(repo: Repository) {
     await repo.audit(company.id, c.get('userId'), 'bot.draft_saved');
     return c.json(settings);
   });
+  // Publishes the saved draft, a restored version, or (one click: "Save and publish") the
+  // settings on screen, saving them as the draft in the same atomic, revision-guarded write.
   app.post('/bot/publish', async (c) => {
     owner(c.get('role'));
-    const { revision, restoreVersion } = z
-      .object({ revision: z.number().int().min(0), restoreVersion: z.number().int().optional() })
+    const { revision, restoreVersion, config } = z
+      .object({
+        revision: z.number().int().min(0),
+        restoreVersion: z.number().int().optional(),
+        config: botSchema.optional(),
+      })
       .parse(await c.req.json());
+    if (restoreVersion && config)
+      throw new PublicError('Publish either the current settings or a saved version, not both.');
     const company = c.get('company');
     const previous = company.bot;
     const source = restoreVersion
       ? previous?.history.find((v) => v.version === restoreVersion)?.config
-      : (previous?.draft ?? defaultBot);
+      : (config ?? previous?.draft ?? defaultBot);
     if (!source) throw new PublicError('That saved version is no longer available.', 404);
     const published = {
       version: (previous?.published?.version ?? 0) + 1,

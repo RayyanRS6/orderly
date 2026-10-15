@@ -36,7 +36,6 @@ import {
 } from '../../src/shared/whatsapp';
 
 interface Reservation {
-  funding?: 'own' | 'platform';
   id: string;
   companyId: string;
   amountUsd: number;
@@ -47,7 +46,6 @@ interface Reservation {
 interface State {
   gatewayNonces?: Record<string, number>;
   whatsappConnections?: WhatsAppConnection[];
-  platformLimit: number;
   retention: Record<string, import('../../src/shared/types').RetentionStatus>;
   companies: Company[];
   products: Product[];
@@ -65,7 +63,6 @@ interface State {
 }
 const copy = <T>(value: T): T => structuredClone(value);
 const freshState = (seed: boolean): State => ({
-  platformLimit: 100,
   retention: {},
   companies: seed ? copy(seedCompanies) : [],
   products: seed ? copy(seedProducts) : [],
@@ -258,31 +255,6 @@ export class MemoryRepository implements Repository {
           sameAddress(c.whatsappAddress, address),
       ),
     );
-  }
-  platformBudget() {
-    return this.read((s) => {
-      const month = new Date().toISOString().slice(0, 7);
-      return {
-        limitUsd: s.platformLimit,
-        spentUsd: s.usage
-          .filter((u) => u.funding !== 'own' && u.createdAt.startsWith(month))
-          .reduce((n, u) => n + u.costUsd, 0),
-        reservedUsd: s.reservations
-          .filter(
-            (r) =>
-              r.funding !== 'own' && !r.settled && (r.createdAt ?? r.expiresAt).startsWith(month),
-          )
-          .reduce((n, r) => n + r.amountUsd, 0),
-      };
-    });
-  }
-  async configurePlatformBudget(limit: number) {
-    if (!Number.isFinite(limit) || limit < 0 || limit > 100000)
-      throw new PublicError('Invalid platform budget.', 400);
-    await this.mutate((s) => {
-      s.platformLimit = limit;
-    });
-    return this.platformBudget();
   }
   async alertPreferences(_companyId: string, _userId: string) {
     return { enabled: false, responseMinutes: 10, emailVerified: false };
@@ -1127,19 +1099,6 @@ export class MemoryRepository implements Repository {
       )
         return false;
       const month = now.toISOString().slice(0, 7);
-      const funding = s.companies.find((c) => c.id === companyId)!.ai.keyMode;
-      if (funding === 'platform') {
-        const platformSpent = s.usage
-          .filter((u) => u.funding !== 'own' && u.createdAt.startsWith(month))
-          .reduce((n, u) => n + u.costUsd, 0);
-        const platformHeld = s.reservations
-          .filter(
-            (r) =>
-              r.funding !== 'own' && !r.settled && (r.createdAt ?? r.expiresAt).startsWith(month),
-          )
-          .reduce((n, r) => n + r.amountUsd, 0);
-        if (platformSpent + platformHeld + amountUsd > s.platformLimit + 1e-9) return false;
-      }
       const spent = s.usage
         .filter((u) => u.companyId === companyId && u.createdAt.slice(0, 7) === month)
         .reduce((sum, u) => sum + u.costUsd, 0);
@@ -1157,7 +1116,6 @@ export class MemoryRepository implements Repository {
       )
         return false;
       s.reservations.push({
-        funding,
         id: reservationId,
         companyId,
         amountUsd,
@@ -1174,7 +1132,7 @@ export class MemoryRepository implements Repository {
       if (!reservation || reservation.companyId !== usage.companyId || usage.id !== reservationId)
         throw new Error('Invalid budget settlement.');
       if (reservation.settled) return;
-      putUsage(s, { ...usage, funding: reservation.funding ?? 'platform' });
+      putUsage(s, usage);
       reservation.settled = true;
     });
   }

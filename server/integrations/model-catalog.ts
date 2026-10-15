@@ -53,7 +53,9 @@ export function modelFingerprint(company: Company, credential = ''): string {
       JSON.stringify([
         company.ai.provider,
         company.ai.model,
-        company.ai.keyMode,
+        // Was the key mode. Businesses always use their own key now; the constant keeps
+        // existing "Connect and test" results valid.
+        'own',
         company.ai.pricing,
         credential,
       ]),

@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { seedCompanies, seedProducts } from '../src/shared/seed';
 import { createConversation, processTurn } from '../src/domain/engine';
 import { makeJob } from '../server/jobs';
-import type { BotAction, Conversation, Order } from '../src/shared/types';
+import type { BotAction, Company, Conversation, Order } from '../src/shared/types';
 import { defaultBot } from '../src/shared/bot';
 
 const db = new PGlite();
@@ -67,13 +67,14 @@ beforeAll(async () => {
     '202609180001_email_alerts.sql',
     '202609180003_platform_budget.sql',
     '202609200001_whatsapp_gateway.sql',
+    '202610170001_business_keys_only.sql',
   ])
     await db.exec(readFileSync(`supabase/migrations/${migration}`, 'utf8'));
   await db.query('insert into auth.users(id) values($1),($2)', [ownerId, outsiderId]);
 }, 30000);
 beforeEach(async () => {
   await db.exec(
-    'reset role; update auth.users set email=null,email_confirmed_at=null; update platform_limits set monthly_budget_usd=100',
+    'reset role; update auth.users set email=null,email_confirmed_at=null',
   );
   await db.exec(
     "reset role; truncate public.companies cascade; delete from public.platform_admins; delete from auth.mfa_factors; select set_config('request.jwt.claims','',false);",
@@ -145,33 +146,92 @@ describe('opt-in retention and staff attention', () => {
       'permission denied',
     );
   });
-  it('enforces a shared platform allowance while keeping client-funded spending separate', async () => {
-    await rpc('configure_platform_budget', [5]);
+  it('caps AI spending by each business’s own budget, with no shared Orderly allowance', async () => {
     const expiry = new Date(Date.now() + 60000).toISOString();
-    expect(await rpc('reserve_budget', [company.id, 'platform-a', 4, expiry])).toBe(true);
-    expect(await rpc('reserve_budget', [company.id, 'platform-b', 2, expiry])).toBe(false);
-    expect(await rpc('reserve_budget', [other.id, 'own-key', 4, expiry])).toBe(true);
+    // Both seeds allow $10 a month. Before, a shared $100 allowance also applied.
+    expect(await rpc('reserve_budget', [company.id, 'turn-a', 9, expiry])).toBe(true);
+    expect(await rpc('reserve_budget', [company.id, 'turn-b', 2, expiry])).toBe(false);
+    expect(await rpc('reserve_budget', [other.id, 'turn-c', 10, expiry])).toBe(true);
     await rpc('settle_budget', [
-      'own-key',
-      { id: 'own-key', companyId: other.id, costUsd: 3, createdAt: now() },
+      'turn-a',
+      { id: 'turn-a', companyId: company.id, costUsd: 3, createdAt: now() },
     ]);
-    expect(await rpc('platform_budget', [])).toMatchObject({
-      limitUsd: 5,
-      reservedUsd: 4,
-      spentUsd: 0,
-    });
-    await db.query(
-      "update companies set data=jsonb_set(data,'{ai,keyMode}','\"own\"') where id=$1",
-      [company.id],
+    expect(await scalar("select data->>'funding' value from usage_events where id='turn-a'")).toBe(
+      null,
     );
-    await rpc('settle_budget', [
-      'platform-a',
-      { id: 'platform-a', companyId: company.id, costUsd: 2, createdAt: now() },
-    ]);
-    expect(await rpc('platform_budget', [])).toMatchObject({ reservedUsd: 0, spentUsd: 2 });
+    expect(await rpc('reserve_budget', [company.id, 'turn-d', 7, expiry])).toBe(true);
+    expect(await rpc('reserve_budget', [company.id, 'turn-e', 0.01, expiry])).toBe(false);
+    expect(await scalar("select to_regclass('public.platform_limits')::text value")).toBe(null);
     expect(
-      await scalar("select data->>'funding' value from usage_events where id='platform-a'"),
-    ).toBe('platform');
+      await scalar(
+        "select count(*)::int value from information_schema.columns where table_name='budget_reservations' and column_name='funding'",
+      ),
+    ).toBe(0);
+    await expect(rpc('platform_budget', [])).rejects.toThrow('does not exist');
+  });
+  it('moves every business to its own key, pausing any that relied on Orderly’s', async () => {
+    const shared = {
+      ...company,
+      id: 'shared-key',
+      slug: 'shared-key',
+      botEnabled: true,
+      modelVerification: { fingerprint: 'old', checkedAt: now() },
+      ai: { ...company.ai, provider: 'openai', model: 'gpt-5.5-mini', keyMode: 'platform' },
+    };
+    const unlabelled = {
+      ...shared,
+      id: 'unlabelled',
+      slug: 'unlabelled',
+      ai: { ...company.ai, provider: 'anthropic', model: 'claude-haiku-5-5' },
+    };
+    const demo = {
+      ...shared,
+      id: 'demo-shared',
+      slug: 'demo-shared',
+      ai: { ...company.ai, keyMode: 'platform' },
+    };
+    const own = {
+      ...shared,
+      id: 'own-key',
+      slug: 'own-key',
+      ai: { ...shared.ai, keyMode: 'own' },
+    };
+    for (const c of [shared, unlabelled, demo, own])
+      await db.query('insert into companies(id,slug,data) values($1,$2,$3)', [c.id, c.slug, c]);
+    const script = readFileSync('supabase/migrations/202610170001_business_keys_only.sql', 'utf8');
+    // As before the first run, when the shared-budget table still existed.
+    await db.exec('create table public.platform_limits(id boolean primary key default true)');
+    await db.exec(script);
+    // The new code then saves businesses without the label; a rerun must leave them alone.
+    await db.query(
+      "update companies set data=jsonb_set(data,'{ai}',(data->'ai')-'keyMode') where id=$1",
+      [own.id],
+    );
+    await db.exec(script);
+    expect(
+      (await db.query<{ data: Company }>('select data from companies where id=$1', [own.id]))
+        .rows[0]!.data.botEnabled,
+    ).toBe(true);
+    await db.query("update companies set data=jsonb_set(data,'{ai,keyMode}','\"own\"') where id=$1", [
+      own.id,
+    ]);
+    const rows = (
+      await db.query<{ id: string; data: Record<string, any> }>(
+        'select id,data from companies where id = any($1)',
+        [[shared.id, unlabelled.id, demo.id, own.id]],
+      )
+    ).rows;
+    const byId = Object.fromEntries(rows.map((r) => [r.id, r.data]));
+    for (const id of [shared.id, unlabelled.id]) {
+      expect(byId[id].botEnabled).toBe(false);
+      expect(byId[id].modelVerification).toBeUndefined();
+    }
+    for (const id of [demo.id, own.id]) {
+      expect(byId[id].botEnabled).toBe(true);
+      expect(byId[id].modelVerification).toEqual(shared.modelVerification);
+    }
+    for (const id of [shared.id, unlabelled.id, demo.id, own.id])
+      expect(byId[id].ai.keyMode).toBe('own');
   });
   it('queues email only for a subscribed verified member with overdue work and throttles reminders', async () => {
     await db.query("insert into company_memberships values($1,$2,'staff')", [company.id, ownerId]);
@@ -404,7 +464,9 @@ describe('opt-in retention and staff attention', () => {
     await expect(rpc('alert_recipient', [company.id, ownerId])).rejects.toThrow(
       'permission denied',
     );
-    await expect(rpc('configure_platform_budget', [500])).rejects.toThrow('permission denied');
+    await expect(
+      rpc('reserve_budget', [company.id, 'browser', 1, new Date(Date.now() + 60000).toISOString()]),
+    ).rejects.toThrow('permission denied');
     await expect(db.query('select * from retention_policies')).rejects.toThrow('permission denied');
   });
 });

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ArrowDownToLine,
   ArrowRight,
@@ -18,9 +18,10 @@ import {
 import type { Order, OrderStatus, PageResult } from '../shared/types';
 import { money } from '../shared/types';
 import { api } from '../lib/api';
-import { useWorkspace } from '../lib/workspace';
+import { useAction, useWorkspace } from '../lib/workspace';
 import { cn, initials, label, shortDate } from '../lib/utils';
 import {
+  ActionButton,
   Badge,
   ConfirmDialog,
   Empty,
@@ -746,8 +747,16 @@ function OrderTable({ orders, onSelect }: { orders: Order[]; onSelect: (order: O
 }
 
 function OrderDetails({ order, onClose }: { order: Order | null; onClose: () => void }) {
-  const { mutate, busy } = useWorkspace();
+  const { mutate, notify, clearError } = useWorkspace();
+  const { pending, run } = useAction();
   const [reject, setReject] = useState(false);
+  const [rejectError, setRejectError] = useState('');
+  // This dialog is reused for every order: an answer about an order no longer shown
+  // must not appear as this order's.
+  const shown = useRef(order?.id);
+  useEffect(() => {
+    shown.current = order?.id;
+  }, [order?.id]);
   const next: Partial<Record<OrderStatus, OrderStatus>> = {
     pending: 'accepted',
     accepted: 'preparing',
@@ -756,13 +765,27 @@ function OrderDetails({ order, onClose }: { order: Order | null; onClose: () => 
     out_for_delivery: 'completed',
   };
   const nextStatus = order ? next[order.status] : undefined;
-  async function update(status: OrderStatus) {
+  // The order dialog shows a failure inline, so no notification is needed.
+  const update = async (status: OrderStatus) => {
     if (!order) return;
     try {
-      await mutate(`/orders/${order.id}/status`, { status });
-      setReject(false);
-    } catch {}
-  }
+      await mutate(`/orders/${order.id}/status`, { status }, undefined, {
+        quiet: true,
+        success:
+          status === 'accepted'
+            ? `Order ${order.reference} accepted.`
+            : status === 'rejected'
+              ? `Order ${order.reference} rejected.`
+              : `Order ${order.reference} marked ${label(status).toLowerCase()}.`,
+      });
+    } catch (e) {
+      if (shown.current !== order.id) {
+        clearError();
+        notify(`Order ${order.reference}: ${(e as Error).message}`, 'error');
+      }
+      throw e;
+    }
+  };
   return (
     <>
       <Modal
@@ -837,22 +860,31 @@ function OrderDetails({ order, onClose }: { order: Order | null; onClose: () => 
             {nextStatus && (
               <div className="mt-6 flex gap-2.5">
                 {order.status === 'pending' && (
-                  <button className="btn" disabled={busy} onClick={() => setReject(true)}>
+                  <button
+                    className="btn"
+                    onClick={() => {
+                      setRejectError('');
+                      setReject(true);
+                    }}
+                  >
                     Reject order
                   </button>
                 )}
-                <button
-                  className="btn btn-primary flex-1"
-                  disabled={busy}
-                  onClick={() => void update(nextStatus)}
+                <ActionButton
+                  className="btn-primary flex-1"
+                  loading={pending === `status-${order.id}`}
+                  loadingLabel={nextStatus === 'accepted' ? 'Accepting…' : 'Updating…'}
+                  onClick={() =>
+                    void run(`status-${order.id}`, () => update(nextStatus)).catch(
+                      () => undefined,
+                    )
+                  }
                 >
-                  {busy
-                    ? 'Updating…'
-                    : nextStatus === 'accepted'
-                      ? 'Accept order'
-                      : `Mark ${label(nextStatus).toLowerCase()}`}
+                  {nextStatus === 'accepted'
+                    ? 'Accept order'
+                    : `Mark ${label(nextStatus).toLowerCase()}`}
                   <ArrowRight className="size-4" />
-                </button>
+                </ActionButton>
               </div>
             )}
           </>
@@ -863,8 +895,22 @@ function OrderDetails({ order, onClose }: { order: Order | null; onClose: () => 
         onOpenChange={setReject}
         title="Reject this order?"
         description="The order will be marked rejected. In a live workspace the customer will receive an update."
-        onConfirm={() => void update('rejected')}
-        busy={busy}
+        onConfirm={() => {
+          const target = order?.id;
+          setRejectError('');
+          void run(`reject-${target}`, async () => {
+            // The confirmation is shared by all orders: only answer it for this order.
+            try {
+              await update('rejected');
+              if (shown.current === target) setReject(false);
+            } catch (e) {
+              if (shown.current === target) setRejectError((e as Error).message);
+            }
+          });
+        }}
+        busy={pending === `reject-${order?.id}`}
+        busyLabel="Rejecting…"
+        error={rejectError}
         confirmLabel="Reject order"
       />
     </>
@@ -872,7 +918,8 @@ function OrderDetails({ order, onClose }: { order: Order | null; onClose: () => 
 }
 
 function CallConfirmation({ order }: { order: Order }) {
-  const { mutate, busy } = useWorkspace();
+  const { mutate } = useWorkspace();
+  const { pending, run } = useAction();
   const [outcome, setOutcome] = useState<'confirmed' | 'unreachable' | 'declined'>(
     order.phoneConfirmation?.outcome ?? 'confirmed',
   );
@@ -922,17 +969,23 @@ function CallConfirmation({ order }: { order: Order }) {
           onChange={(e) => setNote(e.target.value)}
         />
       </Field>
-      <button
-        className="btn"
-        disabled={busy}
+      <ActionButton
+        loading={pending === 'call'}
+        loadingLabel="Recording…"
         onClick={() =>
-          void mutate('/orders/' + order.id + '/call', { outcome, addressVerified, note }).catch(
-            () => {},
-          )
+          // The order dialog shows a failure inline.
+          void run('call', () =>
+            mutate(
+              '/orders/' + order.id + '/call',
+              { outcome, addressVerified, note },
+              undefined,
+              { dialog: true, success: 'Call outcome recorded.' },
+            ),
+          ).catch(() => undefined)
         }
       >
         Record call outcome
-      </button>
+      </ActionButton>
     </section>
   );
 }

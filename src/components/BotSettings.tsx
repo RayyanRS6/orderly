@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import {
   ArrowDown,
   ArrowUp,
+  Check,
   ExternalLink,
   PlugZap,
   Plus,
@@ -16,17 +17,17 @@ import type {
   ModelOption,
   Provider,
 } from '../shared/types';
-import { botConfig, MAX_BOT_INSTRUCTIONS } from '../shared/bot';
+import { botConfig, MAX_BOT_INSTRUCTIONS, normalizeBotConfig, sameBotConfig } from '../shared/bot';
 import {
   KNOWN_MODEL_RATES,
   MODEL_DEFAULTS,
   PROVIDER_NAMES,
   recommendedModel,
 } from '../shared/models';
-import { useWorkspace } from '../lib/workspace';
+import { useAction, useWorkspace } from '../lib/workspace';
 import { api } from '../lib/api';
-import { label, shortDate } from '../lib/utils';
-import { Badge, ConfirmDialog, CustomSelect, ErrorNotice, Field, PageHeading } from './ui';
+import { cn, label, shortDate } from '../lib/utils';
+import { ActionButton, Badge, ConfirmDialog, CustomSelect, Field, PageHeading } from './ui';
 
 const KEY_HINTS: Record<Provider, { placeholder: string; url: string; pricing: string }> = {
   anthropic: {
@@ -48,51 +49,63 @@ const KEY_HINTS: Record<Provider, { placeholder: string; url: string; pricing: s
 };
 
 export function BotSettings() {
-  const { data, mutate, busy, navigate } = useWorkspace();
+  const { data, mutate, navigate, notify } = useWorkspace();
+  const { pending, run } = useAction();
   const [draft, setDraft] = useState(() => botConfig(data.company, true));
+  // The saved draft (at `revision`) that the edits on screen started from.
+  const [base, setBase] = useState(draft);
   const [revision, setRevision] = useState(data.company.bot?.revision ?? 0);
+  const [restoring, setRestoring] = useState<number>();
+  const [restoreError, setRestoreError] = useState('');
   const [ai, setAi] = useState(data.company.ai);
   const [approved, setApproved] = useState(data.company.privacy?.aiDataApproved ?? false);
   const [apiKey, setApiKey] = useState('');
-  const [connecting, setConnecting] = useState(false);
   const [removing, setRemoving] = useState(false);
+  const [removeError, setRemoveError] = useState('');
   const [catalog, setCatalog] = useState<ModelOption[]>([]);
   const [checkedAt, setCheckedAt] = useState('');
   const [catalogNote, setCatalogNote] = useState('');
-  const [error, setError] = useState('');
-  const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState(false);
   const owner = data.role !== 'staff';
-  const admin = data.role === 'admin';
-  const changed =
-    JSON.stringify(draft) !==
-    JSON.stringify(data.company.bot?.draft ?? botConfig(data.company, true));
+  const published = data.company.bot?.published;
+  // Compared by meaning: the database reorders fields and the server trims text.
+  const changed = !sameBotConfig(draft, base);
+  const live = !!published && sameBotConfig(draft, published.config);
+  // Someone saved elsewhere (another tab or owner) and there are no edits here: follow along.
+  useEffect(() => {
+    const latest = data.company.bot?.revision ?? 0;
+    if (latest === revision || changed) return;
+    const fresh = botConfig(data.company, true);
+    setRevision(latest);
+    setBase(fresh);
+    setDraft(fresh);
+  }, [data.company.bot?.revision]);
+  // After a save: the server's copy becomes the new starting point. Anything typed while
+  // it was saving stays on screen as an unsaved change instead of being overwritten.
+  const adopt = (saved: Settings, sent: BotConfig) => {
+    const fresh = normalizeBotConfig(saved.draft);
+    setRevision(saved.revision);
+    setBase(fresh);
+    setDraft((current) => (current === sent ? fresh : current));
+  };
   const usesAi = ai.provider !== 'mock';
+  // Every business connects its own key. There is no shared Orderly key.
   const savedKey =
     usesAi &&
-    (ai.keyMode === 'own'
-      ? !!data.integrations?.find((integration) => integration.kind === ai.provider)?.configured
-      : data.company.ai.keyMode === 'platform' &&
-        data.company.ai.provider === ai.provider &&
-        !!data.aiConnection?.configured);
+    !!data.integrations?.find((integration) => integration.kind === ai.provider)?.configured;
   const connected =
     data.company.ai.provider !== 'mock' &&
     !!data.readiness?.find((check) => check.id === 'model')?.ready;
   const sameAsSaved =
     ai.provider === data.company.ai.provider &&
     ai.model === data.company.ai.model &&
-    ai.keyMode === data.company.ai.keyMode &&
     JSON.stringify(ai.pricing) === JSON.stringify(data.company.ai.pricing) &&
     !apiKey.trim();
-  const canConnect =
-    usesAi && approved && !!ai.model && (ai.keyMode === 'platform' || savedKey || !!apiKey.trim());
-  const update = (patch: Partial<BotConfig>) => {
-    setDraft({ ...draft, ...patch });
-    setNotice('');
-  };
+  const canConnect = usesAi && approved && !!ai.model && (savedKey || !!apiKey.trim());
+  const update = (patch: Partial<BotConfig>) => setDraft({ ...draft, ...patch });
   async function discover(refresh = false) {
-    // Models can only be listed once this business has a key the server can use.
-    if (!usesAi || (!savedKey && !(admin && ai.keyMode === 'platform'))) {
+    // Models can only be listed once this business has saved its own key.
+    if (!usesAi || !savedKey) {
       setCatalog([]);
       setCatalogNote(usesAi ? 'The full model list appears after the key is connected.' : '');
       return;
@@ -101,7 +114,7 @@ export function BotSettings() {
     setCatalogNote('');
     try {
       const result = await api<{ items: ModelOption[]; checkedAt: string }>(
-        `/models?provider=${ai.provider}&keyMode=${ai.keyMode}&refresh=${refresh}`,
+        `/models?provider=${ai.provider}&refresh=${refresh}`,
         data.company.id,
       );
       setCatalog(result.items);
@@ -115,45 +128,79 @@ export function BotSettings() {
   }
   useEffect(() => {
     if (owner) void discover();
-  }, [ai.provider, ai.keyMode, savedKey]);
-  async function connect() {
-    setConnecting(true);
-    setError('');
-    setNotice('');
-    try {
-      await mutate('/ai/connect', {
-        provider: ai.provider,
-        model: ai.model,
-        keyMode: ai.keyMode,
-        approve: true,
-        monthlyBudgetUsd: ai.monthlyBudgetUsd,
-        ...(apiKey.trim() && ai.keyMode === 'own' && { apiKey: apiKey.trim() }),
-        ...(ai.pricing && { pricing: ai.pricing }),
-      });
-      setApiKey('');
-      setNotice(
-        `Connected. ${PROVIDER_NAMES[ai.provider]} ${ai.model} answered a test message, and the bot now uses it.`,
+  }, [ai.provider, savedKey]);
+  // Failures already show as a notification (from mutate); nothing else to do here.
+  const act = (key: string, work: () => Promise<unknown>) =>
+    void run(key, work).catch(() => undefined);
+  const connect = () =>
+    act('connect', async () => {
+      await mutate(
+        '/ai/connect',
+        {
+          provider: ai.provider,
+          model: ai.model,
+          approve: true,
+          monthlyBudgetUsd: ai.monthlyBudgetUsd,
+          ...(apiKey.trim() && { apiKey: apiKey.trim() }),
+          ...(ai.pricing && { pricing: ai.pricing }),
+        },
+        undefined,
+        {
+          success: `Connected. ${PROVIDER_NAMES[ai.provider]} ${ai.model} answered a test message, and the bot now uses it.`,
+        },
       );
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setConnecting(false);
-    }
-  }
-  async function action(work: () => Promise<unknown>, message: string) {
-    setError('');
-    setNotice('');
-    try {
-      await work();
-      setNotice(message);
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  }
-  async function saveDraft() {
-    const saved = await mutate<Settings>('/bot/draft', { config: draft, revision }, 'PUT');
-    setRevision(saved.revision);
-  }
+      setApiKey('');
+    });
+  const saveDraft = () =>
+    act('draft', async () => {
+      const sent = draft;
+      const saved = await mutate<Settings>(
+        '/bot/draft',
+        { config: sent, revision },
+        'PUT',
+        {
+          success: published
+            ? `Draft saved. Customers keep seeing version ${published.version} until you publish.`
+            : 'Draft saved. Publish it when you want customers to get it.',
+        },
+      );
+      adopt(saved, sent);
+    });
+  // One click: the settings on screen are saved and published together.
+  const publish = () =>
+    act('publish', async () => {
+      const sent = draft;
+      const saved = await mutate<Settings>('/bot/publish', { revision, config: sent });
+      adopt(saved, sent);
+      notify(
+        `Published version ${saved.published?.version}. Customers now get these settings.${
+          data.company.botEnabled ? '' : ' Automatic replies are still paused.'
+        }`,
+      );
+    });
+  // Publishes an older version again; it also replaces the draft.
+  const restore = (version: number) =>
+    act(`restore-${version}`, async () => {
+      const sent = draft;
+      setRestoreError('');
+      try {
+        const saved = await mutate<Settings>(
+          '/bot/publish',
+          { revision, restoreVersion: version },
+          undefined,
+          {
+            dialog: true,
+            success: `Version ${version} restored. Customers now get it as version ${
+              (published?.version ?? 0) + 1
+            }.`,
+          },
+        );
+        adopt(saved, sent);
+        setRestoring(undefined);
+      } catch (e) {
+        setRestoreError((e as Error).message);
+      }
+    });
   const items = catalog.some((m) => m.id === ai.model)
     ? catalog
     : [
@@ -176,13 +223,39 @@ export function BotSettings() {
         title={`Remove the saved ${PROVIDER_NAMES[ai.provider]} key?`}
         description="Automatic replies pause and the bot stops using this key until you connect another one. The key still works in your provider account; revoke it there if you no longer need it."
         confirmLabel="Remove key"
-        busy={busy}
+        busy={pending === 'remove-key'}
+        busyLabel="Removing…"
+        error={removing ? removeError : undefined}
         onConfirm={() =>
-          void action(async () => {
-            await mutate(`/integrations/${ai.provider}`, undefined, 'DELETE');
-            setRemoving(false);
-          }, 'Saved key removed. Paste a new key to connect again.')
+          act('remove-key', async () => {
+            setRemoveError('');
+            try {
+              await mutate(`/integrations/${ai.provider}`, undefined, 'DELETE', {
+                dialog: true,
+                success: 'Saved key removed. Paste a new key to connect again.',
+              });
+              setRemoving(false);
+            } catch (e) {
+              setRemoveError((e as Error).message);
+            }
+          })
         }
+      />
+      <ConfirmDialog
+        open={restoring !== undefined}
+        onOpenChange={(open) => {
+          if (!open) setRestoring(undefined);
+          setRestoreError('');
+        }}
+        title={`Restore version ${restoring}?`}
+        description={`Customers get version ${restoring} right away. The settings on this page are not published, and they will be replaced by version ${restoring}. To keep them, publish them first.`}
+        confirmLabel={`Restore version ${restoring}`}
+        busy={pending === `restore-${restoring}`}
+        busyLabel="Restoring…"
+        error={restoreError}
+        onConfirm={() => {
+          if (restoring !== undefined) restore(restoring);
+        }}
       />
       <PageHeading
         title="Bot settings"
@@ -192,15 +265,6 @@ export function BotSettings() {
           Test saved draft
         </button>
       </PageHeading>
-      <ErrorNotice message={error} />
-      {notice && (
-        <p
-          role="status"
-          className="mb-4 rounded-xl border border-success-700/15 bg-success-700/[0.07] p-4 text-[13px] text-success-800"
-        >
-          {notice}
-        </p>
-      )}
       <section className="card mb-6 p-5 sm:p-6">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className="panel-title">Live readiness</h2>
@@ -227,26 +291,30 @@ export function BotSettings() {
           inbound message and a staff reply with your own test number before your first customer.
         </p>
         {owner && (
-          <button
-            disabled={busy}
-            className="btn mt-4"
+          <ActionButton
+            className="mt-4"
+            loading={pending === 'automation'}
+            loadingLabel={data.company.botEnabled ? 'Pausing…' : 'Enabling…'}
             onClick={() =>
-              void action(
-                () =>
-                  mutate(
-                    `/companies/${data.company.id}`,
-                    { ...data.company, botEnabled: !data.company.botEnabled },
-                    'PUT',
-                  ),
-                data.company.botEnabled ? 'Automation paused.' : 'Automation enabled.',
+              act('automation', () =>
+                mutate(
+                  `/companies/${data.company.id}`,
+                  { ...data.company, botEnabled: !data.company.botEnabled },
+                  'PUT',
+                  {
+                    success: data.company.botEnabled
+                      ? 'Automatic replies paused.'
+                      : 'Automatic replies are on.',
+                  },
+                ),
               )
             }
           >
             {data.company.botEnabled ? 'Pause automation' : 'Enable automation'}
-          </button>
+          </ActionButton>
         )}
       </section>
-      <fieldset disabled={!owner || busy} className="min-w-0 space-y-6 disabled:opacity-70">
+      <fieldset disabled={!owner} className="min-w-0 space-y-6 disabled:opacity-70">
         <section className="card p-5 sm:p-6 space-y-5" aria-labelledby="ai-model-title">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 id="ai-model-title" className="panel-title">
@@ -278,11 +346,6 @@ export function BotSettings() {
                   setAi({
                     ...ai,
                     provider,
-                    keyMode: saved
-                      ? data.company.ai.keyMode
-                      : provider === 'mock'
-                        ? 'platform'
-                        : 'own',
                     model: saved ? data.company.ai.model : MODEL_DEFAULTS[provider],
                     pricing: saved ? data.company.ai.pricing : undefined,
                   });
@@ -315,7 +378,7 @@ export function BotSettings() {
                 />
               </Field>
             )}
-            {usesAi && ai.keyMode === 'own' && (
+            {usesAi && (
               <div className="sm:col-span-2">
                 <Field
                   label={`${PROVIDER_NAMES[ai.provider]} API key for ${data.company.name}`}
@@ -345,13 +408,6 @@ export function BotSettings() {
                   <ExternalLink className="size-3" />
                 </a>
               </div>
-            )}
-            {usesAi && ai.keyMode === 'platform' && (
-              <p className="rounded-xl border border-white bg-white/60 p-3 text-[13px] leading-relaxed text-stone-600 sm:col-span-2">
-                This business uses Orderly’s shared {PROVIDER_NAMES[ai.provider]} key, which the
-                platform administrator sets on the server.{' '}
-                {savedKey ? 'It is available.' : 'It is not set on the server yet.'}
-              </p>
             )}
             <Field
               label="Monthly AI spending limit (USD)"
@@ -386,79 +442,86 @@ export function BotSettings() {
           )}
           <div className="flex flex-wrap items-center gap-3">
             {usesAi ? (
-              <button
-                className="btn btn-primary"
-                disabled={!canConnect || connecting}
-                onClick={() => void connect()}
+              <ActionButton
+                className="btn-primary"
+                disabled={!canConnect}
+                loading={pending === 'connect'}
+                loadingLabel="Checking the key and testing a reply…"
+                onClick={connect}
               >
                 <PlugZap className="size-4" />
-                {connecting
-                  ? 'Checking the key and testing a reply…'
-                  : connected && sameAsSaved
-                    ? 'Test again'
-                    : 'Connect and test'}
-              </button>
+                {connected && sameAsSaved ? 'Test again' : 'Connect and test'}
+              </ActionButton>
             ) : data.company.ai.provider === 'mock' ? (
               <p className="text-sm text-stone-500">
                 AI is off. Choose a provider above to connect one.
               </p>
             ) : (
-              <button
-                className="btn btn-primary"
+              <ActionButton
+                className="btn-primary"
+                loading={pending === 'ai-off'}
+                loadingLabel="Turning AI off…"
                 onClick={() =>
-                  void action(
-                    () =>
-                      mutate(
-                        `/companies/${data.company.id}`,
-                        {
-                          ...data.company,
-                          botEnabled: false,
-                          ai: {
-                            provider: 'mock',
-                            model: MODEL_DEFAULTS.mock,
-                            keyMode: 'platform',
-                            monthlyBudgetUsd: ai.monthlyBudgetUsd,
-                          },
+                  act('ai-off', () =>
+                    mutate(
+                      `/companies/${data.company.id}`,
+                      {
+                        ...data.company,
+                        botEnabled: false,
+                        ai: {
+                          provider: 'mock',
+                          model: MODEL_DEFAULTS.mock,
+                          monthlyBudgetUsd: ai.monthlyBudgetUsd,
                         },
-                        'PUT',
-                      ),
-                    'AI turned off. Test chats use built-in rules only, and automatic replies are paused.',
+                      },
+                      'PUT',
+                      {
+                        success:
+                          'AI turned off. Test chats use built-in rules only, and automatic replies are paused.',
+                      },
+                    ),
                   )
                 }
               >
                 Turn AI off
-              </button>
+              </ActionButton>
             )}
             {data.company.ai.provider !== 'mock' &&
               ai.monthlyBudgetUsd !== data.company.ai.monthlyBudgetUsd && (
-                <button
-                  className="btn"
+                <ActionButton
+                  loading={pending === 'limit'}
+                  loadingLabel="Saving…"
                   onClick={() =>
-                    void action(
-                      () =>
-                        mutate(
-                          `/companies/${data.company.id}`,
-                          {
-                            ...data.company,
-                            ai: { ...data.company.ai, monthlyBudgetUsd: ai.monthlyBudgetUsd },
-                          },
-                          'PUT',
-                        ),
-                      'Spending limit saved.',
+                    act('limit', () =>
+                      mutate(
+                        `/companies/${data.company.id}`,
+                        {
+                          ...data.company,
+                          ai: { ...data.company.ai, monthlyBudgetUsd: ai.monthlyBudgetUsd },
+                        },
+                        'PUT',
+                        { success: 'Spending limit saved.' },
+                      ),
                     )
                   }
                 >
                   <Save className="size-4" />
                   Save limit only
-                </button>
+                </ActionButton>
               )}
-            {savedKey && ai.keyMode === 'own' && (
-              <button className="btn btn-quiet text-red-700" onClick={() => setRemoving(true)}>
+            {savedKey && (
+              <button
+                className="btn btn-quiet text-red-700"
+                onClick={() => {
+                  setRemoveError('');
+                  setRemoving(true);
+                }}
+              >
                 Remove saved key
               </button>
             )}
           </div>
-          {usesAi && !canConnect && !connecting && (
+          {usesAi && !canConnect && pending !== 'connect' && (
             <p className="text-xs text-brand-700">
               {!approved ? 'Tick the agreement to continue.' : 'Paste the API key to continue.'}
             </p>
@@ -476,25 +539,8 @@ export function BotSettings() {
               className="rounded-xl border border-white bg-white/50 p-4"
             >
               <summary className="cursor-pointer text-sm font-semibold">
-                Advanced{admin ? ': shared key, prices and model list' : ': prices and model list'}
+                Advanced: prices and model list
               </summary>
-              {admin && (
-                <label className="mt-3 flex items-start gap-3 text-sm leading-6">
-                  <input
-                    type="checkbox"
-                    className="mt-1 size-4 shrink-0 accent-brand-500"
-                    checked={ai.keyMode === 'platform'}
-                    onChange={(e) => {
-                      setApiKey('');
-                      setAi({ ...ai, keyMode: e.target.checked ? 'platform' : 'own' });
-                    }}
-                  />
-                  <span>
-                    Use Orderly’s shared key instead of this business’s own key. You pay for its
-                    usage. Administrators only.
-                  </span>
-                </label>
-              )}
               <p className="my-3 text-xs leading-5 text-stone-500">
                 Token prices in USD per million tokens. Known models are filled in automatically;
                 enter prices only for a model marked “prices required”. They are used to reserve the
@@ -526,12 +572,8 @@ export function BotSettings() {
                 ))}
               </div>
               <div className="mt-3 flex flex-wrap items-center gap-4">
-                <button
-                  className="btn"
-                  disabled={loading || !savedKey}
-                  onClick={() => void discover(true)}
-                >
-                  <RefreshCw className="size-4" />
+                <button className="btn" disabled={!savedKey} onClick={() => void discover(true)}>
+                  <RefreshCw className={cn('size-4', loading && 'animate-spin')} />
                   {loading ? 'Loading…' : 'Refresh model list'}
                 </button>
                 <a
@@ -549,7 +591,9 @@ export function BotSettings() {
         <section className="card p-5 sm:p-6 space-y-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="panel-title">Behavior draft</h2>
-            <Badge>{changed ? 'Unsaved changes' : `Saved revision ${revision}`}</Badge>
+            <Badge tone={changed ? 'amber' : 'neutral'}>
+              {changed ? 'Unsaved changes' : 'All changes saved'}
+            </Badge>
           </div>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Assistant name">
@@ -887,27 +931,54 @@ export function BotSettings() {
             </div>
           ))}
         </section>
-        <div className="flex flex-wrap gap-3">
-          <button
-            className="btn"
-            onClick={() => void action(saveDraft, 'Draft saved. Test it before publishing.')}
-          >
-            <Save className="size-4" />
-            Save draft
-          </button>
-          <button
-            className="btn btn-primary"
-            disabled={changed}
-            onClick={() =>
-              void action(async () => {
-                const saved = await mutate<Settings>('/bot/publish', { revision });
-                setRevision(saved.revision);
-              }, 'Published. Automation keeps its current enabled/paused state.')
-            }
-          >
-            Publish saved draft
-          </button>
-        </div>
+        <section
+          className="card flex flex-wrap items-center justify-between gap-4 p-5 sm:p-6"
+          aria-label="Publish"
+        >
+          <div className="min-w-0 text-sm" aria-live="polite">
+            <p className="font-semibold text-ink">
+              {live
+                ? `Customers see these settings (version ${published?.version}).`
+                : published
+                  ? `Customers see version ${published.version}. The settings above are not live yet.`
+                  : 'Nothing is published yet. Customers get the default settings.'}
+            </p>
+            <p className="mt-1 text-stone-500">
+              {live && !changed
+                ? 'Change something above to publish a new version.'
+                : 'Publish saves and makes these settings live in one step. You can test a saved draft first in Test your bot.'}
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-3">
+            <ActionButton
+              loading={pending === 'draft'}
+              loadingLabel="Saving…"
+              disabled={!changed}
+              onClick={saveDraft}
+            >
+              {changed ? <Save className="size-4" /> : <Check className="size-4" />}
+              {changed ? 'Save draft' : 'Draft saved'}
+            </ActionButton>
+            <ActionButton
+              className="btn-primary"
+              loading={pending === 'publish'}
+              loadingLabel="Publishing…"
+              disabled={live && !changed}
+              onClick={publish}
+            >
+              {live && !changed ? (
+                <>
+                  <Check className="size-4" />
+                  Published
+                </>
+              ) : changed ? (
+                'Save and publish'
+              ) : (
+                'Publish'
+              )}
+            </ActionButton>
+          </div>
+        </section>
         {!!data.company.bot?.history.length && (
           <section className="card p-5 sm:p-6">
             <h2 className="panel-title">Published history</h2>
@@ -921,21 +992,18 @@ export function BotSettings() {
                     Version {v.version} · {shortDate(v.publishedAt)}
                   </span>
                   {v.version !== data.company.bot?.published?.version && (
-                    <button
-                      className="btn"
-                      onClick={() =>
-                        void action(async () => {
-                          const s = await mutate<Settings>('/bot/publish', {
-                            revision,
-                            restoreVersion: v.version,
-                          });
-                          setDraft(s.draft);
-                          setRevision(s.revision);
-                        }, 'Previous configuration restored as a new version.')
-                      }
+                    <ActionButton
+                      loading={pending === `restore-${v.version}`}
+                      loadingLabel="Restoring…"
+                      onClick={() => {
+                        // A saved draft or edits that are not live would be replaced: ask first.
+                        setRestoreError('');
+                        if (live && !changed) restore(v.version);
+                        else setRestoring(v.version);
+                      }}
                     >
                       Restore version {v.version}
-                    </button>
+                    </ActionButton>
                   )}
                 </div>
               ))}

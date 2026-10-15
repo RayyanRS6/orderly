@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { createApp } from '../server/app';
 import { MemoryRepository } from '../server/repository';
+import { encryptSecret } from '../server/security';
 import { modelFingerprint } from '../server/integrations/model-catalog';
 import { defaultBot } from '../src/shared/bot';
 import { seedCompanies, seedProducts } from '../src/shared/seed';
@@ -461,7 +462,12 @@ describe('configured model pipeline', () => {
     vi.stubEnv('APP_MODE', 'demo');
     vi.stubEnv('ORDERLY_RUNTIME', '');
     vi.stubEnv('VERCEL', '');
-    vi.stubEnv('GOOGLE_API_KEY', 'fictional-test-key');
+    vi.stubEnv('CREDENTIAL_ENCRYPTION_KEY', Buffer.alloc(32, 7).toString('base64'));
+    await repo.saveIntegration(
+      company.id,
+      { kind: 'gemini', configured: true, status: 'connected', config: {} },
+      encryptSecret('fictional-test-key'),
+    );
     const configured = {
       ...company,
       botEnabled: true,
@@ -469,7 +475,6 @@ describe('configured model pipeline', () => {
         ...company.ai,
         provider: 'gemini' as const,
         model: 'gemini-3.5-flash-lite',
-        keyMode: 'platform' as const,
       },
       privacy: { aiDataApproved: true, retentionDays: 0 },
       bot: {

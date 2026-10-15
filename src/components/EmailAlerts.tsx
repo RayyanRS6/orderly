@@ -1,14 +1,21 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api';
-import { useWorkspace } from '../lib/workspace';
+import { useAction, useWorkspace } from '../lib/workspace';
 import type { AlertPreferences } from '../shared/types';
-import { ErrorNotice, Field } from './ui';
+import { ActionButton, ErrorNotice, Field } from './ui';
 export function EmailAlerts() {
-  const { data } = useWorkspace();
+  const { data, notify } = useWorkspace();
+  const { pending, run } = useAction();
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const [preferences, setPreferences] = useState<AlertPreferences>();
   const [enabled, setEnabled] = useState(false);
   const [minutes, setMinutes] = useState(10);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   useEffect(() => {
@@ -28,29 +35,41 @@ export function EmailAlerts() {
       active = false;
     };
   }, [data.company.id]);
-  async function save() {
-    setBusy(true);
-    setError('');
-    setMessage('');
-    try {
-      const p = await api<AlertPreferences>(
-        '/notifications',
-        data.company.id,
-        { enabled, responseMinutes: minutes },
-        'PUT',
-      );
-      setPreferences(p);
-      setMessage(
-        p.enabled
+  // This sits inside the Staff alerts dialog, which hides notifications from screen
+  // readers, so the result shows here; if the dialog was closed meanwhile, as a notification.
+  const save = () =>
+    run('save', async () => {
+      setError('');
+      setMessage('');
+      try {
+        const p = await api<AlertPreferences>(
+          '/notifications',
+          data.company.id,
+          { enabled, responseMinutes: minutes },
+          'PUT',
+        );
+        const done = p.enabled
           ? 'Email alerts enabled for your verified account email.'
-          : 'Email alerts turned off.',
-      );
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
+          : 'Email alerts turned off.';
+        if (!mounted.current) return notify(done);
+        setPreferences(p);
+        setMessage(done);
+      } catch (e) {
+        if (!mounted.current) return notify((e as Error).message, 'error');
+        setError((e as Error).message);
+      }
+    });
+  const cannotEnable =
+    !!preferences && !preferences.enabled && (!preferences.available || !preferences.emailVerified);
+  const saveBlocked = !preferences
+    ? 'Loading your email settings…'
+    : !preferences.available && enabled
+      ? 'Email alerts are not configured on this server yet.'
+      : !preferences.enabled && !enabled
+        ? 'Tick the box above to turn email alerts on.'
+        : minutes < 5 || minutes > 120
+          ? 'Choose between 5 and 120 minutes.'
+          : undefined;
   return (
     <section className="mt-5 space-y-3 border-t border-ink/10 pt-4">
       <h3 className="font-semibold">Email escalation</h3>
@@ -75,11 +94,7 @@ export function EmailAlerts() {
           type="checkbox"
           className="mt-1 accent-brand-500"
           checked={enabled}
-          disabled={
-            busy ||
-            !preferences ||
-            (!preferences.enabled && (!preferences.available || !preferences.emailVerified))
-          }
+          disabled={!preferences || cannotEnable}
           onChange={(e) => {
             setEnabled(e.target.checked);
             setMessage('');
@@ -97,32 +112,25 @@ export function EmailAlerts() {
           min="5"
           max="120"
           value={minutes}
-          disabled={busy || !preferences}
+          disabled={!preferences}
           onChange={(e) => {
             setMinutes(Number(e.target.value));
             setMessage('');
           }}
         />
       </Field>
-      <button
-        className="btn"
-        disabled={
-          busy ||
-          !preferences ||
-          (!preferences.available && enabled) ||
-          (!preferences.enabled && !enabled) ||
-          minutes < 5 ||
-          minutes > 120
-        }
+      <ActionButton
+        disabled={!!saveBlocked}
+        title={saveBlocked}
+        loading={pending === 'save'}
+        loadingLabel="Saving…"
         onClick={() => void save()}
       >
-        {busy ? 'Saving…' : 'Save email preferences'}
-      </button>
-      {message && (
-        <p role="status" className="text-xs text-green-800">
-          {message}
-        </p>
-      )}
+        Save email preferences
+      </ActionButton>
+      <p role="status" className="text-xs text-green-800">
+        {message}
+      </p>
     </section>
   );
 }

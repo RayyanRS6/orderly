@@ -64,18 +64,15 @@ export async function providerKey(
   provider = company.ai.provider,
 ): Promise<string> {
   if (provider === 'mock') throw new PublicError('The demo provider does not use an API key.');
-  if (company.ai.keyMode === 'own') {
-    const encrypted = await repo.getSecret(company.id, provider);
-    if (!encrypted)
-      throw new PublicError(
-        `Paste this restaurant’s ${PROVIDER_NAMES[provider]} API key in Bot settings → AI model.`,
-        409,
-      );
-    return decryptSecret(encrypted);
-  }
-  const key = process.env[`${provider === 'gemini' ? 'GOOGLE' : provider.toUpperCase()}_API_KEY`];
-  if (!key) throw new PublicError(`The platform ${provider} API key is not configured.`, 409);
-  return key;
+  // Every business answers with its own key. There is no Orderly-provided fallback, and
+  // server environment keys are never read.
+  const encrypted = await repo.getSecret(company.id, provider);
+  if (!encrypted)
+    throw new PublicError(
+      `Paste this restaurant’s ${PROVIDER_NAMES[provider]} API key in Bot settings → AI model.`,
+      409,
+    );
+  return decryptSecret(encrypted);
 }
 function makeModel(provider: Provider, model: string, apiKey: string) {
   if (provider === 'openai') return createOpenAI({ apiKey })(model);

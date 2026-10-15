@@ -1,5 +1,4 @@
-import { useState } from 'react';
-import { PlatformBudgetSettings } from './PlatformBudgetSettings';
+import { useRef, useState } from 'react';
 import {
   ArrowRight,
   Bot,
@@ -19,9 +18,19 @@ import {
 import type { Company, Integration, IntegrationKind, Provider } from '../shared/types';
 import { money } from '../shared/types';
 import { MODEL_DEFAULTS } from '../shared/models';
-import { useWorkspace } from '../lib/workspace';
+import { useAction, useWorkspace } from '../lib/workspace';
 import { cn, initials, label } from '../lib/utils';
-import { Badge, ConfirmDialog, CustomSelect, Empty, Field, Modal, PageHeading, Status } from './ui';
+import {
+  ActionButton,
+  Badge,
+  ConfirmDialog,
+  CustomSelect,
+  Empty,
+  Field,
+  Modal,
+  PageHeading,
+  Status,
+} from './ui';
 import { WhatsAppSignup } from './WhatsAppSignup';
 import { WhatsAppConnection } from './WhatsAppConnection';
 
@@ -33,7 +42,9 @@ const providers: Record<Provider, { name: string; model: string }> = {
 };
 
 export function Settings() {
-  const { data, mutate, busy, navigate } = useWorkspace();
+  const { data, mutate, navigate } = useWorkspace();
+  const { pending, run } = useAction();
+  const edits = useRef(0);
   const [draft, setDraft] = useState<Company>(() => {
     const c = structuredClone(data.company || {});
     return {
@@ -46,7 +57,6 @@ export function Settings() {
       ai: c.ai || {
         provider: 'mock',
         model: 'mock',
-        keyMode: 'platform',
         monthlyBudgetUsd: 10,
       },
       deliveryZones: c.deliveryZones || [],
@@ -62,6 +72,7 @@ export function Settings() {
       .filter((u) => u.createdAt?.startsWith(new Date().toISOString().slice(0, 7)))
       .reduce((sum, u) => sum + (u.costUsd || 0), 0);
   const update = (values: Partial<Company>) => {
+    edits.current++;
     setSaved(false);
     setDraft((d) => ({ ...d, ...values }));
   };
@@ -72,15 +83,17 @@ export function Settings() {
         description="Set the details your assistant uses in every conversation."
       />
       <form
-        onSubmit={async (e) => {
+        onSubmit={(e) => {
           e.preventDefault();
-          try {
-            await mutate(`/companies/${draft.id}`, draft, 'PUT');
-            setSaved(true);
-          } catch {}
+          const before = edits.current;
+          void run('settings', async () => {
+            await mutate(`/companies/${draft.id}`, draft, 'PUT', { success: 'Settings saved.' });
+            // Edits typed while saving are not saved yet.
+            if (edits.current === before) setSaved(true);
+          }).catch(() => undefined);
         }}
       >
-        <fieldset disabled={!canEdit || busy} className="space-y-6 disabled:opacity-70">
+        <fieldset disabled={!canEdit} className="space-y-6 disabled:opacity-70">
           <section className="card p-6">
             <div className="mb-6 flex items-center gap-3">
               <Building2 className="size-5 text-brand-500" />
@@ -382,10 +395,15 @@ export function Settings() {
             <span role="status" className="text-[13px] font-medium text-success-700">
               {saved ? 'Settings saved.' : !canEdit ? 'Only an owner can edit settings.' : ''}
             </span>
-            <button className="btn btn-primary px-6">
+            <ActionButton
+              type="submit"
+              className="btn-primary px-6"
+              loading={pending === 'settings'}
+              loadingLabel="Saving…"
+            >
               <Save className="size-4" />
-              {busy ? 'Saving…' : 'Save settings'}
-            </button>
+              Save settings
+            </ActionButton>
           </div>
         </fieldset>
       </form>
@@ -470,19 +488,16 @@ const integrationInfo: Record<
 
 export function Integrations() {
   const [disconnecting, setDisconnecting] = useState<Integration>();
-  const { data, mutate, busy, navigate } = useWorkspace();
+  const [disconnectError, setDisconnectError] = useState('');
+  const { data, mutate, navigate } = useWorkspace();
+  const { pending, run } = useAction();
   const [editing, setEditing] = useState<Integration | null>(null);
   const [config, setConfig] = useState<Record<string, string>>({});
   const [secret, setSecret] = useState('');
-  const [notice, setNotice] = useState('');
   const canEdit = data.role !== 'staff';
-  const run = async (path: string, message: string, body: Record<string, string> = {}) => {
-    setNotice('');
-    try {
-      await mutate(path, body);
-      setNotice(message);
-    } catch {}
-  };
+  // Failures show as a notification from mutate.
+  const act = (key: string, path: string, message: string) =>
+    void run(key, () => mutate(path, {}, undefined, { success: message })).catch(() => undefined);
   return (
     <>
       <ConfirmDialog
@@ -493,12 +508,24 @@ export function Integrations() {
         title="Disconnect this integration?"
         description="Automation will pause, Orderly will delete the stored credential and cancel pending delivery work for this integration. Revoke Orderly access or the API key in the provider account separately. Existing provider data is kept."
         confirmLabel="Disconnect"
-        busy={busy}
+        busy={pending === 'disconnect'}
+        busyLabel="Disconnecting…"
+        error={disconnectError}
         onConfirm={() => {
-          if (disconnecting)
-            void mutate(`/integrations/${disconnecting.kind}`, undefined, 'DELETE')
-              .then(() => setDisconnecting(undefined))
-              .catch(() => {});
+          const target = disconnecting;
+          if (!target) return;
+          setDisconnectError('');
+          void run('disconnect', async () => {
+            try {
+              await mutate(`/integrations/${target.kind}`, undefined, 'DELETE', {
+                dialog: true,
+                success: `${integrationInfo[target.kind]?.title ?? 'Integration'} disconnected.`,
+              });
+              setDisconnecting(undefined);
+            } catch (e) {
+              setDisconnectError((e as Error).message);
+            }
+          });
         }}
       />
       <PageHeading
@@ -519,14 +546,6 @@ export function Integrations() {
       </div>
       <WhatsAppConnection />
       <WhatsAppSignup />
-      {notice && (
-        <p
-          role="status"
-          className="mb-5 rounded-xl border border-success-700/15 bg-success-700/[0.07] p-4 text-[13px] text-success-800"
-        >
-          {notice}
-        </p>
-      )}
       <section className="card mb-6 p-6">
         <div className="flex items-center justify-between gap-3">
           <h2 className="panel-title">AI model</h2>
@@ -575,7 +594,7 @@ export function Integrations() {
                 <div className="mt-auto flex flex-wrap gap-2">
                   <button
                     className="btn"
-                    disabled={!canEdit || busy}
+                    disabled={!canEdit}
                     onClick={() => {
                       setEditing(integration);
                       setConfig(
@@ -593,27 +612,32 @@ export function Integrations() {
                     <ArrowRight className="size-4" />
                   </button>
                   {integration.configured && (
-                    <button
-                      className="btn btn-quiet"
-                      disabled={!canEdit || busy}
+                    <ActionButton
+                      className="btn-quiet"
+                      disabled={!canEdit}
+                      loading={pending === `test-${integration.kind}`}
+                      loadingLabel="Testing…"
                       onClick={() =>
-                        void run(
+                        act(
+                          `test-${integration.kind}`,
                           `/integrations/${integration.kind}/test`,
                           `${info.title} credentials verified. Live message delivery still needs end-to-end testing.`,
-                          { keyMode: 'own' },
                         )
                       }
                     >
                       <RefreshCw className="size-4" />
                       Test
-                    </button>
+                    </ActionButton>
                   )}
                 </div>
                 {integration.configured && (
                   <button
-                    disabled={!canEdit || busy}
+                    disabled={!canEdit}
                     className="btn mt-3 text-red-700"
-                    onClick={() => setDisconnecting(integration)}
+                    onClick={() => {
+                      setDisconnectError('');
+                      setDisconnecting(integration);
+                    }}
                   >
                     Disconnect
                   </button>
@@ -646,13 +670,13 @@ export function Integrations() {
           </div>
         </div>
         <div className="mt-5 flex flex-wrap gap-2">
-          <button
-            className="btn"
-            disabled={
-              !canEdit || busy || !data.integrations.find((i) => i.kind === 'whatsapp')?.configured
-            }
+          <ActionButton
+            disabled={!canEdit || !data.integrations.find((i) => i.kind === 'whatsapp')?.configured}
+            loading={pending === 'template'}
+            loadingLabel="Submitting…"
             onClick={() =>
-              void run(
+              act(
+                'template',
                 '/whatsapp/templates/status',
                 'Status template submitted to Meta. Check its approval in WhatsApp Manager before using it.',
               )
@@ -660,12 +684,14 @@ export function Integrations() {
           >
             <MessageCircle className="size-4" />
             Submit status template
-          </button>
-          <button
-            className="btn"
-            disabled={!canEdit || busy}
+          </ActionButton>
+          <ActionButton
+            disabled={!canEdit}
+            loading={pending === 'retry'}
+            loadingLabel="Queuing…"
             onClick={() =>
-              void run(
+              act(
+                'retry',
                 '/jobs/retry',
                 'Failed jobs queued for another attempt. Check activity for the outcome.',
               )
@@ -673,7 +699,7 @@ export function Integrations() {
           >
             <RefreshCw className="size-4" />
             Retry failed jobs
-          </button>
+          </ActionButton>
           <button className="btn btn-quiet" onClick={() => navigate('bot')}>
             Choose your active model
             <ArrowRight className="size-4" />
@@ -694,17 +720,19 @@ export function Integrations() {
         {editing && (
           <form
             className="space-y-5"
-            onSubmit={async (e) => {
+            onSubmit={(e) => {
               e.preventDefault();
-              try {
-                await mutate(`/integrations/${editing.kind}`, {
-                  config,
-                  ...(secret.trim() ? { secret: secret.trim() } : {}),
-                });
+              // Errors show inside this dialog (Modal), so no notification is needed.
+              void run('save-connection', async () => {
+                await mutate(
+                  `/integrations/${editing.kind}`,
+                  { config, ...(secret.trim() ? { secret: secret.trim() } : {}) },
+                  undefined,
+                  { dialog: true, success: 'Connection saved. Use Test to verify account access.' },
+                );
                 setEditing(null);
                 setSecret('');
-                setNotice('Connection saved. Use Test to verify account access.');
-              } catch {}
+              }).catch(() => undefined);
             }}
           >
             {integrationInfo[editing.kind].fields.map(([key, title]) => (
@@ -755,15 +783,15 @@ export function Integrations() {
                 available, emoji, aliases, variants, modifiers. Prices in the sheet use PKR rupees.
               </p>
             )}
-            {['openai', 'anthropic', 'gemini'].includes(editing.kind) && (
-              <p className="text-xs leading-relaxed text-stone-500">
-                To use this key, choose this provider and “Business API key” in Bot settings.
-              </p>
-            )}
-            <button className="btn btn-primary w-full" disabled={busy}>
+            <ActionButton
+              type="submit"
+              className="btn-primary w-full"
+              loading={pending === 'save-connection'}
+              loadingLabel="Saving…"
+            >
               <KeyRound className="size-4" />
-              {busy ? 'Saving…' : 'Save connection'}
-            </button>
+              Save connection
+            </ActionButton>
           </form>
         )}
       </Modal>
@@ -772,7 +800,8 @@ export function Integrations() {
 }
 
 export function Businesses() {
-  const { data, mutate, busy, switchCompany } = useWorkspace();
+  const { data, mutate, switchCompany } = useWorkspace();
+  const { pending, run } = useAction();
   const [open, setOpen] = useState(false);
   const [name, setName] = useState('');
   const [address, setAddress] = useState('');
@@ -790,7 +819,6 @@ export function Businesses() {
           </button>
         )}
       </PageHeading>
-      {data.role === 'admin' && <PlatformBudgetSettings />}
       <div className="grid gap-5 md:grid-cols-2">
         {data.companies.map((company) => (
           <section key={company.id} className="card p-6 sm:p-7">
@@ -818,7 +846,7 @@ export function Businesses() {
             </div>
             <button
               className="btn w-full"
-              disabled={company.id === data.company.id || busy}
+              disabled={company.id === data.company.id}
               onClick={() => switchCompany(company.id)}
             >
               Open workspace
@@ -842,16 +870,21 @@ export function Businesses() {
       >
         <form
           className="space-y-5"
-          onSubmit={async (e) => {
+          onSubmit={(e) => {
             e.preventDefault();
-            try {
-              const company = await mutate<Company>('/companies', { name, address, phone });
+            void run('create', async () => {
+              const company = await mutate<Company>(
+                '/companies',
+                { name, address, phone },
+                undefined,
+                { dialog: true, success: `${name.trim()} created.` },
+              );
               setOpen(false);
               setName('');
               setAddress('');
               setPhone('');
               switchCompany(company.id);
-            } catch {}
+            }).catch(() => undefined);
           }}
         >
           <Field label="Business name">
@@ -874,10 +907,15 @@ export function Businesses() {
               onChange={(e) => setPhone(e.target.value)}
             />
           </Field>
-          <button className="btn btn-primary w-full" disabled={busy}>
+          <ActionButton
+            type="submit"
+            className="btn-primary w-full"
+            loading={pending === 'create'}
+            loadingLabel="Creating…"
+          >
             <Plus className="size-4" />
             Create workspace
-          </button>
+          </ActionButton>
         </form>
       </Modal>
     </>

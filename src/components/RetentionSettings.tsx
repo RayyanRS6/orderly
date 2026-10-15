@@ -1,16 +1,17 @@
 import { useEffect, useState } from 'react';
 import type { RetentionStatus } from '../shared/types';
 import { api } from '../lib/api';
-import { useWorkspace } from '../lib/workspace';
-import { ConfirmDialog, ErrorNotice, Field } from './ui';
+import { dialogOpen, useAction, useWorkspace } from '../lib/workspace';
+import { ActionButton, ConfirmDialog, ErrorNotice, Field } from './ui';
 
 export function RetentionSettings() {
-  const { data } = useWorkspace();
+  const { data, notify } = useWorkspace();
+  const { pending, run } = useAction();
   const [status, setStatus] = useState<RetentionStatus>();
   const [days, setDays] = useState('0');
   const [preview, setPreview] = useState<{ days: number; count: number }>();
   const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [saveError, setSaveError] = useState('');
   const [confirm, setConfirm] = useState(false);
   useEffect(() => {
     let active = true;
@@ -28,40 +29,39 @@ export function RetentionSettings() {
       active = false;
     };
   }, [data.company.id]);
-  async function inspect() {
-    setBusy(true);
-    setError('');
-    try {
-      const r = await api<RetentionStatus>(
-        `/privacy/retention?days=${encodeURIComponent(days)}`,
-        data.company.id,
-      );
-      setPreview({ days: Number(days), count: r.eligibleConversations });
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-  async function save() {
-    setBusy(true);
-    setError('');
-    try {
-      const r = await api<RetentionStatus>(
-        '/privacy/retention',
-        data.company.id,
-        { days: Number(days), confirmed: true },
-        'PUT',
-      );
-      setStatus(r);
-      setPreview(undefined);
-      setConfirm(false);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
+  const inspect = () =>
+    run('preview', async () => {
+      setError('');
+      try {
+        const r = await api<RetentionStatus>(
+          `/privacy/retention?days=${encodeURIComponent(days)}`,
+          data.company.id,
+        );
+        setPreview({ days: Number(days), count: r.eligibleConversations });
+      } catch (e) {
+        setError((e as Error).message);
+      }
+    });
+  const save = () =>
+    run('save', async () => {
+      setSaveError('');
+      try {
+        const r = await api<RetentionStatus>(
+          '/privacy/retention',
+          data.company.id,
+          { days: Number(days), confirmed: true },
+          'PUT',
+        );
+        setStatus(r);
+        setPreview(undefined);
+        setConfirm(false);
+        notify(r.days ? `Retention policy saved: ${r.days} days.` : 'Automatic deletion turned off.');
+      } catch (e) {
+        // The dialog stays open and shows why; if it was closed meanwhile, notify instead.
+        if (dialogOpen()) setSaveError((e as Error).message);
+        else notify((e as Error).message, 'error');
+      }
+    });
   return (
     <section className="card mb-6 p-5 sm:p-6 space-y-4">
       <h2 className="panel-title">Automatic data retention</h2>
@@ -89,17 +89,24 @@ export function RetentionSettings() {
           max="3650"
           step="1"
           value={days}
-          disabled={busy || !status}
+          disabled={!status}
           onChange={(e) => {
             setDays(e.target.value);
             setPreview(undefined);
           }}
         />
       </Field>
-      <button className="btn" disabled={busy || !status || !days} onClick={() => void inspect()}>
+      <ActionButton
+        disabled={!status || !days}
+        title={!days ? 'Enter a number of days first.' : undefined}
+        loading={pending === 'preview'}
+        loadingLabel="Checking…"
+        onClick={() => void inspect()}
+      >
         Preview policy
-      </button>
-      {preview && (
+      </ActionButton>
+      {/* A preview that arrived after the number changed belongs to another number. */}
+      {preview && preview.days === Number(days) && (
         <div className="space-y-3 text-sm">
           <p>
             {preview.days === 0
@@ -107,9 +114,13 @@ export function RetentionSettings() {
               : `${preview.count}${preview.count === 100 ? '+' : ''} conversations currently qualify for the next batch. Counts can change as customers and staff act.`}
           </p>
           <button
-            className="btn-primary"
-            disabled={busy || preview.days !== Number(days) || preview.days === status?.days}
-            onClick={() => setConfirm(true)}
+            className="btn btn-primary"
+            disabled={preview.days === status?.days}
+            title={preview.days === status?.days ? 'This is already the saved policy.' : undefined}
+            onClick={() => {
+              setSaveError('');
+              setConfirm(true);
+            }}
           >
             Save retention policy
           </button>
@@ -136,7 +147,9 @@ export function RetentionSettings() {
       <ConfirmDialog
         open={confirm}
         onOpenChange={setConfirm}
-        busy={busy}
+        busy={pending === 'save'}
+        busyLabel="Saving…"
+        error={saveError}
         title={Number(days) ? 'Enable automatic deletion?' : 'Turn off automatic deletion?'}
         description={
           Number(days)

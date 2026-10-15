@@ -68,7 +68,6 @@ describe('POST /api/ai/connect', () => {
       ok: true,
       provider: 'anthropic',
       model: 'claude-haiku-5-5',
-      keyMode: 'own',
     });
     const [url, init] = providerFetch.mock.calls[0]!;
     expect(url).toBe('https://api.anthropic.com/v1/models');
@@ -79,7 +78,6 @@ describe('POST /api/ai/connect', () => {
     expect(after.ai).toEqual({
       provider: 'anthropic',
       model: 'claude-haiku-5-5',
-      keyMode: 'own',
       monthlyBudgetUsd: 15,
     });
     expect(after.privacy?.aiDataApproved).toBe(true);
@@ -155,7 +153,8 @@ describe('POST /api/ai/connect', () => {
     );
   });
 
-  it('asks for a key when none is saved or pasted', async () => {
+  it('asks for a key when none is saved or pasted, ignoring any server key', async () => {
+    vi.stubEnv('ANTHROPIC_API_KEY', 'sk-ant-server-wide-key-0003');
     const response = await connect({});
     expect(response.status).toBe(409);
     expect((await response.json()).error).toBe(
@@ -163,10 +162,14 @@ describe('POST /api/ai/connect', () => {
     );
   });
 
-  it('never accepts a pasted key for Orderly’s shared key', async () => {
+  it('uses the pasted key when an older dashboard still asks for Orderly’s key', async () => {
     const response = await connect({ keyMode: 'platform', apiKey: key });
-    expect(response.status).toBe(400);
-    expect(providerFetch).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect((providerFetch.mock.calls[0]![1] as RequestInit).headers).toMatchObject({
+      'x-api-key': key,
+    });
+    expect(decryptSecret((await repo.getSecret(company.id, 'anthropic'))!)).toBe(key);
+    expect((await stored()).ai).not.toHaveProperty('keyMode');
   });
 });
 

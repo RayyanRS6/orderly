@@ -36,8 +36,6 @@ export interface Repository {
     companyId: string,
     address: import('../src/shared/whatsapp').WhatsAppAddress,
   ): Promise<Conversation | undefined>;
-  platformBudget(): Promise<import('../src/shared/types').PlatformBudget>;
-  configurePlatformBudget(limit: number): Promise<import('../src/shared/types').PlatformBudget>;
   alertPreferences(
     companyId: string,
     userId: string,

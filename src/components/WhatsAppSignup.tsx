@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ArrowRight, Link2 } from 'lucide-react';
 import { api } from '../lib/api';
 import { useWorkspace } from '../lib/workspace';
-import { ErrorNotice, Field } from './ui';
+import { ActionButton, ErrorNotice, Field } from './ui';
 
 type SignupConfig = { enabled: boolean; appId: string; configId: string; version: string };
 type FacebookSDK = {
@@ -32,7 +32,7 @@ function loadSDK() {
 }
 
 export function WhatsAppSignup() {
-  const { data, mutate, busy } = useWorkspace();
+  const { data, mutate } = useWorkspace();
   const [config, setConfig] = useState<SignupConfig>();
   const [ready, setReady] = useState(false);
   const [working, setWorking] = useState(false);
@@ -62,13 +62,19 @@ export function WhatsAppSignup() {
     clearPendingSignupTimer();
     current.active = false;
     setWorking(true);
-    void mutate<{ message: string }>('/whatsapp/signup', {
-      code: current.code,
-      phoneNumberId: current.phoneNumberId,
-      wabaId: current.wabaId,
-      coexistence: current.coexistence ?? false,
-      ...(current.pin ? { pin: current.pin } : {}),
-    })
+    void mutate<{ message: string }>(
+      '/whatsapp/signup',
+      {
+        code: current.code,
+        phoneNumberId: current.phoneNumberId,
+        wabaId: current.wabaId,
+        coexistence: current.coexistence ?? false,
+        ...(current.pin ? { pin: current.pin } : {}),
+      },
+      undefined,
+      // The failure shows in this section instead of a notification.
+      { quiet: true },
+    )
       .then((result) => {
         setNotice(result.message);
         setPin('');
@@ -233,14 +239,23 @@ export function WhatsAppSignup() {
               </Field>
             </div>
           )}
-          <button
-            className="btn btn-primary"
-            disabled={!ready || busy || working || (!coexistence && !!pin && pin.length !== 6)}
+          <ActionButton
+            className="btn-primary"
+            disabled={!ready || (!coexistence && !!pin && pin.length !== 6)}
+            title={
+              !ready
+                ? 'Loading Facebook sign-in…'
+                : !coexistence && !!pin && pin.length !== 6
+                  ? 'The PIN needs six digits, or leave it empty.'
+                  : undefined
+            }
+            loading={working}
+            loadingLabel="Completing setup…"
             onClick={launch}
           >
-            {working ? 'Completing setup…' : 'Continue with Facebook'}
+            Continue with Facebook
             <ArrowRight className="size-4" />
-          </button>
+          </ActionButton>
           {working && (
             <button
               className="btn btn-quiet ml-2"

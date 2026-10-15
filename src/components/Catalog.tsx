@@ -15,12 +15,23 @@ import {
 } from 'lucide-react';
 import type { Product, ProductOption } from '../shared/types';
 import { money } from '../shared/types';
-import { useWorkspace } from '../lib/workspace';
+import { useAction, useWorkspace } from '../lib/workspace';
 import { cn, shortDate } from '../lib/utils';
-import { Badge, ConfirmDialog, Empty, ErrorNotice, Field, Modal, PageHeading } from './ui';
+import {
+  ActionButton,
+  Badge,
+  ConfirmDialog,
+  Empty,
+  ErrorNotice,
+  Field,
+  Modal,
+  PageHeading,
+  Spinner,
+} from './ui';
 
 export function Catalog() {
-  const { data, mutate, busy, navigate } = useWorkspace();
+  const { data, mutate, navigate } = useWorkspace();
+  const { pending, run } = useAction();
   const [category, setCategory] = useState('All items');
   const [query, setQuery] = useState('');
   const [editing, setEditing] = useState<Product | 'new' | null>(null);
@@ -44,14 +55,20 @@ export function Catalog() {
         description="The source of truth for every price, option, and delicious possibility."
       >
         {data.company.catalogSource === 'sheets' ? (
-          <button
-            className="btn"
-            disabled={busy}
-            onClick={() => void mutate('/catalog/refresh', {}).catch(() => {})}
+          <ActionButton
+            loading={pending === 'refresh'}
+            loadingLabel="Refreshing…"
+            onClick={() =>
+              void run('refresh', () =>
+                mutate('/catalog/refresh', {}, undefined, {
+                  success: 'Menu refreshed from Google Sheets.',
+                }),
+              ).catch(() => undefined)
+            }
           >
             <RefreshCw className="size-4" />
             Refresh from Sheets
-          </button>
+          </ActionButton>
         ) : (
           editable && (
             <>
@@ -178,15 +195,24 @@ export function Catalog() {
                 {editable && (
                   <div className="flex items-center gap-3">
                     <button
-                      className="text-xs font-medium text-stone-500 hover:text-brand-600"
-                      disabled={busy}
+                      className="inline-flex items-center gap-1.5 text-xs font-medium text-stone-500 hover:text-brand-600"
+                      aria-busy={pending === `available-${product.id}` || undefined}
                       onClick={() =>
-                        void mutate('/products', {
-                          ...product,
-                          available: !product.available,
-                        }).catch(() => {})
+                        void run(`available-${product.id}`, () =>
+                          mutate(
+                            '/products',
+                            { ...product, available: !product.available },
+                            undefined,
+                            {
+                              success: product.available
+                                ? `${product.name} marked sold out.`
+                                : `${product.name} is available again.`,
+                            },
+                          ),
+                        ).catch(() => undefined)
                       }
                     >
+                      {pending === `available-${product.id}` && <Spinner className="size-3" />}
                       {product.available ? 'Mark sold out' : 'Make available'}
                     </button>
                     <button
@@ -253,18 +279,25 @@ export function Catalog() {
           if (!open) setRemoving(null);
         }}
         title={`Remove ${removing?.name || 'item'}?`}
-        description={
-          error ||
-          'This item will be removed from the menu. Previously placed orders keep their original item details.'
-        }
-        busy={busy}
-        onConfirm={async () => {
-          try {
-            await mutate(`/products/${removing!.id}`, undefined, 'DELETE');
-            setRemoving(null);
-          } catch (e) {
-            setError((e as Error).message);
-          }
+        description="This item will be removed from the menu. Previously placed orders keep their original item details."
+        busy={pending === 'delete'}
+        busyLabel="Removing…"
+        error={error}
+        onConfirm={() => {
+          const target = removing;
+          if (!target) return;
+          setError('');
+          void run('delete', async () => {
+            try {
+              await mutate(`/products/${target.id}`, undefined, 'DELETE', {
+                dialog: true,
+                success: `${target.name} removed from the menu.`,
+              });
+              setRemoving(null);
+            } catch (e) {
+              setError((e as Error).message);
+            }
+          });
         }}
       />
     </>
@@ -272,7 +305,8 @@ export function Catalog() {
 }
 
 function ProductEditor({ product, onDone }: { product?: Product; onDone: () => void }) {
-  const { data, mutate, busy } = useWorkspace();
+  const { data, mutate } = useWorkspace();
+  const { pending, run } = useAction();
   const [name, setName] = useState(product?.name || '');
   const [description, setDescription] = useState(product?.description || '');
   const [category, setCategory] = useState(product?.category || 'Mains');
@@ -298,32 +332,38 @@ function ProductEditor({ product, onDone }: { product?: Product; onDone: () => v
   return (
     <form
       className="space-y-5"
-      onSubmit={async (e) => {
+      onSubmit={(e) => {
         e.preventDefault();
         setError('');
-        try {
-          if (!name.trim() || !category.trim())
-            throw new Error('Name and category cannot be blank.');
-          await mutate('/products', {
-            ...product,
-            companyId: data.company.id,
-            name: name.trim(),
-            description,
-            category: category.trim(),
-            price: Math.round(Number(price) * 100),
-            emoji,
-            aliases: aliases
-              .split(',')
-              .map((v) => v.trim())
-              .filter(Boolean),
-            available,
-            variants,
-            modifiers,
-          });
-          onDone();
-        } catch (e) {
-          setError((e as Error).message);
+        if (!name.trim() || !category.trim()) {
+          setError('Name and category cannot be blank.');
+          return;
         }
+        // A failed save shows inside this dialog (Modal), so no notification is needed.
+        void run('save', async () => {
+          await mutate(
+            '/products',
+            {
+              ...product,
+              companyId: data.company.id,
+              name: name.trim(),
+              description,
+              category: category.trim(),
+              price: Math.round(Number(price) * 100),
+              emoji,
+              aliases: aliases
+                .split(',')
+                .map((v) => v.trim())
+                .filter(Boolean),
+              available,
+              variants,
+              modifiers,
+            },
+            undefined,
+            { dialog: true, success: `${name.trim()} saved.` },
+          );
+          onDone();
+        }).catch(() => undefined);
       }}
     >
       <div className="grid grid-cols-5 gap-4">
@@ -429,10 +469,15 @@ function ProductEditor({ product, onDone }: { product?: Product; onDone: () => v
         <button type="button" className="btn" onClick={onDone}>
           Cancel
         </button>
-        <button className="btn btn-primary" disabled={busy}>
-          {busy ? 'Saving…' : 'Save menu item'}
+        <ActionButton
+          type="submit"
+          className="btn-primary"
+          loading={pending === 'save'}
+          loadingLabel="Saving…"
+        >
+          Save menu item
           <Check className="size-4" />
-        </button>
+        </ActionButton>
       </div>
     </form>
   );
@@ -511,7 +556,8 @@ function OptionEditor({
 }
 
 function CsvImport({ onDone }: { onDone: () => void }) {
-  const { mutate, busy } = useWorkspace();
+  const { mutate } = useWorkspace();
+  const { pending, run } = useAction();
   const [csv, setCsv] = useState('');
   const [error, setError] = useState('');
   const sample =
@@ -519,15 +565,17 @@ function CsvImport({ onDone }: { onDone: () => void }) {
   return (
     <form
       className="space-y-5"
-      onSubmit={async (e) => {
+      onSubmit={(e) => {
         e.preventDefault();
         setError('');
-        try {
-          await mutate('/catalog/import', { csv });
+        // A failed import shows inside this dialog (Modal), so no notification is needed.
+        void run('import', async () => {
+          await mutate('/catalog/import', { csv }, undefined, {
+            dialog: true,
+            success: 'Menu imported.',
+          });
           onDone();
-        } catch (e) {
-          setError((e as Error).message);
-        }
+        }).catch(() => undefined);
       }}
     >
       <label className="block rounded-xl border border-dashed border-ink/15 bg-white/50 p-6 text-center">
@@ -582,10 +630,16 @@ function CsvImport({ onDone }: { onDone: () => void }) {
         <button type="button" className="btn" onClick={onDone}>
           Cancel
         </button>
-        <button className="btn btn-primary" disabled={busy || !csv.trim()}>
-          {busy ? 'Importing…' : 'Import menu'}
+        <ActionButton
+          type="submit"
+          className="btn-primary"
+          disabled={!csv.trim()}
+          loading={pending === 'import'}
+          loadingLabel="Importing…"
+        >
+          Import menu
           <Upload className="size-4" />
-        </button>
+        </ActionButton>
       </div>
     </form>
   );

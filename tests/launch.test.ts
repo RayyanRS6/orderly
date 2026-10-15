@@ -360,7 +360,6 @@ describe('launch safety and management', () => {
       // PostgreSQL jsonb does not preserve JavaScript object insertion order.
       testContext: {
         catalogSource: context.catalogSource,
-        keyMode: context.keyMode,
         model: context.model,
         provider: context.provider,
         configRevision: context.configRevision,
@@ -467,7 +466,6 @@ describe('launch safety and management', () => {
       ai: {
         ...company.ai,
         provider: 'gemini' as const,
-        keyMode: 'own' as const,
         model: 'gemini-2.5-flash-lite',
       },
     };

@@ -169,18 +169,10 @@ describe('HTTP and service behavior', () => {
     };
     expect((await app.request('http://localhost/api/bootstrap', { headers })).status).toBe(200);
     expect((await app.request('http://localhost/api/attention', { headers })).status).toBe(200);
+    // Orderly no longer funds a shared AI key, so its budget page is gone.
     expect((await app.request('http://localhost/api/platform/budget', { headers })).status).toBe(
-      403,
+      404,
     );
-    expect(
-      (
-        await app.request('http://localhost/api/platform/budget', {
-          headers,
-          method: 'PUT',
-          body: JSON.stringify({ limitUsd: 500 }),
-        })
-      ).status,
-    ).toBe(403);
     expect(
       (
         await app.request('http://localhost/api/notifications', {
@@ -235,21 +227,31 @@ describe('HTTP and service behavior', () => {
       ).status,
     ).toBe(403);
   });
-  it('prevents restaurant owners from increasing their platform spending allowance', async () => {
+  it('lets owners set the AI spending limit for their own key, up to the maximum', async () => {
     vi.stubEnv('APP_MODE', 'live');
+    vi.spyOn(repo, 'listAllowedCompanies').mockResolvedValue([company]);
     vi.spyOn(repo, 'getRole').mockImplementation(async (_user, id) =>
       id === company.id ? 'owner' : null,
     );
-    const response = await createApp(repo).request(`http://localhost/api/companies/${company.id}`, {
-      method: 'PUT',
-      headers: {
-        Authorization: 'Bearer test-session',
-        'x-company-id': company.id,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ ...company, ai: { ...company.ai, monthlyBudgetUsd: 1000 } }),
-    });
-    expect(response.status).toBe(403);
+    const save = (monthlyBudgetUsd: number) =>
+      createApp(repo).request(`http://localhost/api/companies/${company.id}`, {
+        method: 'PUT',
+        headers: {
+          Authorization: 'Bearer test-session',
+          'x-company-id': company.id,
+          'Content-Type': 'application/json',
+        },
+        // Paused, so the live readiness checks for automatic replies do not apply.
+        body: JSON.stringify({
+          ...company,
+          botEnabled: false,
+          ai: { ...company.ai, monthlyBudgetUsd },
+        }),
+      });
+    expect((await save(1000)).status).toBe(200);
+    expect((await repo.getCompany(company.id))?.ai.monthlyBudgetUsd).toBe(1000);
+    expect((await save(20000)).status).toBe(400);
+    expect((await repo.getCompany(company.id))?.ai.monthlyBudgetUsd).toBe(1000);
   });
   it('creates an empty isolated business with automation paused', async () => {
     const response = await request('/companies', { name: 'A new restaurant' });

@@ -6,7 +6,7 @@ Orderly uses Cloudflare Workers Static Assets for the dashboard and Supabase Edg
 
 Create one Supabase project for the platform. The existing Orderly project is in Sydney. Companies are isolated within it using `company_id`, membership checks and RLS. See `SETUP-STATUS.md` before applying migrations to an existing project.
 
-For a new installation, apply every file in `supabase/migrations` in filename order. The existing Orderly project already has migrations through `202609180003_platform_budget.sql`. Earlier SQL-editor/management-API execution did not populate complete CLI migration history; reconcile it before using `supabase db push`, and do not reapply existing migrations blindly. All application tables use RLS; mutation RPCs and secrets are server-only.
+For a new installation, apply every file in `supabase/migrations` in filename order. The existing Orderly project already has migrations through `202610170001_business_keys_only.sql` (applied by hand in the SQL editor). Earlier SQL-editor/management-API execution did not populate complete CLI migration history; reconcile it before using `supabase db push`, and do not reapply existing migrations blindly. All application tables use RLS; mutation RPCs and secrets are server-only.
 
 Use the [exact launch guide](ORDERLY-LAUNCH-STEPS-2026-09-18.md) for current client setup and the [audit closure](ORDERLY-AUDIT-CLOSURE-2026-09-18.md) for verified status.
 
@@ -25,7 +25,7 @@ values ('COMPANY_ID_FROM_SETTINGS', 'EXISTING_AUTH_USER_UUID', 'owner')
 on conflict(company_id, user_id) do update set role=excluded.role;
 ```
 
-Use `staff` for employees who only handle orders and conversations. Owners can manage their own menu and connections. Only the founder creates companies, raises AI allowances, or grants access to platform-owned model keys. Use Orderly’s Security page for team invitations and MFA, and its password-recovery flow. Configure production Auth SMTP before client invitations.
+Use `staff` for employees who only handle orders and conversations. Owners can manage their own menu and connections. Only the founder creates companies. There are no Orderly-owned model keys: each business connects and pays for its own. Use Orderly’s Security page for team invitations and MFA, and its password-recovery flow. Configure production Auth SMTP before client invitations.
 
 ## 2. Supabase backend and Cloudflare frontend
 
@@ -46,7 +46,6 @@ Save server environment variables in an ignored file, such as `.local/supabase.e
 | `META_APP_ID`, `META_APP_SECRET`                        | Your platform Meta app credentials                                                |
 | `META_VERIFY_TOKEN`                                     | Random secret you will also enter in Meta’s webhook setup                         |
 | `META_EMBEDDED_SIGNUP_CONFIG_ID`                        | Your Facebook Login for Business / Embedded Signup v4 configuration               |
-| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` | Optional platform model keys; company-owned keys are entered in Integrations      |
 
 Reuse the existing encryption key when migrating. Generate one only for a new installation:
 
@@ -89,7 +88,7 @@ Inspect `/functions/v1/orderly/api/health`, sign-in, first-company creation and 
 
 ## 3. Models
 
-In **Settings**, choose a provider and model. Default suggestions are OpenAI `gpt-5.4-mini`, Anthropic `claude-haiku-5-5` (recommended: fast and low-cost for chat), or Gemini `gemini-3.5-flash-lite`. Use **This business’s API key** for BYOK, then save the key in **Integrations**. Alternatively the founder can enable a platform key for that company. The **Selected AI connection** card reports whether that chosen key is available and can test account access. Individual provider cards test the separately saved business key.
+In **Settings**, choose a provider and model. Default suggestions are OpenAI `gpt-5.4-mini`, Anthropic `claude-haiku-5-5` (recommended: fast and low-cost for chat), or Gemini `gemini-3.5-flash-lite`. Paste the business’s own API key on the same card and click **Connect and test**; Orderly never supplies a key. The card reports whether the key is saved and tested.
 
 The key test checks provider account access; it does not establish model availability or language quality. Test a natural-language order in **Test your bot** afterward. This incurs normal provider usage if a live model is selected, even in local demo mode.
 

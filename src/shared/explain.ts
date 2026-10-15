@@ -136,9 +136,7 @@ export function describeConfig(explanation: TurnExplanation): string {
         ? `${config.target === 'live' ? 'Live' : 'Published'} settings v${config.version}`
         : 'Default settings (nothing published)';
   if (explanation.provider === 'mock') return `${settings} · no AI model`;
-  return `${settings} · ${PROVIDER_NAMES[explanation.provider]} ${explanation.model} · ${
-    explanation.keyMode === 'own' ? 'business key' : 'Orderly key'
-  }`;
+  return `${settings} · ${PROVIDER_NAMES[explanation.provider]} ${explanation.model}`;
 }
 
 /** One-sentence headline for a reply. */

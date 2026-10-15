@@ -60,7 +60,7 @@ Each business uses its own Anthropic key, so its AI usage is billed to its own A
    - Click **Connect and test**.
 3. Orderly checks the key, sends one fictional test message ("Hello. Please show the menu.") to prove the model works, then saves the key encrypted for that business and switches the bot over. If anything fails you see why, and nothing changes. The badge turns **Connected**, and Agent flow shows the **Model** circle in green with $0.10 in · $0.50 out.
 
-To change model or key later, use the same card: pick or paste the new one and click **Connect and test** again. **Remove saved key** pauses replies until another key is connected. Platform administrators can still choose Orderly's own shared key under **Advanced** (set as the `ANTHROPIC_API_KEY` server secret), but each business having its own key is the default.
+To change model or key later, use the same card: pick or paste the new one and click **Connect and test** again. **Remove saved key** pauses replies until another key is connected. Orderly never supplies a key of its own: every business must connect its own.
 
 ## 4. Connect WhatsApp
 

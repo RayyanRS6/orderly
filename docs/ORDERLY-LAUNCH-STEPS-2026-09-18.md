@@ -96,7 +96,7 @@ Supabase is the order record of truth. Sheets is a synchronized view: **editing 
 5. Save the draft, inspect its instructions and run the selected-model test. Live model tests incur provider usage; the free simulator does not establish real model quality.
 6. Publish the reviewed configuration. Changing credentials/model resets the relevant approval/readiness checks; repeat them before re-enabling the bot.
 
-Model discovery can refresh available choices. It does **not** silently replace a retired model or prove that every listed model supports Orderly. Choose and test a replacement explicitly. Model names in the Codex app are not promises of public API availability. Application prices and token budgets are estimates; the provider invoice is authoritative. At 80% usage the staff bell warns; configured email alerts can escalate it. The founder's Businesses page also controls a shared cap for platform-funded keys, initially $100/month. This is a safety ceiling, not a charge. Client-funded keys have their own workspace allowance.
+Model discovery can refresh available choices. It does **not** silently replace a retired model or prove that every listed model supports Orderly. Choose and test a replacement explicitly. Model names in the Codex app are not promises of public API availability. Application prices and token budgets are estimates; the provider invoice is authoritative. At 80% usage the staff bell warns; configured email alerts can escalate it. Each business pays with its own key and has its own monthly allowance; Orderly has no shared key or shared cap.
 
 ## 8. Configure Laziza's bot
 

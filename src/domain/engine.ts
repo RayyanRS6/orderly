@@ -854,7 +854,6 @@ export function processTurn(
           : (company.bot?.revision ?? 0),
       provider: company.ai.provider,
       model: company.ai.model,
-      keyMode: company.ai.keyMode,
       catalogSource: company.catalogSource,
     };
   next.messages.push({

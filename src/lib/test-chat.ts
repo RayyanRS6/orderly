@@ -50,7 +50,6 @@ export function testChatMatches(
         : (company.bot?.published?.version ?? 0)) &&
     context.provider === company.ai.provider &&
     context.model === company.ai.model &&
-    context.keyMode === company.ai.keyMode &&
     context.catalogSource === company.catalogSource
   );
 }

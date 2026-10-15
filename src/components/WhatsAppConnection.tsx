@@ -1,10 +1,17 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { RefreshCw, Smartphone, ShieldAlert } from 'lucide-react';
 import type { WhatsAppConnection as Connection } from '../shared/whatsapp';
 import { api } from '../lib/api';
-import { useWorkspace } from '../lib/workspace';
-import { Field, ConfirmDialog } from './ui';
+import { dialogOpen, useAction, useWorkspace } from '../lib/workspace';
+import { ActionButton, ConfirmDialog, Field } from './ui';
 
+type Action = 'pair' | 'disconnect' | 'select-meta' | 'reconnect';
+const DONE: Record<Action, string> = {
+  pair: 'New pairing started. Scan the QR code or enter the code in WhatsApp.',
+  disconnect: 'WhatsApp disconnected. Automatic replies are paused.',
+  'select-meta': 'Switched to the official Meta route.',
+  reconnect: 'Reconnecting to WhatsApp…',
+};
 type Snapshot = {
   status: Connection['status'];
   qr?: string;
@@ -13,16 +20,27 @@ type Snapshot = {
   errorCode?: string;
 };
 export function WhatsAppConnection() {
-  const { data, refresh } = useWorkspace();
+  const { data, refresh, notify } = useWorkspace();
+  const act = useAction();
+  const pending = act.pending;
   const [connection, setConnection] = useState<Connection | null>(null);
   const [enabled, setEnabled] = useState(false);
   const [snapshot, setSnapshot] = useState<Snapshot>();
   const [method, setMethod] = useState<'qr' | 'code'>('qr');
   const [phone, setPhone] = useState('');
   const [accepted, setAccepted] = useState(false);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [confirmError, setConfirmError] = useState('');
   const [confirm, setConfirm] = useState<'pair' | 'disconnect' | 'select-meta'>();
+  // The open confirmation, readable from a request that finishes later.
+  const asked = useRef(confirm);
+  useEffect(() => {
+    asked.current = confirm;
+  }, [confirm]);
+  const ask = (action: 'pair' | 'disconnect' | 'select-meta') => {
+    setConfirmError('');
+    setConfirm(action);
+  };
   const canEdit = data.role !== 'staff';
   const companyId = data.company.id;
   useEffect(() => {
@@ -100,42 +118,58 @@ export function WhatsAppConnection() {
     );
     return () => clearTimeout(timer);
   }, [snapshot?.expiresAt]);
-  const run = async (action: 'pair' | 'disconnect' | 'select-meta' | 'reconnect') => {
-    setBusy(true);
-    setError('');
-    setSnapshot(undefined);
-    try {
-      await api(
-        `/whatsapp/${action}`,
-        companyId,
-        action === 'pair'
-          ? {
-              method,
-              ...(method === 'code' ? { phone: phone.replace(/\D/g, '') } : {}),
-              riskAccepted: accepted,
-              switchConfirmed: true,
-            }
-          : action === 'reconnect'
-            ? {}
-            : { confirmed: true },
-      );
-      const result = await api<{ enabled: boolean; connection: Connection | null }>(
-        '/whatsapp/connection',
-        companyId,
-      );
-      setConnection(result.connection);
-      setEnabled(result.enabled);
-      setConfirm(undefined);
-      await refresh();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Connection failed.');
-      setConfirm(undefined);
-    } finally {
-      setBusy(false);
-    }
-  };
+  const run = (action: Action) =>
+    act.run(action, async () => {
+      setError('');
+      setConfirmError('');
+      setSnapshot(undefined);
+      try {
+        await api(
+          `/whatsapp/${action}`,
+          companyId,
+          action === 'pair'
+            ? {
+                method,
+                ...(method === 'code' ? { phone: phone.replace(/\D/g, '') } : {}),
+                riskAccepted: accepted,
+                switchConfirmed: true,
+              }
+            : action === 'reconnect'
+              ? {}
+              : { confirmed: true },
+        );
+      } catch (e) {
+        const message = e instanceof Error ? e.message : 'Connection failed.';
+        // Its confirmation shows the failure while still open for this action. Reconnect
+        // has none, and a confirmation closed meanwhile can't, so those show below (and
+        // as a notification).
+        if (action !== 'reconnect' && asked.current === action && dialogOpen())
+          setConfirmError(message);
+        else {
+          setError(message);
+          if (action !== 'reconnect') notify(message, 'error');
+        }
+        return;
+      }
+      // Only close the confirmation if it still belongs to this action.
+      setConfirm((current) => (current === action ? undefined : current));
+      notify(DONE[action], action === 'reconnect' ? 'info' : 'success');
+      // The change is saved, so a failed reload only delays the new status.
+      try {
+        const result = await api<{ enabled: boolean; connection: Connection | null }>(
+          '/whatsapp/connection',
+          companyId,
+        );
+        setConnection(result.connection);
+        setEnabled(result.enabled);
+        await refresh();
+      } catch {
+        notify('Saved. Reload the page to see the latest status.', 'info');
+      }
+    });
   if (!canEdit) return null;
   const state = snapshot?.status ?? connection?.status ?? 'disconnected';
+  const phoneValid = method !== 'code' || /^[1-9]\d{5,14}$/.test(phone.replace(/\D/g, ''));
   return (
     <section className="card mb-6 p-6">
       <div className="flex items-center gap-3">
@@ -153,11 +187,16 @@ export function WhatsAppConnection() {
         <button
           className="btn"
           disabled={
-            busy ||
-            !connection ||
-            (connection.provider === 'meta' && connection.status !== 'disconnected')
+            !connection || (connection.provider === 'meta' && connection.status !== 'disconnected')
           }
-          onClick={() => setConfirm('select-meta')}
+          title={
+            !connection
+              ? 'Nothing is connected yet. Use the official signup below.'
+              : connection.provider === 'meta' && connection.status !== 'disconnected'
+                ? 'The official Meta route is already in use.'
+                : undefined
+          }
+          onClick={() => ask('select-meta')}
         >
           Use official Meta route
         </button>
@@ -231,26 +270,35 @@ export function WhatsAppConnection() {
           <div className="mt-4 flex flex-wrap gap-2">
             <button
               className="btn btn-primary"
-              disabled={
-                busy ||
-                !accepted ||
-                (method === 'code' && !/^[1-9]\d{5,14}$/.test(phone.replace(/\D/g, '')))
+              disabled={!accepted || !phoneValid}
+              title={
+                !accepted
+                  ? 'Tick the permission box above first.'
+                  : !phoneValid
+                    ? 'Enter the WhatsApp number with its country code.'
+                    : undefined
               }
-              onClick={() => setConfirm('pair')}
+              onClick={() => ask('pair')}
             >
               Start new pairing
             </button>
             {connection?.provider === 'baileys' && (
               <>
-                <button
-                  className="btn"
-                  disabled={busy || ['logged_out', 'disconnected'].includes(state)}
+                <ActionButton
+                  disabled={['logged_out', 'disconnected'].includes(state)}
+                  title={
+                    ['logged_out', 'disconnected'].includes(state)
+                      ? 'This session ended. Start a new pairing instead.'
+                      : undefined
+                  }
+                  loading={pending === 'reconnect'}
+                  loadingLabel="Reconnecting…"
                   onClick={() => void run('reconnect')}
                 >
                   <RefreshCw className="size-4" />
                   Reconnect
-                </button>
-                <button className="btn" disabled={busy} onClick={() => setConfirm('disconnect')}>
+                </ActionButton>
+                <button className="btn" onClick={() => ask('disconnect')}>
                   Disconnect
                 </button>
               </>
@@ -302,7 +350,15 @@ export function WhatsAppConnection() {
         </p>
       )}
       <ConfirmDialog
-        busy={busy}
+        busy={!!confirm && pending === confirm}
+        busyLabel={
+          confirm === 'disconnect'
+            ? 'Disconnecting…'
+            : confirm === 'pair'
+              ? 'Starting…'
+              : 'Switching…'
+        }
+        error={confirmError}
         open={!!confirm}
         onOpenChange={(open) => !open && setConfirm(undefined)}
         title={

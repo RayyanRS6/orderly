@@ -51,10 +51,10 @@ export interface Company {
   openingHours: { start: string; end: string; days: number[] };
   deliveryZones: DeliveryZone[];
   faqs: { question: string; answer: string }[];
+  // Every business answers with its own provider API key (Bot settings → AI model).
   ai: {
     provider: Provider;
     model: string;
-    keyMode: 'platform' | 'own';
     monthlyBudgetUsd: number;
     pricing?: [number, number];
   };
@@ -152,7 +152,6 @@ export interface TurnExplanation {
   config: { target: 'draft' | 'published' | 'live'; revision: number; version?: number };
   provider: Provider;
   model: string;
-  keyMode: 'platform' | 'own';
   catalogSource: 'app' | 'sheets';
   ai: {
     called: boolean;
@@ -204,7 +203,6 @@ export interface Conversation {
     configRevision: number;
     provider: Provider;
     model: string;
-    keyMode: 'platform' | 'own';
     catalogSource: 'app' | 'sheets';
   };
   version: number;
@@ -277,7 +275,6 @@ export interface Trace {
   code?: string;
 }
 export interface Usage {
-  funding?: 'platform' | 'own';
   id: string;
   companyId: string;
   provider: Provider;
@@ -359,11 +356,6 @@ export interface AlertPreferences {
   emailVerified: boolean;
   available?: boolean;
 }
-export interface PlatformBudget {
-  limitUsd: number;
-  spentUsd: number;
-  reservedUsd: number;
-}
 export type IntegrationKind = 'whatsapp' | 'sheets' | 'openai' | 'anthropic' | 'gemini';
 export interface Integration {
   kind: IntegrationKind;
@@ -385,7 +377,6 @@ export interface Bootstrap {
   integrations: Integration[];
   aiConnection: {
     provider: Provider;
-    keyMode: 'platform' | 'own';
     configured: boolean;
   };
   usage: Usage[];

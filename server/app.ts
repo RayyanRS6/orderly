@@ -414,7 +414,6 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
       integrations: allIntegrations,
       aiConnection: {
         provider: company.ai.provider,
-        keyMode: company.ai.keyMode,
         configured: aiKeyConfigured,
       },
       usage: [],
@@ -451,7 +450,6 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
       ai: {
         provider: 'mock',
         model: modelDefaults.mock,
-        keyMode: 'platform',
         monthlyBudgetUsd: 10,
       },
       createdAt: new Date().toISOString(),
@@ -469,34 +467,10 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
       id: c.get('company').id,
       createdAt: c.get('company').createdAt,
     };
-    if (
-      c.get('role') !== 'admin' &&
-      company.ai.keyMode === 'platform' &&
-      company.ai.monthlyBudgetUsd > c.get('company').ai.monthlyBudgetUsd
-    )
-      throw new PublicError('Ask the platform administrator to raise your AI budget.', 403);
-    if (
-      c.get('role') !== 'admin' &&
-      company.ai.keyMode === 'platform' &&
-      c.get('company').ai.keyMode !== 'platform'
-    )
-      throw new PublicError(
-        'The platform administrator must enable use of platform API keys.',
-        403,
-      );
     validateModelConfiguration(company);
-    if (
-      c.get('role') !== 'admin' &&
-      company.ai.keyMode === 'platform' &&
-      JSON.stringify(company.ai.pricing) !== JSON.stringify(c.get('company').ai.pricing)
-    )
-      throw new PublicError(
-        'Only the platform administrator can change rates for platform-funded AI.',
-        403,
-      );
-    // Only settings that change which model and key run need a new test; a budget change does not.
+    // Only settings that change which model runs need a new test; a budget change does not.
     const tested = (ai: Company['ai']) =>
-      JSON.stringify([ai.provider, ai.model, ai.keyMode, ai.pricing ?? null]);
+      JSON.stringify([ai.provider, ai.model, ai.pricing ?? null]);
     if (tested(company.ai) !== tested(c.get('company').ai)) company.modelVerification = undefined;
     if (appMode() === 'live' && company.botEnabled) {
       const missing = (await readiness(repo, company)).filter((check) => !check.ready);
@@ -733,31 +707,12 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
     const kind = kindSchema.parse(c.req.param('kind'));
     const company = c.get('company');
     const integration = (await repo.getIntegrations(company.id)).find((i) => i.kind === kind);
-    const isModel = kind !== 'sheets' && kind !== 'whatsapp';
-    const body = isModel
-      ? z
-          .object({ keyMode: z.enum(['own', 'platform']).optional() })
-          .parse(JSON.parse((await c.req.text()) || '{}'))
-      : {};
-    const keyMode = body.keyMode ?? (company.ai.provider === kind ? company.ai.keyMode : 'own');
-    const usePlatform = isModel && keyMode === 'platform';
-    if (usePlatform && (company.ai.keyMode !== 'platform' || company.ai.provider !== kind))
-      throw new PublicError(
-        'Select an authorized platform provider in Settings before testing it.',
-        403,
-      );
-    if (!usePlatform && !integration?.configured)
-      throw new PublicError('Save the connection credentials first.');
+    if (!integration?.configured) throw new PublicError('Save the connection credentials first.');
     try {
       if (kind === 'sheets' || kind === 'whatsapp')
         await (await integrationAdapter(repo, company.id, kind as 'sheets')).test();
-      else {
-        const key = await providerKey(repo, { ...company, ai: { ...company.ai, keyMode } }, kind);
-        await verifyProviderKey(kind, key);
-      }
+      else await verifyProviderKey(kind, await providerKey(repo, company, kind));
       const checkedAt = new Date().toISOString();
-      if (usePlatform)
-        return c.json({ kind, keyMode, configured: true, status: 'connected', checkedAt });
       const updated = {
         ...integration!,
         status: 'connected' as const,
@@ -767,8 +722,6 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
       await repo.saveIntegration(company.id, updated);
       return c.json(updated);
     } catch (error) {
-      // Platform tests must not replace the separate business-key connection state.
-      if (usePlatform) throw error;
       const updated = {
         ...integration!,
         status: 'error' as const,

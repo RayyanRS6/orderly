@@ -135,7 +135,6 @@ export async function handleTurn(
             : (company.bot?.revision ?? 0),
         provider: company.ai.provider,
         model: company.ai.model,
-        keyMode: company.ai.keyMode,
         catalogSource: company.catalogSource,
       };
       const current = storedConversation.testContext;
@@ -144,7 +143,6 @@ export async function handleTurn(
         current.configRevision !== expected.configRevision ||
         current.provider !== expected.provider ||
         current.model !== expected.model ||
-        current.keyMode !== expected.keyMode ||
         current.catalogSource !== expected.catalogSource
       )
         throw new PublicError(

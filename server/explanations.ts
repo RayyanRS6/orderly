@@ -66,7 +66,6 @@ export function describeTurn(details: {
     config: configUsed(company, conversation, input),
     provider: company.ai.provider,
     model: company.ai.model,
-    keyMode: company.ai.keyMode,
     catalogSource: company.catalogSource,
     ai: aiCall(details.interpretation, details.skipped, details.ruleOverride),
     steps: details.steps.slice(0, 40).map((step) => step.slice(0, 120)),

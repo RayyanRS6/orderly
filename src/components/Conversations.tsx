@@ -20,9 +20,20 @@ import { api } from '../lib/api';
 import { readTestChat, saveTestChat, testChatMatches } from '../lib/test-chat';
 import type { PageResult, Message } from '../shared/types';
 import { quoteCart } from '../domain/engine';
-import { useWorkspace } from '../lib/workspace';
+import { useAction, useWorkspace } from '../lib/workspace';
 import { cn, label } from '../lib/utils';
-import { Badge, CustomSelect, Empty, ErrorNotice, Field, Modal, PageHeading, Status } from './ui';
+import {
+  ActionButton,
+  Badge,
+  CustomSelect,
+  Empty,
+  ErrorNotice,
+  Field,
+  Modal,
+  PageHeading,
+  Spinner,
+  Status,
+} from './ui';
 import { WhyToggle } from './ReplyExplanation';
 
 function Messages({ conversation, waiting }: { conversation?: Conversation; waiting?: boolean }) {
@@ -109,7 +120,8 @@ function Messages({ conversation, waiting }: { conversation?: Conversation; wait
 }
 
 export function Playground({ active = true }: { active?: boolean }) {
-  const { data, mutate, busy, navigate } = useWorkspace();
+  const { data, mutate, navigate } = useWorkspace();
+  const { pending, run } = useAction();
   const [saved] = useState(() => readTestChat(data.company.id));
   const [id, setId] = useState<string | undefined>(saved.conversationId);
   const [latest, setLatest] = useState<Conversation>();
@@ -156,7 +168,12 @@ export function Playground({ active = true }: { active?: boolean }) {
     }
   }, [active]);
   const stale = !!latest && !testChatMatches(data.company, latest, testTarget);
-  const blocked = busy || restoring || stale || (!!id && !latest);
+  const blocked = restoring || stale || (!!id && !latest);
+  const blockedReason = restoring
+    ? 'Restoring your saved test chat…'
+    : stale
+      ? 'The bot settings changed. Refresh chat to test them.'
+      : undefined;
   function resetChat(target = testTarget) {
     restoreGeneration.current++;
     saveTestChat(data.company.id, { target });
@@ -173,25 +190,37 @@ export function Playground({ active = true }: { active?: boolean }) {
     setSelected(undefined);
     setDetails(false);
   }
-  async function send(message: string) {
+  /** Sends one test message; `key` picks which button shows the spinner. */
+  async function send(message: string, key = 'send') {
     if (blocked) return false;
-    setError('');
-    try {
-      const result = await mutate<TurnResult>('/chat', {
-        conversationId: id,
-        text: message,
-        messageId: crypto.randomUUID(),
-        testTarget,
-      });
-      saveTestChat(data.company.id, { conversationId: result.conversation.id, target: testTarget });
-      setId(result.conversation.id);
-      setLatest(result.conversation);
-      setText('');
-      return true;
-    } catch (reason) {
-      setError((reason as Error).message);
-      return false;
-    }
+    // Refreshing the chat while the bot answers drops that answer.
+    const generation = restoreGeneration.current;
+    let sent = false;
+    await run(key, async () => {
+      setError('');
+      try {
+        const result = await mutate<TurnResult>(
+          '/chat',
+          { conversationId: id, text: message, messageId: crypto.randomUUID(), testTarget },
+          undefined,
+          // The error shows next to the message box instead.
+          { quiet: true },
+        );
+        if (generation !== restoreGeneration.current) return;
+        saveTestChat(data.company.id, {
+          conversationId: result.conversation.id,
+          target: testTarget,
+        });
+        setId(result.conversation.id);
+        setLatest(result.conversation);
+        // Keep anything typed while the bot was answering.
+        setText((current) => (current === message ? '' : current));
+        sent = true;
+      } catch (reason) {
+        if (generation === restoreGeneration.current) setError((reason as Error).message);
+      }
+    });
+    return sent;
   }
   let total: number | undefined;
   try {
@@ -206,7 +235,7 @@ export function Playground({ active = true }: { active?: boolean }) {
         title="Test your bot"
         description="Try the complete ordering experience before connecting your number."
       >
-        <button className="btn" disabled={busy} onClick={() => resetChat()}>
+        <button className="btn" onClick={() => resetChat()}>
           <RotateCcw className="size-4" />
           Refresh chat
         </button>
@@ -215,7 +244,7 @@ export function Playground({ active = true }: { active?: boolean }) {
         <Field label="Configuration to test">
           <CustomSelect
             value={testTarget}
-            disabled={busy || restoring}
+            disabled={restoring}
             onChange={(value) => {
               resetChat(value as 'draft' | 'published');
             }}
@@ -269,7 +298,6 @@ export function Playground({ active = true }: { active?: boolean }) {
               <button
                 type="button"
                 className="btn px-3"
-                disabled={busy}
                 onClick={() => resetChat()}
                 aria-label="Refresh chat — start a new test conversation"
                 title="Refresh chat — start a new test conversation"
@@ -283,7 +311,7 @@ export function Playground({ active = true }: { active?: boolean }) {
               Restoring your saved test conversation…
             </p>
           )}
-          <Messages conversation={conversation} waiting={busy} />
+          <Messages conversation={conversation} waiting={!!pending} />
           {conversation?.mode === 'human' && (
             <div className="border-t border-white/[0.06] bg-ink px-5 py-3 text-xs text-cream/75 font-medium">
               This conversation is waiting for staff.{' '}
@@ -300,10 +328,13 @@ export function Playground({ active = true }: { active?: boolean }) {
               {['Show menu', 'Repeat my order', 'Review order', 'Talk to staff'].map((title) => (
                 <button
                   key={String(title)}
-                  className="rounded-[9px] border border-ink/8 bg-white/70 hover:bg-white hover:border-ink/14 px-3.5 py-1.5 text-xs font-semibold text-stone-700 hover:text-ink transition-all disabled:opacity-50"
+                  className="inline-flex items-center gap-1.5 rounded-[9px] border border-ink/8 bg-white/70 hover:bg-white hover:border-ink/14 px-3.5 py-1.5 text-xs font-semibold text-stone-700 hover:text-ink transition-all disabled:opacity-50"
                   disabled={blocked}
-                  onClick={() => void send(title)}
+                  title={blockedReason}
+                  aria-busy={pending === `quick-${title}` || undefined}
+                  onClick={() => void send(title, `quick-${title}`)}
                 >
+                  {pending === `quick-${title}` && <Spinner className="size-3.5" />}
                   {String(title)}
                 </button>
               ))}
@@ -335,13 +366,17 @@ export function Playground({ active = true }: { active?: boolean }) {
                 maxLength={2000}
                 autoComplete="off"
               />
-              <button
-                className="btn btn-primary px-4"
-                aria-label="Send message"
-                disabled={blocked || !text.trim()}
+              <ActionButton
+                type="submit"
+                className="btn-primary px-4"
+                aria-label={pending === 'send' ? 'Sending message' : 'Send message'}
+                disabled={blocked || (!text.trim() && pending !== 'send')}
+                title={blockedReason ?? (!text.trim() ? 'Type a message first.' : undefined)}
+                loading={pending === 'send'}
+                loadingLabel={<span className="sr-only">Sending</span>}
               >
                 <Send className="size-4" />
-              </button>
+              </ActionButton>
             </form>
             <p className="mt-2 text-center text-[10px] font-medium text-stone-400">
               English · اردو · Roman Urdu · Chat stays saved until you refresh it
@@ -383,10 +418,10 @@ export function Playground({ active = true }: { active?: boolean }) {
                         <button
                           className="text-stone-400 hover:text-red-600"
                           aria-label={`Remove ${product?.name}`}
-                          disabled={busy}
-                          onClick={() => void send(`Remove ${product?.name}`)}
+                          aria-busy={pending === `remove-${i}` || undefined}
+                          onClick={() => void send(`Remove ${product?.name}`, `remove-${i}`)}
                         >
-                          <X className="size-4" />
+                          {pending === `remove-${i}` ? <Spinner /> : <X className="size-4" />}
                         </button>
                       )}
                     </div>
@@ -424,21 +459,23 @@ export function Playground({ active = true }: { active?: boolean }) {
                 <>
                   <button
                     className="btn mt-4 w-full"
-                    disabled={busy || !conversation?.cart.items.length}
+                    disabled={!conversation?.cart.items.length}
+                    title={!conversation?.cart.items.length ? 'Add an item first.' : undefined}
                     onClick={() => setDetails(true)}
                   >
                     Add order details
                     <ChevronRight className="size-4" />
                   </button>
                   {conversation?.cart.status === 'awaiting_confirmation' && (
-                    <button
-                      className="btn btn-primary mt-2 w-full"
-                      disabled={busy}
-                      onClick={() => void send('Confirm order')}
+                    <ActionButton
+                      className="btn-primary mt-2 w-full"
+                      loading={pending === 'confirm'}
+                      loadingLabel="Confirming…"
+                      onClick={() => void send('Confirm order', 'confirm')}
                     >
                       <Check className="size-4" />
                       Confirm order
-                    </button>
+                    </ActionButton>
                   )}
                 </>
               )}
@@ -456,7 +493,8 @@ export function Playground({ active = true }: { active?: boolean }) {
                 <button
                   key={product.id}
                   className="flex w-full items-center gap-3 border-b border-ink/[0.05] p-4 text-left hover:bg-white/50 disabled:opacity-40"
-                  disabled={!product.available || busy || conversation?.cart.status === 'submitted'}
+                  disabled={!product.available || conversation?.cart.status === 'submitted'}
+                  title={!product.available ? 'Sold out' : undefined}
                   onClick={() => setSelected(product)}
                 >
                   <span className="flex size-10 items-center justify-center rounded-[10px] bg-ink/5 text-2xl">
@@ -493,6 +531,7 @@ export function Playground({ active = true }: { active?: boolean }) {
               fulfillment === 'delivery'
                 ? `My name is ${name}. I want delivery. My area is ${zone}. Address: ${address}`
                 : `My name is ${name}. I want pickup.`,
+              'details',
             );
             if (saved) setDetails(false);
           }}
@@ -539,15 +578,20 @@ export function Playground({ active = true }: { active?: boolean }) {
               </Field>
             </>
           )}
-          <button className="btn btn-primary w-full" disabled={busy}>
+          <ActionButton
+            type="submit"
+            className="btn-primary w-full"
+            loading={pending === 'details'}
+            loadingLabel="Saving…"
+          >
             Save details
-          </button>
+          </ActionButton>
         </form>
       </Modal>
       {selected && (
         <AddItem
           product={selected}
-          busy={busy}
+          loading={pending === 'add'}
           close={() => setSelected(undefined)}
           add={async (action) => {
             const variant = selected.variants.find((item) => item.id === action.variantId)?.name;
@@ -562,7 +606,7 @@ export function Playground({ active = true }: { active?: boolean }) {
             ]
               .filter(Boolean)
               .join(', ');
-            if (await send(message)) setSelected(undefined);
+            if (await send(message, 'add')) setSelected(undefined);
           }}
         />
       )}
@@ -571,12 +615,13 @@ export function Playground({ active = true }: { active?: boolean }) {
 }
 function AddItem({
   product,
-  busy,
+  loading,
   close,
   add,
 }: {
   product: Product;
-  busy: boolean;
+  /** The order dialog shows a failure itself, from the workspace. */
+  loading: boolean;
   close: () => void;
   add: (action: Extract<BotAction, { type: 'add_item' }>) => Promise<void>;
 }) {
@@ -661,10 +706,15 @@ function AddItem({
             onChange={(e) => setNotes(e.target.value)}
           />
         </Field>
-        <button className="btn btn-primary w-full" disabled={busy}>
+        <ActionButton
+          type="submit"
+          className="btn-primary w-full"
+          loading={loading}
+          loadingLabel="Adding…"
+        >
           <Plus className="size-4" />
           Add to order
-        </button>
+        </ActionButton>
       </form>
     </Modal>
   );

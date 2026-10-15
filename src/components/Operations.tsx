@@ -2,9 +2,18 @@ import { useEffect, useState } from 'react';
 import { RetentionSettings } from './RetentionSettings';
 import type { TeamMember, Job } from '../shared/types';
 import { api } from '../lib/api';
-import { useWorkspace } from '../lib/workspace';
+import { useAction, useWorkspace } from '../lib/workspace';
 import { label, shortDate } from '../lib/utils';
-import { ConfirmDialog, CustomSelect, ErrorNotice, Field, PageHeading, Status } from './ui';
+import {
+  ActionButton,
+  ConfirmDialog,
+  CustomSelect,
+  ErrorNotice,
+  Field,
+  PageHeading,
+  Spinner,
+  Status,
+} from './ui';
 
 export function download(name: string, value: unknown) {
   const url = URL.createObjectURL(
@@ -17,7 +26,8 @@ export function download(name: string, value: unknown) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 export function Activity() {
-  const { data, mutate, busy, navigate } = useWorkspace();
+  const { data, mutate, navigate } = useWorkspace();
+  const { pending, run } = useAction();
   const [jobs, setJobs] = useState<Job[]>(data.jobs ?? []);
   const [error, setError] = useState('');
   useEffect(() => {
@@ -47,13 +57,19 @@ export function Activity() {
             {jobs.length === 100 ? '+' : ''} open jobs
           </h2>
           {data.role !== 'staff' && (
-            <button
-              disabled={busy}
-              className="btn"
-              onClick={() => void mutate('/jobs/retry', {}).catch(() => {})}
+            <ActionButton
+              loading={pending === 'retry'}
+              loadingLabel="Retrying…"
+              onClick={() =>
+                void run('retry', () =>
+                  mutate('/jobs/retry', {}, undefined, {
+                    success: 'Failed work queued to try again.',
+                  }),
+                ).catch(() => undefined)
+              }
             >
               Retry failed work
-            </button>
+            </ActionButton>
           )}
         </div>
         <p className="mt-2 text-sm text-stone-500">
@@ -116,7 +132,9 @@ export function Activity() {
 }
 
 export function SecuritySettings() {
-  const { data, auth, mutate, busy, navigate } = useWorkspace();
+  const { data, auth, mutate, navigate, notify } = useWorkspace();
+  const action = useAction();
+  const pending = action.pending;
   const [members, setMembers] = useState<TeamMember[]>([]);
   const [userId, setUserId] = useState('');
   const [email, setEmail] = useState('');
@@ -125,22 +143,23 @@ export function SecuritySettings() {
   const [ack, setAck] = useState(false);
   const [erase, setErase] = useState(false);
   const [error, setError] = useState('');
-  const [notice, setNotice] = useState('');
+  const [eraseError, setEraseError] = useState('');
   const [factor, setFactor] = useState<{ id: string; qr: string }>();
   const [enrolled, setEnrolled] = useState<string>();
   const [code, setCode] = useState('');
   const [password, setPassword] = useState('');
   const owner = data.role !== 'staff';
-  const run = async (work: () => Promise<unknown>, success: string) => {
-    setError('');
-    setNotice('');
-    try {
-      await work();
-      setNotice(success);
-    } catch (e) {
-      setError((e as Error).message);
-    }
-  };
+  // Changes here use quiet saves: this reports success and failure once, bottom right.
+  const quiet = { quiet: true } as const;
+  const run = (key: string, work: () => Promise<unknown>, success: string) =>
+    action.run(key, async () => {
+      try {
+        await work();
+        notify(success);
+      } catch (e) {
+        notify((e as Error).message, 'error');
+      }
+    });
   const loadTeam = () => api<TeamMember[]>('/team', data.company.id).then(setMembers);
   useEffect(() => {
     if (owner) void loadTeam().catch((e) => setError(e.message));
@@ -155,15 +174,7 @@ export function SecuritySettings() {
         title="Security & privacy"
         description="Protect your account, manage team access and respond to customer data requests."
       />
-      <ErrorNotice message={error} />
-      {notice && (
-        <p
-          role="status"
-          className="mb-5 rounded-xl border border-success-700/15 bg-success-700/[0.07] p-4 text-[13px] text-success-800"
-        >
-          {notice}
-        </p>
-      )}
+      <ErrorNotice message={error} onDismiss={() => setError('')} />
       <section className="card mb-6 p-5 sm:p-6 space-y-4">
         <h2 className="panel-title">Your account</h2>
         {auth ? (
@@ -174,21 +185,26 @@ export function SecuritySettings() {
               sign-in.
             </p>
             {!enrolled && !factor && (
-              <button
-                className="btn"
+              <ActionButton
+                loading={pending === 'mfa-enroll'}
+                loadingLabel="Preparing…"
                 onClick={() =>
-                  void run(async () => {
-                    const r = await auth.auth.mfa.enroll({
-                      factorType: 'totp',
-                      friendlyName: `Orderly ${new Date().toISOString()}`,
-                    });
-                    if (r.error) throw r.error;
-                    setFactor({ id: r.data.id, qr: r.data.totp.qr_code });
-                  }, 'Scan the QR code in your authenticator, then verify a code.')
+                  void run(
+                    'mfa-enroll',
+                    async () => {
+                      const r = await auth.auth.mfa.enroll({
+                        factorType: 'totp',
+                        friendlyName: `Orderly ${new Date().toISOString()}`,
+                      });
+                      if (r.error) throw r.error;
+                      setFactor({ id: r.data.id, qr: r.data.totp.qr_code });
+                    },
+                    'Scan the QR code in your authenticator, then verify a code.',
+                  )
                 }
               >
                 Set up authenticator
-              </button>
+              </ActionButton>
             )}
             {factor && (
               <div className="space-y-3">
@@ -207,34 +223,43 @@ export function SecuritySettings() {
                     onChange={(e) => setCode(e.target.value)}
                   />
                 </Field>
-                <button
-                  className="btn"
+                <ActionButton
+                  loading={pending === 'mfa-verify'}
+                  loadingLabel="Verifying…"
                   onClick={() =>
-                    void run(async () => {
-                      const r = await auth.auth.mfa.challengeAndVerify({
-                        factorId: factor.id,
-                        code,
-                      });
-                      if (r.error) throw r.error;
-                      setEnrolled(factor.id);
-                      setFactor(undefined);
-                      setCode('');
-                    }, 'Authenticator protection enabled.')
+                    void run(
+                      'mfa-verify',
+                      async () => {
+                        const r = await auth.auth.mfa.challengeAndVerify({
+                          factorId: factor.id,
+                          code,
+                        });
+                        if (r.error) throw r.error;
+                        setEnrolled(factor.id);
+                        setFactor(undefined);
+                        setCode('');
+                      },
+                      'Authenticator protection enabled.',
+                    )
                   }
                 >
                   Verify and enable
-                </button>
+                </ActionButton>
               </div>
             )}
             <form
               className="flex flex-wrap items-end gap-3"
               onSubmit={(e) => {
                 e.preventDefault();
-                void run(async () => {
-                  const r = await auth.auth.updateUser({ password });
-                  if (r.error) throw r.error;
-                  setPassword('');
-                }, 'Password updated.');
+                void run(
+                  'password',
+                  async () => {
+                    const r = await auth.auth.updateUser({ password });
+                    if (r.error) throw r.error;
+                    setPassword('');
+                  },
+                  'Password updated.',
+                );
               }}
             >
               <Field label="New password">
@@ -248,7 +273,9 @@ export function SecuritySettings() {
                   onChange={(e) => setPassword(e.target.value)}
                 />
               </Field>
-              <button className="btn">Change password</button>
+              <ActionButton type="submit" loading={pending === 'password'} loadingLabel="Saving…">
+                Change password
+              </ActionButton>
             </form>
             <button className="btn" onClick={() => void auth.auth.signOut({ scope: 'global' })}>
               Sign out all sessions
@@ -273,11 +300,15 @@ export function SecuritySettings() {
               className="grid gap-3 sm:grid-cols-3"
               onSubmit={(e) => {
                 e.preventDefault();
-                void run(async () => {
-                  await mutate('/team/invite', { email, role });
-                  setEmail('');
-                  await loadTeam();
-                }, 'Invitation sent to the team member.');
+                void run(
+                  'invite',
+                  async () => {
+                    await mutate('/team/invite', { email, role }, undefined, quiet);
+                    setEmail('');
+                    await loadTeam();
+                  },
+                  'Invitation sent to the team member.',
+                );
               }}
             >
               <Field label="New member’s email">
@@ -299,9 +330,16 @@ export function SecuritySettings() {
                   ]}
                 />
               </Field>
-              <button disabled={busy || data.mode === 'demo'} className="btn self-end">
+              <ActionButton
+                type="submit"
+                disabled={data.mode === 'demo'}
+                title={data.mode === 'demo' ? 'Invitations need the hosted workspace.' : undefined}
+                className="self-end"
+                loading={pending === 'invite'}
+                loadingLabel="Sending…"
+              >
                 Send invitation
-              </button>
+              </ActionButton>
             </form>
             <details>
               <summary className="cursor-pointer text-sm font-medium">
@@ -311,11 +349,15 @@ export function SecuritySettings() {
                 className="mt-3 flex flex-wrap items-end gap-3"
                 onSubmit={(e) => {
                   e.preventDefault();
-                  void run(async () => {
-                    await mutate(`/team/${encodeURIComponent(userId)}`, { role }, 'PUT');
-                    setUserId('');
-                    await loadTeam();
-                  }, 'Team access saved.');
+                  void run(
+                    'add-member',
+                    async () => {
+                      await mutate(`/team/${encodeURIComponent(userId)}`, { role }, 'PUT', quiet);
+                      setUserId('');
+                      await loadTeam();
+                    },
+                    'Team access saved.',
+                  );
                 }}
               >
                 <Field label="Existing Supabase user ID">
@@ -327,9 +369,13 @@ export function SecuritySettings() {
                     placeholder="Account UUID"
                   />
                 </Field>
-                <button disabled={busy} className="btn">
+                <ActionButton
+                  type="submit"
+                  loading={pending === 'add-member'}
+                  loadingLabel="Saving…"
+                >
                   Add as {role}
-                </button>
+                </ActionButton>
               </form>
             </details>
             <ul className="divide-y divide-ink/[0.05]">
@@ -339,33 +385,46 @@ export function SecuritySettings() {
                   className="flex flex-wrap items-center justify-between gap-3 py-3"
                 >
                   <code className="break-all text-xs">{m.userId}</code>
-                  <div className="flex flex-wrap gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {pending === `role-${m.userId}` && (
+                      <span className="flex items-center gap-1.5 text-xs text-stone-500">
+                        <Spinner /> Saving…
+                      </span>
+                    )}
                     <CustomSelect
                       aria-label={`Role for ${m.userId}`}
                       value={m.role}
                       onChange={(v) =>
-                        void run(async () => {
-                          await mutate(`/team/${m.userId}`, { role: v }, 'PUT');
-                          await loadTeam();
-                        }, 'Role updated.')
+                        void run(
+                          `role-${m.userId}`,
+                          async () => {
+                            await mutate(`/team/${m.userId}`, { role: v }, 'PUT', quiet);
+                            await loadTeam();
+                          },
+                          'Role updated.',
+                        )
                       }
                       options={[
                         { value: 'staff', label: 'Staff' },
                         { value: 'owner', label: 'Owner' },
                       ]}
                     />
-                    <button
-                      disabled={busy}
-                      className="btn"
+                    <ActionButton
+                      loading={pending === `remove-${m.userId}`}
+                      loadingLabel="Removing…"
                       onClick={() =>
-                        void run(async () => {
-                          await mutate(`/team/${m.userId}`, undefined, 'DELETE');
-                          await loadTeam();
-                        }, 'Access removed.')
+                        void run(
+                          `remove-${m.userId}`,
+                          async () => {
+                            await mutate(`/team/${m.userId}`, undefined, 'DELETE', quiet);
+                            await loadTeam();
+                          },
+                          'Access removed.',
+                        )
                       }
                     >
                       Remove
-                    </button>
+                    </ActionButton>
                   </div>
                 </li>
               ))}
@@ -391,11 +450,14 @@ export function SecuritySettings() {
                 onChange={(e) => setPhone(e.target.value)}
               />
             </Field>
-            <button
-              className="btn"
-              disabled={!phone || busy}
+            <ActionButton
+              disabled={!phone}
+              title={!phone ? 'Enter the customer’s phone number first.' : undefined}
+              loading={pending === 'export'}
+              loadingLabel="Preparing export…"
               onClick={() =>
                 void run(
+                  'export',
                   async () =>
                     download(
                       'orderly-customer-export.json',
@@ -409,7 +471,7 @@ export function SecuritySettings() {
               }
             >
               Export customer data
-            </button>
+            </ActionButton>
             <label className="flex items-start gap-3 text-sm leading-6">
               <input
                 type="checkbox"
@@ -428,8 +490,20 @@ export function SecuritySettings() {
             </p>
             <button
               className="btn text-red-700"
-              disabled={!phone || !ack || busy || data.company.botEnabled}
-              onClick={() => setErase(true)}
+              disabled={!phone || !ack || data.company.botEnabled}
+              title={
+                !phone
+                  ? 'Enter the customer’s phone number first.'
+                  : !ack
+                    ? 'Tick the confirmation above first.'
+                    : data.company.botEnabled
+                      ? 'Pause automation in Bot settings first.'
+                      : undefined
+              }
+              onClick={() => {
+                setEraseError('');
+                setErase(true);
+              }}
             >
               Delete this customer’s data
             </button>
@@ -470,13 +544,26 @@ export function SecuritySettings() {
         title="Delete this customer’s data?"
         description={`This permanently removes active Orderly conversations and orders for ${phone}. Connected Sheets and provider records are separate.`}
         confirmLabel="Delete customer data"
-        busy={busy}
-        onConfirm={() =>
-          void run(async () => {
-            await mutate('/privacy/erase', { phone, externalCopiesAcknowledged: true });
-            setErase(false);
-          }, 'Customer data removed from Orderly’s active database.')
-        }
+        busy={pending === 'erase'}
+        busyLabel="Deleting…"
+        error={eraseError}
+        onConfirm={() => {
+          setEraseError('');
+          // The dialog shows a failure inline, where screen readers can reach it.
+          void action.run('erase', async () => {
+            try {
+              await mutate(
+                '/privacy/erase',
+                { phone, externalCopiesAcknowledged: true },
+                undefined,
+                { dialog: true, success: 'Customer data removed from Orderly’s active database.' },
+              );
+              setErase(false);
+            } catch (e) {
+              setEraseError((e as Error).message);
+            }
+          });
+        }}
       />
     </>
   );

@@ -26,6 +26,13 @@ function unwrap<T>(result: Result<T>): T | null {
   if (result.error) throw new Error(`Database operation failed: ${result.error.message}`);
   return result.data;
 }
+// Businesses saved before every business used its own key carry a "keyMode" label. It
+// means nothing now; dropping it keeps dashboards opened before that change from seeing
+// their test chats as out of date.
+function withoutKeyLabel(company: Company): Company {
+  const { keyMode: _label, ...ai } = company.ai as Company['ai'] & { keyMode?: unknown };
+  return { ...company, ai };
+}
 const jobRow = (job: Job) => ({
   id: job.id,
   company_id: job.companyId,
@@ -95,14 +102,6 @@ export class SupabaseRepository implements Repository {
         .maybeSingle(),
     ) as { data: Conversation } | null;
     return row?.data;
-  }
-  platformBudget() {
-    return this.rpc<import('../../src/shared/types').PlatformBudget>('platform_budget', {});
-  }
-  configurePlatformBudget(limit: number) {
-    return this.rpc<import('../../src/shared/types').PlatformBudget>('configure_platform_budget', {
-      p_limit: limit,
-    });
   }
   alertPreferences(companyId: string, userId: string) {
     return this.rpc<import('../../src/shared/types').AlertPreferences>('alert_preferences', {
@@ -220,7 +219,7 @@ export class SupabaseRepository implements Repository {
             memberships.map((m) => m.company_id),
           ),
       ) ?? [];
-    return rows.map((row) => row.data as Company);
+    return rows.map((row) => withoutKeyLabel(row.data as Company));
   }
   queryOrders(companyId: string, filter: ListFilter) {
     return this.rpc<PageResult<Order>>('query_orders', {
@@ -352,11 +351,12 @@ export class SupabaseRepository implements Repository {
     const row = unwrap(await query.maybeSingle()) as { data: T } | null;
     return row?.data;
   }
-  listCompanies() {
-    return this.list<Company>('companies');
+  async listCompanies() {
+    return (await this.list<Company>('companies')).map(withoutKeyLabel);
   }
-  getCompany(id: string) {
-    return this.get<Company>('companies', id);
+  async getCompany(id: string) {
+    const company = await this.get<Company>('companies', id);
+    return company && withoutKeyLabel(company);
   }
   async saveCompany(company: Company) {
     await this.rpc('save_company_settings', { p_company: company });

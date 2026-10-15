@@ -54,7 +54,7 @@ Local demo mode does not automatically dispatch cloud queue jobs. Use **Integrat
 - English, Urdu and Roman Urdu ordering responses; prices calculated in integer paisa.
 - Persistent cart, versioned customer review, explicit confirmation, and pending orders awaiting staff acceptance.
 - Order status workflow, export CSV, inbox, staff takeover and manual replies.
-- OpenAI, Anthropic and Gemini adapters with business-owned or platform API keys. Provider changes keep the same application rules.
+- OpenAI, Anthropic and Gemini adapters. Every business uses its own API key, stored encrypted; Orderly never supplies one. Provider changes keep the same application rules.
 - Monthly AI budget reservations, bounded model context/actions, conservative accounting for uncertain calls, and message burst handoff.
 - Direct Meta webhook verification, message deduplication, outbound replies and status templates.
 - Embedded Signup UI, server code exchange, granted account/phone validation, subscription and optional number registration.
@@ -122,7 +122,7 @@ Do not assume messaging or AI is free: confirm the selected model's quota, Googl
 
 ## Connect real accounts
 
-Follow [the deployment guide](docs/DEPLOYMENT.md) for Supabase, Cloudflare, Meta, Google Sheets and the activation checklist. The keys are supplied through server environment variables or the encrypted Integrations forms. Do not put service-role, Meta, Google or model secrets in `VITE_*` variables.
+Follow [the deployment guide](docs/DEPLOYMENT.md) for Supabase, Cloudflare, Meta, Google Sheets and the activation checklist. Server keys are supplied through environment variables; each business's AI, WhatsApp and Sheets credentials go through the encrypted Bot settings and Integrations forms. Do not put service-role, Meta, Google or model secrets in `VITE_*` variables.
 
 ## Scope and next milestones
 

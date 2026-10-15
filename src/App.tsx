@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { StaffAlerts } from './components/StaffAlerts';
 import * as Dialog from '@radix-ui/react-dialog';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -27,8 +27,23 @@ import {
 import type { Bootstrap } from './shared/types';
 import { api, setAccessToken } from './lib/api';
 import { cn, initials, label } from './lib/utils';
-import { Workspace, type Page } from './lib/workspace';
-import { CustomSelect, ErrorNotice, Field, Modal } from './components/ui';
+import {
+  Workspace,
+  dialogOpen,
+  type MutateOptions,
+  type Page,
+  type Toast,
+  type ToastTone,
+} from './lib/workspace';
+import {
+  ActionButton,
+  CustomSelect,
+  ErrorNotice,
+  Field,
+  keepOpenForToasts,
+  Modal,
+  Toaster,
+} from './components/ui';
 import { Overview, Orders } from './components/Orders';
 import { Catalog } from './components/Catalog';
 import { Playground } from './components/Conversations';
@@ -96,8 +111,16 @@ export default function App() {
   const [data, setData] = useState<Bootstrap | null>(null);
   const route = useRoute();
   const page = route.page;
+  // Page-level problems (loading, background updates, sign-in) show at the top of the page.
   const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
+  // A failed change: a bottom-right notification, and inline inside an open dialog.
+  const [actionError, setActionError] = useState('');
+  // How many changes are being saved. Background refreshes wait; nothing greys out.
+  const savesInFlight = useRef(0);
+  const [saving, setSaving] = useState(0);
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const toastId = useRef(0);
+  const refreshSeq = useRef(0);
   const [mobile, setMobile] = useState(false);
   const [help, setHelp] = useState(false);
   const [firstBusiness, setFirstBusiness] = useState(false);
@@ -167,13 +190,31 @@ export default function App() {
   }, []);
 
   const refresh = useCallback(async () => {
+    // Saves no longer block each other, so a slower, older reload must not overwrite a newer one.
+    const seq = ++refreshSeq.current;
     const result = await api<Bootstrap>(
       `/bootstrap${route.slug ? `?companySlug=${encodeURIComponent(route.slug)}` : companyId ? `?companyId=${encodeURIComponent(companyId)}` : ''}`,
       companyId,
     );
-    setData((current) => (current?.company.id === result.company.id ? result : current));
-    setStoredCompany(result.company.id);
+    if (seq !== refreshSeq.current) return;
+    setData((current) => {
+      if (current?.company.id !== result.company.id) return current;
+      setStoredCompany(result.company.id);
+      return result;
+    });
   }, [companyId, route.slug]);
+
+  const dismissToast = useCallback((id: number) => {
+    setToasts((current) => current.filter((toast) => toast.id !== id));
+  }, []);
+  const notify = useCallback(
+    (message: string, tone: ToastTone = 'success') => {
+      const id = ++toastId.current;
+      setToasts((current) => [...current.slice(-2), { id, message, tone }]);
+      setTimeout(() => dismissToast(id), tone === 'error' ? 8000 : 4000);
+    },
+    [dismissToast],
+  );
 
   useEffect(() => {
     if (!authenticated) return;
@@ -214,7 +255,7 @@ export default function App() {
     if (!authenticated || !data || !['overview', 'orders', 'inbox', 'activity'].includes(page))
       return;
     const timer = setInterval(() => {
-      if (!document.hidden && !busy)
+      if (!document.hidden && !savesInFlight.current)
         void api<Pick<Bootstrap, 'summary' | 'traces' | 'jobs' | 'orders'>>(
           '/activity',
           data.company.id,
@@ -228,30 +269,52 @@ export default function App() {
           .catch((e) => setError(`Updates delayed: ${e.message}`));
     }, 15000);
     return () => clearInterval(timer);
-  }, [authenticated, !!data, page, busy, refresh]);
+  }, [authenticated, !!data, page, refresh]);
 
   const mutate = useCallback(
-    async <T,>(path: string, body?: unknown, method?: string): Promise<T> => {
-      setBusy(true);
-      setError('');
+    async <T,>(
+      path: string,
+      body?: unknown,
+      method?: string,
+      options: MutateOptions = {},
+    ): Promise<T> => {
+      savesInFlight.current++;
+      setSaving(savesInFlight.current);
+      setActionError('');
       try {
-        const result = await api<T>(path, data?.company.id || companyId, body, method);
-        await refresh();
+        let result: T;
+        try {
+          result = await api<T>(path, data?.company.id || companyId, body, method);
+        } catch (e) {
+          const message = (e as Error).message;
+          setActionError(message);
+          // A dialog shows the failure only while it is open: closed early, the failure
+          // would otherwise appear nowhere.
+          if (!options.quiet && !(options.dialog && dialogOpen())) notify(message, 'error');
+          throw e;
+        }
+        try {
+          await refresh();
+        } catch {
+          // The change itself was saved; only reloading the page data failed.
+          notify('Saved. Reload the page to see the latest data.', 'info');
+          return result;
+        }
+        if (options.success) notify(options.success);
         return result;
-      } catch (e) {
-        setError((e as Error).message);
-        throw e;
       } finally {
-        setBusy(false);
+        savesInFlight.current--;
+        setSaving(savesInFlight.current);
       }
     },
-    [data?.company.id, companyId, refresh],
+    [data?.company.id, companyId, refresh, notify],
   );
 
   function switchCompany(id: string) {
     if (id === data?.company.id) return;
     setData(null);
     setError('');
+    setActionError('');
     setCompanyId(id);
     const company = data?.companies.find((c) => c.id === id);
     if (company) go(workspacePath(company.slug, page));
@@ -497,13 +560,14 @@ export default function App() {
     <Workspace.Provider
       value={{
         data,
-        busy,
-        error,
-        clearError: () => setError(''),
+        busy: saving > 0,
+        error: actionError,
+        clearError: () => setActionError(''),
         page,
         navigate,
         switchCompany,
         refresh,
+        notify,
         mutate,
         detailId: route.id,
         auth: client ?? undefined,
@@ -518,6 +582,7 @@ export default function App() {
               onClick={() => setMobile(false)}
             />
             <Dialog.Content
+              onInteractOutside={keepOpenForToasts}
               aria-describedby={undefined}
               className="fixed inset-y-0 left-0 z-50 w-72 max-w-[85vw] bg-ink shadow-2xl flex flex-col"
             >
@@ -572,7 +637,6 @@ export default function App() {
                   variant="pill"
                   align="right"
                   value={data.company.id}
-                  disabled={busy}
                   onChange={(val) => switchCompany(val)}
                   options={(data.companies || []).map((c) => ({
                     value: c.id,
@@ -672,7 +736,7 @@ export default function App() {
             ],
             [
               'Connect when ready',
-              'Add your model, Google Sheets, and Meta credentials in Integrations. Live setup requires server configuration.',
+              'Connect your AI model with your own API key in Bot settings, then WhatsApp and Google Sheets in Integrations.',
             ],
             [
               'See how it all connects',
@@ -701,6 +765,7 @@ export default function App() {
           <ArrowRight className="size-4" />
         </button>
       </Modal>
+      <Toaster toasts={toasts} onDismiss={dismissToast} />
     </Workspace.Provider>
   );
 }
@@ -759,10 +824,15 @@ function FirstBusiness({ onCreated }: { onCreated: (id: string) => void }) {
             />
           </Field>
           <ErrorNotice message={error} />
-          <button className="btn btn-primary w-full" disabled={busy}>
+          <ActionButton
+            type="submit"
+            className="btn-primary w-full"
+            loading={busy}
+            loadingLabel="Creating workspace…"
+          >
             Create workspace
             <Plus className="size-4" />
-          </button>
+          </ActionButton>
         </form>
       </div>
     </div>
@@ -773,7 +843,7 @@ function Login({ client }: { client: SupabaseClient }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<'' | 'signin' | 'reset'>('');
   const [notice, setNotice] = useState('');
   return (
     <div className="grid min-h-dvh place-items-center bg-canvas px-4 py-8">
@@ -788,7 +858,8 @@ function Login({ client }: { client: SupabaseClient }) {
             className="space-y-5"
             onSubmit={async (e) => {
               e.preventDefault();
-              setBusy(true);
+              if (busy) return;
+              setBusy('signin');
               setError('');
               try {
                 const result = await client.auth.signInWithPassword({ email, password });
@@ -796,7 +867,7 @@ function Login({ client }: { client: SupabaseClient }) {
               } catch (reason) {
                 setError((reason as Error).message);
               } finally {
-                setBusy(false);
+                setBusy('');
               }
             }}
           >
@@ -826,17 +897,34 @@ function Login({ client }: { client: SupabaseClient }) {
                 {notice}
               </p>
             )}
-            <button className="btn btn-primary w-full" disabled={busy}>
-              {busy ? 'Signing in…' : 'Sign in'}
+            <ActionButton
+              type="submit"
+              className="btn-primary w-full"
+              disabled={busy === 'reset'}
+              title={busy === 'reset' ? 'Wait for the reset email to finish sending.' : undefined}
+              loading={busy === 'signin'}
+              loadingLabel="Signing in…"
+            >
+              Sign in
               <ArrowRight className="size-4" />
-            </button>
+            </ActionButton>
           </form>
-          <button
-            className="btn btn-quiet mt-4 w-full"
-            disabled={busy || !email}
+          <ActionButton
+            className="btn-quiet mt-4 w-full"
+            disabled={!email || busy === 'signin'}
+            title={
+              !email
+                ? 'Enter your email address above first.'
+                : busy === 'signin'
+                  ? 'Signing in…'
+                  : undefined
+            }
+            loading={busy === 'reset'}
+            loadingLabel="Sending…"
             onClick={async () => {
+              if (busy) return;
               setError('');
-              setBusy(true);
+              setBusy('reset');
               try {
                 const result = await client.auth.resetPasswordForEmail(email, {
                   redirectTo: `${window.location.origin}/login?flow=recovery`,
@@ -846,12 +934,12 @@ function Login({ client }: { client: SupabaseClient }) {
               } catch (e) {
                 setError((e as Error).message);
               } finally {
-                setBusy(false);
+                setBusy('');
               }
             }}
           >
             Send password reset link
-          </button>
+          </ActionButton>
           <p className="mt-6 text-xs leading-relaxed text-stone-400">
             Workspace access is managed by your administrator. Contact them if you need an account
             access. Enter your email above to request a password reset.
@@ -910,9 +998,14 @@ function AccountChallenge({
           />
         </Field>
         <ErrorNotice message={error} />
-        <button disabled={busy} className="btn btn-primary w-full">
-          {busy ? 'Checking…' : 'Continue'}
-        </button>
+        <ActionButton
+          type="submit"
+          className="btn-primary w-full"
+          loading={busy}
+          loadingLabel="Checking…"
+        >
+          Continue
+        </ActionButton>
         <button type="button" className="btn w-full" onClick={() => void client.auth.signOut()}>
           Sign out
         </button>
