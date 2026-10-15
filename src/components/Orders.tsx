@@ -95,7 +95,7 @@ export function Overview() {
               Launch readiness · {data.readiness.filter((c) => c.ready).length}/
               {data.readiness.length}
             </h2>
-            <button className="btn" onClick={() => navigate('bot')}>
+            <button className="btn" onClick={() => navigate('flow')}>
               Review setup
             </button>
           </div>

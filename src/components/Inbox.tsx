@@ -5,6 +5,7 @@ import { useWorkspace } from '../lib/workspace';
 import { api } from '../lib/api';
 import { cn, shortDate } from '../lib/utils';
 import { CustomSelect, Empty, ErrorNotice, PageHeading, Status } from './ui';
+import { WhyToggle } from './ReplyExplanation';
 
 export function Inbox() {
   const { data, mutate, busy, navigate, detailId } = useWorkspace();
@@ -255,7 +256,9 @@ export function Inbox() {
                     <strong className="block truncate text-sm">
                       {conversation.customerName || 'Customer'}
                     </strong>
-                    <p className="text-xs text-stone-500">{conversation.customerPhone || 'WhatsApp contact · phone number not shared'}</p>
+                    <p className="text-xs text-stone-500">
+                      {conversation.customerPhone || 'WhatsApp contact · phone number not shared'}
+                    </p>
                   </div>
                 </div>
                 <button
@@ -301,6 +304,9 @@ export function Inbox() {
                     </p>
                     {m.deliveryError && (
                       <p className="mt-2 text-xs text-red-700">{m.deliveryError}</p>
+                    )}
+                    {m.role === 'assistant' && m.explanation && (
+                      <WhyToggle explanation={m.explanation} />
                     )}
                   </div>
                 ))}

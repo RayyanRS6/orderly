@@ -32,7 +32,8 @@ For the prepared HTTPS stack, private configuration generator, preflight checks 
 launch gates, use [DEPLOYMENT.md](DEPLOYMENT.md). Hosting can be purchased later. Run
 `npm run configure` / `npm run doctor` only after building the gateway. Neither provisions
 a server. The production overlay reserves OS memory on a 2 GB pilot VPS and starts with
-one number when using the generated configuration.
+one number when using the generated configuration. Hosting on Railway instead of a VPS:
+see [RAILWAY.md](RAILWAY.md).
 
 Use an always-on Linux host with Docker, a persistent volume, working outbound HTTPS/WebSockets,
 an HTTPS reverse proxy, encrypted host backups, and monitoring. **Do not deploy this Node

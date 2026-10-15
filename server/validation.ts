@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { MAX_BOT_INSTRUCTIONS } from '../src/shared/bot.js';
+import { MODEL_LIMITS } from '../src/shared/models.js';
 const text = (max: number) => z.string().trim().max(max);
 export const behaviorRuleSchema = z
   .object({
@@ -176,7 +177,7 @@ export const chatSchema = z.object({
   testTarget: z.enum(['draft', 'published']).default('draft'),
 });
 export const modelOutputSchema = z.object({
-  actions: z.array(actionSchema).min(1).max(6),
+  actions: z.array(actionSchema).min(1).max(MODEL_LIMITS.maxActions),
   response: z
     .object({
       text: text(2000),

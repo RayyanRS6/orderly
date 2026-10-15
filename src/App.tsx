@@ -21,6 +21,7 @@ import {
   ShoppingBag,
   SlidersHorizontal,
   Sparkles,
+  Workflow,
   X,
 } from 'lucide-react';
 import type { Bootstrap } from './shared/types';
@@ -35,6 +36,7 @@ import { Inbox } from './components/Inbox';
 import { Businesses, Integrations, Settings } from './components/Settings';
 import { BotSettings } from './components/BotSettings';
 import { Activity, SecuritySettings } from './components/Operations';
+import { AgentFlow } from './components/AgentFlow';
 import { go, useRoute, workspacePath } from './lib/routes';
 
 const navigation = [
@@ -44,6 +46,7 @@ const navigation = [
   { id: 'menu', label: 'Menu', icon: BookOpen },
   { id: 'playground', label: 'Test your bot', icon: FlaskConical },
   { id: 'bot', label: 'Bot settings', icon: SlidersHorizontal },
+  { id: 'flow', label: 'Agent flow', icon: Workflow },
   { id: 'activity', label: 'Activity & errors', icon: Sparkles },
 ] as const;
 const manage = [
@@ -632,6 +635,7 @@ export default function App() {
               {page === 'settings' && <Settings />}
               {page === 'businesses' && <Businesses />}
               {page === 'bot' && <BotSettings />}
+              {page === 'flow' && <AgentFlow />}
               {page === 'activity' && <Activity />}
               {page === 'security' && <SecuritySettings />}
             </div>
@@ -669,6 +673,10 @@ export default function App() {
             [
               'Connect when ready',
               'Add your model, Google Sheets, and Meta credentials in Integrations. Live setup requires server configuration.',
+            ],
+            [
+              'See how it all connects',
+              'Agent flow shows every connection, what is still missing, and why the bot replied the way it did.',
             ],
           ].map(([title, copy], index) => (
             <li key={title} className="flex gap-3">

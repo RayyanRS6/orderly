@@ -4,6 +4,7 @@ The gateway, HTTPS configuration, setup helper and test suite can be prepared wi
 buying a server. **Prepared does not mean deployed or real-phone verified.** Do not enable
 customer traffic until every acceptance gate below has passed. No script here provisions
 a paid resource, applies a production migration, or pairs a WhatsApp number automatically.
+Hosting on Railway instead of a VPS: see [RAILWAY.md](RAILWAY.md).
 
 ## 1. What will be needed later
 

@@ -23,6 +23,7 @@ import { quoteCart } from '../domain/engine';
 import { useWorkspace } from '../lib/workspace';
 import { cn, label } from '../lib/utils';
 import { Badge, CustomSelect, Empty, ErrorNotice, Field, Modal, PageHeading, Status } from './ui';
+import { WhyToggle } from './ReplyExplanation';
 
 function Messages({ conversation, waiting }: { conversation?: Conversation; waiting?: boolean }) {
   const end = useRef<HTMLDivElement>(null);
@@ -88,6 +89,9 @@ function Messages({ conversation, waiting }: { conversation?: Conversation; wait
                     });
               })()}
             </p>
+            {message.role === 'assistant' && message.explanation && (
+              <WhyToggle explanation={message.explanation} />
+            )}
           </div>
         </div>
       ))}

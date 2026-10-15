@@ -15,6 +15,8 @@ A WhatsApp ordering platform for restaurants, in use at **Fries & Buns**. Custom
 
 **Status (October 2026):** live on Cloudflare and Supabase and in use at Fries & Buns, with public pages, workspace URLs, configurable bots and models, and security controls. Earlier records from the launch: the [implementation and launch handover](docs/ORDERLY-IMPLEMENTATION-2026-09-17.md), the [audit](docs/ORDERLY-AUDIT-2026-09-16.md) and the [Pakistan budget](docs/ORDERLY-BUDGET-2026-09-16.md).
 
+**Start here:** [Get Orderly running](docs/GET-IT-RUNNING.md) is the current step-by-step checklist (accounts, Claude Haiku 5.5, the Railway WhatsApp gateway, per-client setup and costs). In the dashboard, **Agent flow** shows everything connected to a business's bot, what is missing, and why the bot sent each reply.
+
 ## Run locally
 
 Requires Node.js 22.12+ or 24+. Tested with Node 24 on Windows.
@@ -79,6 +81,8 @@ flowchart LR
     Commit --> Sheet[Google Sheets sync job]
     Commit --> Staff[Restaurant dashboard]
 ```
+
+The **Agent flow** page (`/app/<business>/flow`) draws this pipeline from live data (`GET /api/agent-flow`, built in `server/agent-flow.ts`). Each bot reply also stores a small explanation (settings version, model, proposed actions, matched rule, engine corrections, who wrote each part, token cost) inside the conversation, shown as **Why this reply?** in Test your bot and the Inbox. Model defaults, prices and context limits live in `src/shared/models.ts`, so the page and the running code always agree.
 
 `src/domain/engine.ts` is the portable core. A model can interpret an item request or suggest an action; it cannot select another company, supply a price, write to a database, or accept an order. Replies about transactions come from the engine. FAQ responses use owner-approved text rather than arbitrary model prose.
 

@@ -89,7 +89,7 @@ Inspect `/functions/v1/orderly/api/health`, sign-in, first-company creation and 
 
 ## 3. Models
 
-In **Settings**, choose a provider and model. Default suggestions are OpenAI `gpt-5.4-mini`, Anthropic `claude-haiku-4-5`, or Gemini `gemini-3.5-flash-lite`. Use **This business’s API key** for BYOK, then save the key in **Integrations**. Alternatively the founder can enable a platform key for that company. The **Selected AI connection** card reports whether that chosen key is available and can test account access. Individual provider cards test the separately saved business key.
+In **Settings**, choose a provider and model. Default suggestions are OpenAI `gpt-5.4-mini`, Anthropic `claude-haiku-5-5` (recommended: fast and low-cost for chat), or Gemini `gemini-3.5-flash-lite`. Use **This business’s API key** for BYOK, then save the key in **Integrations**. Alternatively the founder can enable a platform key for that company. The **Selected AI connection** card reports whether that chosen key is available and can test account access. Individual provider cards test the separately saved business key.
 
 The key test checks provider account access; it does not establish model availability or language quality. Test a natural-language order in **Test your bot** afterward. This incurs normal provider usage if a live model is selected, even in local demo mode.
 

@@ -6,7 +6,23 @@ import { verifySigned } from '../../server/whatsapp/signing.js';
 import { RequestBudget } from './request-budget.js';
 
 const config = loadConfig();
-const supervisor = new Supervisor(config);
+// A redeploy can start before the previous container's 45-second lease expires (for example
+// after a SIGKILL). Wait up to 60 seconds for it instead of crash-looping; never steal it.
+async function acquireSupervisor() {
+  for (let retry = 0; ; retry++) {
+    try {
+      return new Supervisor(config);
+    } catch (error) {
+      const leaseHeld =
+        error instanceof Error && error.message === 'Another gateway owns this data volume.';
+      if (!leaseHeld || retry >= 12) throw error;
+      if (retry === 0)
+        console.info(JSON.stringify({ event: 'GATEWAY_LEASE_WAIT', at: new Date().toISOString() }));
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+    }
+  }
+}
+const supervisor = await acquireSupervisor();
 supervisor.restore();
 const requestBudget = new RequestBudget();
 const server = createServer(async (request, response) => {

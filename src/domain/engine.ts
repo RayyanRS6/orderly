@@ -6,10 +6,13 @@ import type {
   Conversation,
   Language,
   ModelResponse,
+  ModelTextOutcome,
   Order,
   OrderLine,
   OrderStatus,
   Product,
+  ReplyDecision,
+  ReplyPart,
   TurnInput,
   TurnResult,
 } from '../shared/types';
@@ -671,6 +674,20 @@ export function parseActions(
   return [{ type: 'answer', text: '' }];
 }
 
+// Traces that mean the application changed or refused what the model proposed.
+const CORRECTION_TRACES = new Set([
+  'ambiguous_addition_prevented',
+  'item_choice_resolved',
+  'browse_cart_mutation_prevented',
+  'unconfirmed_model_action_rejected',
+  'fresh_confirmation_required',
+  'duplicate_submission_prevented',
+  'invalid_model_grounding_ignored',
+  'unsafe_model_response_ignored',
+  'invalid_model_prompt_ignored',
+  'response_fallback',
+]);
+
 export function processTurn(
   company: Company,
   products: Product[],
@@ -726,6 +743,10 @@ export function processTurn(
     order: Order | undefined;
   const cartFacts: string[] = [];
   let correctedInterpretation = false;
+  let recapCorrected = false;
+  let tooManyActions = false;
+  let modelAnswer: string | undefined;
+  let answerUnsafe = false;
   let incompleteReviewQuestion: string | undefined;
   const finish = (): TurnResult => {
     if (traces.includes('human_mode_message_saved'))
@@ -788,9 +809,23 @@ export function processTurn(
       (traces.includes('review') && !incompleteReviewQuestion) ||
       cart.status === 'cancelled';
     if (cartFacts.length) reply = [cartFacts.join('\n'), reply].filter(Boolean).join('\n\n');
+    // Explanation only: record which source wrote each part of the reply.
+    let parts: ReplyPart[] = [];
+    const answerByModel = !!modelAnswer && reply.includes(modelAnswer);
+    if (reply) {
+      if (transactional || cartFacts.length || (!traces.includes('approved_faq') && !answerByModel))
+        parts.push('engine');
+      if (traces.includes('approved_faq')) parts.push('approved_answer');
+      if (answerByModel) parts.push('model');
+    }
+    const modelWrote = !!modelResponse?.text.trim();
+    let modelText: ModelTextOutcome =
+      modelWrote || answerByModel ? 'used' : answerUnsafe ? 'unsafe' : 'none';
     if (matchedRule?.action === 'handoff') next.mode = 'human';
     let configuredResponseUsed = false;
     if (!protectedReply && matchedRule?.responseMode === 'exact' && matchedRule.response) {
+      parts = transactional && reply ? [...parts, 'exact_rule'] : ['exact_rule'];
+      if (modelWrote) modelText = 'exact_rule';
       reply = transactional && reply ? `${reply}\n\n${matchedRule.response}` : matchedRule.response;
       configuredResponseUsed = true;
     } else if (
@@ -801,16 +836,35 @@ export function processTurn(
       modelResponse?.text.trim() &&
       !unsafeModelText(modelResponse.text)
     ) {
+      const modelFirst = traces.includes('menu') || traces.includes('clarify_item');
+      parts =
+        transactional && reply
+          ? modelFirst
+            ? ['model', ...parts]
+            : [...parts, 'model']
+          : ['model'];
       reply =
         transactional && reply
-          ? traces.includes('menu') || traces.includes('clarify_item')
+          ? modelFirst
             ? `${modelResponse.text.trim()}\n\n${reply}`
             : `${reply}\n\n${modelResponse.text.trim()}`
           : modelResponse.text.trim();
       configuredResponseUsed = true;
+    } else if (modelWrote) {
+      modelText = protectedReply
+        ? 'protected'
+        : next.mode !== 'bot'
+          ? 'staff_mode'
+          : !grounded
+            ? 'ungrounded'
+            : !validAskFor
+              ? 'invalid_question'
+              : 'unsafe';
     }
-    if (incompleteReviewQuestion && !configuredResponseUsed)
+    if (incompleteReviewQuestion && !configuredResponseUsed) {
       reply = `${reply}\n\n${incompleteReviewQuestion}`;
+      if (!parts.includes('engine')) parts.push('engine');
+    }
     if (modelResponse && !grounded) traces.push('invalid_model_grounding_ignored');
     if (modelResponse?.text && unsafeModelText(modelResponse.text))
       traces.push('unsafe_model_response_ignored');
@@ -818,6 +872,7 @@ export function processTurn(
     if (!reply && traces.includes('answer')) {
       next.mode = 'human';
       traces.push('handoff');
+      parts = [configuration.handoffMessage ? 'handoff_message' : 'engine'];
       reply =
         configuration.handoffMessage ||
         say(
@@ -837,17 +892,23 @@ export function processTurn(
           'Aap ki details save hain. Tayyar hon to order review karne ko kahein.',
         );
       traces.push('response_fallback');
+      parts = ['fallback'];
     }
     if (
       traces.includes('handoff') &&
       configuration.handoffMessage &&
       !(matchedRule?.responseMode === 'exact' && matchedRule.response)
-    )
+    ) {
       reply = configuration.handoffMessage;
-    if (company.bot?.published && reply && !matchedRule && !protectedReply && next.mode === 'bot') {
-      if (/^(hi|hello|salam|سلام|ہیلو)$/iu.test(input.text.trim()) && configuration.greeting)
-        reply = configuration.greeting;
+      parts = ['handoff_message'];
     }
+    if (company.bot?.published && reply && !matchedRule && !protectedReply && next.mode === 'bot') {
+      if (/^(hi|hello|salam|سلام|ہیلو)$/iu.test(input.text.trim()) && configuration.greeting) {
+        reply = configuration.greeting;
+        parts = ['greeting'];
+      }
+    }
+    if (modelText === 'used' && !parts.includes('model')) modelText = 'replaced';
     if (reply)
       next.messages.push({
         id: `${input.messageId}:reply`,
@@ -856,7 +917,29 @@ export function processTurn(
         createdAt: input.now,
       });
     if (cart.customerName) next.customerName = cart.customerName;
-    return { conversation: next, order, reply, traces };
+    const decision: ReplyDecision = {
+      parts: reply ? [...new Set<ReplyPart>(parts.length ? parts : ['engine'])] : [],
+      modelText,
+      ...(matchedRule && {
+        matchedRule: {
+          id: matchedRule.id,
+          when: matchedRule.when.slice(0, 200),
+          action: matchedRule.action,
+          responseMode: matchedRule.responseMode,
+        },
+      }),
+      corrections: [
+        ...(recapCorrected ? ['recap_shown'] : []),
+        ...(tooManyActions ? ['too_many_actions'] : []),
+        ...(answerUnsafe && !traces.includes('unsafe_model_response_ignored')
+          ? ['unsafe_model_response_ignored']
+          : []),
+        ...traces.filter(
+          (trace) => CORRECTION_TRACES.has(trace) || trace.startsWith('validation_failed:'),
+        ),
+      ],
+    };
+    return { conversation: next, order, reply, traces, decision };
   };
   if (next.mode === 'human' || !company.botEnabled) {
     next.mode = 'human';
@@ -876,6 +959,7 @@ export function processTurn(
     ) &&
     requested.every((action) => ['answer', 'review', 'cart_summary'].includes(action.type))
   ) {
+    recapCorrected = requested.some((action) => action.type !== 'cart_summary');
     requested = [{ type: 'cart_summary' }];
   }
   if (
@@ -918,6 +1002,7 @@ export function processTurn(
     }
   }
   if (requested.length > 8) {
+    tooManyActions = true;
     reply = say(
       lang,
       'Please split this into a smaller request, or ask for staff.',
@@ -1024,6 +1109,11 @@ export function processTurn(
         // Structured response metadata is validated in finish before deciding
         // whether a handoff is needed. An empty answer action is not a failure.
         reply = faq?.answer ?? (modelResponse || unsafeClaim ? '' : proposed);
+        // Explanation only: an answer the model wrote without a separate response object.
+        if (!faq && !modelResponse && actions && !input.action && proposed) {
+          if (unsafeClaim) answerUnsafe = true;
+          else modelAnswer = proposed;
+        }
         traces.push(faq ? 'approved_faq' : 'grounded_model_answer');
         continue;
       }

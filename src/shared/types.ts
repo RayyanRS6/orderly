@@ -110,6 +110,68 @@ export interface Message {
   delivery?: 'accepted' | 'sent' | 'delivered' | 'read' | 'failed';
   deliveryError?: string;
   externalId?: string;
+  /** Why the bot sent this reply. Present on bot replies written by this version onward. */
+  explanation?: TurnExplanation;
+}
+/** Who wrote each part of a bot reply. */
+export type ReplyPart =
+  | 'engine'
+  | 'approved_answer'
+  | 'model'
+  | 'exact_rule'
+  | 'greeting'
+  | 'handoff_message'
+  | 'fallback'
+  | 'notice';
+/** What happened to the text the AI model wrote. */
+export type ModelTextOutcome =
+  | 'used'
+  | 'none'
+  | 'replaced'
+  | 'exact_rule'
+  | 'protected'
+  | 'staff_mode'
+  | 'ungrounded'
+  | 'invalid_question'
+  | 'unsafe';
+/** Engine-side facts about how a reply was assembled. */
+export interface ReplyDecision {
+  parts: ReplyPart[];
+  modelText: ModelTextOutcome;
+  matchedRule?: Pick<BehaviorRule, 'id' | 'when' | 'action' | 'responseMode'>;
+  corrections: string[];
+}
+export type ModelSkipReason =
+  'button' | 'late' | 'local_rules' | 'staff_mode' | 'paused' | 'cancellation';
+export type StaffNoticeCause = 'burst' | 'menu_sync' | 'ai_error' | 'ai_budget';
+export interface TurnExplanation {
+  v: 1;
+  channel: 'demo' | 'whatsapp';
+  config: { target: 'draft' | 'published' | 'live'; revision: number; version?: number };
+  provider: Provider;
+  model: string;
+  keyMode: 'platform' | 'own';
+  catalogSource: 'app' | 'sheets';
+  ai: {
+    called: boolean;
+    skipped?: ModelSkipReason;
+    proposed?: { type: BotAction['type']; productId?: string; quantity?: number }[];
+    askFor?: ModelResponse['askFor'];
+    groundingIds?: string[];
+    ruleOverride?: 'handoff' | 'reply';
+    usage?: {
+      inputTokens: number;
+      outputTokens: number;
+      costUsd: number;
+      durationMs: number;
+      estimated: boolean;
+    };
+  };
+  steps: string[];
+  decision: ReplyDecision;
+  outcome: 'reply' | 'order' | 'staff';
+  orderReference?: string;
+  notice?: StaffNoticeCause;
 }
 export interface Conversation {
   whatsappAddress?: import('./whatsapp').WhatsAppAddress;
@@ -366,6 +428,7 @@ export interface ModelResponse {
 export interface ModelInterpretation {
   actions: BotAction[];
   response?: ModelResponse;
+  usage?: NonNullable<TurnExplanation['ai']['usage']>;
 }
 export interface TurnInput {
   messageId: string;
@@ -373,12 +436,16 @@ export interface TurnInput {
   action?: BotAction;
   now: string;
   testTarget?: 'draft' | 'published';
+  /** Set when a queued message was processed too late and is handed to staff instead. */
+  late?: boolean;
 }
 export interface TurnResult {
   conversation: Conversation;
   order?: Order;
   reply: string;
   traces: string[];
+  decision?: ReplyDecision;
+  explanation?: TurnExplanation;
 }
 export interface Job {
   id: string;

@@ -1,0 +1,2 @@
+# The entrypoint runs inside a Linux image: keep LF even on Windows checkouts (core.autocrlf).
+docker-entrypoint.sh text eol=lf

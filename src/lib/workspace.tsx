@@ -8,6 +8,7 @@ export type Page =
   | 'inbox'
   | 'playground'
   | 'bot'
+  | 'flow'
   | 'activity'
   | 'security'
   | 'integrations'

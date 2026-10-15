@@ -38,6 +38,7 @@ import { dispatchJob, makeJob, recoverJobs } from './jobs.js';
 import { finishSignup, signupSchema } from './integrations/signup.js';
 import { managementRoutes } from './management.js';
 import { readiness } from './readiness.js';
+import { buildAgentFlow } from './agent-flow.js';
 import { WhatsAppAdapter } from './integrations/whatsapp.js';
 import { whatsappRoutes } from './whatsapp/routes';
 import { gatewaySecret } from './whatsapp/client';
@@ -367,6 +368,9 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
       isAdmin: appMode() === 'demo' || (await repo.isAdmin(c.get('userId'))),
       companyCount: c.get('allowedCompanies').length,
     }),
+  );
+  app.get('/api/agent-flow', async (c) =>
+    c.json(await buildAgentFlow(repo, c.get('company'), c.get('role'))),
   );
   app.get('/api/bootstrap', async (c) => {
     const company = c.get('company');

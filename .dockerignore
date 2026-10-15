@@ -5,6 +5,7 @@
 !gateway/package-lock.json
 !gateway/tsconfig.json
 !gateway/Dockerfile
+!gateway/docker-entrypoint.sh
 !gateway/src/
 !gateway/src/**
 !src/

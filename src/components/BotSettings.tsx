@@ -8,6 +8,7 @@ import type {
   Provider,
 } from '../shared/types';
 import { botConfig, MAX_BOT_INSTRUCTIONS } from '../shared/bot';
+import { MODEL_DEFAULTS, recommendedModel } from '../shared/models';
 import { useWorkspace } from '../lib/workspace';
 import { api } from '../lib/api';
 import { label, shortDate } from '../lib/utils';
@@ -153,12 +154,13 @@ export function BotSettings() {
               <CustomSelect
                 value={ai.provider}
                 onChange={(v) => {
+                  if (v === ai.provider) return;
                   setApproved(false);
                   setAi({
                     ...ai,
                     provider: v as Provider,
                     keyMode: v === 'mock' ? 'platform' : 'own',
-                    model: v === 'mock' ? 'deterministic-demo' : '',
+                    model: MODEL_DEFAULTS[v as Provider],
                     pricing: undefined,
                   });
                 }}
@@ -195,7 +197,7 @@ export function BotSettings() {
                   onChange={(v) => setAi({ ...ai, model: v, pricing: undefined })}
                   options={items.map((m) => ({
                     value: m.id,
-                    label: `${m.name}${!m.available ? ' · unavailable' : !m.priced ? ' · prices required' : ''}`,
+                    label: `${m.name}${recommendedModel(ai.provider, m.id) ? ' · recommended' : ''}${!m.available ? ' · unavailable' : !m.priced ? ' · prices required' : ''}`,
                     disabled: !m.available,
                   }))}
                 />

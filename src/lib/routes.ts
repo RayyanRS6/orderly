@@ -7,6 +7,7 @@ export const pages = [
   'menu',
   'playground',
   'bot',
+  'flow',
   'activity',
   'integrations',
   'settings',

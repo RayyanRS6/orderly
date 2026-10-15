@@ -5,9 +5,14 @@ import type {
   Company,
   Conversation,
   IntegrationKind,
+  ModelInterpretation,
+  ModelSkipReason,
   Order,
+  StaffNoticeCause,
   TurnInput,
+  TurnResult,
 } from '../src/shared/types.js';
+import { attachExplanation, describeTurn } from './explanations.js';
 import { createConversation, processTurn, transitionOrder } from '../src/domain/engine.js';
 import { AiModelAdapter, providerKey } from './integrations/models.js';
 import { modelFingerprint } from './integrations/model-catalog.js';
@@ -68,7 +73,7 @@ export async function handleTurn(
   company: Company,
   conversation: Conversation,
   input: TurnInput,
-) {
+): Promise<TurnResult> {
   const sandbox = conversation.channel === 'demo';
   const selectConfig = (value: Company): Company => {
     if (!sandbox) return configuredCompany(value);
@@ -160,6 +165,7 @@ export async function handleTurn(
         conversation,
         input,
         'There are several messages arriving at once. A staff member will help with your order.',
+        'burst',
       );
     // A sheet-backed catalog is refreshed before any potentially mutating bot turn.
     if (
@@ -182,6 +188,7 @@ export async function handleTurn(
           conversation,
           input,
           'The menu connection needs attention. A staff member will help you complete your order.',
+          'menu_sync',
           error,
         );
       }
@@ -189,9 +196,24 @@ export async function handleTurn(
     const products = await repo.listProducts(company.id);
     let actions: BotAction[] | undefined;
     let modelResponse: import('../src/shared/types.js').ModelResponse | undefined;
+    let interpretation: ModelInterpretation | undefined;
+    let ruleOverride: 'handoff' | 'reply' | undefined;
     const submittedCancellation =
       Boolean(conversation.cart.orderId) &&
       /^(cancel|cancel order|منسوخ|order cancel)$/i.test(input.text.trim());
+    const skipped: ModelSkipReason | undefined = input.late
+      ? 'late'
+      : input.action
+        ? 'button'
+        : submittedCancellation
+          ? 'cancellation'
+          : company.ai.provider === 'mock'
+            ? 'local_rules'
+            : conversation.mode !== 'bot'
+              ? 'staff_mode'
+              : !company.botEnabled
+                ? 'paused'
+                : undefined;
     if (sandbox && !input.action && company.ai.provider === 'mock' && !submittedCancellation)
       throw new PublicError(
         'Connect and select an AI model in Bot settings before testing customer messages.',
@@ -216,22 +238,25 @@ export async function handleTurn(
       company.botEnabled
     ) {
       try {
-        const interpretation = await new AiModelAdapter(repo).interpret(
+        interpretation = await new AiModelAdapter(repo).interpret(
           company,
           products,
           conversation,
           input.text,
         );
+        const proposal = interpretation;
         const matchedRule = botConfig(company).behaviorRules.find(
-          (rule) => rule.enabled && rule.id === interpretation.response?.matchedRuleId,
+          (rule) => rule.enabled && rule.id === proposal.response?.matchedRuleId,
         );
+        if (matchedRule?.action === 'handoff' || matchedRule?.action === 'reply')
+          ruleOverride = matchedRule.action;
         actions =
           matchedRule?.action === 'handoff'
             ? [{ type: 'handoff' }]
             : matchedRule?.action === 'reply'
-              ? [{ type: 'answer', text: interpretation.response?.text ?? matchedRule.response }]
-              : interpretation.actions;
-        modelResponse = interpretation.response;
+              ? [{ type: 'answer', text: proposal.response?.text ?? matchedRule.response }]
+              : proposal.actions;
+        modelResponse = proposal.response;
       } catch (error) {
         if (sandbox)
           throw error instanceof PublicError ? error : new PublicError(sanitizeError(error), 503);
@@ -241,6 +266,7 @@ export async function handleTurn(
           conversation,
           input,
           'I’m having trouble connecting right now. A staff member will help you; your order has not been submitted.',
+          error instanceof PublicError && error.status === 429 ? 'ai_budget' : 'ai_error',
           error,
         );
       }
@@ -265,6 +291,17 @@ export async function handleTurn(
           Math.max(Date.parse(c.lastInboundAt), Date.parse(input.now)),
         ).toISOString();
         const reply = `Order ${order.reference} has been cancelled.`;
+        const explanation = describeTurn({
+          company,
+          conversation,
+          input,
+          steps: ['order_cancelled'],
+          decision: { parts: ['engine'], modelText: 'none', corrections: [] },
+          outcome: 'reply',
+          orderReference: order.reference,
+          interpretation,
+          skipped,
+        });
         c.messages.push(
           {
             id: input.messageId,
@@ -272,13 +309,34 @@ export async function handleTurn(
             text: input.text || 'Cancel order',
             createdAt: input.now,
           },
-          { id: randomUUID(), role: 'assistant', text: reply, createdAt: input.now },
+          { id: randomUUID(), role: 'assistant', text: reply, createdAt: input.now, explanation },
         );
         const cancelled = await changeOrderStatus(repo, order, 'cancelled', input.now, c);
-        return { conversation: c, order: cancelled, reply, traces: ['order_cancelled'] };
+        return {
+          conversation: c,
+          order: cancelled,
+          reply,
+          traces: ['order_cancelled'],
+          explanation,
+        };
       }
     }
     const result = processTurn(company, products, conversation, input, actions, modelResponse);
+    if (result.reply && result.decision) {
+      result.explanation = describeTurn({
+        company,
+        conversation,
+        input,
+        steps: result.traces,
+        decision: result.decision,
+        outcome: result.order ? 'order' : result.conversation.mode === 'human' ? 'staff' : 'reply',
+        orderReference: result.order?.reference,
+        interpretation,
+        skipped,
+        ruleOverride,
+      });
+      attachExplanation(result.conversation, `${input.messageId}:reply`, result.explanation);
+    }
     result.conversation.lastInboundAt = new Date(
       Math.max(Date.parse(conversation.lastInboundAt), Date.parse(input.now)),
     ).toISOString();
@@ -337,8 +395,9 @@ async function saveHandoff(
   conversation: Conversation,
   input: TurnInput,
   reply: string,
+  cause: StaffNoticeCause,
   reason?: unknown,
-) {
+): Promise<TurnResult> {
   const c = structuredClone(conversation);
   c.mode = 'human';
   c.version++;
@@ -346,9 +405,18 @@ async function saveHandoff(
   c.lastInboundAt = new Date(
     Math.max(Date.parse(c.lastInboundAt), Date.parse(input.now)),
   ).toISOString();
+  const explanation = describeTurn({
+    company,
+    conversation,
+    input,
+    steps: ['staff_attention'],
+    decision: { parts: ['notice'], modelText: 'none', corrections: [] },
+    outcome: 'staff',
+    notice: cause,
+  });
   c.messages.push(
     { id: input.messageId, role: 'customer', text: input.text, createdAt: input.now },
-    { id: randomUUID(), role: 'assistant', text: reply, createdAt: input.now },
+    { id: randomUUID(), role: 'assistant', text: reply, createdAt: input.now, explanation },
   );
   const jobs =
     c.channel === 'whatsapp'
@@ -379,7 +447,7 @@ async function saveHandoff(
     createdAt: input.now,
   });
   for (const job of jobs) await dispatchJob(repo, job);
-  return { conversation: c, reply, traces: ['staff_attention'] };
+  return { conversation: c, reply, traces: ['staff_attention'], explanation };
 }
 export async function queueOrderSync(repo: Repository, order: Order) {
   if (
@@ -542,16 +610,16 @@ export async function processJob(repo: Repository, id: string) {
         } finally {
           await repo.releaseConversationLock(company.id, conversation.id, job.id);
         }
-      } else
+      } else {
+        const late = Date.now() - Date.parse(job.createdAt) > 10 * 60 * 1000;
         await handleTurn(repo, company, conversation, {
           messageId: String(job.payload.messageId),
           text: String(job.payload.text),
-          action:
-            Date.now() - Date.parse(job.createdAt) > 10 * 60 * 1000
-              ? { type: 'handoff' }
-              : (job.payload.action as BotAction | undefined),
+          action: late ? { type: 'handoff' } : (job.payload.action as BotAction | undefined),
           now: job.createdAt,
+          ...(late && { late }),
         });
+      }
     } else if (job.kind === 'staff_alert') {
       await sendStaffAlert(repo, job);
     } else if (job.kind === 'sheet_sync') {

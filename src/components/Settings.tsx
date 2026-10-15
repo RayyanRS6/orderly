@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import type { Company, Integration, IntegrationKind, Provider } from '../shared/types';
 import { money } from '../shared/types';
+import { MODEL_DEFAULTS } from '../shared/models';
 import { useWorkspace } from '../lib/workspace';
 import { cn, initials, label } from '../lib/utils';
 import { Badge, ConfirmDialog, CustomSelect, Empty, Field, Modal, PageHeading, Status } from './ui';
@@ -25,10 +26,10 @@ import { WhatsAppSignup } from './WhatsAppSignup';
 import { WhatsAppConnection } from './WhatsAppConnection';
 
 const providers: Record<Provider, { name: string; model: string }> = {
-  mock: { name: 'Local demo · no API calls', model: 'deterministic-demo' },
-  openai: { name: 'OpenAI', model: 'gpt-5.4-mini' },
-  anthropic: { name: 'Anthropic', model: 'claude-haiku-4-5' },
-  gemini: { name: 'Google Gemini', model: 'gemini-3.5-flash-lite' },
+  mock: { name: 'Local demo · no API calls', model: MODEL_DEFAULTS.mock },
+  openai: { name: 'OpenAI', model: MODEL_DEFAULTS.openai },
+  anthropic: { name: 'Anthropic', model: MODEL_DEFAULTS.anthropic },
+  gemini: { name: 'Google Gemini', model: MODEL_DEFAULTS.gemini },
 };
 
 export function Settings() {
@@ -421,7 +422,8 @@ const integrationInfo: Record<
 > = {
   whatsapp: {
     title: 'WhatsApp · official Meta',
-    description: 'Saved Meta Cloud API credentials. The connection method above determines which route is active.',
+    description:
+      'Saved Meta Cloud API credentials. The connection method above determines which route is active.',
     icon: MessageCircle,
     fields: [
       ['phoneNumberId', 'Phone number ID'],
@@ -698,7 +700,7 @@ export function Integrations() {
             <RefreshCw className="size-4" />
             Retry failed jobs
           </button>
-          <button className="btn btn-quiet" onClick={() => navigate('settings')}>
+          <button className="btn btn-quiet" onClick={() => navigate('bot')}>
             Choose your active model
             <ArrowRight className="size-4" />
           </button>
@@ -781,7 +783,7 @@ export function Integrations() {
             )}
             {['openai', 'anthropic', 'gemini'].includes(editing.kind) && (
               <p className="text-xs leading-relaxed text-stone-500">
-                To use this key, choose this provider and “This business’s API key” in Settings.
+                To use this key, choose this provider and “Business API key” in Bot settings.
               </p>
             )}
             <button className="btn btn-primary w-full" disabled={busy}>
