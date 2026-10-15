@@ -50,20 +50,17 @@ No database migration is needed for the Agent flow or the reply explanations. Ex
 
 Model ID `claude-haiku-5-5`. Prices: $0.10 per million input tokens and $0.50 per million output tokens for prompts up to 100,000 tokens. Orderly's prompts stay well under that. Larger prompts are billed at $0.50 / $2.50, and Orderly's budget estimate already uses the higher price when it applies. Orderly asks it to think briefly (effort: low) for fast chat replies.
 
-1. **You (or the client):** at <https://console.anthropic.com>, add billing and credit, set a monthly spend limit, and create an API key. Do not paste the key into chat or into any `VITE_` setting.
-2. Put the key where Orderly can use it. Pick one:
-   - **The business pays (recommended for clients):** Orderly → **Integrations → Anthropic**: save the key and click **Test**.
-   - **Orderly pays (platform key):** set it as a Supabase secret yourself:
+Each business uses its own Anthropic key, so its AI usage is billed to its own Anthropic account.
 
-     ```powershell
-     npx supabase secrets set ANTHROPIC_API_KEY=<your key> --project-ref zygsuxgqkeedgcbjhfzx
-     ```
+1. **The business owner (or you, with them):** at <https://console.anthropic.com>, add billing and credit, set a monthly spend limit, and create an API key. Do not paste the key into chat or into any `VITE_` setting.
+2. **Orderly → Bot settings → AI model** (everything is on this one card):
+   - **AI provider:** Anthropic Claude. The model fills in as `claude-haiku-5-5` (recommended).
+   - **Anthropic API key for <business>:** paste the key.
+   - Tick the agreement to send customer messages to Anthropic.
+   - Click **Connect and test**.
+3. Orderly checks the key, sends one fictional test message ("Hello. Please show the menu.") to prove the model works, then saves the key encrypted for that business and switches the bot over. If anything fails you see why, and nothing changes. The badge turns **Connected**, and Agent flow shows the **Model** circle in green with $0.10 in · $0.50 out.
 
-3. **Bot settings → Provider and model:** choose **Anthropic**. The model fills in as `claude-haiku-5-5` (marked "recommended") and "Who pays the provider?" switches to **Business API key**. If Orderly pays, change it to **Orderly API key** now (admins only).
-4. Tick the data-terms approval, click **Save model settings**, then **Run generation test**.
-5. **Check:** Agent flow → the **Model** circle turns green and shows "Anthropic · claude-haiku-5-5", with a price of $0.10 in · $0.50 out.
-
-Switching back to Gemini or OpenAI works the same way. The Agent flow page updates as soon as the setting is saved.
+To change model or key later, use the same card: pick or paste the new one and click **Connect and test** again. **Remove saved key** pauses replies until another key is connected. Platform administrators can still choose Orderly's own shared key under **Advanced** (set as the `ANTHROPIC_API_KEY` server secret), but each business having its own key is the default.
 
 ## 4. Connect WhatsApp
 

@@ -31,6 +31,7 @@ async function ready(base) {
   }
   throw new Error('Container did not become healthy.');
 }
+let stage = 'start container';
 try {
   docker([
     'run',
@@ -58,11 +59,15 @@ try {
     ].flatMap((key) => ['-e', key]),
     'orderly-gateway:test',
   ]);
+  stage = 'read published port';
   const address = docker(['port', name, '8080/tcp']);
   assert.match(address, /^127\.0\.0\.1:\d+$/);
   const base = `http://${address}`;
+  stage = 'first /healthz';
   await ready(base);
+  stage = 'non-root user';
   assert.equal(docker(['exec', name, 'id', '-u']), '1000');
+  stage = 'signed health probe';
   assert.deepEqual(await probeGateway(base, secret), { workers: 0, maxSessions: 1 });
   const headers = signedHeaders(secret, 'command', '/health', '{}');
   const post = () =>
@@ -72,18 +77,30 @@ try {
       body: '{}',
       signal: AbortSignal.timeout(5000),
     });
+  stage = 'signed POST /health';
   assert.equal((await post()).status, 200);
+  stage = 'restart';
   docker(['restart', '--time', '30', name]);
+  stage = '/healthz after restart';
   await ready(base);
+  stage = 'nonce replay after restart';
   assert.equal((await post()).status, 401, 'nonce must survive a container restart');
+  stage = 'signed health probe after restart';
   assert.deepEqual(await probeGateway(base, secret), { workers: 0, maxSessions: 1 });
   console.info(
     'Container smoke passed: non-root read-only runtime, persistent SQLite, restart, HMAC and replay checks. No WhatsApp pairing.',
   );
-} catch {
+} catch (error) {
   console.error(
-    'Container smoke failed. Investigate locally without publishing environment values or auth data.',
+    `Container smoke failed at "${stage}": ${error instanceof Error ? error.message : 'unknown error'}`,
   );
+  // The gateway logs only event codes and crash traces, never configuration values, and this
+  // run's secrets are random and discarded. Docker's own diagnostics are not printed.
+  const logs = spawnSync('docker', ['logs', '--tail', '60', name], {
+    encoding: 'utf8',
+    timeout: 30000,
+  });
+  console.error(`Container log (last 60 lines):\n${logs.stdout ?? ''}${logs.stderr ?? ''}`);
   process.exitCode = 1;
 } finally {
   // The exact random test name, never a production container or broad volume prune.

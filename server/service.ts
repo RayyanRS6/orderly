@@ -216,14 +216,14 @@ export async function handleTurn(
                 : undefined;
     if (sandbox && !input.action && company.ai.provider === 'mock' && !submittedCancellation)
       throw new PublicError(
-        'Connect and select an AI model in Bot settings before testing customer messages.',
+        'Connect an AI model in Bot settings → AI model before testing customer messages.',
         409,
       );
     if (sandbox && !input.action && company.ai.provider !== 'mock' && !submittedCancellation) {
       const key = await providerKey(repo, company);
       if (company.modelVerification?.fingerprint !== modelFingerprint(company, key))
         throw new PublicError(
-          'Run the selected model generation test in Bot settings before testing conversations.',
+          'Click Connect and test in Bot settings → AI model before testing conversations.',
           409,
         );
     }

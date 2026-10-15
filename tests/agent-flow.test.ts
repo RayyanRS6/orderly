@@ -92,8 +92,11 @@ describe('buildAgentFlow', () => {
     expect(fact(node(flow, 'sandbox'), 'Test orders so far')).toBe('0');
     expect(step(flow, 'business').recommended).toBe(true);
     expect(step(flow, 'whatsapp').optional).toBe(true);
-    expect(step(flow, 'model').recommended).toBeUndefined();
-    expect(step(flow, 'model').optional).toBeUndefined();
+    expect(step(flow, 'ai').recommended).toBeUndefined();
+    expect(step(flow, 'ai').optional).toBeUndefined();
+    // Choosing a model, saving the key, approving and testing are one step now.
+    expect(flow.setup.map((item) => item.id)).not.toContain('key');
+    expect(step(flow, 'ai')).toMatchObject({ page: 'bot', action: 'Connect AI model' });
   });
 
   it('asks for a model while the business still uses local rules', async () => {
@@ -103,11 +106,10 @@ describe('buildAgentFlow', () => {
       subtitle: 'Local rules only',
       status: 'attention',
       statusLabel: 'Not selected',
-      todo: 'Choose an AI provider and model in Bot settings.',
+      todo: 'In Bot settings → AI model, choose a provider, paste this business’s API key and click Connect and test.',
     });
     expect(node(flow, 'agent').status).toBe('attention');
-    expect(step(flow, 'model').done).toBe(false);
-    expect(step(flow, 'key').done).toBe(false);
+    expect(step(flow, 'ai').done).toBe(false);
   });
 
   it('describes Claude Haiku 5.5 with its prices and the missing business key', async () => {
@@ -125,10 +127,11 @@ describe('buildAgentFlow', () => {
     expect(fact(model, 'Thinking')).toBe(
       generationProfile('anthropic', 'claude-haiku-5-5').summary,
     );
-    expect(model.todo).toBe('Save this business’s Anthropic API key in Integrations.');
+    expect(model.todo).toBe(
+      'Paste this business’s Anthropic API key in Bot settings → AI model and click Connect and test.',
+    );
     expect(fact(node(flow, 'agent'), 'Model')).toBe('Anthropic · claude-haiku-5-5');
-    expect(step(flow, 'model').done).toBe(true);
-    expect(step(flow, 'key')).toMatchObject({ done: false, page: 'integrations' });
+    expect(step(flow, 'ai')).toMatchObject({ done: false, page: 'bot' });
   });
 
   it('marks a tested model ready without exposing the platform key', async () => {
@@ -150,7 +153,7 @@ describe('buildAgentFlow', () => {
     expect(fact(model, 'API key available')).toBe('Yes');
     expect(fact(model, 'Generation test')).toBe('Passed for this exact model and key');
     expect(fact(model, 'Who pays')).toBe('Orderly platform key');
-    expect(step(flow, 'test').done).toBe(true);
+    expect(step(flow, 'ai').done).toBe(true);
     expect(flow.platform?.find((check) => check.id === 'anthropic')?.ok).toBe(true);
     expect(JSON.stringify(flow)).not.toContain(platformSecret);
   });
@@ -164,7 +167,8 @@ describe('buildAgentFlow', () => {
     );
     const flow = await buildAgentFlow(repo, await useHaiku('own'), 'owner');
     expect(fact(node(flow, 'model'), 'API key available')).toBe('Yes');
-    expect(step(flow, 'key').done).toBe(true);
+    // A saved key alone is not enough: the step completes only after Connect and test.
+    expect(step(flow, 'ai').done).toBe(false);
     const serialized = JSON.stringify(flow);
     expect(serialized).not.toContain(businessSecret);
     expect(serialized).not.toContain(encrypted);

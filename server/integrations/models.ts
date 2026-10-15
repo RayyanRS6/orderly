@@ -25,6 +25,7 @@ import {
   LONG_PROMPT_RATES,
   MODEL_DEFAULTS,
   MODEL_LIMITS,
+  PROVIDER_NAMES,
 } from '../../src/shared/models.js';
 
 export const modelDefaults = MODEL_DEFAULTS;
@@ -66,7 +67,10 @@ export async function providerKey(
   if (company.ai.keyMode === 'own') {
     const encrypted = await repo.getSecret(company.id, provider);
     if (!encrypted)
-      throw new PublicError(`Connect this restaurant's ${provider} API key in Integrations.`, 409);
+      throw new PublicError(
+        `Paste this restaurant’s ${PROVIDER_NAMES[provider]} API key in Bot settings → AI model.`,
+        409,
+      );
     return decryptSecret(encrypted);
   }
   const key = process.env[`${provider === 'gemini' ? 'GOOGLE' : provider.toUpperCase()}_API_KEY`];
@@ -88,7 +92,11 @@ export interface ModelAdapter {
   ): Promise<ModelInterpretation>;
 }
 export class AiModelAdapter implements ModelAdapter {
-  constructor(private repo: Repository) {}
+  /** apiKeyOverride lets a key be tested before it is saved. */
+  constructor(
+    private repo: Repository,
+    private apiKeyOverride?: string,
+  ) {}
   async interpret(
     company: Company,
     products: Product[],
@@ -100,7 +108,7 @@ export class AiModelAdapter implements ModelAdapter {
         'An owner must approve the AI provider data terms in Bot settings before processing customer messages.',
         409,
       );
-    const apiKey = await providerKey(this.repo, company);
+    const apiKey = this.apiKeyOverride ?? (await providerKey(this.repo, company));
     modelRate(company.ai.model, company.ai.pricing);
     const profile = generationProfile(company.ai.provider, company.ai.model);
     const started = Date.now();

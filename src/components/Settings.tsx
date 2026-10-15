@@ -529,129 +529,103 @@ export function Integrations() {
       )}
       <section className="card mb-6 p-6">
         <div className="flex items-center justify-between gap-3">
-          <h2 className="panel-title">Selected AI connection</h2>
-          <Status value={data.aiConnection?.configured ? 'configured' : 'disconnected'} />
+          <h2 className="panel-title">AI model</h2>
+          <Status
+            value={
+              data.readiness?.find((check) => check.id === 'model')?.ready
+                ? 'connected'
+                : 'disconnected'
+            }
+          />
         </div>
-        {(() => {
-          const aiConn = data.aiConnection || {
-            provider: 'mock',
-            keyMode: 'platform',
-            configured: true,
-          };
-          const providerDef = providers[aiConn.provider] || providers.mock;
-          return (
-            <>
-              <p className="mt-3 text-sm text-stone-700">
-                {providerDef.name}
-                {aiConn.provider !== 'mock' &&
-                  ` · ${aiConn.keyMode === 'platform' ? 'Platform account' : 'This business’s API key'}`}
-              </p>
-              <p className="mt-2 text-xs leading-relaxed text-stone-500">
-                {aiConn.provider === 'mock'
-                  ? 'The local demo does not need an API key.'
-                  : aiConn.configured
-                    ? 'The selected key is available. Test account access, then try a natural-language order in Test your bot to check the model.'
-                    : aiConn.keyMode === 'platform'
-                      ? 'The platform key is missing. Ask the platform administrator to connect this provider.'
-                      : 'Add this business’s provider key below to use the selected model.'}
-              </p>
-              <div className="mt-4 flex flex-wrap gap-2">
-                {aiConn.provider !== 'mock' && aiConn.configured && (
+        <p className="mt-3 text-sm text-stone-700">
+          {(providers[data.company.ai?.provider] || providers.mock).name}
+          {data.company.ai?.provider !== 'mock' && ` · ${data.company.ai.model}`}
+        </p>
+        <p className="mt-2 text-xs leading-relaxed text-stone-500">
+          The AI provider, this business’s API key and the model are all set up in one place: Bot
+          settings → AI model. Paste the key there and click Connect and test.
+        </p>
+        <button className="btn mt-4" onClick={() => navigate('bot')}>
+          Set up the AI model
+          <ArrowRight className="size-4" />
+        </button>
+      </section>
+      <div className="grid gap-5 md:grid-cols-2">
+        {(data.integrations || [])
+          .filter((integration) => integration.kind === 'whatsapp' || integration.kind === 'sheets')
+          .map((integration) => {
+            const info = integrationInfo[integration.kind];
+            if (!info) return null;
+            return (
+              <section key={integration.kind} className="card flex flex-col p-6">
+                <div className="mb-5 flex items-center justify-between gap-3">
+                  <div className="flex size-11 items-center justify-center rounded-xl bg-ink text-brand-500">
+                    <info.icon className="size-5" />
+                  </div>
+                  <Status value={integration.status} />
+                </div>
+                <h2 className="panel-title">{info.title}</h2>
+                <p className="mb-6 mt-2 text-sm leading-relaxed text-stone-500">
+                  {info.description}
+                </p>
+                {integration.error && (
+                  <p className="mb-4 text-xs text-red-700">{integration.error}</p>
+                )}
+                <div className="mt-auto flex flex-wrap gap-2">
                   <button
                     className="btn"
                     disabled={!canEdit || busy}
-                    onClick={() =>
-                      void run(
-                        `/integrations/${aiConn.provider}/test`,
-                        `${providerDef.name} ${aiConn.keyMode === 'platform' ? 'platform' : 'business'} key verified. Test a natural-language order to check the selected model.`,
-                        { keyMode: aiConn.keyMode },
-                      )
-                    }
+                    onClick={() => {
+                      setEditing(integration);
+                      setConfig(
+                        Object.fromEntries(
+                          info.fields.map(([key, , fallback]) => [
+                            key,
+                            integration.config[key] || fallback || '',
+                          ]),
+                        ),
+                      );
+                      setSecret('');
+                    }}
                   >
-                    <RefreshCw className="size-4" />
-                    Test selected key
+                    {integration.configured ? 'Manage connection' : 'Connect'}
+                    <ArrowRight className="size-4" />
                   </button>
-                )}
-                <button className="btn btn-quiet" onClick={() => navigate('bot')}>
-                  Change AI settings
-                  <ArrowRight className="size-4" />
-                </button>
-              </div>
-            </>
-          );
-        })()}
-      </section>
-      <div className="grid gap-5 md:grid-cols-2">
-        {(data.integrations || []).map((integration) => {
-          const info = integrationInfo[integration.kind];
-          if (!info) return null;
-          return (
-            <section key={integration.kind} className="card flex flex-col p-6">
-              <div className="mb-5 flex items-center justify-between gap-3">
-                <div className="flex size-11 items-center justify-center rounded-xl bg-ink text-brand-500">
-                  <info.icon className="size-5" />
+                  {integration.configured && (
+                    <button
+                      className="btn btn-quiet"
+                      disabled={!canEdit || busy}
+                      onClick={() =>
+                        void run(
+                          `/integrations/${integration.kind}/test`,
+                          `${info.title} credentials verified. Live message delivery still needs end-to-end testing.`,
+                          { keyMode: 'own' },
+                        )
+                      }
+                    >
+                      <RefreshCw className="size-4" />
+                      Test
+                    </button>
+                  )}
                 </div>
-                <Status value={integration.status} />
-              </div>
-              <h2 className="panel-title">{info.title}</h2>
-              <p className="mb-6 mt-2 text-sm leading-relaxed text-stone-500">{info.description}</p>
-              {integration.error && (
-                <p className="mb-4 text-xs text-red-700">{integration.error}</p>
-              )}
-              <div className="mt-auto flex flex-wrap gap-2">
-                <button
-                  className="btn"
-                  disabled={!canEdit || busy}
-                  onClick={() => {
-                    setEditing(integration);
-                    setConfig(
-                      Object.fromEntries(
-                        info.fields.map(([key, , fallback]) => [
-                          key,
-                          integration.config[key] || fallback || '',
-                        ]),
-                      ),
-                    );
-                    setSecret('');
-                  }}
-                >
-                  {integration.configured ? 'Manage connection' : 'Connect'}
-                  <ArrowRight className="size-4" />
-                </button>
                 {integration.configured && (
                   <button
-                    className="btn btn-quiet"
                     disabled={!canEdit || busy}
-                    onClick={() =>
-                      void run(
-                        `/integrations/${integration.kind}/test`,
-                        `${info.title} credentials verified. Live message delivery still needs end-to-end testing.`,
-                        { keyMode: 'own' },
-                      )
-                    }
+                    className="btn mt-3 text-red-700"
+                    onClick={() => setDisconnecting(integration)}
                   >
-                    <RefreshCw className="size-4" />
-                    Test
+                    Disconnect
                   </button>
                 )}
-              </div>
-              {integration.configured && (
-                <button
-                  disabled={!canEdit || busy}
-                  className="btn mt-3 text-red-700"
-                  onClick={() => setDisconnecting(integration)}
-                >
-                  Disconnect
-                </button>
-              )}
-              {integration.checkedAt && (
-                <p className="mt-4 text-xs text-stone-400">
-                  Last checked {new Date(integration.checkedAt).toLocaleString()}
-                </p>
-              )}
-            </section>
-          );
-        })}
+                {integration.checkedAt && (
+                  <p className="mt-4 text-xs text-stone-400">
+                    Last checked {new Date(integration.checkedAt).toLocaleString()}
+                  </p>
+                )}
+              </section>
+            );
+          })}
       </div>
       <section className="card mt-6 p-6">
         <h2 className="panel-title">Before connecting a restaurant number</h2>

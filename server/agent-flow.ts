@@ -229,18 +229,19 @@ export async function buildAgentFlow(
   };
 
   const modelReady = usesAi && keyAvailable && verified && approved && !!rates;
+  const connectHint = 'In Bot settings → AI model, click Connect and test.';
   const modelTodo = !usesAi
-    ? 'Choose an AI provider and model in Bot settings.'
+    ? 'In Bot settings → AI model, choose a provider, paste this business’s API key and click Connect and test.'
     : !keyAvailable
       ? ai.keyMode === 'own'
-        ? `Save this business’s ${PROVIDER_NAMES[ai.provider]} API key in Integrations.`
-        : `Ask the platform administrator to add the ${PROVIDER_NAMES[ai.provider]} key on the server.`
+        ? `Paste this business’s ${PROVIDER_NAMES[ai.provider]} API key in Bot settings → AI model and click Connect and test.`
+        : `Ask the platform administrator to add the shared ${PROVIDER_NAMES[ai.provider]} key on the server.`
       : !rates
-        ? 'Enter this model’s token prices in Bot settings.'
+        ? 'Enter this model’s token prices under Advanced in Bot settings → AI model.'
         : !approved
-          ? 'Approve the provider’s customer-data terms in Bot settings.'
+          ? `Tick the data agreement. ${connectHint}`
           : !verified
-            ? 'Run the generation test in Bot settings.'
+            ? `The current settings have not been tested. ${connectHint}`
             : undefined;
   const model: FlowNode = {
     id: 'model',
@@ -694,39 +695,13 @@ export async function buildAgentFlow(
       action: 'Open Menu',
     },
     {
-      id: 'model',
-      title: 'Choose an AI model',
-      detail: 'Claude Haiku 5.5 is the recommended fast, low-cost model for chat.',
-      done: usesAi,
-      page: 'bot',
-      action: 'Open Bot settings',
-    },
-    {
-      id: 'key',
-      title: 'Connect the AI key',
+      id: 'ai',
+      title: 'Connect your AI model',
       detail:
-        ai.keyMode === 'own'
-          ? 'Save the business’s provider API key in Integrations.'
-          : 'The platform administrator adds the key on the server.',
-      done: usesAi && keyAvailable,
-      page: ai.keyMode === 'own' ? 'integrations' : 'bot',
-      action: ai.keyMode === 'own' ? 'Open Integrations' : 'Open Bot settings',
-    },
-    {
-      id: 'terms',
-      title: 'Approve the AI data terms',
-      detail: 'Confirm you reviewed the provider’s customer-data terms.',
-      done: usesAi && approved,
+        'Bot settings → AI model: choose Anthropic (Claude Haiku 5.5 is recommended), paste this business’s API key, tick the agreement and click Connect and test.',
+      done: modelReady,
       page: 'bot',
-      action: 'Open Bot settings',
-    },
-    {
-      id: 'test',
-      title: 'Run the model test',
-      detail: 'One short generation proves the exact model and key work.',
-      done: verified,
-      page: 'bot',
-      action: 'Open Bot settings',
+      action: 'Connect AI model',
     },
     {
       id: 'publish',

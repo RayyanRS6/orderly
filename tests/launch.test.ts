@@ -359,7 +359,7 @@ describe('launch safety and management', () => {
       testTarget: 'draft',
     });
     expect(response.status).toBe(409);
-    expect((await response.json()).error).toContain('Connect and select an AI model');
+    expect((await response.json()).error).toContain('Connect an AI model in Bot settings');
   });
   it('rejects a WhatsApp number outside the token’s WABA without replacing a saved mapping', async () => {
     const old = {

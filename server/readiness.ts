@@ -33,10 +33,10 @@ export async function readiness(repo: Repository, company: Company): Promise<Rea
   return [
     { id: 'bot', label: 'Publish a bot configuration', ready: !!company.bot?.published },
     { id: 'menu', label: 'Add an available menu item', ready: products.some((p) => p.available) },
-    { id: 'model', label: 'Run the selected model generation test', ready: verified },
+    { id: 'model', label: 'Connect and test the AI model', ready: verified },
     {
       id: 'privacy',
-      label: 'Approve the AI provider and customer data terms',
+      label: 'Accept the AI data agreement (part of Connect and test)',
       ready: !!company.privacy?.aiDataApproved,
     },
     {

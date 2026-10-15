@@ -1,5 +1,14 @@
 import { useEffect, useState } from 'react';
-import { ArrowDown, ArrowUp, Check, Plus, RefreshCw, Save, Trash2 } from 'lucide-react';
+import {
+  ArrowDown,
+  ArrowUp,
+  ExternalLink,
+  PlugZap,
+  Plus,
+  RefreshCw,
+  Save,
+  Trash2,
+} from 'lucide-react';
 import type {
   BotConfig,
   BotSettings as Settings,
@@ -8,11 +17,35 @@ import type {
   Provider,
 } from '../shared/types';
 import { botConfig, MAX_BOT_INSTRUCTIONS } from '../shared/bot';
-import { MODEL_DEFAULTS, recommendedModel } from '../shared/models';
+import {
+  KNOWN_MODEL_RATES,
+  MODEL_DEFAULTS,
+  PROVIDER_NAMES,
+  recommendedModel,
+} from '../shared/models';
 import { useWorkspace } from '../lib/workspace';
 import { api } from '../lib/api';
 import { label, shortDate } from '../lib/utils';
-import { Badge, CustomSelect, ErrorNotice, Field, PageHeading } from './ui';
+import { Badge, ConfirmDialog, CustomSelect, ErrorNotice, Field, PageHeading } from './ui';
+
+const KEY_HINTS: Record<Provider, { placeholder: string; url: string; pricing: string }> = {
+  anthropic: {
+    placeholder: 'sk-ant-…',
+    url: 'https://console.anthropic.com/settings/keys',
+    pricing: 'https://platform.claude.com/docs/en/about-claude/pricing',
+  },
+  openai: {
+    placeholder: 'sk-…',
+    url: 'https://platform.openai.com/api-keys',
+    pricing: 'https://openai.com/api/pricing/',
+  },
+  gemini: {
+    placeholder: 'AIza…',
+    url: 'https://aistudio.google.com/app/apikey',
+    pricing: 'https://ai.google.dev/gemini-api/docs/pricing',
+  },
+  mock: { placeholder: '', url: '', pricing: '' },
+};
 
 export function BotSettings() {
   const { data, mutate, busy, navigate } = useWorkspace();
@@ -20,25 +53,52 @@ export function BotSettings() {
   const [revision, setRevision] = useState(data.company.bot?.revision ?? 0);
   const [ai, setAi] = useState(data.company.ai);
   const [approved, setApproved] = useState(data.company.privacy?.aiDataApproved ?? false);
+  const [apiKey, setApiKey] = useState('');
+  const [connecting, setConnecting] = useState(false);
+  const [removing, setRemoving] = useState(false);
   const [catalog, setCatalog] = useState<ModelOption[]>([]);
   const [checkedAt, setCheckedAt] = useState('');
+  const [catalogNote, setCatalogNote] = useState('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState(false);
   const owner = data.role !== 'staff';
+  const admin = data.role === 'admin';
   const changed =
     JSON.stringify(draft) !==
     JSON.stringify(data.company.bot?.draft ?? botConfig(data.company, true));
-  const modelChanged =
-    JSON.stringify(ai) !== JSON.stringify(data.company.ai) ||
-    approved !== (data.company.privacy?.aiDataApproved ?? false);
+  const usesAi = ai.provider !== 'mock';
+  const savedKey =
+    usesAi &&
+    (ai.keyMode === 'own'
+      ? !!data.integrations?.find((integration) => integration.kind === ai.provider)?.configured
+      : data.company.ai.keyMode === 'platform' &&
+        data.company.ai.provider === ai.provider &&
+        !!data.aiConnection?.configured);
+  const connected =
+    data.company.ai.provider !== 'mock' &&
+    !!data.readiness?.find((check) => check.id === 'model')?.ready;
+  const sameAsSaved =
+    ai.provider === data.company.ai.provider &&
+    ai.model === data.company.ai.model &&
+    ai.keyMode === data.company.ai.keyMode &&
+    JSON.stringify(ai.pricing) === JSON.stringify(data.company.ai.pricing) &&
+    !apiKey.trim();
+  const canConnect =
+    usesAi && approved && !!ai.model && (ai.keyMode === 'platform' || savedKey || !!apiKey.trim());
   const update = (patch: Partial<BotConfig>) => {
     setDraft({ ...draft, ...patch });
     setNotice('');
   };
   async function discover(refresh = false) {
+    // Models can only be listed once this business has a key the server can use.
+    if (!usesAi || (!savedKey && !(admin && ai.keyMode === 'platform'))) {
+      setCatalog([]);
+      setCatalogNote(usesAi ? 'The full model list appears after the key is connected.' : '');
+      return;
+    }
     setLoading(true);
-    setError('');
+    setCatalogNote('');
     try {
       const result = await api<{ items: ModelOption[]; checkedAt: string }>(
         `/models?provider=${ai.provider}&keyMode=${ai.keyMode}&refresh=${refresh}`,
@@ -47,7 +107,7 @@ export function BotSettings() {
       setCatalog(result.items);
       setCheckedAt(result.checkedAt);
     } catch (e) {
-      setError((e as Error).message);
+      setCatalogNote((e as Error).message);
       setCatalog([]);
     } finally {
       setLoading(false);
@@ -55,7 +115,31 @@ export function BotSettings() {
   }
   useEffect(() => {
     if (owner) void discover();
-  }, [ai.provider, ai.keyMode]);
+  }, [ai.provider, ai.keyMode, savedKey]);
+  async function connect() {
+    setConnecting(true);
+    setError('');
+    setNotice('');
+    try {
+      await mutate('/ai/connect', {
+        provider: ai.provider,
+        model: ai.model,
+        keyMode: ai.keyMode,
+        approve: true,
+        monthlyBudgetUsd: ai.monthlyBudgetUsd,
+        ...(apiKey.trim() && ai.keyMode === 'own' && { apiKey: apiKey.trim() }),
+        ...(ai.pricing && { pricing: ai.pricing }),
+      });
+      setApiKey('');
+      setNotice(
+        `Connected. ${PROVIDER_NAMES[ai.provider]} ${ai.model} answered a test message, and the bot now uses it.`,
+      );
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setConnecting(false);
+    }
+  }
   async function action(work: () => Promise<unknown>, message: string) {
     setError('');
     setNotice('');
@@ -73,12 +157,33 @@ export function BotSettings() {
   const items = catalog.some((m) => m.id === ai.model)
     ? catalog
     : [
-        { id: ai.model, name: ai.model || 'Choose a model', available: true, priced: false },
+        {
+          id: ai.model,
+          name: ai.model || 'Choose a model',
+          available: true,
+          priced: !!KNOWN_MODEL_RATES[ai.model],
+          inputRate: KNOWN_MODEL_RATES[ai.model]?.[0],
+          outputRate: KNOWN_MODEL_RATES[ai.model]?.[1],
+        },
         ...catalog,
       ];
   const picked = items.find((m) => m.id === ai.model);
   return (
     <>
+      <ConfirmDialog
+        open={removing}
+        onOpenChange={setRemoving}
+        title={`Remove the saved ${PROVIDER_NAMES[ai.provider]} key?`}
+        description="Automatic replies pause and the bot stops using this key until you connect another one. The key still works in your provider account; revoke it there if you no longer need it."
+        confirmLabel="Remove key"
+        busy={busy}
+        onConfirm={() =>
+          void action(async () => {
+            await mutate(`/integrations/${ai.provider}`, undefined, 'DELETE');
+            setRemoving(false);
+          }, 'Saved key removed. Paste a new key to connect again.')
+        }
+      />
       <PageHeading
         title="Bot settings"
         description="Choose how this business’s assistant behaves. Drafts stay separate from the published bot."
@@ -142,12 +247,23 @@ export function BotSettings() {
         )}
       </section>
       <fieldset disabled={!owner || busy} className="min-w-0 space-y-6 disabled:opacity-70">
-        <section className="card p-5 sm:p-6 space-y-5">
-          <h2 className="panel-title">Provider and model</h2>
-          <p className="text-sm text-stone-500">
-            Connect the business’s API key in Integrations. Available text models refresh when you
-            open this page (cached for one hour), or on demand. New models appear automatically;
-            your selected model stays pinned until you change it.
+        <section className="card p-5 sm:p-6 space-y-5" aria-labelledby="ai-model-title">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 id="ai-model-title" className="panel-title">
+              AI model
+            </h2>
+            <Badge tone={connected ? 'green' : 'amber'}>
+              {connected
+                ? `Connected · ${PROVIDER_NAMES[data.company.ai.provider]} ${data.company.ai.model}`
+                : 'Not connected'}
+            </Badge>
+          </div>
+          <p className="text-sm leading-relaxed text-stone-500">
+            Each business uses its own API key, so its AI usage is billed to its own provider
+            account. Choose a provider, paste the key, tick the agreement and click{' '}
+            <strong className="text-stone-700">Connect and test</strong>. Orderly checks the key and
+            sends one test message before switching the bot over. If anything fails, nothing
+            changes.
           </p>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="AI provider">
@@ -155,42 +271,38 @@ export function BotSettings() {
                 value={ai.provider}
                 onChange={(v) => {
                   if (v === ai.provider) return;
-                  setApproved(false);
+                  const provider = v as Provider;
+                  const saved = provider === data.company.ai.provider;
+                  setApproved(saved ? (data.company.privacy?.aiDataApproved ?? false) : false);
+                  setApiKey('');
                   setAi({
                     ...ai,
-                    provider: v as Provider,
-                    keyMode: v === 'mock' ? 'platform' : 'own',
-                    model: MODEL_DEFAULTS[v as Provider],
-                    pricing: undefined,
+                    provider,
+                    keyMode: saved
+                      ? data.company.ai.keyMode
+                      : provider === 'mock'
+                        ? 'platform'
+                        : 'own',
+                    model: saved ? data.company.ai.model : MODEL_DEFAULTS[provider],
+                    pricing: saved ? data.company.ai.pricing : undefined,
                   });
                 }}
                 options={[
-                  { value: 'mock', label: 'Local rules · free sandbox' },
+                  { value: 'anthropic', label: 'Anthropic Claude · recommended' },
                   { value: 'openai', label: 'OpenAI' },
                   { value: 'gemini', label: 'Google Gemini' },
-                  { value: 'anthropic', label: 'Anthropic' },
+                  { value: 'mock', label: 'No AI · built-in rules (testing only)' },
                 ]}
               />
             </Field>
-            <Field label="Who pays the provider?">
-              <CustomSelect
-                value={ai.keyMode}
-                onChange={(v) => {
-                  setApproved(false);
-                  setAi({ ...ai, keyMode: v as 'own' | 'platform' });
-                }}
-                options={[
-                  { value: 'own', label: 'Business API key' },
-                  {
-                    value: 'platform',
-                    label: 'Orderly API key',
-                    disabled: data.role !== 'admin' && data.company.ai.keyMode !== 'platform',
-                  },
-                ]}
-              />
-            </Field>
-            <div className="sm:col-span-2">
-              <Field label="Model">
+            {usesAi && (
+              <Field
+                label="Model"
+                hint={
+                  catalogNote ||
+                  (checkedAt ? `Model list checked ${shortDate(checkedAt)}.` : undefined)
+                }
+              >
                 <CustomSelect
                   value={ai.model}
                   disabled={loading}
@@ -202,8 +314,49 @@ export function BotSettings() {
                   }))}
                 />
               </Field>
-            </div>
-            <Field label="Monthly AI spending limit (USD)">
+            )}
+            {usesAi && ai.keyMode === 'own' && (
+              <div className="sm:col-span-2">
+                <Field
+                  label={`${PROVIDER_NAMES[ai.provider]} API key for ${data.company.name}`}
+                  hint={
+                    savedKey
+                      ? 'A key is already saved for this business and is never shown. Leave this empty to keep it, or paste a new key to replace it.'
+                      : 'Stored encrypted on the server and used only for this business.'
+                  }
+                >
+                  <input
+                    className="input font-mono"
+                    type="password"
+                    autoComplete="new-password"
+                    spellCheck={false}
+                    value={apiKey}
+                    placeholder={savedKey ? '•••••••• saved' : KEY_HINTS[ai.provider].placeholder}
+                    onChange={(e) => setApiKey(e.target.value)}
+                  />
+                </Field>
+                <a
+                  className="mt-1.5 inline-flex items-center gap-1 text-xs font-semibold text-brand-500 hover:text-brand-600"
+                  href={KEY_HINTS[ai.provider].url}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Get a {PROVIDER_NAMES[ai.provider]} API key
+                  <ExternalLink className="size-3" />
+                </a>
+              </div>
+            )}
+            {usesAi && ai.keyMode === 'platform' && (
+              <p className="rounded-xl border border-white bg-white/60 p-3 text-[13px] leading-relaxed text-stone-600 sm:col-span-2">
+                This business uses Orderly’s shared {PROVIDER_NAMES[ai.provider]} key, which the
+                platform administrator sets on the server.{' '}
+                {savedKey ? 'It is available.' : 'It is not set on the server yet.'}
+              </p>
+            )}
+            <Field
+              label="Monthly AI spending limit (USD)"
+              hint="When the limit is reached, customers get a short notice and staff take over."
+            >
               <input
                 className="input"
                 type="number"
@@ -214,139 +367,184 @@ export function BotSettings() {
                 onChange={(e) => setAi({ ...ai, monthlyBudgetUsd: Number(e.target.value) })}
               />
             </Field>
-            <div className="self-end">
-              <button className="btn" disabled={loading} onClick={() => void discover(true)}>
-                <RefreshCw className="size-4" />
-                {loading ? 'Loading…' : 'Refresh models'}
-              </button>
-              <p className="mt-2 text-xs text-stone-500">
-                {checkedAt
-                  ? `Checked ${shortDate(checkedAt)}`
-                  : 'Model availability has not been checked.'}
-              </p>
-            </div>
           </div>
-          {ai.provider !== 'mock' && (
-            <>
-              <details
-                open={!picked?.priced || !!ai.pricing}
-                className="rounded-xl border border-white bg-white/50 p-4"
-              >
-                <summary className="cursor-pointer text-sm font-semibold">
-                  Token prices and budget estimates
-                </summary>
-                <p className="my-3 text-xs leading-5 text-stone-500">
-                  USD per million tokens. Confirm current standard rates on the provider’s pricing
-                  page. Model catalogs do not include prices. These estimates are used to reserve
-                  your budget; provider invoices remain authoritative.
-                </p>
-                <div className="grid gap-4 sm:grid-cols-2">
-                  {(['Input', 'Output'] as const).map((name, index) => (
-                    <Field key={name} label={`${name} price / 1M tokens`}>
-                      <input
-                        type="number"
-                        min="0.00001"
-                        max="1000"
-                        step="any"
-                        className="input"
-                        value={
-                          ai.pricing?.[index] ??
-                          (index === 0 ? picked?.inputRate : picked?.outputRate) ??
-                          ''
-                        }
-                        onChange={(e) => {
-                          const rates: [number, number] = ai.pricing
-                            ? [...ai.pricing]
-                            : [picked?.inputRate ?? 0, picked?.outputRate ?? 0];
-                          rates[index] = Number(e.target.value);
-                          setAi({ ...ai, pricing: rates });
-                        }}
-                      />
-                    </Field>
-                  ))}
-                </div>
-                <div className="mt-3 flex flex-wrap gap-4 text-xs font-semibold text-brand-500 underline">
-                  <a href="https://openai.com/api/pricing/" target="_blank" rel="noreferrer">
-                    OpenAI prices
-                  </a>
-                  <a
-                    href="https://ai.google.dev/gemini-api/docs/pricing"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Gemini prices
-                  </a>
-                  <a
-                    href="https://platform.claude.com/docs/en/about-claude/pricing"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Anthropic prices
-                  </a>
-                </div>
-              </details>
-              <label className="flex items-start gap-3 text-sm leading-6">
-                <input
-                  type="checkbox"
-                  className="mt-1 size-4 shrink-0 accent-brand-500"
-                  checked={approved}
-                  onChange={(e) => setApproved(e.target.checked)}
-                />
-                <span>
-                  I have reviewed this provider’s customer-data terms and billing tier and approve
-                  sending customer message content to it. I will inform customers. In particular, I
-                  have checked the Gemini free and paid tier data-use differences.
-                </span>
-              </label>
-            </>
+          {usesAi && (
+            <label className="flex items-start gap-3 text-sm leading-6">
+              <input
+                type="checkbox"
+                className="mt-1 size-4 shrink-0 accent-brand-500"
+                checked={approved}
+                onChange={(e) => setApproved(e.target.checked)}
+              />
+              <span>
+                I agree to send customer messages to {PROVIDER_NAMES[ai.provider]} to generate
+                replies, and I have checked its data and billing terms
+                {ai.provider === 'gemini' ? ', including the free-tier data-use differences' : ''}.
+                I will let customers know.
+              </span>
+            </label>
           )}
-          <div className="flex flex-wrap gap-3">
-            <button
-              className="btn btn-primary"
-              disabled={!ai.model}
-              onClick={() =>
-                void action(
-                  () =>
-                    mutate<Company>(
-                      `/companies/${data.company.id}`,
-                      {
-                        ...data.company,
-                        botEnabled: false,
-                        ai,
-                        privacy: {
-                          ...data.company.privacy,
-                          aiDataApproved: approved,
-                          retentionDays: data.company.privacy?.retentionDays ?? 0,
+          <div className="flex flex-wrap items-center gap-3">
+            {usesAi ? (
+              <button
+                className="btn btn-primary"
+                disabled={!canConnect || connecting}
+                onClick={() => void connect()}
+              >
+                <PlugZap className="size-4" />
+                {connecting
+                  ? 'Checking the key and testing a reply…'
+                  : connected && sameAsSaved
+                    ? 'Test again'
+                    : 'Connect and test'}
+              </button>
+            ) : data.company.ai.provider === 'mock' ? (
+              <p className="text-sm text-stone-500">
+                AI is off. Choose a provider above to connect one.
+              </p>
+            ) : (
+              <button
+                className="btn btn-primary"
+                onClick={() =>
+                  void action(
+                    () =>
+                      mutate(
+                        `/companies/${data.company.id}`,
+                        {
+                          ...data.company,
+                          botEnabled: false,
+                          ai: {
+                            provider: 'mock',
+                            model: MODEL_DEFAULTS.mock,
+                            keyMode: 'platform',
+                            monthlyBudgetUsd: ai.monthlyBudgetUsd,
+                          },
                         },
-                      },
-                      'PUT',
-                    ),
-                  'Model saved. Run a generation test before enabling automation.',
-                )
-              }
-            >
-              <Save className="size-4" />
-              Save model settings
-            </button>
-            <button
-              className="btn"
-              disabled={modelChanged || ai.provider === 'mock'}
-              onClick={() =>
-                void action(
-                  () => mutate('/models/test', {}),
-                  'The exact selected model generated a valid structured response.',
-                )
-              }
-            >
-              <Check className="size-4" />
-              Run generation test
-            </button>
+                        'PUT',
+                      ),
+                    'AI turned off. Test chats use built-in rules only, and automatic replies are paused.',
+                  )
+                }
+              >
+                Turn AI off
+              </button>
+            )}
+            {data.company.ai.provider !== 'mock' &&
+              ai.monthlyBudgetUsd !== data.company.ai.monthlyBudgetUsd && (
+                <button
+                  className="btn"
+                  onClick={() =>
+                    void action(
+                      () =>
+                        mutate(
+                          `/companies/${data.company.id}`,
+                          {
+                            ...data.company,
+                            ai: { ...data.company.ai, monthlyBudgetUsd: ai.monthlyBudgetUsd },
+                          },
+                          'PUT',
+                        ),
+                      'Spending limit saved.',
+                    )
+                  }
+                >
+                  <Save className="size-4" />
+                  Save limit only
+                </button>
+              )}
+            {savedKey && ai.keyMode === 'own' && (
+              <button className="btn btn-quiet text-red-700" onClick={() => setRemoving(true)}>
+                Remove saved key
+              </button>
+            )}
           </div>
-          <p className="text-xs text-stone-500">
-            The generation test uses fictional customer text and incurs a small API charge. Retired
-            or incompatible models produce an error and hand off to staff; Orderly never silently
-            switches models.
-          </p>
+          {usesAi && !canConnect && !connecting && (
+            <p className="text-xs text-brand-700">
+              {!approved ? 'Tick the agreement to continue.' : 'Paste the API key to continue.'}
+            </p>
+          )}
+          {usesAi && (
+            <p className="text-xs leading-relaxed text-stone-500">
+              The test sends one fictional message (“Hello. Please show the menu.”) to prove this
+              exact model and key can produce a valid order reply. It costs a fraction of a cent.
+              Orderly never switches models on its own.
+            </p>
+          )}
+          {usesAi && (
+            <details
+              open={!picked?.priced || !!ai.pricing}
+              className="rounded-xl border border-white bg-white/50 p-4"
+            >
+              <summary className="cursor-pointer text-sm font-semibold">
+                Advanced{admin ? ': shared key, prices and model list' : ': prices and model list'}
+              </summary>
+              {admin && (
+                <label className="mt-3 flex items-start gap-3 text-sm leading-6">
+                  <input
+                    type="checkbox"
+                    className="mt-1 size-4 shrink-0 accent-brand-500"
+                    checked={ai.keyMode === 'platform'}
+                    onChange={(e) => {
+                      setApiKey('');
+                      setAi({ ...ai, keyMode: e.target.checked ? 'platform' : 'own' });
+                    }}
+                  />
+                  <span>
+                    Use Orderly’s shared key instead of this business’s own key. You pay for its
+                    usage. Administrators only.
+                  </span>
+                </label>
+              )}
+              <p className="my-3 text-xs leading-5 text-stone-500">
+                Token prices in USD per million tokens. Known models are filled in automatically;
+                enter prices only for a model marked “prices required”. They are used to reserve the
+                spending limit; the provider’s invoice is authoritative.
+              </p>
+              <div className="grid gap-4 sm:grid-cols-2">
+                {(['Input', 'Output'] as const).map((name, index) => (
+                  <Field key={name} label={`${name} price / 1M tokens`}>
+                    <input
+                      type="number"
+                      min="0.00001"
+                      max="1000"
+                      step="any"
+                      className="input"
+                      value={
+                        ai.pricing?.[index] ??
+                        (index === 0 ? picked?.inputRate : picked?.outputRate) ??
+                        ''
+                      }
+                      onChange={(e) => {
+                        const rates: [number, number] = ai.pricing
+                          ? [...ai.pricing]
+                          : [picked?.inputRate ?? 0, picked?.outputRate ?? 0];
+                        rates[index] = Number(e.target.value);
+                        setAi({ ...ai, pricing: rates });
+                      }}
+                    />
+                  </Field>
+                ))}
+              </div>
+              <div className="mt-3 flex flex-wrap items-center gap-4">
+                <button
+                  className="btn"
+                  disabled={loading || !savedKey}
+                  onClick={() => void discover(true)}
+                >
+                  <RefreshCw className="size-4" />
+                  {loading ? 'Loading…' : 'Refresh model list'}
+                </button>
+                <a
+                  className="text-xs font-semibold text-brand-500 underline"
+                  href={KEY_HINTS[ai.provider].pricing}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {PROVIDER_NAMES[ai.provider]} prices
+                </a>
+              </div>
+            </details>
+          )}
         </section>
         <section className="card p-5 sm:p-6 space-y-5">
           <div className="flex flex-wrap items-center justify-between gap-3">

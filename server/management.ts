@@ -6,8 +6,10 @@ import type { Repository } from './repository';
 import { PublicError } from './security';
 import { botSchema } from './validation';
 import { defaultBot, configuredCompany } from '../src/shared/bot';
-import { availableModels, modelFingerprint } from './integrations/model-catalog';
-import { AiModelAdapter, providerKey } from './integrations/models';
+import { availableModels, modelFingerprint, verifyProviderKey } from './integrations/model-catalog';
+import { AiModelAdapter, providerKey, validateModelConfiguration } from './integrations/models';
+import { encryptSecret } from './security';
+import { PROVIDER_NAMES } from '../src/shared/models';
 import { createConversation } from '../src/domain/engine';
 import { readiness } from './readiness';
 import { appMode } from './config';
@@ -158,6 +160,121 @@ export function managementRoutes(repo: Repository) {
         c.req.query('refresh') === 'true',
       ),
     );
+  });
+  // One step for owners: check the key, run a test reply with the exact model, and only
+  // then save the key and switch this business to the new model. Any failure changes nothing.
+  app.post('/ai/connect', async (c) => {
+    owner(c.get('role'));
+    const role = c.get('role');
+    const company = c.get('company');
+    const body = z
+      .object({
+        provider: z.enum(['openai', 'anthropic', 'gemini']),
+        model: z.string().trim().min(1).max(120),
+        apiKey: z.string().trim().min(10).max(16000).optional(),
+        keyMode: z.enum(['own', 'platform']).default('own'),
+        approve: z.literal(true, {
+          error: 'Tick the agreement to send customer messages to this AI provider.',
+        }),
+        monthlyBudgetUsd: z.number().min(0).max(10000).optional(),
+        pricing: z
+          .tuple([z.number().positive().max(1000), z.number().positive().max(1000)])
+          .optional(),
+      })
+      .strict()
+      .parse(await c.req.json());
+    const monthlyBudgetUsd = body.monthlyBudgetUsd ?? company.ai.monthlyBudgetUsd;
+    if (body.keyMode === 'platform') {
+      if (body.apiKey)
+        throw new PublicError('Orderly’s shared key lives on the server. Leave the key box empty.');
+      if (
+        role !== 'admin' &&
+        (company.ai.keyMode !== 'platform' || company.ai.provider !== body.provider)
+      )
+        throw new PublicError(
+          'Only the platform administrator can switch a business to Orderly’s shared key.',
+          403,
+        );
+      if (role !== 'admin' && monthlyBudgetUsd > company.ai.monthlyBudgetUsd)
+        throw new PublicError('Ask the platform administrator to raise your AI budget.', 403);
+      if (role !== 'admin' && JSON.stringify(body.pricing) !== JSON.stringify(company.ai.pricing))
+        throw new PublicError(
+          'Only the platform administrator can change rates for platform-funded AI.',
+          403,
+        );
+    }
+    const candidate: Company = {
+      ...company,
+      ai: {
+        provider: body.provider,
+        model: body.model,
+        keyMode: body.keyMode,
+        monthlyBudgetUsd,
+        ...(body.pricing && { pricing: body.pricing }),
+      },
+      privacy: { aiDataApproved: true, retentionDays: company.privacy?.retentionDays ?? 0 },
+    };
+    validateModelConfiguration(candidate);
+    const key =
+      body.keyMode === 'own' && body.apiKey ? body.apiKey : await providerKey(repo, candidate);
+    await verifyProviderKey(body.provider, key);
+    try {
+      await new AiModelAdapter(repo, key).interpret(
+        configuredCompany(candidate),
+        await repo.listProducts(company.id),
+        createConversation(
+          company.id,
+          `model-test-${randomUUID()}`,
+          'demo',
+          new Date().toISOString(),
+        ),
+        'Hello. Please show the menu.',
+      );
+    } catch (error) {
+      throw new PublicError(
+        `The key works, but ${PROVIDER_NAMES[body.provider]} model “${body.model}” could not answer a test message. ${
+          error instanceof PublicError
+            ? error.message
+            : 'Check the model name and your account credit.'
+        }`,
+        422,
+      );
+    }
+    const checkedAt = new Date().toISOString();
+    if (body.keyMode === 'own' && body.apiKey) {
+      const previous = (await repo.getIntegrations(company.id)).find(
+        (integration) => integration.kind === body.provider,
+      );
+      await repo.saveIntegration(
+        company.id,
+        {
+          kind: body.provider,
+          configured: true,
+          status: 'connected',
+          checkedAt,
+          config: { ...previous?.config },
+        },
+        encryptSecret(body.apiKey),
+      );
+    }
+    const latest = (await repo.getCompany(company.id)) ?? company;
+    await repo.saveCompany({
+      ...latest,
+      ai: candidate.ai,
+      privacy: {
+        aiDataApproved: true,
+        retentionDays: latest.privacy?.retentionDays ?? candidate.privacy?.retentionDays ?? 0,
+      },
+      modelVerification: { fingerprint: modelFingerprint(candidate, key), checkedAt },
+    });
+    await repo.audit(company.id, c.get('userId'), `ai.connected.${body.provider}`);
+    return c.json({
+      ok: true,
+      provider: body.provider,
+      model: body.model,
+      keyMode: body.keyMode,
+      checkedAt,
+    });
   });
   app.post('/models/test', async (c) => {
     owner(c.get('role'));

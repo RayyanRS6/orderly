@@ -39,6 +39,7 @@ import { finishSignup, signupSchema } from './integrations/signup.js';
 import { managementRoutes } from './management.js';
 import { readiness } from './readiness.js';
 import { buildAgentFlow } from './agent-flow.js';
+import { verifyProviderKey } from './integrations/model-catalog.js';
 import { WhatsAppAdapter } from './integrations/whatsapp.js';
 import { whatsappRoutes } from './whatsapp/routes';
 import { gatewaySecret } from './whatsapp/client';
@@ -493,8 +494,10 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
         'Only the platform administrator can change rates for platform-funded AI.',
         403,
       );
-    if (JSON.stringify(company.ai) !== JSON.stringify(c.get('company').ai))
-      company.modelVerification = undefined;
+    // Only settings that change which model and key run need a new test; a budget change does not.
+    const tested = (ai: Company['ai']) =>
+      JSON.stringify([ai.provider, ai.model, ai.keyMode, ai.pricing ?? null]);
+    if (tested(company.ai) !== tested(c.get('company').ai)) company.modelVerification = undefined;
     if (appMode() === 'live' && company.botEnabled) {
       const missing = (await readiness(repo, company)).filter((check) => !check.ready);
       if (missing.length)
@@ -739,29 +742,7 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
         await (await integrationAdapter(repo, company.id, kind as 'sheets')).test();
       else {
         const key = await providerKey(repo, { ...company, ai: { ...company.ai, keyMode } }, kind);
-        const config: { url: string; headers: Record<string, string> } =
-          kind === 'openai'
-            ? {
-                url: 'https://api.openai.com/v1/models',
-                headers: { Authorization: `Bearer ${key}` },
-              }
-            : kind === 'anthropic'
-              ? {
-                  url: 'https://api.anthropic.com/v1/models',
-                  headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' },
-                }
-              : {
-                  url: 'https://generativelanguage.googleapis.com/v1beta/models',
-                  headers: { 'x-goog-api-key': key },
-                };
-        const response = await fetch(config.url, {
-          headers: config.headers as Record<string, string>,
-          signal: AbortSignal.timeout(10000),
-        });
-        if (!response.ok)
-          throw new PublicError(
-            'The provider rejected these credentials. Check the key and account permissions.',
-          );
+        await verifyProviderKey(kind, key);
       }
       const checkedAt = new Date().toISOString();
       if (usePlatform)
