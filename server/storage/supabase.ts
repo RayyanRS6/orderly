@@ -179,13 +179,17 @@ export class SupabaseRepository implements Repository {
             messages.map((m) => m.id),
           ),
       ) ?? [];
-    const receipts = new Map(rows.map((r) => [r.message_id, r]));
+    // A real WhatsApp receipt outranks a "not sent" note ('job:' key) from a failed attempt.
+    const receipts = new Map<string, (typeof rows)[number]>();
+    for (const r of rows)
+      if (!receipts.get(r.message_id) || receipts.get(r.message_id)!.external_id.startsWith('job:'))
+        receipts.set(r.message_id, r);
     return messages.map((m) => {
       const r = receipts.get(m.id);
       return r
         ? {
             ...m,
-            externalId: r.external_id,
+            externalId: r.external_id.startsWith('job:') ? undefined : r.external_id,
             delivery: r.status as Message['delivery'],
             deliveryError: r.error ?? undefined,
           }
@@ -640,6 +644,22 @@ export class SupabaseRepository implements Repository {
   }
   async saveJob(job: Job) {
     unwrap(await this.client.from('jobs').upsert(jobRow(job)));
+  }
+  async hasEarlierSend(companyId: string, conversationId: string, job: Job) {
+    const rows =
+      unwrap(
+        await this.client
+          .from('jobs')
+          .select('id')
+          .eq('company_id', companyId)
+          .in('status', ['pending', 'processing'])
+          .eq('data->>kind', 'whatsapp_send')
+          .eq('data->payload->>conversationId', conversationId)
+          .lt('created_at', job.createdAt)
+          .neq('id', job.id)
+          .limit(1),
+      ) ?? [];
+    return rows.length > 0;
   }
   async findCompanyByPhoneNumberId(id: string) {
     const row = unwrap(

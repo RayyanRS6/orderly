@@ -609,6 +609,8 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
     const next = {
       ...conversation,
       mode,
+      // Staff decided explicitly; the bot must not take the chat back on its own.
+      botPausedAt: undefined,
       version: conversation.version + 1,
       updatedAt: new Date().toISOString(),
     };
@@ -633,6 +635,7 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
     const next = {
       ...conversation,
       mode: 'human' as const,
+      botPausedAt: undefined,
       version: conversation.version + 1,
       updatedAt: new Date().toISOString(),
       messages: [

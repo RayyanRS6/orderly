@@ -473,7 +473,7 @@ export class MemoryRepository implements Repository {
         );
         const m = c?.messages.find((m) => m.id === receipt.messageId);
         if (m) {
-          m.externalId = externalId;
+          if (!externalId.startsWith('job:')) m.externalId = externalId;
           m.delivery = receipt.status;
           m.deliveryError = receipt.error;
         }
@@ -1186,6 +1186,19 @@ export class MemoryRepository implements Repository {
   }
   getJob(id: string) {
     return this.read((s) => s.jobs.find((j) => j.id === id));
+  }
+  hasEarlierSend(companyId: string, conversationId: string, job: Job) {
+    return this.read((s) =>
+      s.jobs.some(
+        (j) =>
+          j.companyId === companyId &&
+          j.id !== job.id &&
+          j.kind === 'whatsapp_send' &&
+          (j.status === 'pending' || j.status === 'processing') &&
+          j.payload.conversationId === conversationId &&
+          j.createdAt < job.createdAt,
+      ),
+    );
   }
   listDueJobs(limit: number) {
     return this.read((s) => {

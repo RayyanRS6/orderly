@@ -277,11 +277,12 @@ export async function receiveGatewayEvent(repo: Repository, event: GatewayEvent)
   if (event.fromMe) {
     const conversation = await repo.findWhatsAppConversation(current.companyId, address);
     if (
-      conversation?.mode === 'bot' &&
+      (conversation?.mode === 'bot' || conversation?.botPausedAt) &&
       !(await repo.saveConversation(
         {
           ...conversation,
           mode: 'human',
+          botPausedAt: undefined,
           version: conversation.version + 1,
           updatedAt: event.timestamp,
         },

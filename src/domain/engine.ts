@@ -53,6 +53,16 @@ export function createConversation(
     lastInboundAt: now,
   };
 }
+// A chat that went to staff only because the bot was switched off goes back to the bot
+// once it is on again. Any staff message since then means staff are handling it.
+export function resumesAfterPause(conversation: Conversation): boolean {
+  const pausedAt = conversation.botPausedAt;
+  return (
+    conversation.mode === 'human' &&
+    !!pausedAt &&
+    !conversation.messages.some((m) => m.role === 'staff' && m.createdAt >= pausedAt)
+  );
+}
 
 function normalize(text: string): string {
   return text
@@ -325,9 +335,9 @@ function review(company: Company, products: Product[], cart: Cart, lang: Languag
   return text;
 }
 
-// Words that ask for the whole menu rather than name a dish. The AI sometimes passes
-// the customer's own word ("menu", "rates") as a search filter, which matches nothing.
-const WHOLE_MENU_WORDS = new Set([
+// Words that do not name a dish. The AI sometimes passes the customer's own words
+// ("menu", "rates", "biryani rates") as the search, so they are left out of the match.
+const NOT_DISH_WORDS = new Set([
   'menu',
   'menus',
   'full',
@@ -351,17 +361,44 @@ const WHOLE_MENU_WORDS = new Set([
   'the',
   'your',
   'our',
+  'a',
+  'an',
+  'any',
+  'some',
+  'of',
+  'for',
+  'do',
+  'you',
+  'have',
+  'is',
+  'are',
+  'what',
+  'which',
+  'show',
+  'send',
+  'me',
+  'please',
+  'pls',
   'mainu',
   'khana',
+  'kya',
+  'hai',
+  'ka',
+  'ki',
+  'ke',
+  'bhej',
+  'dikhao',
   'مینو',
   'ریٹ',
   'قیمت',
   'قیمتیں',
 ]);
-const asksForWholeMenu = (query: string) =>
-  normalize(query)
-    .split(/[^\p{L}\p{N}]+/u)
-    .every((word) => !word || WHOLE_MENU_WORDS.has(word));
+const dishWords = (query?: string) =>
+  query
+    ? normalize(query)
+        .split(/[^\p{L}\p{N}]+/u)
+        .filter((word) => word && !NOT_DISH_WORDS.has(word))
+    : [];
 
 function menu(
   company: Company,
@@ -378,23 +415,35 @@ function menu(
       'ابھی مینو دستیاب نہیں ہے۔ براہ کرم عملے سے رابطہ کریں۔',
       'Abhi menu available nahi hai. Meherbani karke staff se baat karein.',
     );
-  const filter = query && !asksForWholeMenu(query) ? normalize(query) : '';
-  const matching = filter
-    ? all.filter((p) =>
-        normalize(`${p.name} ${p.category} ${p.aliases.join(' ')}`).includes(filter),
-      )
+  const words = dishWords(query);
+  const matching = words.length
+    ? all.filter((p) => {
+        const text = normalize(`${p.name} ${p.category} ${p.aliases.join(' ')}`);
+        return words.every((word) => text.includes(word));
+      })
     : all;
-  // Never answer a menu request with an empty list: show everything instead.
+  // Never answer a menu request with an empty list: show the menu instead.
   const own = matching.length ? matching : all;
-  const shown = query?.trim().slice(0, 40);
+  // Quote only letters and digits, cut by character, and never the AI's text when it
+  // reads like a price or an order outcome: only the engine states those.
+  const shown = Array.from(words.join(' ')).slice(0, 40).join('');
   const notFound =
-    filter && !matching.length
-      ? `${say(
-          lang,
-          `We couldn’t find “${shown}” on the menu. Here is everything we have:`,
-          `“${shown}” مینو میں نہیں ملا۔ یہ رہا پورا مینو:`,
-          `“${shown}” menu mein nahi mila. Yeh raha pura menu:`,
-        )}\n\n`
+    words.length && !matching.length
+      ? `${
+          query && unsafeModelText(query)
+            ? say(
+                lang,
+                'We couldn’t find that on the menu. Here is our menu:',
+                'یہ چیز مینو میں نہیں ملی۔ یہ رہا ہمارا مینو:',
+                'Yeh cheez menu mein nahi mili. Yeh raha hamara menu:',
+              )
+            : say(
+                lang,
+                `We couldn’t find “${shown}” on the menu. Here is our menu:`,
+                `“${shown}” مینو میں نہیں ملا۔ یہ رہا ہمارا مینو:`,
+                `“${shown}” menu mein nahi mila. Yeh raha hamara menu:`,
+              )
+        }\n\n`
       : '';
   const lines: string[] = [];
   for (const p of own) {
@@ -992,10 +1041,13 @@ export function processTurn(
     };
     return { conversation: next, order, reply, traces, decision };
   };
-  // A switched-off bot only pauses replies. Staff mode is kept for handoffs and staff
-  // takeovers, so a conversation that arrives while the bot is off is answered again
-  // as soon as the bot is switched back on.
   if (next.mode === 'human' || !company.botEnabled) {
+    // While the bot is off, staff alerts and "Needs staff" pick the chat up (they follow
+    // mode 'human'). The mark lets the bot take it back once it is switched on again
+    // (see resumesAfterPause), unless the customer asked for a person.
+    if (next.mode === 'bot') next.botPausedAt = input.now;
+    next.mode = 'human';
+    if (input.action?.type === 'handoff') delete next.botPausedAt;
     traces.push('human_mode_message_saved');
     return finish();
   }
@@ -1069,6 +1121,7 @@ export function processTurn(
     try {
       if (action.type === 'handoff') {
         next.mode = 'human';
+        delete next.botPausedAt;
         reply = say(
           lang,
           'This conversation is now assigned to staff. The bot is paused until they resume it.',

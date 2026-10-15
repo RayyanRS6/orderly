@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { MemoryRepository } from '../server/repository';
 import { jobAddress, receiveGatewayEvent } from '../server/whatsapp/connections';
 import { makeJob } from '../server/jobs';
-import { processJob } from '../server/service';
+import { handleTurn, processJob } from '../server/service';
 import { createConversation, processTurn } from '../src/domain/engine';
 import { seedCompanies, seedProducts } from '../src/shared/seed';
 import {
@@ -58,18 +58,85 @@ describe('menu replies are never empty', () => {
     ]).reply;
     expect(reply).toContain('Our menu is not available right now.');
   });
+  it('narrows a dish mixed with generic words instead of calling it missing', () => {
+    for (const query of ['biryani rates', 'karahi menu', 'all biryani', 'do you have biryani']) {
+      const { reply } = turn(company, query, [{ type: 'menu', query }]);
+      expect(reply).not.toContain('couldn’t find');
+      expect(reply).toMatch(/Chicken (Biryani|Karahi)/);
+      expect(reply.includes('Chicken Biryani') && reply.includes('Chicken Karahi')).toBe(false);
+    }
+  });
+  it('quotes only plain words, cut safely, and never AI text about prices or orders', () => {
+    const odd = turn(company, 'x', [{ type: 'menu', query: '*pizza*\n_deal_ 🍕🍕' }]).reply;
+    expect(odd).toContain('We couldn’t find “pizza deal” on the menu.');
+    const long = turn(company, 'x', [
+      { type: 'menu', query: '🍕'.repeat(30) + ' zzzz'.repeat(20) },
+    ]);
+    expect(long.reply).not.toMatch(/�|[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+    const unsafe = turn(company, 'x', [{ type: 'menu', query: 'Rs 0 deal order confirmed' }]);
+    expect(unsafe.reply).toContain('We couldn’t find that on the menu.');
+    expect(unsafe.reply).not.toContain('confirmed');
+  });
 });
 
-describe('switching the bot off only pauses it', () => {
-  it('keeps the conversation with the bot, so it answers again once switched on', () => {
-    const paused = turn({ ...company, botEnabled: false }, 'hi');
-    expect(paused.reply).toBe('');
-    expect(paused.traces).toContain('human_mode_message_saved');
-    expect(paused.conversation.mode).toBe('bot');
-    const resumed = turn({ ...company, botEnabled: true }, 'menu', undefined, {
-      ...paused.conversation,
+describe('switching the bot off pauses it without losing customers', () => {
+  let repo: MemoryRepository;
+  const whatsapp = (phone = '923000000777') =>
+    createConversation(company.id, phone, 'whatsapp', now);
+  const say = (text: string, c: Conversation, action?: BotAction) =>
+    handleTurn(repo, company, c, {
+      messageId: `m-${randomUUID()}`,
+      text,
+      now: new Date().toISOString(),
+      ...(action && { action }),
     });
+  const setBot = async (botEnabled: boolean) =>
+    repo.saveCompany({ ...(await repo.getCompany(company.id))!, botEnabled });
+  beforeEach(() => {
+    vi.stubEnv('APP_MODE', 'demo');
+    repo = new MemoryRepository();
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('shows the chat to staff while off and gives it back to the bot once on', async () => {
+    await setBot(false);
+    const paused = await say('hi', whatsapp());
+    expect(paused.reply).toBe('');
+    expect(paused.conversation.mode).toBe('human');
+    expect(paused.conversation.botPausedAt).toBeTruthy();
+    const attention = await repo.staffAttention(company.id);
+    expect(attention.items.some((i) => i.entityId === paused.conversation.id)).toBe(true);
+    await setBot(true);
+    const resumed = await say('menu', paused.conversation);
     expect(resumed.reply).toContain('Chicken Biryani');
+    expect(resumed.conversation.mode).toBe('bot');
+    expect(resumed.conversation.botPausedAt).toBeUndefined();
+  });
+
+  it('stays with staff when staff replied or the customer asked for a person', async () => {
+    await setBot(false);
+    const paused = await say('hi', whatsapp());
+    const stored = (await repo.getConversation(company.id, paused.conversation.id))!;
+    await repo.saveConversation(
+      {
+        ...stored,
+        version: stored.version + 1,
+        messages: [
+          ...stored.messages,
+          { id: 'staff-1', role: 'staff', text: 'Hello!', createdAt: new Date().toISOString() },
+        ],
+      },
+      stored.version,
+    );
+    const asked = await say('voice note', whatsapp('923000000888'), { type: 'handoff' });
+    expect(asked.conversation.botPausedAt).toBeUndefined();
+    await setBot(true);
+    for (const id of [paused.conversation.id, asked.conversation.id]) {
+      const c = (await repo.getConversation(company.id, id))!;
+      const result = await say('menu', c);
+      expect(result.reply).toBe('');
+      expect(result.conversation.mode).toBe('human');
+    }
   });
 });
 
@@ -170,6 +237,83 @@ describe('WhatsApp delivery', () => {
     const saved = await repo.getJob(job.id);
     expect(saved?.status).toBe('done');
     expect(saved?.attempts).toBe(1);
+  });
+
+  it('sends replies to one customer in the order they were written', async () => {
+    vi.stubEnv('APP_MODE', 'live');
+    const c = await savedConversation();
+    const reply = (text: string) =>
+      makeJob(company.id, 'whatsapp_send', {
+        ...jobAddress(c),
+        conversationId: c.id,
+        text,
+        source: 'notice',
+      });
+    const first = { ...reply('first'), createdAt: new Date(Date.now() - 2000).toISOString() };
+    const second = reply('second');
+    await repo.insertJob(first);
+    await repo.insertJob(second);
+    const sent: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: unknown, init: RequestInit) => {
+        sent.push(JSON.parse(String(init.body)).text);
+        return new Response(JSON.stringify({ messageId: `wa-${sent.length}` }), { status: 200 });
+      }),
+    );
+    // The later reply is picked up first and must wait for the earlier one.
+    const later = processJob(repo, second.id);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(sent).toEqual([]);
+    await processJob(repo, first.id);
+    await later;
+    expect(sent).toEqual(['first', 'second']);
+    expect((await repo.getJob(second.id))?.status).toBe('done');
+  });
+
+  it('marks a reply that never left as not delivered, with the reason', async () => {
+    const message = (id: string): Message => ({
+      id,
+      role: 'assistant',
+      text: 'hi',
+      createdAt: now,
+    });
+    // Staff took over before the bot's reply went out.
+    const taken = { ...(await savedConversation([message('dropped')])) };
+    await repo.saveConversation({ ...taken, mode: 'human', version: 1 }, 0);
+    const dropped = makeJob(company.id, 'whatsapp_send', {
+      ...jobAddress(taken),
+      conversationId: taken.id,
+      messageId: 'dropped',
+      text: 'hi',
+      source: 'bot',
+    });
+    await repo.insertJob(dropped);
+    await processJob(repo, dropped.id);
+    const afterDrop = (await repo.getConversation(company.id, taken.id))!.messages[0]!;
+    expect(afterDrop.delivery).toBe('failed');
+    expect(afterDrop.deliveryError).toContain('staff took over');
+    expect(afterDrop.externalId).toBeUndefined();
+    // A send that fails for good, here outside WhatsApp's 24-hour reply window.
+    const old = {
+      ...createConversation(company.id, '', 'whatsapp', '2020-01-01T00:00:00.000Z'),
+      whatsappAddress: { ...address, peer: '100000009@lid' },
+      messages: [message('late')],
+    };
+    await repo.saveConversation(old);
+    const failing = makeJob(company.id, 'whatsapp_send', {
+      ...jobAddress(old),
+      conversationId: old.id,
+      messageId: 'late',
+      text: 'hi',
+      source: 'notice',
+    });
+    await repo.insertJob(failing);
+    await processJob(repo, failing.id);
+    expect((await repo.getJob(failing.id))?.status).toBe('failed');
+    const late = (await repo.getConversation(company.id, old.id))!.messages[0]!;
+    expect(late.delivery).toBe('failed');
+    expect(late.deliveryError).toContain('24 hours');
   });
 
   it('shows delivered and read ticks, whichever order they arrive in', async () => {

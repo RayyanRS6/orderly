@@ -182,6 +182,9 @@ export interface Conversation {
   channel: 'demo' | 'whatsapp';
   language: Language;
   mode: 'bot' | 'human';
+  // Set when the chat went to staff only because the bot was switched off. The bot
+  // takes it back once switched on; any staff action or handoff request clears it.
+  botPausedAt?: string;
   messages: Message[];
   cart: Cart;
   pendingItemChoice?: {

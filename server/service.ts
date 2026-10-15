@@ -7,13 +7,19 @@ import type {
   IntegrationKind,
   ModelInterpretation,
   ModelSkipReason,
+  Job,
   Order,
   StaffNoticeCause,
   TurnInput,
   TurnResult,
 } from '../src/shared/types.js';
 import { attachExplanation, describeTurn } from './explanations.js';
-import { createConversation, processTurn, transitionOrder } from '../src/domain/engine.js';
+import {
+  createConversation,
+  processTurn,
+  resumesAfterPause,
+  transitionOrder,
+} from '../src/domain/engine.js';
 import { AiModelAdapter, providerKey } from './integrations/models.js';
 import { modelFingerprint } from './integrations/model-catalog.js';
 import { GoogleSheetsAdapter } from './integrations/sheets.js';
@@ -62,10 +68,19 @@ export async function refreshCatalog(repo: Repository, company: Company): Promis
   const adapter = await integrationAdapter(repo, company.id, 'sheets');
   const products = await adapter.readCatalog(company.id);
   await repo.replaceProducts(company.id, products);
-  // Re-read company to avoid reverting concurrent business settings edits.
-  const latest = await repo.getCompany(company.id);
-  if (!latest) throw new PublicError('Company not found.', 404);
-  await repo.saveCompany({ ...latest, catalogSyncedAt: new Date().toISOString() });
+  // Pairing and disconnecting switch the bot off under the connection lock. Stamping the
+  // sync time under it too means this read-then-write can never switch the bot back on.
+  // If the lock stays busy the stamp is skipped, so the next turn refreshes again.
+  const lock = randomUUID();
+  if (!(await acquireConnectionLock(repo, company.id, lock))) return products.length;
+  try {
+    // Re-read company to avoid reverting concurrent business settings edits.
+    const latest = await repo.getCompany(company.id);
+    if (!latest) throw new PublicError('Company not found.', 404);
+    await repo.saveCompany({ ...latest, catalogSyncedAt: new Date().toISOString() });
+  } finally {
+    await repo.releaseConversationLock(company.id, 'whatsapp-connection', lock);
+  }
   return products.length;
 }
 export async function handleTurn(
@@ -152,6 +167,9 @@ export async function handleTurn(
         reply: conversation.messages.filter((m) => m.role === 'assistant').at(-1)?.text ?? '',
         traces: ['duplicate_message_ignored'],
       };
+    // The bot is on again: a chat that went to staff only because it was off goes back.
+    if (!sandbox && company.botEnabled && resumesAfterPause(conversation))
+      conversation = { ...conversation, mode: 'bot', botPausedAt: undefined };
     if (
       company.botEnabled &&
       conversation.mode === 'bot' &&
@@ -400,6 +418,7 @@ async function saveHandoff(
 ): Promise<TurnResult> {
   const c = structuredClone(conversation);
   c.mode = 'human';
+  delete c.botPausedAt;
   c.version++;
   c.updatedAt = input.now;
   c.lastInboundAt = new Date(
@@ -536,21 +555,41 @@ export async function queueReply(
 // a second or two. Waiting here is far faster than a retry, which runs only on the next
 // minute's recovery pass and let later replies overtake earlier ones.
 const CONNECTION_LOCK_WAIT_MS = 30000;
-async function acquireConnectionLock(repo: Repository, companyId: string, owner: string) {
+async function acquireConnectionLock(
+  repo: Repository,
+  companyId: string,
+  owner: string,
+  ready: () => Promise<boolean> = async () => true,
+) {
   const deadline = Date.now() + CONNECTION_LOCK_WAIT_MS;
   for (;;) {
     if (
-      await repo.acquireConversationLock(
+      (await ready()) &&
+      (await repo.acquireConversationLock(
         companyId,
         'whatsapp-connection',
         owner,
         new Date(Date.now() + WORKER_LEASE_MS).toISOString(),
-      )
+      ))
     )
       return true;
     if (Date.now() >= deadline) return false;
     await new Promise((resolve) => setTimeout(resolve, 300));
   }
+}
+// The Inbox shows a reply that never left as "Not delivered" with the reason. Keyed by
+// the job: a real WhatsApp receipt for the same message outranks it.
+async function recordNotSent(repo: Repository, job: Job, reason: string) {
+  if (typeof job.payload.messageId !== 'string' || typeof job.payload.externalId === 'string')
+    return;
+  await repo.recordDelivery(
+    job.companyId,
+    `job:${job.id}`,
+    'failed',
+    String(job.payload.conversationId),
+    job.payload.messageId,
+    reason,
+  );
 }
 export async function processJob(repo: Repository, id: string) {
   const job = await repo.claimJob(
@@ -565,8 +604,20 @@ export async function processJob(repo: Repository, id: string) {
     // order per customer and under the conversation lock, so they must not hold the
     // connection while the AI answers: that blocked every reply and other customers.
     if (job.kind === 'whatsapp_send') {
-      connectionLocked = await acquireConnectionLock(repo, job.companyId, job.id);
-      if (!connectionLocked) throw new PublicError('WhatsApp connection is busy.', 409);
+      // Replies to one customer leave in the order they were written.
+      const conversationId = String(job.payload.conversationId);
+      let waitingForEarlier = false;
+      connectionLocked = await acquireConnectionLock(repo, job.companyId, job.id, async () => {
+        waitingForEarlier = await repo.hasEarlierSend(job.companyId, conversationId, job);
+        return !waitingForEarlier;
+      });
+      if (!connectionLocked)
+        throw new PublicError(
+          waitingForEarlier
+            ? 'An earlier reply to this customer has not been sent yet.'
+            : 'WhatsApp connection is busy.',
+          409,
+        );
     }
     if (job.kind === 'incoming' || job.kind === 'whatsapp_send')
       await assertCurrentAddress(repo, job.companyId, job.payload.whatsappAddress);
@@ -618,6 +669,7 @@ export async function processJob(repo: Repository, id: string) {
             const next = {
               ...current,
               mode: 'human' as const,
+              botPausedAt: undefined,
               version: current.version + 1,
               updatedAt: job.createdAt,
               messages: [
@@ -681,6 +733,13 @@ export async function processJob(repo: Repository, id: string) {
       );
       if (!conversation) throw new PublicError('Conversation not found.', 404);
       if (job.payload.source === 'bot' && (!company.botEnabled || conversation.mode === 'human')) {
+        await recordNotSent(
+          repo,
+          job,
+          company.botEnabled
+            ? 'Not sent: staff took over this chat before the reply went out.'
+            : 'Not sent: the bot was switched off before the reply went out.',
+        );
         await repo.saveJob({ ...job, status: 'done', leaseUntil: undefined, error: undefined });
         return;
       }
@@ -755,6 +814,14 @@ export async function processJob(repo: Repository, id: string) {
     if (job.kind === 'sheet_sync') {
       await repo.setOrderSyncStatus(job.companyId, String(job.payload.orderId), 'failed');
     }
+    if (permanent && job.kind === 'whatsapp_send')
+      await recordNotSent(
+        repo,
+        job,
+        error instanceof PublicError
+          ? error.message
+          : 'Sending failed. Check the WhatsApp connection.',
+      ).catch(() => undefined);
     // A failed incoming message remains a FIFO barrier until recovery. Mark its
     // conversation for staff too, so retrying the stream cannot resume ordering silently.
     let failedConversationId: string | undefined;
@@ -766,11 +833,12 @@ export async function processJob(repo: Repository, id: string) {
         : await repo.findConversation(job.companyId, String(job.payload.phone), 'whatsapp');
       if (current) {
         failedConversationId = current.id;
-        if (current.mode === 'bot')
+        if (current.mode === 'bot' || current.botPausedAt)
           await repo.saveConversation(
             {
               ...current,
               mode: 'human',
+              botPausedAt: undefined,
               version: current.version + 1,
               updatedAt: new Date().toISOString(),
             },

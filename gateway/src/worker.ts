@@ -18,6 +18,7 @@ import { loadConfig } from './config.js';
 import { Store } from './store.js';
 import { canonicalJid, phoneFromJid, disconnectPolicy, retryDelay } from './policy.js';
 import { sendOnce, recoverUncertainSends } from './sender.js';
+import { receiptStatus, upsertedMessages } from './upserts.js';
 import { signedHeaders } from '../../server/whatsapp/signing.js';
 import {
   sendCommandSchema,
@@ -50,11 +51,6 @@ let sendChain = Promise.resolve();
 // arrives, although it was accepted. Kept encrypted on disk for three days.
 const SENT_RETENTION_MS = 3 * 86400000;
 const EVENT_BATCH = 50;
-const RECEIPTS: Partial<Record<number, 'delivered' | 'read'>> = {
-  [proto.WebMessageInfo.Status.DELIVERY_ACK]: 'delivered',
-  [proto.WebMessageInfo.Status.READ]: 'read',
-  [proto.WebMessageInfo.Status.PLAYED]: 'read',
-};
 const encode = (value: unknown) => JSON.parse(JSON.stringify(value, BufferJSON.replacer));
 const decode = <T>(value: unknown): T => JSON.parse(JSON.stringify(value), BufferJSON.reviver);
 const snapshot = () => ({
@@ -140,6 +136,8 @@ async function drainOnce(): Promise<number | false> {
   ];
   let messages = 0;
   for (const row of rows) {
+    // A customer message saved meanwhile goes before the remaining ticks.
+    if (row.namespace === 'receipt-events' && drainAgain) break;
     const raw = JSON.stringify(row.value);
     let response: Response;
     try {
@@ -170,7 +168,7 @@ async function drainOnce(): Promise<number | false> {
   return messages;
 }
 function receipt(key: proto.IMessageKey, status?: number | null) {
-  const value = status == null ? undefined : RECEIPTS[status];
+  const value = receiptStatus(status);
   // Only replies this gateway sent; messages staff type on the phone are not tracked.
   if (!value || !key.fromMe || !key.id || !store.get('own', key.id)) return;
   const id = `${key.id}:${value}`;
@@ -285,6 +283,9 @@ async function connect() {
     syncFullHistory: false,
     shouldSyncHistoryMessage: () => false,
     markOnlineOnConnect: false,
+    // Our own sends would otherwise leave Baileys buffering events until the next
+    // incoming node, batching customer messages and ticks behind them (see upserts.ts).
+    emitOwnEvents: false,
     generateHighQualityLinkPreview: false,
     connectTimeoutMs: 20000,
     defaultQueryTimeoutMs: 15000,
@@ -311,9 +312,14 @@ async function connect() {
     );
   currentSocket.ev.on('messages.upsert', (update) =>
     guard(() => {
-      // No history imports or placeholder-resend injections. Only live notify events.
-      if (update.type !== 'notify' || update.requestId || currentSocket !== socket) return;
-      for (const message of update.messages) incoming(message);
+      // Never filter by update.type (see upserts.ts): it dropped customer messages that
+      // were batched behind our own reply or delivered after a reconnect. incoming()
+      // skips our own replies, old and duplicate messages; history sync is disabled.
+      if (currentSocket !== socket) return;
+      for (const message of upsertedMessages(update)) {
+        receipt(message.key, message.status);
+        incoming(message);
+      }
     }),
   );
   currentSocket.ev.on('messages.update', (updates) =>
