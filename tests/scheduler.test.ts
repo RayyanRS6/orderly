@@ -31,6 +31,7 @@ async function insertJob(
     companyId?: string;
     attempts?: number;
     orderId?: string;
+    payload?: Record<string, unknown>;
   } = {},
 ) {
   const job = {
@@ -40,6 +41,7 @@ async function insertJob(
     payload: {
       phone: options.phone ?? id,
       ...(options.orderId ? { orderId: options.orderId } : {}),
+      ...options.payload,
     },
     status: options.status ?? 'pending',
     attempts: options.attempts ?? 0,
@@ -55,6 +57,7 @@ async function insertConversation(
   companyId = 'company-a',
   channel = 'whatsapp',
   phone = id,
+  extra: Record<string, unknown> = {},
 ) {
   const conversation = {
     id,
@@ -66,6 +69,7 @@ async function insertConversation(
     updatedAt: offset(-60000),
     cart: { items: [] },
     messages: [{ id: 'preserve-message' }],
+    ...extra,
   };
   await db.query('select public.save_conversation($1)', [conversation]);
   return conversation;
@@ -158,7 +162,14 @@ beforeAll(async () => {
   for (const filename of ['202609090001_initial.sql', '202609090002_order_transitions.sql'])
     await db.exec(readFileSync(`supabase/migrations/${filename}`, 'utf8'));
   await db.exec(executableMigration);
+  for (const filename of [
+    '202609160002_message_delivery.sql',
+    '202609200001_whatsapp_gateway.sql',
+    '202610160001_delivery_followups.sql',
+  ])
+    await db.exec(readFileSync(`supabase/migrations/${filename}`, 'utf8'));
 }, 30000);
+const followups = readFileSync('supabase/migrations/202610160001_delivery_followups.sql', 'utf8');
 
 beforeEach(async () => {
   await db.exec(`reset role; truncate public.companies cascade; truncate vault.secrets,net.http_request_queue,net.test_failure,cron.job_run_details;
@@ -492,6 +503,7 @@ describe('Supabase durable dispatch and scheduler', () => {
       'public.dispatch_next_orderly_incoming()',
       'public.prune_orderly_cron_history()',
       'public.orderly_scheduler_status()',
+      'public.mark_catalog_synced(text,timestamptz)',
     ];
     for (const role of ['anon', 'authenticated']) {
       for (const signature of signatures)
@@ -516,6 +528,14 @@ describe('Supabase durable dispatch and scheduler', () => {
 
   it('keeps recent/running and unrelated cron history and can rerun the migration without duplicating jobs', async () => {
     await db.exec(executableMigration);
+    // The follow-up migration must be rerunnable too, and restores its own definitions.
+    await db.exec(followups);
+    await db.exec(followups);
+    expect(
+      await scalar(
+        `select prosrc like '%streamKey%' as value from pg_proc where oid='public.dispatch_orderly_job(text)'::regprocedure`,
+      ),
+    ).toBe(true);
     expect(await scalar('select count(*)::int as value from cron.job')).toBe(2);
     await db.exec(`
       select cron.schedule('unrelated-job','* * * * *','select 1;');
@@ -530,5 +550,157 @@ describe('Supabase durable dispatch and scheduler', () => {
         `select count(*)::int as value from cron.job_run_details join cron.job using(jobid) where jobname='unrelated-job'`,
       ),
     ).toBe(1);
+  });
+});
+
+describe('delivery follow-ups (202610160001)', () => {
+  const address = (peer: string) => ({
+    connectionId: '756bc31b-63af-4ce9-8324-1fd87803ae71',
+    generation: 4,
+    provider: 'baileys',
+    peer,
+  });
+  const streamKey = (peer: string) => `756bc31b-63af-4ce9-8324-1fd87803ae71:4:${peer}`;
+  const markDone = (id: string) =>
+    db.query(
+      `update public.jobs set status='done',data=data||'{"status":"done"}'::jsonb where id=$1`,
+      [id],
+    );
+
+  it('releases the next message of a customer whose number arrived after the first message', async () => {
+    await configure();
+    const stream = { streamKey: streamKey('100000001@lid') };
+    await insertJob('first', { phone: '', payload: stream });
+    await insertJob('second', { phone: '+923001234567', payload: stream });
+    await insertJob('other-customer', { phone: '', payload: { streamKey: streamKey('2@lid') } });
+    // Same customer: the second waits for the first even though their phones differ.
+    expect(await scalar('select public.dispatch_orderly_job($1) as value', ['second'])).toBeNull();
+    // A different customer with the same empty phone is not held back.
+    expect(
+      await scalar('select public.dispatch_orderly_job($1) as value', ['other-customer']),
+    ).not.toBeNull();
+    await markDone('first');
+    expect(await dispatchedIds()).toEqual(['other-customer', 'second']);
+  });
+
+  it('recovery keeps each customer stream separate, also when phones are unknown', async () => {
+    await configure();
+    // One privacy-protected customer's message failed: it holds back only their stream.
+    await insertJob('stuck', {
+      phone: '',
+      status: 'failed',
+      payload: { streamKey: streamKey('100000001@lid') },
+    });
+    await insertJob('behind-stuck', {
+      phone: '+923001234567',
+      payload: { streamKey: streamKey('100000001@lid') },
+    });
+    await insertJob('other-customer', {
+      phone: '',
+      payload: { streamKey: streamKey('100000002@lid') },
+    });
+    expect(await scalar('select public.recover_orderly_jobs() as value')).toBe(1);
+    expect(await dispatchedIds()).toEqual(['other-customer']);
+  });
+
+  it('marks only the right privacy-protected customer for staff and clears the pause mark', async () => {
+    const bystander = await insertConversation('bystander', 'company-a', 'whatsapp', '', {
+      whatsappAddress: address('100000001@lid'),
+    });
+    await insertConversation('paused', 'company-a', 'whatsapp', '', {
+      whatsappAddress: address('100000002@lid'),
+      mode: 'human',
+      botPausedAt: offset(-120000),
+    });
+    await insertJob('failed-message', {
+      phone: '',
+      status: 'processing',
+      attempts: 5,
+      leaseUntil: offset(-60000),
+      payload: { streamKey: streamKey('100000002@lid'), whatsappAddress: address('100000002@lid') },
+    });
+    expect(await scalar('select public.fail_exhausted_orderly_jobs() as value')).toBe(1);
+    expect(
+      await scalar('select data as value from public.conversations where id=$1', ['bystander']),
+    ).toEqual(bystander);
+    const paused = (await scalar('select data as value from public.conversations where id=$1', [
+      'paused',
+    ])) as Record<string, unknown>;
+    expect(paused).toMatchObject({ mode: 'human', version: 4 });
+    expect(paused).not.toHaveProperty('botPausedAt');
+    expect(await scalar('select data as value from public.traces')).toMatchObject({
+      conversationId: 'paused',
+      action: 'job.failed',
+    });
+  });
+
+  it('shows a reply the worker gave up on as not delivered, like the worker does', async () => {
+    await insertConversation('chat');
+    const send = (id: string, payload: Record<string, unknown>) =>
+      insertJob(id, {
+        kind: 'whatsapp_send',
+        status: 'processing',
+        attempts: 5,
+        leaseUntil: offset(-60000),
+        payload,
+      });
+    await send('unsent', { conversationId: 'chat', messageId: 'reply-1' });
+    // Already accepted by WhatsApp: its real receipt stands.
+    await send('already-sent', {
+      conversationId: 'chat',
+      messageId: 'reply-2',
+      externalId: 'wa-2',
+    });
+    // An order-status notice has no chat message to label.
+    await send('notice', { conversationId: 'chat' });
+    expect(await scalar('select public.fail_exhausted_orderly_jobs() as value')).toBe(3);
+    expect(
+      (
+        await db.query(
+          'select external_id,conversation_id,message_id,status,error from public.message_deliveries',
+        )
+      ).rows,
+    ).toEqual([
+      {
+        external_id: 'job:unsent',
+        conversation_id: 'chat',
+        message_id: 'reply-1',
+        status: 'failed',
+        error: expect.stringContaining('Not sent'),
+      },
+    ]);
+    expect(
+      await scalar(`select count(*)::int as value from public.jobs where status='failed'`),
+    ).toBe(3);
+  });
+
+  it('stamps the menu sync time without touching any other setting, and only forwards', async () => {
+    await db.query(`update public.companies set data=data||$1::jsonb where id='company-a'`, [
+      { botEnabled: false, name: 'Kept', catalogSyncedAt: '2026-10-01T00:00:00.000Z' },
+    ]);
+    const later = '2026-10-16T10:00:00.000Z';
+    await db.exec('set role service_role');
+    await db.query('select public.mark_catalog_synced($1,$2)', ['company-a', later]);
+    await db.query('select public.mark_catalog_synced($1,$2)', [
+      'company-a',
+      '2026-10-02T00:00:00.000Z',
+    ]);
+    await db.query('select public.mark_catalog_synced($1,$2)', ['no-such-company', later]);
+    await db.exec('reset role');
+    expect(await scalar(`select data as value from public.companies where id='company-a'`)).toEqual(
+      {
+        id: 'company-a',
+        slug: 'company-a',
+        botEnabled: false,
+        name: 'Kept',
+        catalogSyncedAt: later,
+      },
+    );
+    await db.query('select public.mark_catalog_synced($1,$2)', ['company-b', later]);
+    expect(
+      await scalar(
+        `select data->>'catalogSyncedAt' as value from public.companies where id='company-b'`,
+      ),
+    ).toBe(later);
   });
 });

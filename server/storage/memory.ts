@@ -752,6 +752,16 @@ export class MemoryRepository implements Repository {
       put(s.companies, previous?.bot ? { ...company, bot: previous.bot } : company);
     });
   }
+  markCatalogSynced(companyId: string, syncedAt: string) {
+    return this.mutate((s) => {
+      const company = s.companies.find((c) => c.id === companyId);
+      if (
+        company &&
+        (!company.catalogSyncedAt || Date.parse(company.catalogSyncedAt) < Date.parse(syncedAt))
+      )
+        company.catalogSyncedAt = new Date(syncedAt).toISOString();
+    });
+  }
   isAdmin(userId: string) {
     return this.read((s) => s.admins.includes(userId));
   }

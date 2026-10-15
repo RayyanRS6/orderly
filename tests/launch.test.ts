@@ -5,7 +5,7 @@ import { MemoryRepository } from '../server/repository';
 import { defaultBot } from '../src/shared/bot';
 import { seedCompanies, seedProducts } from '../src/shared/seed';
 import { createConversation, processTurn } from '../src/domain/engine';
-import { handleTurn, processJob } from '../server/service';
+import { handleTurn, processJob, refreshCatalog } from '../server/service';
 import { encryptSecret } from '../server/security';
 import { makeJob } from '../server/jobs';
 import { availableModels } from '../server/integrations/model-catalog';
@@ -236,6 +236,32 @@ describe('launch safety and management', () => {
       'Fresh Sheet Special',
     ]);
     expect(await repo.listCompanyJobs(company.id)).toEqual([]);
+  });
+  it('a menu refresh only stamps its sync time and never re-saves business settings', async () => {
+    await repo.saveCompany({ ...company, catalogSource: 'sheets', botEnabled: true });
+    await repo.saveIntegration(
+      company.id,
+      {
+        kind: 'sheets',
+        configured: true,
+        status: 'connected',
+        config: { spreadsheetId: 'test-spreadsheet-id', catalogSheet: 'Menu' },
+      },
+      encryptSecret('unused-private-key'),
+    );
+    vi.spyOn(GoogleSheetsAdapter.prototype, 'readCatalog').mockResolvedValue([seedProducts[0]]);
+    const current = (await repo.getCompany(company.id))!;
+    // A whole-record save from a copy read before the owner switched the bot off would
+    // switch it back on. The refresh may only stamp its own field.
+    const save = vi.spyOn(repo, 'saveCompany');
+    await repo.saveCompany({ ...current, botEnabled: false });
+    save.mockClear();
+    const before = Date.now();
+    await refreshCatalog(repo, current);
+    expect(save).not.toHaveBeenCalled();
+    const saved = (await repo.getCompany(company.id))!;
+    expect(saved.botEnabled).toBe(false);
+    expect(Date.parse(saved.catalogSyncedAt!)).toBeGreaterThanOrEqual(before);
   });
   it('saves drafts with a revision guard and publishes or restores without enabling automation', async () => {
     await repo.saveCompany({ ...company, botEnabled: false });

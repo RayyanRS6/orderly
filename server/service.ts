@@ -68,21 +68,10 @@ export async function refreshCatalog(repo: Repository, company: Company): Promis
   const adapter = await integrationAdapter(repo, company.id, 'sheets');
   const products = await adapter.readCatalog(company.id);
   await repo.replaceProducts(company.id, products);
-  // Pairing and disconnecting switch the bot off under the connection lock, so stamping the
-  // sync time under it too keeps this read-then-write from switching the bot back on during
-  // them. The wait is short because a customer's turn may be waiting on it; when the lock
-  // stays busy the stamp is skipped and the next turn refreshes again.
-  const lock = randomUUID();
-  if (!(await acquireConnectionLock(repo, company.id, lock, { leaseMs: 60000, waitMs: 2000 })))
-    return products.length;
-  try {
-    // Re-read company to avoid reverting concurrent business settings edits.
-    const latest = await repo.getCompany(company.id);
-    if (!latest) throw new PublicError('Company not found.', 404);
-    await repo.saveCompany({ ...latest, catalogSyncedAt: new Date().toISOString() });
-  } finally {
-    await repo.releaseConversationLock(company.id, 'whatsapp-connection', lock);
-  }
+  // Only this one field is written: re-saving the whole company could undo a concurrent
+  // settings change, such as the bot being switched off. Best effort: the menu is already
+  // refreshed, and a missed stamp only means the next turn reads the Sheet again.
+  await repo.markCatalogSynced(company.id, new Date().toISOString()).catch(() => undefined);
   return products.length;
 }
 export async function handleTurn(

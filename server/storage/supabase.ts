@@ -361,6 +361,9 @@ export class SupabaseRepository implements Repository {
   async saveCompany(company: Company) {
     await this.rpc('save_company_settings', { p_company: company });
   }
+  async markCatalogSynced(companyId: string, syncedAt: string) {
+    await this.rpc('mark_catalog_synced', { p_company_id: companyId, p_synced_at: syncedAt });
+  }
   async isAdmin(userId: string) {
     return !!unwrap(
       await this.client

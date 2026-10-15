@@ -90,6 +90,8 @@ export interface Repository {
   listCompanies(): Promise<Company[]>;
   getCompany(id: string): Promise<Company | undefined>;
   saveCompany(company: Company): Promise<void>;
+  // Sets only catalogSyncedAt, and only forwards, leaving every other setting untouched.
+  markCatalogSynced(companyId: string, syncedAt: string): Promise<void>;
   getRole(userId: string, companyId: string): Promise<Role | null>;
   isAdmin(userId: string): Promise<boolean>;
   listProducts(companyId: string): Promise<Product[]>;
