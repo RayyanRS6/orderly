@@ -12,6 +12,7 @@ import {
   type WhatsAppConnection,
 } from '../src/shared/whatsapp';
 import { deliveryLabel } from '../src/components/Inbox';
+import { defaultBot } from '../src/shared/bot';
 import type { BotAction, Company, Conversation, Message } from '../src/shared/types';
 
 const company = seedCompanies[0]!;
@@ -91,6 +92,79 @@ describe('menu replies are never empty', () => {
         false,
       );
     }
+  });
+});
+
+describe('a mislabelled AI follow-up never hands the chat to staff', () => {
+  // The live bot's published settings at the time: handoff message "Love you.".
+  const live: Company = {
+    ...company,
+    bot: {
+      draft: defaultBot,
+      revision: 20,
+      history: [],
+      published: {
+        version: 3,
+        config: { ...defaultBot, handoffMessage: 'Love you.' },
+        publishedAt: now,
+        publishedBy: 'test',
+      },
+    },
+  };
+  const answer = (
+    text: string,
+    response: { text: string; askFor: 'anything_else' | 'fulfillment'; groundingIds?: string[] },
+    conversation: Conversation = fresh(),
+  ) =>
+    processTurn(
+      live,
+      products,
+      conversation,
+      { messageId: `m-${randomUUID()}`, text, now },
+      [{ type: 'answer', text: '' }],
+      response,
+    );
+
+  it('answers "hi" with an empty cart instead of handing off (the live 19:39 case)', () => {
+    for (const text of ['hi', 'is anyone there?']) {
+      const result = answer(text, {
+        text: 'Hi! Anything else I can help you with today?',
+        askFor: 'anything_else',
+      });
+      expect(result.reply, text).not.toBe('Love you.');
+      expect(result.traces, text).not.toContain('handoff');
+      expect(result.conversation.mode, text).toBe('bot');
+    }
+    expect(
+      answer('is anyone there?', {
+        text: 'Yes, I am here! What would you like?',
+        askFor: 'anything_else',
+      }).reply,
+    ).toBe('Yes, I am here! What would you like?');
+  });
+
+  it('asks the right next question when the AI re-asks a collected detail', () => {
+    const c = fresh();
+    c.cart = {
+      ...c.cart,
+      items: [{ productId: products[0]!.id, quantity: 1, modifierIds: [], notes: '' }] as never,
+      fulfillment: 'pickup',
+    };
+    const result = answer('thanks', { text: 'Pickup or delivery?', askFor: 'fulfillment' }, c);
+    expect(result.conversation.mode).toBe('bot');
+    expect(result.reply).not.toContain('Pickup or delivery?');
+    expect(result.reply).not.toBe('Love you.');
+    expect(result.traces).toContain('response_fallback');
+  });
+
+  it('still hands off an answer built on facts that do not exist', () => {
+    const result = answer('do you have parking?', {
+      text: 'Yes, free parking for 50 cars.',
+      askFor: 'anything_else',
+      groundingIds: ['made-up-fact'],
+    });
+    expect(result.traces).toContain('handoff');
+    expect(result.conversation.mode).toBe('human');
   });
 });
 

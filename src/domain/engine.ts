@@ -910,6 +910,18 @@ export function processTurn(
       (modelResponse.askFor === 'address' &&
         cart.fulfillment === 'delivery' &&
         !cart.address?.trim());
+    // A follow-up label that does not fit the cart is a labelling slip, not a sign the AI
+    // could not answer. "What would you like?" / "anything else?" cannot re-ask a detail
+    // the customer already gave, so an answer-only reply keeps that wording; any other
+    // mismatched question is replaced by the engine's own next question. Neither hands
+    // the chat to staff: that paused the bot for a customer who had only said "hi".
+    const harmlessAskFor =
+      modelResponse?.askFor === 'items' || modelResponse?.askFor === 'anything_else';
+    const answerOnlyLabelSlip =
+      !validAskFor &&
+      grounded &&
+      !!modelResponse?.text.trim() &&
+      !unsafeModelText(modelResponse.text);
     const matchedRule = configuration.behaviorRules.find(
       (rule) => rule.enabled && rule.id === modelResponse?.matchedRuleId,
     );
@@ -966,7 +978,7 @@ export function processTurn(
       !protectedReply &&
       next.mode === 'bot' &&
       grounded &&
-      validAskFor &&
+      (validAskFor || (!reply && harmlessAskFor)) &&
       modelResponse?.text.trim() &&
       !unsafeModelText(modelResponse.text)
     ) {
@@ -1002,8 +1014,9 @@ export function processTurn(
     if (modelResponse && !grounded) traces.push('invalid_model_grounding_ignored');
     if (modelResponse?.text && unsafeModelText(modelResponse.text))
       traces.push('unsafe_model_response_ignored');
-    if (modelResponse?.askFor && !validAskFor) traces.push('invalid_model_prompt_ignored');
-    if (!reply && traces.includes('answer')) {
+    if (modelResponse?.askFor && !validAskFor && !parts.includes('model'))
+      traces.push('invalid_model_prompt_ignored');
+    if (!reply && traces.includes('answer') && !answerOnlyLabelSlip) {
       next.mode = 'human';
       traces.push('handoff');
       parts = [configuration.handoffMessage ? 'handoff_message' : 'engine'];

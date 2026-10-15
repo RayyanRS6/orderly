@@ -107,7 +107,7 @@ const CORRECTION_LABELS: Record<string, string> = {
   unsafe_model_response_ignored:
     'The AI’s wording stated prices or a confirmation, so it was dropped.',
   invalid_model_prompt_ignored:
-    'The AI asked for a detail already collected, so its question was dropped.',
+    'The AI’s follow-up question didn’t fit the order so far, so its wording was dropped.',
   response_fallback: 'There was no usable reply text, so a built-in next question was sent.',
 };
 
