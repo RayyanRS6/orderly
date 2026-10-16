@@ -38,7 +38,7 @@ import { sendStaffAlert } from './integrations/alerts.js';
 import { LinkedWhatsAppAdapter } from './integrations/linked-whatsapp';
 import { assertCurrentAddress, jobAddress, requireMeta } from './whatsapp/connections';
 import { customerKeys, sameAddress } from '../src/shared/whatsapp';
-import { appHost, menuPublicUrl } from './menu.js';
+import { appHost, menuPublicUrl, personalMenuText } from './menu.js';
 
 // Paid Supabase workers have a 400s maximum lifetime. Include an 80s margin;
 // bounded upstream requests and database requests cannot survive this lease.
@@ -999,7 +999,12 @@ export async function processJob(repo: Repository, id: string) {
         // Never attach a new cart's confirmation to an older queued response.
         if (job.payload.cartRevision !== conversation.cart.revision)
           snapshot.cart.status = 'building';
-        messageId = await adapter.send(snapshot, String(job.payload.text));
+        // The menu page link becomes this customer's own one-tap link, only in what is sent.
+        const text =
+          job.payload.menuLink === true
+            ? await personalMenuText(repo, company, conversation, job, String(job.payload.text))
+            : String(job.payload.text);
+        messageId = await adapter.send(snapshot, text);
       }
       // Checkpoint the provider receipt before bookkeeping. Retrying this job
       // reuses the receipt instead of sending the same message again.

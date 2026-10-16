@@ -193,6 +193,29 @@ export const actionSchema = z.discriminatedUnion('type', [
   }),
   z.object({ type: z.literal('answer'), text: text(2000) }),
 ]);
+// A cart sent by the public menu page. Prices are never sent: the server prices the order.
+export const webCartSchema = z
+  .object({
+    items: z
+      .array(
+        z
+          .object({
+            productId: text(100).min(1),
+            quantity: z.number().int().min(1).max(50),
+            variantId: text(80).min(1).optional(),
+            modifierIds: z.array(text(80).min(1)).max(20).default([]),
+            notes: z.literal('').default(''),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(40),
+    fulfillment: z.enum(['pickup', 'delivery']),
+    customerName: text(80).min(2),
+    address: text(400).min(5).optional(),
+    zone: text(100).min(1).optional(),
+  })
+  .strict();
 export const chatSchema = z.object({
   conversationId: z.string().uuid().optional(),
   text: text(2000).default(''),

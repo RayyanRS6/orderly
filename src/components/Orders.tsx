@@ -713,6 +713,7 @@ function OrderTable({ orders, onSelect }: { orders: Order[]; onSelect: (order: O
               <strong className="font-mono text-[12.5px] font-semibold tracking-[0.02em] text-ink">
                 {o.reference}
               </strong>
+              {o.source === 'menu_page' && <Badge tone="amber">Menu page</Badge>}
               <Status value={o.status} />
             </div>
             <p className="mt-2 text-sm break-words">
@@ -748,6 +749,11 @@ function OrderTable({ orders, onSelect }: { orders: Order[]; onSelect: (order: O
                   <p className="mt-0.5 text-xs text-stone-500">
                     {order.items.reduce((sum, i) => sum + i.quantity, 0)} items
                   </p>
+                  {order.source === 'menu_page' && (
+                    <div className="mt-1">
+                      <Badge tone="amber">Menu page</Badge>
+                    </div>
+                  )}
                 </td>
                 <td className="table-cell">
                   <div className="flex items-center gap-3">

@@ -96,6 +96,16 @@ export interface MenuDraft {
   orderId?: string;
   conversationId?: string;
 }
+export interface MenuDraftInput {
+  id: string;
+  companyId: string;
+  codeHash: string;
+  phoneHash: string;
+  cart: WebCart;
+  quotedTotal: number;
+}
+export type MenuDraftResult =
+  { ok: true; expiresAt: string } | { ok: false; reason: 'busy' | 'collision' };
 
 export const MENU_SLUG_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 export const PHOTO_URL_RE = /^https:\/\/[^\s"'<>]+$/i;

@@ -3,13 +3,24 @@ import { randomUUID } from 'node:crypto';
 import { createEdgeApp } from '../server/edge';
 import { MemoryRepository } from '../server/repository';
 import { encryptSecret } from '../server/security';
-import { handleTurn } from '../server/service';
-import { whatsappNumberFor } from '../server/menu';
+import { handleTurn, processJob } from '../server/service';
+import { personalMenuText, whatsappNumberFor } from '../server/menu';
+import { signMenuToken, verifyMenuToken } from '../server/menu-token';
+import { makeJob } from '../server/jobs';
 import { GoogleSheetsAdapter } from '../server/integrations/sheets';
+import { WhatsAppAdapter } from '../server/integrations/whatsapp';
 import { createConversation } from '../src/domain/engine';
 import { seedCompanies, seedProducts } from '../src/shared/seed';
-import type { MenuLinkStatus, PublicMenu } from '../src/shared/menu';
-import type { Company, Conversation, Product } from '../src/shared/types';
+import type { MenuLinkStatus, MenuSession, PublicMenu, WebCart } from '../src/shared/menu';
+import type { Company, Conversation, ModelInterpretation, Product } from '../src/shared/types';
+import type { WhatsAppConnection } from '../src/shared/whatsapp';
+
+const { generate } = vi.hoisted(() => ({ generate: vi.fn() }));
+vi.mock('ai', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('ai')>()),
+  generateText: generate,
+  Output: { object: vi.fn() },
+}));
 
 // The bearer token is the signed-in user's id, so tests can act as owner or staff.
 vi.mock('@supabase/supabase-js', () => ({
@@ -389,5 +400,454 @@ describe('the bot shares the menu page', () => {
       (j) => j.kind === 'whatsapp_send',
     );
     expect(job!.payload.menuLink).toBeUndefined();
+  });
+});
+
+// ── Personal one-tap links ──────────────────────────────────────────────────────────────────
+
+const url = `${origin}/m/dastarkhwan`;
+const biryani = seedProducts.find((p) => p.name === 'Chicken Biryani')!;
+const cart: WebCart = {
+  items: [{ productId: biryani.id, quantity: 2, modifierIds: [], notes: '' }],
+  fulfillment: 'pickup',
+  customerName: 'Ali',
+};
+async function customer(phone = '923001230000', changes: Partial<Conversation> = {}) {
+  const conversation: Conversation = {
+    ...createConversation(
+      company.id,
+      phone,
+      'whatsapp',
+      new Date(Date.now() - 10 * 60000).toISOString(),
+    ),
+    version: 1,
+    ...changes,
+  };
+  expect(await repo.saveConversation(conversation, 0)).toBe(true);
+  return conversation;
+}
+const tokenFor = (
+  conversation: Conversation,
+  issuedAt = new Date().toISOString(),
+  jobId = randomUUID(),
+  companyId = company.id,
+) =>
+  signMenuToken(
+    companyId,
+    {
+      conversationId: conversation.id,
+      connectionId: conversation.whatsappAddress?.connectionId,
+      generation: conversation.whatsappAddress?.generation,
+    },
+    { jobId, issuedAt },
+  )!;
+const session = async (token: string, slug = 'dastarkhwan') =>
+  (await (await call(`/public/menu/${slug}/session`, { body: { token } })).json()) as MenuSession;
+const order = (token: string, body: Record<string, unknown> = {}) =>
+  call('/public/menu/dastarkhwan/orders', {
+    body: { token, cart, expectedTotal: 90000, ...body },
+  });
+const update = async (conversation: Conversation, changes: Partial<Conversation>) => {
+  const current = (await repo.getConversation(company.id, conversation.id))!;
+  expect(
+    await repo.saveConversation(
+      { ...current, ...changes, version: current.version + 1 },
+      current.version,
+    ),
+  ).toBe(true);
+};
+async function linkedPhone(): Promise<WhatsAppConnection> {
+  const connection: WhatsAppConnection = {
+    id: randomUUID(),
+    companyId: company.id,
+    provider: 'baileys',
+    generation: 1,
+    revision: 1,
+    status: 'connected',
+    phoneNumber: '+923009990000',
+    updatedAt: new Date().toISOString(),
+  };
+  await repo.saveWhatsAppConnection(connection, 0);
+  return connection;
+}
+const meta = () =>
+  repo.saveIntegration(
+    company.id,
+    {
+      kind: 'whatsapp',
+      configured: true,
+      status: 'connected',
+      config: { phoneNumberId: '123', displayPhoneNumber: '923001112233' },
+    },
+    encryptSecret('meta-token'),
+  );
+
+describe('personal link at send time', () => {
+  beforeEach(async () => {
+    await turnOn();
+    await meta();
+  });
+  async function menuReply(conversation: Conversation) {
+    await handleTurn(repo, (await repo.getCompany(company.id))!, conversation, {
+      messageId: randomUUID(),
+      text: 'menu',
+      now: new Date().toISOString(),
+    });
+    const jobs = (await repo.listCompanyJobs(company.id)).filter((j) => j.kind === 'whatsapp_send');
+    return jobs.at(0)!;
+  }
+
+  it('sends the customer their own link while storing only the public one', async () => {
+    const send = vi.spyOn(WhatsAppAdapter.prototype, 'send').mockResolvedValue('wamid.sent');
+    const conversation = await customer();
+    const job = await menuReply(conversation);
+    expect(job.payload).toMatchObject({ menuLink: true });
+    await processJob(repo, job.id);
+    expect(send).toHaveBeenCalledOnce();
+    const sent = String(send.mock.calls[0]![1]);
+    const token = sent.match(/#t=([A-Za-z0-9_-]+)/)?.[1];
+    expect(sent).toBe(String(job.payload.text).replace(url, `${url}#t=${token}`));
+    const checked = verifyMenuToken(company.id, token!);
+    expect(checked.ok && checked.claims.conversationId).toBe(conversation.id);
+    const stored = JSON.stringify([
+      await repo.getConversation(company.id, conversation.id),
+      await repo.getJob(job.id),
+      await repo.listTraces(company.id),
+    ]);
+    expect(stored).not.toContain('#t=');
+    expect(stored).not.toContain(token!);
+  });
+
+  it('sends exactly the same text when a send is retried', async () => {
+    const send = vi
+      .spyOn(WhatsAppAdapter.prototype, 'send')
+      .mockRejectedValueOnce(new Error('Timed out after the message went out'))
+      .mockResolvedValueOnce('wamid.sent');
+    const job = await menuReply(await customer());
+    await expect(processJob(repo, job.id)).rejects.toThrow('waiting to retry');
+    const waiting = (await repo.getJob(job.id))!;
+    await repo.saveJob({ ...waiting, nextRunAt: new Date().toISOString() });
+    await processJob(repo, job.id);
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls[1]![1]).toBe(send.mock.calls[0]![1]);
+    expect(String(send.mock.calls[0]![1])).toContain('#t=');
+  });
+
+  it('falls back to the public link when the personal text would be too long', async () => {
+    const conversation = await customer();
+    const job = makeJob(company.id, 'whatsapp_send', { conversationId: conversation.id });
+    const long = `${'x'.repeat(4096 - url.length - 40)}\n${url}`;
+    expect(long.length).toBeLessThanOrEqual(4096);
+    expect(await personalMenuText(repo, company, conversation, job, long)).toBe(long);
+    const short = `Menu: ${url}\nSee also ${url}-2 and ${url}/x`;
+    expect(await personalMenuText(repo, company, conversation, job, short)).toMatch(
+      new RegExp(`^Menu: ${url}#t=[A-Za-z0-9_-]{87}\\nSee also ${url}-2 and ${url}/x$`),
+    );
+    await repo.setMenuLink(company.id, false, company.slug);
+    expect(await personalMenuText(repo, company, conversation, job, short)).toBe(short);
+  });
+
+  it('never shows the AI a personal link', async () => {
+    vi.stubEnv('MODEL_PRICING_JSON', '');
+    await repo.saveCompany({
+      ...company,
+      ai: { provider: 'anthropic', model: 'claude-haiku-5-5', monthlyBudgetUsd: 10 },
+      privacy: { aiDataApproved: true, retentionDays: 0 },
+    });
+    await repo.saveIntegration(
+      company.id,
+      { kind: 'anthropic', configured: true, status: 'connected', config: {} },
+      encryptSecret('fictional-anthropic-key'),
+    );
+    const menu: ModelInterpretation = {
+      actions: [{ type: 'menu' }],
+      response: { text: 'Here is our menu.', askFor: 'items' },
+    };
+    generate.mockReset();
+    generate.mockResolvedValue({ output: menu, usage: { inputTokens: 100, outputTokens: 10 } });
+    const send = vi.spyOn(WhatsAppAdapter.prototype, 'send').mockResolvedValue('wamid.sent');
+    const conversation = await customer();
+    const job = await menuReply(conversation);
+    await processJob(repo, job.id);
+    expect(String(send.mock.calls[0]![1])).toContain('#t=');
+    await handleTurn(repo, (await repo.getCompany(company.id))!, conversation, {
+      messageId: randomUUID(),
+      text: 'and the karahi?',
+      now: new Date().toISOString(),
+    });
+    expect(generate).toHaveBeenCalledTimes(2);
+    const prompt = String(generate.mock.calls[1]![0].prompt);
+    expect(prompt).toContain('/m/dastarkhwan');
+    expect(prompt).not.toContain('#t=');
+  });
+});
+
+describe('personal link session', () => {
+  beforeEach(async () => {
+    await turnOn();
+    await meta();
+  });
+
+  it('is ready with a masked number and the customer’s name', async () => {
+    const conversation = await customer('923001234567', { customerName: 'Sana' });
+    expect(await session(tokenFor(conversation))).toEqual({
+      state: 'ready',
+      phoneMasked: '+92 ••• 4567',
+      name: 'Sana',
+      whatsappUrl: 'https://wa.me/923001112233',
+    });
+  });
+
+  it('works for linked-phone chats, including privacy IDs, until the connection changes', async () => {
+    const connection = await linkedPhone();
+    const address = {
+      connectionId: connection.id,
+      generation: 1,
+      provider: 'baileys' as const,
+      peer: '100000001@lid',
+    };
+    const privacy = await customer('', { whatsappAddress: address });
+    const token = tokenFor(privacy);
+    expect(await session(token)).toEqual({
+      state: 'ready',
+      whatsappUrl: 'https://wa.me/923009990000',
+    });
+    await repo.saveWhatsAppConnection({ ...connection, revision: 2, generation: 2 }, 1);
+    expect((await session(token)).state).toBe('stale');
+  });
+
+  it('is stale for an old chat after the business connects a phone', async () => {
+    const conversation = await customer();
+    const token = tokenFor(conversation);
+    await linkedPhone();
+    expect((await session(token)).state).toBe('stale');
+  });
+
+  it('expires, and refuses another business’s link or a changed token', async () => {
+    const conversation = await customer();
+    expect(
+      (await session(tokenFor(conversation, new Date(Date.now() - 3 * 3600000).toISOString())))
+        .state,
+    ).toBe('expired');
+    await repo.saveCompany({ ...other, slug: 'bun-and-co' });
+    await repo.setMenuLink(other.id, true, 'bun-and-co');
+    expect((await session(tokenFor(conversation), 'bun-and-co')).state).toBe('invalid');
+    expect((await session('x'.repeat(87))).state).toBe('invalid');
+    expect((await session(tokenFor({ ...conversation, id: randomUUID() }))).state).toBe('invalid');
+    const res = await call('/public/menu/dastarkhwan/session', { body: { token: 1 } });
+    expect(await res.json()).toEqual({ state: 'invalid' });
+  });
+
+  it('says when staff, a paused bot, closing time or the reply window stop ordering', async () => {
+    const conversation = await customer();
+    const token = tokenFor(conversation);
+    await update(conversation, { mode: 'human' });
+    expect((await session(token)).state).toBe('staff');
+    await update(conversation, { mode: 'bot' });
+    await repo.saveCompany({ ...company, botEnabled: false });
+    expect((await session(token)).state).toBe('bot_off');
+    await repo.saveCompany({
+      ...company,
+      openingHours: { start: '09:00', end: '10:00', days: [] },
+    });
+    expect((await session(token)).state).toBe('closed');
+    await repo.saveCompany(company);
+    await update(conversation, {
+      lastInboundAt: new Date(Date.now() - (23 * 60 + 56) * 60000).toISOString(),
+    });
+    expect((await session(token)).state).toBe('expired');
+  });
+
+  it('reports a blocked number without counting it as an ignored message', async () => {
+    const conversation = await customer('923001234567');
+    const token = tokenFor(conversation);
+    await repo.blockCustomer(
+      company.id,
+      conversation.id,
+      'block-1',
+      ['pn:923001234567'],
+      'Spam',
+      'owner',
+    );
+    expect((await session(token)).state).toBe('blocked');
+    // The number stays blocked even if this chat's own mark is gone.
+    await update(conversation, { blocked: undefined });
+    const hit = vi.spyOn(repo, 'findBlockedCustomer');
+    expect((await session(token)).state).toBe('blocked');
+    expect(hit).not.toHaveBeenCalled();
+    expect((await repo.listBlockedCustomers(company.id))[0]!.blockedCount).toBe(0);
+  });
+});
+
+describe('one-tap order from a personal link', () => {
+  beforeEach(async () => {
+    await turnOn();
+    await meta();
+  });
+  const orders = async () =>
+    (await repo.listOrders(company.id)).filter((o) => o.source === 'menu_page');
+
+  it('places one pending order in the customer’s chat and confirms it there', async () => {
+    const conversation = await customer();
+    const token = tokenFor(conversation);
+    const res = await order(token);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    const [saved] = await orders();
+    expect(body).toEqual({
+      reference: saved!.reference,
+      total: 90000,
+      alreadyPlaced: false,
+      whatsappUrl: 'https://wa.me/923001112233',
+    });
+    expect(saved).toMatchObject({
+      status: 'pending',
+      sandbox: false,
+      source: 'menu_page',
+      conversationId: conversation.id,
+      customerName: 'Ali',
+    });
+    const chat = (await repo.getConversation(company.id, conversation.id))!;
+    expect(chat.lastInboundAt).toBe(conversation.lastInboundAt);
+    expect(chat.messages.map((m) => m.id)).toEqual([`menu-order:${saved!.id}`]);
+    expect(chat.cart).toMatchObject({ status: 'submitted', orderId: saved!.id });
+    const sends = (await repo.listCompanyJobs(company.id)).filter(
+      (j) => j.kind === 'whatsapp_send',
+    );
+    expect(sends).toHaveLength(1);
+    expect(sends[0]!.payload).toMatchObject({ source: 'notice', conversationId: conversation.id });
+    expect(String(sends[0]!.payload.text)).toContain('Awaiting restaurant acceptance');
+    expect(sends[0]!.payload.orderId).toBeUndefined();
+    expect((await repo.listTraces(company.id)).map((t) => t.action)).toContain('menu_link_order');
+
+    const again = await order(token);
+    expect(again.status).toBe(200);
+    expect(await again.json()).toMatchObject({
+      reference: saved!.reference,
+      alreadyPlaced: true,
+    });
+    expect(await orders()).toHaveLength(1);
+  });
+
+  it('places exactly one order when tapped twice at once', async () => {
+    const token = tokenFor(await customer());
+    const results = await Promise.all([order(token), order(token)]);
+    const bodies = await Promise.all(results.map((r) => r.json()));
+    expect(await orders()).toHaveLength(1);
+    const codes = results.map((r, i) =>
+      r.status === 200 ? (bodies[i].alreadyPlaced ? 'again' : 'placed') : bodies[i].code,
+    );
+    expect(codes).toContain('placed');
+    expect(codes.filter((c) => c === 'placed')).toHaveLength(1);
+    expect(codes.every((c) => ['placed', 'again', 'busy'].includes(c))).toBe(true);
+  });
+
+  it('refuses a changed total with the new one, and keeps the link usable', async () => {
+    const conversation = await customer();
+    const token = tokenFor(conversation);
+    const res = await order(token, { expectedTotal: 80000 });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'price_changed', total: 90000 });
+    expect(await orders()).toHaveLength(0);
+    expect((await session(token)).state).toBe('ready');
+    expect((await order(token)).status).toBe(200);
+  });
+
+  it('refuses while the bot is off, after hours, during staff chats and for blocked numbers', async () => {
+    const conversation = await customer('923001234567');
+    const token = tokenFor(conversation);
+    await repo.saveCompany({ ...company, botEnabled: false });
+    const off = await order(token);
+    expect([off.status, (await off.json()).code]).toEqual([409, 'bot_off']);
+    await repo.saveCompany({
+      ...company,
+      openingHours: { start: '09:00', end: '10:00', days: [] },
+    });
+    const closed = await order(token);
+    expect([closed.status, (await closed.json()).code]).toEqual([409, 'closed']);
+    await repo.saveCompany(company);
+    await update(conversation, { mode: 'human' });
+    const staff = await order(token);
+    expect([staff.status, (await staff.json()).code]).toEqual([409, 'staff']);
+    await update(conversation, { mode: 'bot' });
+    await repo.blockCustomer(company.id, conversation.id, 'b', ['pn:923001234567'], 'x', 'o');
+    const blocked = await order(token);
+    expect(blocked.status).toBe(403);
+    expect(await blocked.json()).toMatchObject({
+      code: 'blocked',
+      error: 'Ordering isn’t available for this chat.',
+    });
+    expect(await orders()).toHaveLength(0);
+    expect(
+      await repo.findMenuLinkUse(
+        company.id,
+        (verifyMenuToken(company.id, token) as { claims: { nonce: string } }).claims.nonce,
+      ),
+    ).toBeUndefined();
+  });
+
+  it('refreshes a stale Google Sheets menu once before ordering', async () => {
+    await repo.saveCompany({
+      ...company,
+      catalogSource: 'sheets',
+      catalogSyncedAt: new Date(Date.now() - 5 * 60000).toISOString(),
+    });
+    await repo.saveIntegration(
+      company.id,
+      { kind: 'sheets', configured: true, status: 'connected', config: { spreadsheetId: 'x' } },
+      encryptSecret('key'),
+    );
+    const read = vi
+      .spyOn(GoogleSheetsAdapter.prototype, 'readCatalog')
+      .mockResolvedValue(seedProducts.filter((p) => p.companyId === company.id));
+    const res = await order(tokenFor(await customer()));
+    expect(res.status).toBe(200);
+    expect(read).toHaveBeenCalledOnce();
+    const [saved] = await orders();
+    expect(saved!.syncStatus).toBe('pending');
+    expect((await repo.listCompanyJobs(company.id)).map((j) => j.kind).sort()).toEqual([
+      'sheet_sync',
+      'whatsapp_send',
+    ]);
+  });
+
+  it('turns away a bad cart with a friendly sentence', async () => {
+    const token = tokenFor(await customer());
+    const short = await order(token, { cart: { ...cart, customerName: 'A' } });
+    expect(short.status).toBe(422);
+    expect(await short.json()).toEqual({
+      error: 'Please give a name between 2 and 80 characters.',
+      code: 'invalid',
+    });
+    const extra = await order(token, { cart: { ...cart, price: 1 } });
+    expect(extra.status).toBe(422);
+    const expired = await order(
+      tokenFor(await customer('923001239999'), new Date(Date.now() - 3 * 3600000).toISOString()),
+    );
+    expect([expired.status, (await expired.json()).code]).toEqual([410, 'expired']);
+  });
+
+  it('keeps chat buttons and cancelling safe after a page order', async () => {
+    const conversation = await customer();
+    const before = conversation.cart.revision;
+    expect((await order(tokenFor(conversation))).status).toBe(200);
+    const [placed] = await orders();
+    const current = (await repo.getConversation(company.id, conversation.id))!;
+    const tap = await handleTurn(repo, company, current, {
+      messageId: 'old-confirm',
+      text: 'Confirm order',
+      action: { type: 'confirm', revision: before },
+      now: new Date().toISOString(),
+    });
+    expect(tap.reply).toContain('already been submitted');
+    expect(await orders()).toHaveLength(1);
+    const cancel = await handleTurn(
+      repo,
+      company,
+      (await repo.getConversation(company.id, conversation.id))!,
+      { messageId: 'cancel-1', text: 'cancel', now: new Date().toISOString() },
+    );
+    expect(cancel.reply).toBe(`Order ${placed!.reference} has been cancelled.`);
+    expect((await repo.getOrder(company.id, placed!.id))!.status).toBe('cancelled');
   });
 });
