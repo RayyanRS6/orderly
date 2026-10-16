@@ -17,7 +17,14 @@ import type {
 } from '../src/shared/types';
 import { defaultBot } from '../src/shared/bot';
 import { AI_LIMIT_DEFAULTS, AI_LIMIT_RANGES, effectiveAiLimits } from '../src/shared/models';
-import { blockCustomerArgs, reserveAiCallArgs } from '../server/storage/supabase';
+import {
+  blockCustomerArgs,
+  createMenuDraftArgs,
+  placeWebOrderArgs,
+  reserveAiCallArgs,
+} from '../server/storage/supabase';
+import { buildWebOrder } from '../src/domain/web-order';
+import type { MenuDraftResult, WebCart, WebOrderClaim, WebOrderOutcome } from '../src/shared/menu';
 
 const db = new PGlite();
 const company = seedCompanies[0];
@@ -80,6 +87,8 @@ beforeAll(async () => {
     '202609200001_whatsapp_gateway.sql',
     '202610170001_business_keys_only.sql',
     '202610180001_spam_protection.sql',
+    '202610190001_menu_page.sql',
+    '202610190002_menu_ordering.sql',
   ])
     await db.exec(readFileSync(`supabase/migrations/${migration}`, 'utf8'));
   await db.query('insert into auth.users(id) values($1),($2)', [ownerId, outsiderId]);
@@ -2061,6 +2070,398 @@ describe('spam protection', () => {
       await expect(reserve('browser')).rejects.toThrow(DENIED);
     } finally {
       await db.exec('reset role');
+    }
+  });
+});
+
+describe('menu page', () => {
+  const DENIED = /permission denied for (function|table)/;
+  const link = (companyId: string, enabled: boolean, slug: string) =>
+    scalar(
+      'select public.set_menu_link(p_company_id => $1, p_enabled => $2, p_slug => $3) as value',
+      [companyId, enabled, slug],
+    ) as Promise<{ companyId: string; slug: string; enabled: boolean; updatedAt: string }>;
+
+  it('chooses the slug once, numbers a taken one, and keeps it when switched off and on', async () => {
+    const first = await link(company.id, true, 'laziza');
+    expect(first).toMatchObject({ companyId: company.id, slug: 'laziza', enabled: true });
+    expect(first.updatedAt).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
+    expect(await link(other.id, true, 'laziza')).toMatchObject({ slug: 'laziza-2' });
+    expect(await link(company.id, false, 'renamed-business')).toMatchObject({
+      slug: 'laziza',
+      enabled: false,
+    });
+    expect(await link(company.id, true, 'renamed-business')).toMatchObject({
+      slug: 'laziza',
+      enabled: true,
+    });
+    await expect(link(randomUUID(), true, 'nobody')).rejects.toThrow('Unknown company');
+    await db.query('delete from menu_links');
+    await expect(link(company.id, true, 'Bad Slug')).rejects.toThrow('Invalid menu link');
+    await expect(link(company.id, true, 'ab')).rejects.toThrow('Invalid menu link');
+  });
+
+  it('is server-only and can be applied again without changing links', async () => {
+    await link(company.id, true, 'laziza');
+    await db.exec(readFileSync('supabase/migrations/202610190001_menu_page.sql', 'utf8'));
+    expect(
+      await scalar('select slug value from menu_links where company_id=$1', [company.id]),
+    ).toBe('laziza');
+    for (const role of ['anon', 'authenticated']) {
+      await db.exec(`set role ${role}`);
+      try {
+        await expect(link(company.id, false, 'laziza')).rejects.toThrow(DENIED);
+        await expect(db.query('select * from menu_links')).rejects.toThrow(DENIED);
+      } finally {
+        await db.exec('reset role');
+      }
+    }
+  });
+});
+
+describe('menu page ordering', () => {
+  const DENIED = /permission denied for (function|table)/;
+  const phone = '+923001112222';
+  const cart: WebCart = {
+    items: [{ productId: products[0]!.id, quantity: 2, modifierIds: [], notes: '' }],
+    fulfillment: 'pickup',
+    customerName: 'Ali',
+  };
+  function named<T>(name: string, args: Record<string, unknown>) {
+    const keys = Object.keys(args);
+    return scalar(
+      `select public.${name}(${keys.map((k, i) => `${k} => $${i + 1}`).join(',')}) as value`,
+      Object.values(args),
+    ) as Promise<T>;
+  }
+  async function chat(customerPhone = phone, changes: Partial<Conversation> = {}) {
+    const conversation: Conversation = {
+      ...createConversation(
+        company.id,
+        customerPhone,
+        'whatsapp',
+        new Date(Date.now() - 3600000).toISOString(),
+      ),
+      version: 1,
+      ...changes,
+    };
+    expect(await rpc('save_conversation', [conversation, 0])).toBe(true);
+    return conversation;
+  }
+  const nonce = (n = 1) => `nonce-${String(n).padStart(5, '0')}`;
+  const linkClaim = (n = 1, changes: Partial<WebOrderClaim> = {}) =>
+    ({
+      kind: 'link',
+      nonce: nonce(n),
+      expiresAt: new Date(Date.now() + 3600000).toISOString(),
+      keys: ['pn:923001112222'],
+      ...changes,
+    }) as WebOrderClaim;
+  function web(conversation: Conversation, key = 'menu-link:1') {
+    return buildWebOrder(company, products, conversation, cart, {
+      now: now(),
+      submissionKey: `${company.id}:${conversation.id}:${key}`,
+    });
+  }
+  const jobsFor = (built: ReturnType<typeof web>) => [
+    makeJob(company.id, 'whatsapp_send', {
+      conversationId: built.conversation.id,
+      messageId: built.replyId,
+      text: built.reply,
+      source: 'notice',
+    }),
+  ];
+  const place = (
+    built: ReturnType<typeof web>,
+    claim: WebOrderClaim,
+    { version = 1, jobs = jobsFor(built), companyId = company.id } = {},
+  ) =>
+    named<WebOrderOutcome>(
+      'place_web_order',
+      placeWebOrderArgs(companyId, built.conversation, version, built.order, jobs, claim),
+    );
+  const count = async (table: string) =>
+    scalar(`select count(*)::int value from ${table}`) as Promise<number>;
+  const hash = (c: string) => c.repeat(64);
+  const draft = (id: string, code = 'a', changes: Record<string, unknown> = {}) =>
+    named<MenuDraftResult>(
+      'create_menu_draft',
+      createMenuDraftArgs(
+        {
+          id,
+          companyId: company.id,
+          codeHash: hash(code),
+          phoneHash: hash('b'),
+          cart,
+          quotedTotal: 90000,
+          ...changes,
+        } as never,
+        30,
+        200,
+      ),
+    );
+
+  it('places a link order once, with its use, and answers a repeat with the same order', async () => {
+    const conversation = await chat();
+    const built = web(conversation);
+    const placed = await place(built, linkClaim());
+    expect(placed).toMatchObject({ ok: true, order: { id: built.order.id, source: 'menu_page' } });
+    expect(await count('orders')).toBe(1);
+    expect(
+      await scalar('select order_id value from menu_link_uses where nonce=$1', [nonce()]),
+    ).toBe(built.order.id);
+    expect(await count("jobs where data->>'kind'='whatsapp_send'")).toBe(1);
+    const stored = (await scalar('select data value from conversations where id=$1', [
+      conversation.id,
+    ])) as Conversation;
+    expect(stored).toMatchObject({ version: 2, lastInboundAt: conversation.lastInboundAt });
+    expect(stored.cart).toMatchObject({ status: 'submitted', orderId: built.order.id });
+    const again = await place(built, linkClaim());
+    expect(again).toMatchObject({ ok: false, reason: 'duplicate', order: { id: built.order.id } });
+    expect(await count('menu_link_uses')).toBe(1);
+    const other = web({ ...stored, version: 2 } as Conversation, 'menu-link:2');
+    expect(await place(other, linkClaim(), { version: 2 })).toEqual({ ok: false, reason: 'used' });
+    expect(
+      await place(other, linkClaim(2, { expiresAt: new Date(Date.now() - 1000).toISOString() }), {
+        version: 2,
+      }),
+    ).toEqual({ ok: false, reason: 'expired' });
+    expect(await count('orders')).toBe(1);
+  });
+
+  it('refuses while the bot is off, for a blocked number, a staff chat or a changed chat', async () => {
+    const conversation = await chat();
+    const built = web(conversation);
+    await db.query("update companies set data=jsonb_set(data,'{botEnabled}','false') where id=$1", [
+      company.id,
+    ]);
+    expect(await place(built, linkClaim())).toEqual({ ok: false, reason: 'bot_off' });
+    await db.query("update companies set data=jsonb_set(data,'{botEnabled}','true') where id=$1", [
+      company.id,
+    ]);
+    await db.query(
+      "insert into blocked_customers(company_id,key,block_id) values($1,'pn:923001112222','block-1')",
+      [company.id],
+    );
+    expect(await place(built, linkClaim())).toEqual({ ok: false, reason: 'blocked' });
+    expect(await scalar('select blocked_count value from blocked_customers')).toBe(0);
+    await db.query('delete from blocked_customers');
+    expect(await place(built, linkClaim(), { version: 0 })).toEqual({
+      ok: false,
+      reason: 'conversation_changed',
+    });
+    await db.query(
+      `update conversations set data=jsonb_set(data,'{blocked}','{"at":"2026-10-16T10:00:00.000Z","blockId":"b"}') where id=$1`,
+      [conversation.id],
+    );
+    expect(await place(built, linkClaim())).toEqual({ ok: false, reason: 'blocked' });
+    await db.query(
+      'update conversations set data=(data-\'blocked\')||\'{"mode":"human"}\' where id=$1',
+      [conversation.id],
+    );
+    expect(await place(built, linkClaim())).toEqual({ ok: false, reason: 'staff' });
+    expect(await count('orders')).toBe(0);
+    expect(await count('menu_link_uses')).toBe(0);
+    expect(await count('jobs')).toBe(0);
+  });
+
+  it('raises on anything but a live pending menu-page order in its own chat', async () => {
+    const conversation = await chat();
+    const built = web(conversation);
+    const tamper = (order: object, conv: object = {}) =>
+      place(
+        {
+          ...built,
+          order: { ...built.order, ...order },
+          conversation: { ...built.conversation, ...conv },
+        } as never,
+        linkClaim(),
+      );
+    await expect(tamper({ sandbox: true })).rejects.toThrow('Invalid web order');
+    await expect(tamper({ source: undefined })).rejects.toThrow('Invalid web order');
+    await expect(tamper({}, { lastInboundAt: now() })).rejects.toThrow(
+      'must not change lastInboundAt',
+    );
+    await expect(
+      place(built, linkClaim(), { jobs: [makeJob(other.id, 'staff_alert', {})] }),
+    ).rejects.toThrow('Cross-company job');
+    await expect(place(built, linkClaim(), { companyId: other.id })).rejects.toThrow(
+      'Cross-company web order',
+    );
+    await expect(place(built, linkClaim(1, { nonce: 'bad' }))).rejects.toThrow(
+      'Invalid menu link claim',
+    );
+    expect(await count('orders')).toBe(0);
+  });
+
+  it('lets the price check refuse a changed menu, leaving the link unused', async () => {
+    const conversation = await chat();
+    const built = web(conversation);
+    await db.query("update products set data=jsonb_set(data,'{price}','46000') where id=$1", [
+      products[0]!.id,
+    ]);
+    await expect(place(built, linkClaim())).rejects.toThrow('Catalog price changed');
+    expect(await count('menu_link_uses')).toBe(0);
+    expect(await count('orders')).toBe(0);
+  });
+
+  it('uses an order code once and forgets its name, address and phone hash', async () => {
+    expect(await draft('draft-1')).toMatchObject({ ok: true, expiresAt: expect.any(String) });
+    expect(await draft('draft-2')).toEqual({ ok: false, reason: 'collision' });
+    const conversation = await chat();
+    const built = buildWebOrder(company, products, conversation, cart, {
+      now: now(),
+      submissionKey: `${company.id}:${conversation.id}:menu-draft:draft-1`,
+      customerMessage: { id: 'wamid-1', text: 'Code: OM-ABCD-EFGH' },
+    });
+    const claim: WebOrderClaim = { kind: 'draft', draftId: 'draft-1', keys: ['pn:923001112222'] };
+    expect(await place(built, claim)).toMatchObject({ ok: true });
+    const row = (
+      await db.query<{ used_at: string; cart: unknown; phone_hash: unknown; order_id: string }>(
+        "select used_at,cart,phone_hash,order_id from menu_drafts where id='draft-1'",
+      )
+    ).rows[0]!;
+    expect(row).toMatchObject({ cart: null, phone_hash: null, order_id: built.order.id });
+    expect(row.used_at).not.toBeNull();
+    const second = buildWebOrder(
+      company,
+      products,
+      { ...built.conversation, version: 2 } as Conversation,
+      cart,
+      {
+        now: now(),
+        submissionKey: `${company.id}:${conversation.id}:menu-draft:draft-1b`,
+      },
+    );
+    expect(await place(second, claim, { version: 2 })).toEqual({ ok: false, reason: 'used' });
+    // A brand-new chat can start with the code message.
+    expect(await draft('draft-3', 'c')).toMatchObject({ ok: true });
+    const fresh = createConversation(company.id, '+923009998888', 'whatsapp', now());
+    const first = buildWebOrder(company, products, fresh, cart, {
+      now: now(),
+      submissionKey: `${company.id}:${fresh.id}:menu-draft:draft-3`,
+      customerMessage: { id: 'wamid-2', text: 'Code: OM-CCCC-CCCC' },
+    });
+    expect(
+      await place(first, { kind: 'draft', draftId: 'draft-3', keys: [] }, { version: 0 }),
+    ).toMatchObject({ ok: true });
+    expect(await count('orders')).toBe(2);
+  });
+
+  it('refuses an expired code and caps open drafts', async () => {
+    expect(await draft('old', 'd')).toMatchObject({ ok: true });
+    await db.query(
+      "update menu_drafts set created_at=now()-interval '90 minutes',expires_at=now()-interval '31 minutes' where id='old'",
+    );
+    const conversation = await chat();
+    const built = web(conversation, 'menu-draft:old');
+    expect(await place(built, { kind: 'draft', draftId: 'old', keys: [] })).toEqual({
+      ok: false,
+      reason: 'expired',
+    });
+    expect(await place(built, { kind: 'draft', draftId: 'missing', keys: [] })).toEqual({
+      ok: false,
+      reason: 'expired',
+    });
+    const capped = (id: string, code: string) =>
+      named<MenuDraftResult>(
+        'create_menu_draft',
+        createMenuDraftArgs(
+          {
+            id,
+            companyId: company.id,
+            codeHash: hash(code),
+            phoneHash: hash('b'),
+            cart,
+            quotedTotal: 1,
+          },
+          30,
+          1,
+        ),
+      );
+    expect(await capped('cap-1', 'e')).toMatchObject({ ok: true });
+    expect(await capped('cap-2', 'f')).toEqual({ ok: false, reason: 'busy' });
+    await expect(draft('bad', 'g', { phoneHash: 'not-a-hash' })).rejects.toThrow(
+      'Invalid menu draft',
+    );
+  });
+
+  it('purges expired drafts and old link uses on schedule', async () => {
+    expect(await draft('soon', '1')).toMatchObject({ ok: true });
+    expect(await draft('gone', '2')).toMatchObject({ ok: true });
+    expect(await draft('open', '3')).toMatchObject({ ok: true });
+    await db.query(
+      "update menu_drafts set created_at=now()-interval '40 minutes',expires_at=now()-interval '5 minutes' where id='soon'",
+    );
+    await db.query(
+      "update menu_drafts set created_at=now()-interval '3 hours',expires_at=now()-interval '2 hours' where id='gone'",
+    );
+    const conversation = await chat();
+    await db.query(
+      "insert into menu_link_uses(company_id,nonce,conversation_id,order_id,expires_at) values($1,$2,$3,'o',now()-interval '2 hours')",
+      [company.id, nonce(9), conversation.id],
+    );
+    // Two expired drafts wiped, one of them old enough to remove, and one old link use.
+    expect(await rpc('purge_menu_ordering', [])).toBe(4);
+    const rows = (
+      await db.query<{ id: string; cart: unknown; phone_hash: unknown }>(
+        'select id,cart,phone_hash from menu_drafts order by id',
+      )
+    ).rows;
+    expect(rows.map((r) => [r.id, r.cart === null, r.phone_hash === null])).toEqual([
+      ['open', false, false],
+      ['soon', true, true],
+    ]);
+    expect(await count('menu_link_uses')).toBe(0);
+    expect(await rpc('purge_menu_ordering', [])).toBe(0);
+  });
+
+  it('keeps erasing customers and retention working with used links', async () => {
+    const conversation = await chat();
+    await db.query(
+      "insert into menu_link_uses(company_id,nonce,conversation_id,order_id,expires_at) values($1,$2,$3,'o',now())",
+      [company.id, nonce(1), conversation.id],
+    );
+    await db.query("update companies set data=jsonb_set(data,'{botEnabled}','false') where id=$1", [
+      company.id,
+    ]);
+    expect(await rpc('erase_customer', [company.id, phone])).toBe(1);
+    expect(await count('menu_link_uses')).toBe(0);
+    const old = await chat('+923004445555');
+    await db.query(
+      "insert into menu_link_uses(company_id,nonce,conversation_id,order_id,expires_at) values($1,$2,$3,'o',now())",
+      [company.id, nonce(2), old.id],
+    );
+    await db.query(
+      "update conversations set updated_at=now()-interval '120 days',data=data||jsonb_build_object('updatedAt',now()-interval '120 days','lastInboundAt',now()-interval '120 days') where id=$1",
+      [old.id],
+    );
+    await rpc('configure_retention', [company.id, 30, ownerId]);
+    await db.query(
+      "update retention_policies set eligible_after=now()-interval '1 minute' where company_id=$1",
+      [company.id],
+    );
+    expect(await rpc('run_retention', [company.id])).toBe(1);
+    expect(await count('menu_link_uses')).toBe(0);
+  });
+
+  it('is server-only and can be applied again', async () => {
+    expect(await draft('keep', '9')).toMatchObject({ ok: true });
+    await db.exec(readFileSync('supabase/migrations/202610190002_menu_ordering.sql', 'utf8'));
+    expect(await count('menu_drafts')).toBe(1);
+    const conversation = await chat();
+    const built = web(conversation);
+    for (const role of ['anon', 'authenticated']) {
+      await db.exec(`set role ${role}`);
+      try {
+        await expect(draft('x', '8')).rejects.toThrow(DENIED);
+        await expect(place(built, linkClaim())).rejects.toThrow(DENIED);
+        await expect(rpc('purge_menu_ordering', [])).rejects.toThrow(DENIED);
+        for (const table of ['menu_drafts', 'menu_link_uses'])
+          await expect(db.query(`select * from ${table}`)).rejects.toThrow(DENIED);
+      } finally {
+        await db.exec('reset role');
+      }
     }
   });
 });

@@ -27,6 +27,9 @@ import App from '../src/App';
 import { initials, label, shortDate } from '../src/lib/utils';
 import { seedCompanies, seedProducts, seedOrders, seedConversations } from '../src/shared/seed';
 import type { Bootstrap } from '../src/shared/types';
+import type { PublicMenu } from '../src/shared/menu';
+import { addLine, count, previewQuote, setQuantity } from '../src/lib/menu-cart';
+import { MenuPage } from '../src/components/MenuPage';
 
 function createMockBootstrap(overrides: Partial<Bootstrap> = {}): Bootstrap {
   return {
@@ -548,6 +551,96 @@ describe('Theme Polish: Dropdowns, Scrollbars, and Sidebar Scrolling', () => {
     expect(html).toContain('name="zone"');
     expect(html).toContain('required=""');
     expect(html).toContain('Select an area');
+  });
+});
+
+describe('light public pages', () => {
+  it('keeps the basic controls free of the dialog library and the workspace', () => {
+    for (const file of [
+      'src/components/ui-basic.tsx',
+      'src/components/MenuPage.tsx',
+      'src/lib/menu-cart.ts',
+      'src/shared/menu.ts',
+      'src/domain/pricing.ts',
+    ]) {
+      const imports = readFileSync(join(process.cwd(), file), 'utf8').match(/from '[^']+'/g) ?? [];
+      for (const banned of ['@radix-ui', '../lib/workspace', './App', './ui'])
+        expect(
+          imports.filter((i) => i === `from '${banned}'` || i.startsWith(`from '${banned}/`)),
+          `${file} imports ${banned}`,
+        ).toEqual([]);
+      expect(imports.join(' ')).not.toContain('@radix-ui');
+    }
+  });
+});
+
+describe('menu page cart', () => {
+  const menu: PublicMenu = {
+    slug: 'dastarkhwan',
+    restaurant: {
+      name: 'Dastarkhwan',
+      address: '',
+      phone: '',
+      timezone: 'Asia/Karachi',
+      openingHours: { start: '00:00', end: '00:00', days: [0, 1, 2, 3, 4, 5, 6] },
+      deliveryZones: [{ name: 'Gulberg', fee: 15000 }],
+      fulfillment: 'both',
+      currency: 'PKR',
+    },
+    categories: [
+      {
+        name: 'Mains',
+        items: seedProducts
+          .filter((p) => p.companyId === seedCompanies[0].id)
+          .map(({ id, name, description, price, available, emoji, variants, modifiers }) => ({
+            id,
+            name,
+            description,
+            price,
+            available,
+            emoji,
+            variants,
+            modifiers,
+          })),
+      },
+    ],
+    ordering: { open: true, botOn: true, publicOrdering: true },
+    generatedAt: '2026-10-16T10:00:00.000Z',
+  };
+  const biryani = seedProducts[0];
+  const [raita, chicken] = biryani.modifiers;
+
+  it('merges identical lines, removes at zero and prices like the server', () => {
+    let items = addLine([], {
+      productId: biryani.id,
+      quantity: 1,
+      modifierIds: [chicken.id, raita.id],
+    });
+    items = addLine(items, {
+      productId: biryani.id,
+      quantity: 2,
+      modifierIds: [raita.id, chicken.id],
+    });
+    items = addLine(items, { productId: biryani.id, quantity: 1, modifierIds: [] });
+    expect(items.map((i) => [i.quantity, i.modifierIds.length])).toEqual([
+      [3, 2],
+      [1, 0],
+    ]);
+    expect(count(items)).toBe(4);
+    expect(previewQuote(menu, { items, fulfillment: 'pickup' }).quote?.total).toBe(
+      3 * (45000 + 8000 + 18000) + 45000,
+    );
+    expect(
+      previewQuote(menu, { items, fulfillment: 'delivery', zone: 'Gulberg' }).quote?.total,
+    ).toBe(3 * (45000 + 8000 + 18000) + 45000 + 15000);
+    expect(previewQuote(menu, { items, fulfillment: 'delivery' }).error).toContain('delivery area');
+    expect(setQuantity(items, 0, 0)).toHaveLength(1);
+    expect(setQuantity(items, 1, 99)[1]!.quantity).toBe(50);
+  });
+
+  it('renders the menu page shell without the workspace', () => {
+    const html = renderToStaticMarkup(createElement(MenuPage, { slug: 'dastarkhwan' }));
+    expect(html).toContain('Opening the menu…');
   });
 });
 

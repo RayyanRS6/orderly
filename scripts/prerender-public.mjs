@@ -46,6 +46,22 @@ await writeFile(
     `<meta name="robots" content="noindex,nofollow" />${preloadTags}</head>`,
   ),
 );
+// A restaurant's menu page (/m/<slug>, rewritten to this file) loads its own small chunk, so
+// it preloads nothing from the workspace.
+if (!manifest['src/components/MenuPage.tsx'])
+  throw new Error('The menu page chunk (src/components/MenuPage.tsx) is missing from the build.');
+await writeFile(
+  'dist/menu.html',
+  shell
+    .replace('Opening your workspace…', 'Opening the menu…')
+    .replace('to run the workspace', 'to show this menu')
+    .replace(/<title>[\s\S]*?<\/title>/, '<title>Menu · Orderly</title>')
+    .replace(
+      /<meta\s+name="description"\s+content="[^"]*"\s*\/>/,
+      '<meta name="description" content="See the menu and order on WhatsApp." />',
+    )
+    .replace('</head>', '<meta name="robots" content="noindex" /></head>'),
+);
 // The manifest is a build detail, not something to publish.
 await rm('dist/.vite', { recursive: true, force: true });
 const pages = {
@@ -89,8 +105,8 @@ const csp = [
 ].join('; ');
 await writeFile(
   'dist/_headers',
-  `/*\n  Content-Security-Policy: ${csp}\n  X-Content-Type-Options: nosniff\n  X-Frame-Options: DENY\n  Referrer-Policy: strict-origin-when-cross-origin\n  Permissions-Policy: camera=(), microphone=(), geolocation=()\n  Strict-Transport-Security: max-age=31536000\n/app*\n  X-Robots-Tag: noindex, nofollow\n/login\n  X-Robots-Tag: noindex, nofollow\n/assets/*\n  Cache-Control: public, max-age=31536000, immutable\n`,
+  `/*\n  Content-Security-Policy: ${csp}\n  X-Content-Type-Options: nosniff\n  X-Frame-Options: DENY\n  Referrer-Policy: strict-origin-when-cross-origin\n  Permissions-Policy: camera=(), microphone=(), geolocation=()\n  Strict-Transport-Security: max-age=31536000\n/app*\n  X-Robots-Tag: noindex, nofollow\n/login\n  X-Robots-Tag: noindex, nofollow\n/assets/*\n  Cache-Control: public, max-age=31536000, immutable\n/m/*\n  X-Robots-Tag: noindex\n  Referrer-Policy: no-referrer\n`,
 );
-await writeFile('dist/_redirects', '/login /app 200\n/app/* /app 200\n');
+await writeFile('dist/_redirects', '/login /app 200\n/app/* /app 200\n/m/* /menu 200\n');
 await writeFile('dist/robots.txt', 'User-agent: *\nDisallow: /app\nDisallow: /login\n');
 console.log('Generated public pages, app deep links, security headers and a public 404 page.');

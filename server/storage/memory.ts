@@ -19,6 +19,14 @@ import type {
   Message,
   Account,
 } from '../../src/shared/types';
+import type {
+  MenuDraft,
+  MenuDraftInput,
+  MenuDraftResult,
+  MenuLink,
+  WebOrderClaim,
+  WebOrderOutcome,
+} from '../../src/shared/menu';
 import {
   seedCompanies,
   seedConversations,
@@ -93,6 +101,16 @@ interface State {
   accounts?: Account[];
   /** Audit entries filed under PLATFORM_AUDIT_ID, which is not a business. */
   platformAudit?: { actorId: string; action: string; createdAt: string }[];
+  menuLinks?: MenuLink[];
+  menuLinkUses?: {
+    companyId: string;
+    nonce: string;
+    conversationId: string;
+    orderId: string;
+    expiresAt: string;
+    usedAt: string;
+  }[];
+  menuDrafts?: (MenuDraft & { codeHash: string; createdAt: string })[];
   aiLimitHits?: AiLimitHit[];
   blockedCustomers?: BlockedKey[];
   gatewayNonces?: Record<string, number>;
@@ -1582,6 +1600,191 @@ export class MemoryRepository implements Repository {
         (i) => i.integration.kind === 'whatsapp' && i.integration.config.phoneNumberId === id,
       );
       return integration ? s.companies.find((c) => c.id === integration.companyId) : undefined;
+    });
+  }
+  getMenuLink(companyId: string) {
+    return this.read((s) => s.menuLinks?.find((l) => l.companyId === companyId));
+  }
+  findMenuLink(slug: string) {
+    return this.read((s) => s.menuLinks?.find((l) => l.slug === slug));
+  }
+  // Mirrors SQL set_menu_link.
+  setMenuLink(companyId: string, enabled: boolean, slug: string) {
+    return this.mutate((s) => {
+      companyExists(s, companyId);
+      const rows = (s.menuLinks ??= []);
+      const updatedAt = new Date().toISOString();
+      const existing = rows.find((l) => l.companyId === companyId);
+      if (existing) {
+        existing.enabled = enabled;
+        existing.updatedAt = updatedAt;
+        return existing;
+      }
+      if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug) || slug.length < 3 || slug.length > 72)
+        throw new Error('Invalid menu link');
+      let chosen = slug;
+      for (let attempt = 2; rows.some((l) => l.slug === chosen); attempt++) {
+        if (attempt > 50) throw new Error('Could not choose a free menu link');
+        chosen = `${slug}-${attempt}`;
+      }
+      const link: MenuLink = { companyId, slug: chosen, enabled, updatedAt };
+      rows.push(link);
+      return link;
+    });
+  }
+  // Mirrors SQL place_web_order.
+  placeWebOrder(
+    companyId: string,
+    conversation: Conversation,
+    expectedVersion: number,
+    order: Order,
+    jobs: Job[],
+    claim: WebOrderClaim,
+  ) {
+    return this.mutate((s): WebOrderOutcome => {
+      if (
+        conversation.companyId !== companyId ||
+        order.companyId !== companyId ||
+        order.conversationId !== conversation.id
+      )
+        throw new Error('Cross-company web order');
+      if (
+        conversation.channel !== 'whatsapp' ||
+        order.sandbox !== false ||
+        order.status !== 'pending' ||
+        order.source !== 'menu_page' ||
+        conversation.cart.status !== 'submitted' ||
+        conversation.cart.orderId !== order.id ||
+        !Array.isArray(claim.keys)
+      )
+        throw new Error('Invalid web order');
+      const company = s.companies.find((c) => c.id === companyId);
+      if (!company) throw new Error('Unknown company');
+      const existing = s.orders.find(
+        (o) => o.companyId === companyId && o.submissionKey === order.submissionKey,
+      );
+      if (existing) return { ok: false, reason: 'duplicate', order: existing };
+      if (!company.botEnabled) return { ok: false, reason: 'bot_off' };
+      if (
+        (s.blockedCustomers ?? []).some(
+          (b) => b.companyId === companyId && claim.keys.includes(b.key),
+        )
+      )
+        return { ok: false, reason: 'blocked' };
+      const now = new Date().toISOString();
+      let draft: NonNullable<State['menuDrafts']>[number] | undefined;
+      if (claim.kind === 'link') {
+        if (!/^[A-Za-z0-9_-]{11}$/.test(claim.nonce ?? '') || !claim.expiresAt)
+          throw new Error('Invalid menu link claim');
+        if (
+          (s.menuLinkUses ?? []).some((u) => u.companyId === companyId && u.nonce === claim.nonce)
+        )
+          return { ok: false, reason: 'used' };
+        if (Date.parse(claim.expiresAt) <= Date.now()) return { ok: false, reason: 'expired' };
+      } else if (claim.kind === 'draft') {
+        draft = s.menuDrafts?.find((d) => d.id === claim.draftId && d.companyId === companyId);
+        if (!draft) return { ok: false, reason: 'expired' };
+        if (draft.usedAt) return { ok: false, reason: 'used' };
+        if (Date.parse(draft.expiresAt) <= Date.now()) return { ok: false, reason: 'expired' };
+      } else throw new Error('Invalid web order claim');
+      const current = s.conversations.find(
+        (c) => c.id === conversation.id && c.companyId === companyId,
+      );
+      if (current) {
+        if (current.version !== expectedVersion)
+          return { ok: false, reason: 'conversation_changed' };
+        if (current.blocked) return { ok: false, reason: 'blocked' };
+        if (current.mode !== 'bot') return { ok: false, reason: 'staff' };
+        if (claim.kind === 'link' && conversation.lastInboundAt !== current.lastInboundAt)
+          throw new Error('A menu link order must not change lastInboundAt');
+      } else if (claim.kind === 'link' || expectedVersion !== 0)
+        return { ok: false, reason: 'conversation_changed' };
+      if (conversation.version !== expectedVersion + 1)
+        throw new Error('Conversation version must advance by one.');
+      if (
+        s.conversations.some(
+          (c) =>
+            c.companyId === companyId &&
+            c.channel === conversation.channel &&
+            c.id !== conversation.id &&
+            (conversation.whatsappAddress
+              ? sameAddress(c.whatsappAddress, conversation.whatsappAddress)
+              : !c.whatsappAddress && c.customerPhone === conversation.customerPhone),
+        )
+      )
+        throw new Error('Conversation changed during web order');
+      checkConversation(s, conversation);
+      checkOrder(s, order, conversation);
+      put(s.conversations, conversation);
+      put(s.orders, order);
+      if (claim.kind === 'link')
+        (s.menuLinkUses ??= []).push({
+          companyId,
+          nonce: claim.nonce,
+          conversationId: conversation.id,
+          orderId: order.id,
+          expiresAt: claim.expiresAt,
+          usedAt: now,
+        });
+      else if (draft) {
+        draft.usedAt = now;
+        draft.orderId = order.id;
+        draft.conversationId = conversation.id;
+        delete draft.cart;
+        delete draft.phoneHash;
+      }
+      for (const job of jobs) {
+        if (job.companyId !== companyId) throw new Error('Cross-company job');
+        checkJob(s, job);
+        if (!s.jobs.some((j) => j.id === job.id)) s.jobs.push(copy(job));
+      }
+      return { ok: true, order };
+    });
+  }
+  findMenuLinkUse(companyId: string, nonce: string) {
+    return this.read((s) => {
+      const use = s.menuLinkUses?.find((u) => u.companyId === companyId && u.nonce === nonce);
+      return use && { orderId: use.orderId, conversationId: use.conversationId };
+    });
+  }
+  hasBlockedKey(companyId: string, keys: string[]) {
+    return this.read((s) =>
+      (s.blockedCustomers ?? []).some((b) => b.companyId === companyId && keys.includes(b.key)),
+    );
+  }
+  // Mirrors SQL create_menu_draft.
+  createMenuDraft(draft: MenuDraftInput, minutes = 30, maxOpen = 200) {
+    return this.mutate((s): MenuDraftResult => {
+      if (!Number.isInteger(minutes) || minutes < 5 || minutes > 60 || maxOpen < 1)
+        throw new Error('Invalid menu draft limits');
+      if (
+        !draft.id ||
+        !draft.cart ||
+        typeof draft.quotedTotal !== 'number' ||
+        !/^[0-9a-f]{64}$/.test(draft.codeHash) ||
+        !/^[0-9a-f]{64}$/.test(draft.phoneHash)
+      )
+        throw new Error('Invalid menu draft');
+      companyExists(s, draft.companyId);
+      const rows = (s.menuDrafts ??= []);
+      const open = rows.filter(
+        (d) => d.companyId === draft.companyId && !d.usedAt && Date.parse(d.expiresAt) > Date.now(),
+      );
+      if (open.length >= maxOpen) return { ok: false, reason: 'busy' };
+      if (rows.some((d) => d.codeHash === draft.codeHash || d.id === draft.id))
+        return { ok: false, reason: 'collision' };
+      const createdAt = new Date().toISOString();
+      const expiresAt = new Date(Date.now() + minutes * 60000).toISOString();
+      rows.push({ ...copy(draft), createdAt, expiresAt });
+      return { ok: true, expiresAt };
+    });
+  }
+  findMenuDraft(companyId: string, codeHash: string) {
+    return this.read((s) => {
+      const draft = s.menuDrafts?.find((d) => d.companyId === companyId && d.codeHash === codeHash);
+      if (!draft) return undefined;
+      const { codeHash: _code, createdAt: _created, ...rest } = draft;
+      return rest as MenuDraft;
     });
   }
 }

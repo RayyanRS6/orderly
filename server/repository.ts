@@ -21,6 +21,14 @@ import type {
   Account,
   Membership,
 } from '../src/shared/types';
+import type {
+  MenuDraft,
+  MenuDraftInput,
+  MenuDraftResult,
+  MenuLink,
+  WebOrderClaim,
+  WebOrderOutcome,
+} from '../src/shared/menu';
 import { DemoFileRepository, MemoryRepository } from './storage/memory';
 import { SupabaseRepository } from './storage/supabase';
 import { appMode } from './config';
@@ -212,6 +220,32 @@ export interface Repository {
   claimJob(id: string, now: string, leaseUntil: string): Promise<Job | undefined>;
   saveJob(job: Job): Promise<void>;
   findCompanyByPhoneNumberId(id: string): Promise<Company | undefined>;
+  // Public menu page. Before its migration, reads find no link (the page is off).
+  getMenuLink(companyId: string): Promise<MenuLink | undefined>;
+  findMenuLink(slug: string): Promise<MenuLink | undefined>;
+  // Turns the link on or off. The slug is used only the first time; it never changes after.
+  setMenuLink(companyId: string, enabled: boolean, slug: string): Promise<MenuLink>;
+  // Saves a menu-page order (insert only) and uses up its personal link or order code, together.
+  placeWebOrder(
+    companyId: string,
+    conversation: Conversation,
+    expectedVersion: number,
+    order: Order,
+    jobs: Job[],
+    claim: WebOrderClaim,
+  ): Promise<WebOrderOutcome>;
+  findMenuLinkUse(
+    companyId: string,
+    nonce: string,
+  ): Promise<{ orderId: string; conversationId: string } | undefined>;
+  // Read-only: never counts a hit or adds identities, unlike findBlockedCustomer.
+  hasBlockedKey(companyId: string, keys: string[]): Promise<boolean>;
+  createMenuDraft(
+    draft: MenuDraftInput,
+    minutes: number,
+    maxOpen: number,
+  ): Promise<MenuDraftResult>;
+  findMenuDraft(companyId: string, codeHash: string): Promise<MenuDraft | undefined>;
 }
 
 export { DemoFileRepository, MemoryRepository, SupabaseRepository };

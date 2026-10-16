@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { api, setAccessToken, setSessionRejectedHandler } from '../src/lib/api';
+import { api, ApiError, setAccessToken, setSessionRejectedHandler } from '../src/lib/api';
 
 afterEach(() => {
   setAccessToken();
@@ -112,6 +112,41 @@ describe('frontend API routing', () => {
       await expect(api('/bootstrap')).rejects.toThrow('Complete authenticator verification.');
       expect(handler).not.toHaveBeenCalled();
     });
+  });
+
+  it('sends Content-Type only with a body, so a plain GET needs no CORS preflight', async () => {
+    vi.stubEnv('VITE_API_BASE_URL', '');
+    const fetch = vi.fn(async (_url: string, _init: RequestInit) => Response.json({ ok: true }));
+    vi.stubGlobal('fetch', fetch);
+    await api('/public/menu/dastarkhwan');
+    expect(fetch.mock.calls[0]![1].headers).toEqual({});
+    await api('/public/menu/dastarkhwan', undefined, undefined, undefined, { cache: 'no-store' });
+    expect(fetch.mock.calls[1]![1]).toMatchObject({ cache: 'no-store', method: 'GET' });
+    await api('/orders', 'company-one', { note: 'x' });
+    expect(fetch.mock.calls[2]![1].headers).toMatchObject({ 'Content-Type': 'application/json' });
+    await api('/products/1', 'company-one', undefined, 'DELETE');
+    expect(fetch.mock.calls[3]![1].headers).toEqual({ 'x-company-id': 'company-one' });
+  });
+
+  it('throws an ApiError with the status, code and body, and the same message as before', async () => {
+    vi.stubEnv('VITE_API_BASE_URL', '');
+    const body = { error: 'Prices changed.', code: 'price_changed', total: 99000 };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Response.json(body, { status: 409 })),
+    );
+    const error = await api('/public/menu/x/orders', undefined, {}).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toMatchObject({ message: 'Prices changed.', status: 409, code: 'price_changed' });
+    expect((error as ApiError).data).toEqual(body);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('not json', { status: 502 })),
+    );
+    const plain = (await api('/config').catch((e: unknown) => e)) as ApiError;
+    expect(plain.message).toBe('Request failed (502). Please try again.');
+    expect(plain.code).toBeUndefined();
   });
 
   it.each(['http://localhost:4000', 'http://127.0.0.1:4000', 'http://[::1]:4000'])(

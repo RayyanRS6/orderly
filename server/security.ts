@@ -5,7 +5,7 @@ import {
   randomBytes,
   timingSafeEqual,
 } from 'node:crypto';
-import { appMode, requiredEnv } from './config.js';
+import { appMode, env, requiredEnv } from './config.js';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -25,6 +25,23 @@ function encryptionKey(): Buffer {
     throw new Error('CREDENTIAL_ENCRYPTION_KEY must decode to exactly 32 bytes.');
   return key;
 }
+// Keys for the menu page, derived from one base so nothing new must be set at deploy time:
+// MENU_LINK_SECRET when set, otherwise the credential encryption key. Changing the base ends
+// the personal links and order codes issued with it.
+export function derivedKey(label: 'menu-link' | 'menu-draft' | 'client-ip'): Buffer {
+  const override = env('MENU_LINK_SECRET');
+  let base: Buffer;
+  if (override) {
+    base = Buffer.from(override, 'base64');
+    if (!/^[A-Za-z0-9+/]+={0,2}$/.test(override) || base.length < 32)
+      throw new Error('MENU_LINK_SECRET must be base64 of at least 32 bytes.');
+  } else base = encryptionKey();
+  return createHmac('sha256', base).update(`orderly:${label}:v1`).digest();
+}
+export const hmacHex = (label: Parameters<typeof derivedKey>[0], value: string) =>
+  createHmac('sha256', derivedKey(label)).update(value).digest('hex');
+export const hmacKey22 = (label: Parameters<typeof derivedKey>[0], value: string) =>
+  createHmac('sha256', derivedKey(label)).update(value).digest('base64url').slice(0, 22);
 export function encryptSecret(value: string): string {
   const nonce = randomBytes(12);
   const cipher = createCipheriv('aes-256-gcm', encryptionKey(), nonce);

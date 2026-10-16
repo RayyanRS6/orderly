@@ -22,6 +22,14 @@ import type {
   Account,
   Membership,
 } from '../../src/shared/types';
+import type {
+  MenuDraft,
+  MenuDraftInput,
+  MenuDraftResult,
+  MenuLink,
+  WebOrderClaim,
+  WebOrderOutcome,
+} from '../../src/shared/menu';
 import type { Repository } from '../repository';
 import { LAST_OWNER_MESSAGE, PublicError } from '../security';
 import { env } from '../config';
@@ -37,10 +45,10 @@ const migrationMissing = (error: { code?: string } | null) =>
 const spamMigrationError = () =>
   new PublicError('Apply the spam protection database migration first.', 503);
 const warned = new Set<string>();
-function warnOnce(name: string) {
+function warnOnce(name: string, migration = '202610180001_spam_protection.sql') {
   if (warned.has(name)) return;
   warned.add(name);
-  console.warn(`Orderly: ${name} is missing. Apply 202610180001_spam_protection.sql.`);
+  console.warn(`Orderly: ${name} is missing. Apply ${migration}.`);
 }
 // Named arguments shared with the SQL tests, so a renamed parameter fails there too.
 export const reserveAiCallArgs = (
@@ -921,4 +929,155 @@ export class SupabaseRepository implements Repository {
     ) as { company_id: string } | null;
     return row ? this.getCompany(row.company_id as string) : undefined;
   }
+  // Public menu page. A missing table means the link is off until the migration is applied.
+  getMenuLink(companyId: string) {
+    return this.menuLinkWhere('company_id', companyId);
+  }
+  findMenuLink(slug: string) {
+    return this.menuLinkWhere('slug', slug);
+  }
+  private async menuLinkWhere(column: 'company_id' | 'slug', value: string) {
+    const result = await this.client
+      .from('menu_links')
+      .select('company_id,slug,enabled,updated_at')
+      .eq(column, value)
+      .maybeSingle();
+    if (migrationMissing(result.error)) {
+      warnOnce('menu_links', '202610190001_menu_page.sql');
+      return undefined;
+    }
+    const row = unwrap(result) as {
+      company_id: string;
+      slug: string;
+      enabled: boolean;
+      updated_at: string;
+    } | null;
+    return row
+      ? {
+          companyId: row.company_id,
+          slug: row.slug,
+          enabled: row.enabled,
+          updatedAt: row.updated_at,
+        }
+      : undefined;
+  }
+  async setMenuLink(companyId: string, enabled: boolean, slug: string) {
+    const result = await this.client.rpc('set_menu_link', {
+      p_company_id: companyId,
+      p_enabled: enabled,
+      p_slug: slug,
+    });
+    if (migrationMissing(result.error))
+      throw new PublicError('Apply the menu page database migration first.', 503);
+    return unwrap(result) as MenuLink;
+  }
+  async placeWebOrder(
+    companyId: string,
+    conversation: Conversation,
+    expectedVersion: number,
+    order: Order,
+    jobs: Job[],
+    claim: WebOrderClaim,
+  ) {
+    const result = await this.client.rpc(
+      'place_web_order',
+      placeWebOrderArgs(companyId, conversation, expectedVersion, order, jobs, claim),
+    );
+    if (migrationMissing(result.error)) throw orderingMigrationError();
+    return unwrap(result) as WebOrderOutcome;
+  }
+  async findMenuLinkUse(companyId: string, nonce: string) {
+    const result = await this.client
+      .from('menu_link_uses')
+      .select('order_id,conversation_id')
+      .eq('company_id', companyId)
+      .eq('nonce', nonce)
+      .maybeSingle();
+    if (migrationMissing(result.error)) {
+      warnOnce('menu_link_uses', '202610190002_menu_ordering.sql');
+      return undefined;
+    }
+    const row = unwrap(result) as { order_id: string; conversation_id: string } | null;
+    return row ? { orderId: row.order_id, conversationId: row.conversation_id } : undefined;
+  }
+  async hasBlockedKey(companyId: string, keys: string[]) {
+    if (!keys.length) return false;
+    const result = await this.client
+      .from('blocked_customers')
+      .select('block_id')
+      .eq('company_id', companyId)
+      .in('key', keys)
+      .limit(1);
+    // Nobody can be blocked before the spam protection migration.
+    if (migrationMissing(result.error)) return false;
+    return (unwrap(result) ?? []).length > 0;
+  }
+  async createMenuDraft(draft: MenuDraftInput, minutes: number, maxOpen: number) {
+    const result = await this.client.rpc(
+      'create_menu_draft',
+      createMenuDraftArgs(draft, minutes, maxOpen),
+    );
+    if (migrationMissing(result.error)) throw orderingMigrationError();
+    return unwrap(result) as MenuDraftResult;
+  }
+  async findMenuDraft(companyId: string, codeHash: string) {
+    const result = await this.client
+      .from('menu_drafts')
+      .select(
+        'id,company_id,phone_hash,cart,quoted_total,expires_at,used_at,order_id,conversation_id',
+      )
+      .eq('company_id', companyId)
+      .eq('code_hash', codeHash)
+      .maybeSingle();
+    if (migrationMissing(result.error)) {
+      warnOnce('menu_drafts', '202610190002_menu_ordering.sql');
+      return undefined;
+    }
+    const row = unwrap(result) as {
+      id: string;
+      company_id: string;
+      phone_hash: string | null;
+      cart: MenuDraft['cart'] | null;
+      quoted_total: number | string;
+      expires_at: string;
+      used_at: string | null;
+      order_id: string | null;
+      conversation_id: string | null;
+    } | null;
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      companyId: row.company_id,
+      ...(row.phone_hash && { phoneHash: row.phone_hash }),
+      ...(row.cart && { cart: row.cart }),
+      quotedTotal: Number(row.quoted_total),
+      expiresAt: row.expires_at,
+      ...(row.used_at && { usedAt: row.used_at }),
+      ...(row.order_id && { orderId: row.order_id }),
+      ...(row.conversation_id && { conversationId: row.conversation_id }),
+    } satisfies MenuDraft;
+  }
 }
+const orderingMigrationError = () =>
+  new PublicError('Apply the menu ordering database migration first.', 503);
+// Named arguments shared with the SQL tests, so a renamed parameter fails there too.
+export const placeWebOrderArgs = (
+  companyId: string,
+  conversation: Conversation,
+  expectedVersion: number,
+  order: Order,
+  jobs: Job[],
+  claim: WebOrderClaim,
+) => ({
+  p_company_id: companyId,
+  p_conversation: conversation,
+  p_expected_version: expectedVersion,
+  p_order: order,
+  p_jobs: jobs,
+  p_claim: claim,
+});
+export const createMenuDraftArgs = (draft: MenuDraftInput, minutes: number, maxOpen: number) => ({
+  p_draft: draft,
+  p_minutes: minutes,
+  p_max_open: maxOpen,
+});

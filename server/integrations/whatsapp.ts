@@ -31,11 +31,14 @@ export class WhatsAppAdapter implements ChannelAdapter {
       );
     return response.json();
   }
-  async test(): Promise<void> {
+  /** Also reports the business number's digits, for wa.me links on the menu page. */
+  async test(): Promise<{ displayPhoneNumber?: string }> {
     const id = this.integration.config.phoneNumberId;
     if (!/^\d+$/.test(id || ''))
       throw new PublicError('A numeric WhatsApp phone number ID is required.');
-    await this.request(`${id}?fields=id,display_phone_number,verified_name`);
+    const data = await this.request(`${id}?fields=id,display_phone_number,verified_name`);
+    const digits = String(data?.display_phone_number ?? '').replace(/\D/g, '');
+    return /^[1-9]\d{5,14}$/.test(digits) ? { displayPhoneNumber: digits } : {};
   }
   async verifyOwnership(): Promise<void> {
     const { wabaId, phoneNumberId } = this.integration.config;

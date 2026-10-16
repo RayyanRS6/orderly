@@ -19,6 +19,7 @@ import {
   MODEL_TEXT_LABELS,
   NOTICE_LABELS,
   PART_LABELS,
+  SKIP_LABELS,
 } from '../src/shared/explain';
 import { ReplyExplanation, WhyToggle } from '../src/components/ReplyExplanation';
 import type {
@@ -446,6 +447,19 @@ describe('explanation wording and flow path', () => {
     expect(
       describeConfig(explanation({ config: { target: 'live', revision: 0 }, provider: 'mock' })),
     ).toBe('Default settings (nothing published) · no AI model');
+  });
+
+  it('describes menu page orders and invented links', () => {
+    expect(SKIP_LABELS.menu_page).toBe(
+      'The customer ordered from your menu page, so no AI was needed.',
+    );
+    expect(MODEL_TEXT_LABELS.unsafe).toBe(
+      'The AI’s wording mentioned prices, totals, a confirmed order or a web link you didn’t provide, so it was dropped.',
+    );
+    expect(describeCorrection('invented_link_ignored')).toBe(
+      'The AI’s wording included a web link you didn’t provide, so it was dropped.',
+    );
+    expect(describeStep('menu_page_order')).toBe('Saved an order from the menu page');
   });
 });
 

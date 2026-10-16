@@ -68,6 +68,11 @@ export async function finishSignup(
   const adapter = new WhatsAppAdapter(integration, result.access_token);
   await adapter.subscribe();
   if (!body.coexistence && body.pin) await adapter.register(body.pin);
+  // Best effort: the number's digits for wa.me links on the menu page.
+  try {
+    const { displayPhoneNumber } = (await adapter.test()) ?? {};
+    if (displayPhoneNumber) integration.config.displayPhoneNumber = displayPhoneNumber;
+  } catch {}
   // Activate only after all requested external steps succeed. A failed attempt
   // must not replace an already working workspace connection.
   integration.config.ownershipVerifiedAt = new Date().toISOString();

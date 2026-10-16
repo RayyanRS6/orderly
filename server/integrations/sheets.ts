@@ -73,9 +73,19 @@ export class GoogleSheetsAdapter implements CatalogSource, OrderDestination {
   }
   async readCatalog(companyId: string): Promise<Product[]> {
     const token = await this.token();
-    const range = `${this.sheet(this.integration.config.catalogSheet || 'Menu')}!A1:J502`;
+    const range = `${this.sheet(this.integration.config.catalogSheet || 'Menu')}!A1:Z502`;
     const data = await this.request(`/values/${encodeURIComponent(range)}`, token);
-    return catalogFromRows(companyId, data.values ?? []);
+    const rows: string[][] = data.values ?? [];
+    // Columns A–J parse exactly as before; after them only a photo column is read. Any other
+    // later column (even one repeating an earlier header) is ignored.
+    const photo = new Set(['image', 'image_url', 'photo']);
+    const keep = (rows[0] ?? []).flatMap((header, index) =>
+      index < 10 || photo.has(String(header).trim().toLowerCase()) ? [index] : [],
+    );
+    return catalogFromRows(
+      companyId,
+      rows.map((row) => keep.map((index) => row[index] ?? '')),
+    );
   }
   async syncOrder(order: Order): Promise<void> {
     const token = await this.token();

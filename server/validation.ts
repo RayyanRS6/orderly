@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { MAX_BOT_INSTRUCTIONS } from '../src/shared/bot.js';
 import { AI_LIMIT_RANGES, MODEL_LIMITS } from '../src/shared/models.js';
+import { PHOTO_URL_RE } from '../src/shared/menu.js';
 const text = (max: number) => z.string().trim().max(max);
 export const behaviorRuleSchema = z
   .object({
@@ -62,6 +63,15 @@ export const productSchema = z
     aliases: z.array(text(100)).max(20).default([]),
     variants: z.array(optionSchema).max(15).default([]),
     modifiers: z.array(optionSchema).max(20).default([]),
+    imageUrl: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      z
+        .string()
+        .trim()
+        .max(500)
+        .regex(PHOTO_URL_RE, 'Use a photo link that starts with https://')
+        .optional(),
+    ),
   })
   .superRefine((p, ctx) => {
     for (const key of ['variants', 'modifiers'] as const)
@@ -183,6 +193,29 @@ export const actionSchema = z.discriminatedUnion('type', [
   }),
   z.object({ type: z.literal('answer'), text: text(2000) }),
 ]);
+// A cart sent by the public menu page. Prices are never sent: the server prices the order.
+export const webCartSchema = z
+  .object({
+    items: z
+      .array(
+        z
+          .object({
+            productId: text(100).min(1),
+            quantity: z.number().int().min(1).max(50),
+            variantId: text(80).min(1).optional(),
+            modifierIds: z.array(text(80).min(1)).max(20).default([]),
+            notes: z.literal('').default(''),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(40),
+    fulfillment: z.enum(['pickup', 'delivery']),
+    customerName: text(80).min(2),
+    address: text(400).min(5).optional(),
+    zone: text(100).min(1).optional(),
+  })
+  .strict();
 export const chatSchema = z.object({
   conversationId: z.string().uuid().optional(),
   text: text(2000).default(''),

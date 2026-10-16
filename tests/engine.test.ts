@@ -1,8 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildOrder,
+  closedText,
   createConversation,
   emptyCart,
+  fillMenuLink,
+  inventsLink,
   isOpen,
+  linkAllowlist,
+  orderIdFor,
+  orderReceivedText,
   parseActions,
   processTurn,
   quoteCart,
@@ -537,5 +544,231 @@ describe('restaurant status transitions', () => {
     next = transitionOrder(next, 'completed', now);
     expect(() => transitionOrder(next, 'accepted', now)).toThrow();
     expect(order.status).toBe('pending');
+  });
+});
+
+describe('order builder and sentences shared with the menu page', () => {
+  it('builds exactly the chat order and confirmation text it did before', () => {
+    const c = reviewed();
+    const result = turn(c, 'confirm');
+    const order = result.order!;
+    const submissionKey = `${company.id}:${c.id}:${c.cart.revision}`;
+    expect(Object.keys(order)).toEqual([
+      'id',
+      'companyId',
+      'conversationId',
+      'reference',
+      'submissionKey',
+      'customerName',
+      'customerPhone',
+      'fulfillment',
+      'address',
+      'zone',
+      'items',
+      'subtotal',
+      'deliveryFee',
+      'total',
+      'currency',
+      'status',
+      'syncStatus',
+      'createdAt',
+      'updatedAt',
+      'sandbox',
+      'phoneConfirmationRequired',
+    ]);
+    expect(order).toMatchObject({
+      id: orderIdFor(submissionKey),
+      submissionKey,
+      conversationId: c.id,
+      customerName: 'Ali',
+      customerPhone: c.customerPhone,
+      fulfillment: 'pickup',
+      total: 90000,
+      status: 'pending',
+      syncStatus: 'not_connected',
+      createdAt: now,
+      sandbox: true,
+      phoneConfirmationRequired: false,
+    });
+    expect(order.reference).toBe(`ORD-${order.id.replaceAll('-', '').slice(-8).toUpperCase()}`);
+    expect(result.conversation.cart).toMatchObject({ status: 'submitted', orderId: order.id });
+    expect(result.reply).toBe(
+      `Order ${order.reference} received — Rs. 900. Awaiting restaurant acceptance. Payment is cash at pickup.`,
+    );
+    expect(orderReceivedText('en', order)).toBe(result.reply);
+    expect(orderReceivedText('roman-ur', { ...order, phoneConfirmationRequired: true })).toBe(
+      `Order ${order.reference} receive ho gaya — Rs. 900. Restaurant ki manzoori ka intezar hai. Payment cash hogi.\nRestaurant staff order accept karne se pehle call kar ke confirm karega.`,
+    );
+    const quote = quoteCart(company, products, c.cart);
+    const web = buildOrder(company, c, c.cart, quote, now, submissionKey, 'menu_page');
+    expect(web).toEqual({ ...order, source: 'menu_page' });
+  });
+  it('keeps the closed sentence, with the cart note only in the chat', () => {
+    const closed: Company = {
+      ...company,
+      openingHours: { start: '09:00', end: '10:00', days: [] },
+    };
+    expect(turn(reviewed(), 'confirm', undefined, products, closed).reply).toBe(
+      'We are currently closed. Ordering hours are 09:00–10:00 (Asia/Karachi). Your cart is saved.',
+    );
+    expect(closedText(closed, 'en')).toBe(
+      'We are currently closed. Ordering hours are 09:00–10:00 (Asia/Karachi).',
+    );
+    expect(closedText(closed, 'roman-ur')).toBe(
+      'Hum is waqt band hain. Order ka waqt 09:00–10:00 hai.',
+    );
+  });
+});
+
+describe('menu page link', () => {
+  const link = 'https://orderly.example/m/dastarkhwan';
+  const menuTurn = (lang: 'en' | 'ur' | 'roman-ur', menuLink?: string, catalog = products) =>
+    processTurn(
+      { ...company, bot: publishedConfig({ language: lang }) },
+      catalog,
+      fresh(),
+      { messageId: `menu-${++message}`, text: 'menu', now, menuLink },
+      [{ type: 'menu' }],
+    );
+  function publishedConfig(config: Partial<typeof defaultBot>) {
+    const bot = { ...defaultBot, ...config };
+    return {
+      draft: bot,
+      revision: 1,
+      history: [],
+      published: { version: 1, config: bot, publishedAt: now, publishedBy: 'test' },
+    };
+  }
+
+  it('adds the link line to menu replies, and nothing without a link', () => {
+    const plain = menuTurn('en');
+    expect(plain.reply).not.toContain('See the full menu');
+    expect(menuTurn('en', link).reply).toBe(
+      `${plain.reply}\n\nSee the full menu and order here: ${link}`,
+    );
+    expect(
+      menuTurn('roman-ur', link).reply.endsWith(
+        `\n\nPoora menu dekhein aur yahan order karein: ${link}`,
+      ),
+    ).toBe(true);
+    expect(
+      menuTurn('ur', link).reply.endsWith(`\n\nپورا مینو دیکھیں اور یہاں آرڈر کریں: ${link}`),
+    ).toBe(true);
+    const empty = menuTurn('en', link, []);
+    expect(empty.reply).not.toContain(link);
+  });
+
+  it('fills {menu_link} in owner wording, or leaves its line out when the page is off', () => {
+    const greeting = 'Welcome to Dastarkhwan!\n\n{menu_link}\n\nWhat would you like today?';
+    const hello = (menuLink?: string, text = greeting) =>
+      processTurn(
+        { ...company, bot: publishedConfig({ greeting: text }) },
+        products,
+        fresh(),
+        { messageId: `hi-${++message}`, text: 'hi', now, menuLink },
+        [{ type: 'answer', text: '' }],
+        { text: 'Hello!', askFor: 'none' },
+      ).reply;
+    expect(hello(link)).toBe(`Welcome to Dastarkhwan!\n\n${link}\n\nWhat would you like today?`);
+    expect(hello()).toBe('Welcome to Dastarkhwan!\n\nWhat would you like today?');
+    expect(hello(undefined, 'Hi!\n\n\nWelcome.')).toBe('Hi!\n\n\nWelcome.');
+    expect(fillMenuLink('Order here: {menu_link} now', undefined)).toBe('');
+    expect(fillMenuLink('No placeholder here.  ', link)).toBe('No placeholder here.  ');
+    const echoed = processTurn(
+      company,
+      products,
+      fresh(),
+      { messageId: `echo-${++message}`, text: 'link?', now, menuLink: link },
+      [{ type: 'answer', text: '' }],
+      { text: '{menu_link}', askFor: 'none' },
+    );
+    expect(echoed.reply).toBe(link);
+  });
+});
+
+describe('web links in AI wording', () => {
+  const ask = (text: string, target: Company = company, menuLink?: string) =>
+    processTurn(
+      target,
+      products,
+      fresh(),
+      {
+        messageId: `link-${++message}`,
+        text: 'where can I see more?',
+        now,
+        menuLink,
+        appHost: 'orderly.example',
+      },
+      [{ type: 'answer', text: '' }],
+      { text, askFor: 'none' },
+    );
+
+  it.each([
+    'You can order at http://evil.example right away.',
+    'Please visit evil.pk for deals.',
+    'See foo.dev/x for photos.',
+    'Message us on wa.me/923001234567 instead.',
+    'Go to www.someplace.co/menu',
+  ])('drops invented links and hands an answer-only turn to staff: %s', (text) => {
+    const result = ask(text);
+    expect(result.reply).not.toContain(text);
+    expect(result.decision?.modelText).toBe('unsafe');
+    expect(result.traces).toContain('invented_link_ignored');
+    expect(result.decision?.corrections).toContain('invented_link_ignored');
+    expect(result.traces).not.toContain('unsafe_model_response_ignored');
+    // The same handoff as an unsafe price claim today.
+    const price = ask('That is Rs. 500 in total.');
+    expect(result.conversation.mode).toBe(price.conversation.mode);
+    expect(result.conversation.mode).toBe('human');
+    expect(result.reply).toBe(price.reply);
+  });
+
+  it('keeps links the owner gave, the menu page and the app’s own site', () => {
+    const owner: Company = {
+      ...company,
+      faqs: [
+        ...company.faqs,
+        {
+          question: 'website',
+          answer: 'See https://www.Laziza.pk/menu or email info@lazizafoods.com',
+        },
+      ],
+    };
+    for (const text of [
+      'Our full menu is at laziza.pk/menu.',
+      'Have a look at https://laziza.pk.',
+      'Email info@lazizafoods.com for catering.',
+      'See https://orderly.example/m/dastarkhwan for photos.',
+      'Order on https://shop.laziza.pk today.',
+    ]) {
+      const result = ask(text, owner, 'https://orderly.example/m/dastarkhwan');
+      expect(result.reply, text).toBe(text);
+      expect(result.decision?.modelText).toBe('used');
+    }
+  });
+
+  it.each([
+    'Your biryani will be ready.in 20 minutes',
+    'Add raita for Rs.500 more? (just kidding)',
+    'We have many dishes, e.g. biryani and karahi.',
+    'The family pack is 3.5 kg of rice.',
+    'All our dishes are available.Online ordering is coming soon.',
+    'جی ہاں، بریانی دستیاب ہے۔ شکریہ.',
+  ])('does not treat sloppy punctuation as a link: %s', (text) => {
+    expect(inventsLink(text, new Set())).toBe(false);
+  });
+
+  it('collects allowed hosts from owner wording and the app host only', () => {
+    const owner: Company = {
+      ...company,
+      name: 'Laziza.pk Kitchen',
+      address: 'Shop 4, see www.mall.com.pk',
+    };
+    const hosts = linkAllowlist(
+      owner,
+      { ...defaultBot, instructions: 'Mention https://tiny.ly/deal when asked.' },
+      'Orderly.Example',
+    );
+    expect([...hosts].sort()).toEqual(['laziza.pk', 'mall.com.pk', 'orderly.example', 'tiny.ly']);
   });
 });

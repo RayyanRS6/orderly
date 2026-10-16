@@ -230,6 +230,7 @@ export async function buildAgentFlow(
       '15 or more messages from one customer within a minute go to staff.',
       'If the menu Sheet cannot be refreshed, the chat goes to staff.',
       'Messages from a number staff blocked are ignored before they are saved.',
+      'Orders from your menu page, and the order codes customers send from it, skip the AI.',
     ],
     todo: company.botEnabled
       ? undefined

@@ -156,6 +156,31 @@ Keep stable IDs when editing a menu. Non-UUID source IDs are converted into stab
 
 Orders first commit to Postgres, then synchronize in the background. Sheet downtime never erases the saved order. Writes use a company lock and look up the order ID before appending. An ambiguous append can temporarily duplicate a row; a retry reconciles duplicates without deleting unrelated rows. If synchronization fails repeatedly, correct the connection and use **Retry failed jobs**. [Google Sheets API](https://developers.google.com/workspace/sheets/api/guides/concepts).
 
+## 6. Menu page
+
+Each business can switch on a public menu page at `/m/<slug>` (**Your menu → Menu page**). The slug is copied from the business once and never changes, so printed QR codes keep working after a rename. The bot adds the link to menu replies, and owners can put `{menu_link}` on its own line in the greeting or answers. A reply sent to a customer carries their own one-tap link (`#t=…`, signed for that send, valid for 2 hours and one order); the stored message, the inbox and the AI only ever see the public link. Customers from Instagram or a QR code type their WhatsApp number and get an order code (`OM-XXXX-XXXX`, 30 minutes); the order is placed only when they send that code from their own WhatsApp, without any AI call. Every menu-page order is pending, with a **Menu page** badge in Orders.
+
+Photos are optional `https://` links: the menu editor's **Photo link** field, or an `image` (also `image_url` or `photo`) column in a CSV import or after column J in the menu Sheet. A bad link is skipped, never failing a sync. Photos are never sent to the AI.
+
+Apply the SQL by hand in the Supabase SQL editor, in order, **before** pushing the backend that uses it:
+
+1. `202610190001_menu_page.sql` (the link table and `set_menu_link`).
+2. `202610190002_menu_ordering.sql` (`menu_link_uses`, `menu_drafts`, `create_menu_draft`, `place_web_order`, `purge_menu_ordering`).
+3. `202610190003_menu_purge_schedule.sql` (pg_cron: purges expired drafts every 10 minutes).
+
+All three are additive and safe to rerun; existing functions and triggers are unchanged. Until they are applied the backend treats every menu page as off (one warning in the function logs) and the owner's switch asks for the migration. Check afterwards that `has_function_privilege('anon','public.place_web_order(text,jsonb,integer,jsonb,jsonb,jsonb)','execute')` is false and that `select jobname from cron.job where jobname='orderly-menu-purge'` returns one row.
+
+No new secret is required: the link, order-code and rate-limit keys are derived from `CREDENTIAL_ENCRYPTION_KEY`. An optional `MENU_LINK_SECRET` (base64 of at least 32 random bytes, set in Supabase → Edge Functions → Secrets) overrides that base; changing either ends personal links sent in the last 2 hours and codes from the last 30 minutes. The frontend build writes `dist/menu.html`, the `/m/* /menu 200` rewrite and `noindex` headers for `/m/*`; after the first frontend deploy, open a menu link to confirm the rewrite works.
+
+To roll back, turn the menu page off for each business and remove any `{menu_link}` placeholder from greetings first (older code would send it literally), then revert the code and `npx wrangler rollback` the frontend. The tables can stay. Only if you want the objects gone:
+
+```sql
+select cron.unschedule('orderly-menu-purge');
+drop function if exists public.purge_menu_ordering(), public.place_web_order(text,jsonb,integer,jsonb,jsonb,jsonb),
+  public.create_menu_draft(jsonb,integer,integer), public.set_menu_link(text,boolean,text);
+drop table if exists public.menu_link_uses, public.menu_drafts, public.menu_links;
+```
+
 ## Activation test before a restaurant pilot
 
 Use a dedicated test company, recipient and Sheet. Verify:

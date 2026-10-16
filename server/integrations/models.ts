@@ -262,7 +262,7 @@ ${JSON.stringify({ name: config.name, personality: config.personality, language:
         currentlyOpen: isOpen(company, new Date().toISOString()),
         paymentCapabilities: ['cash_at_pickup', 'cash_on_delivery'],
       },
-      candidateCatalog: relevant,
+      candidateCatalog: relevant.map(({ imageUrl: _image, ...product }) => product),
       catalogIndex: eligible.map((product) => ({
         id: product.id,
         name: product.name,

@@ -1,6 +1,7 @@
 import { botConfig } from '../shared/bot';
 import type {
   BotAction,
+  BotConfig,
   Cart,
   Company,
   Conversation,
@@ -19,6 +20,8 @@ import type {
 import { money } from '../shared/types';
 import { effectiveAiLimits } from '../shared/models';
 import { quantityFromText, resolveItemMention, resolvePendingItemChoice } from './menu-resolver';
+import { normalizeText as normalize, quoteCart, type CartQuote } from './pricing';
+export { quoteCart, type CartQuote } from './pricing';
 
 /** Pure application rules. Models can suggest tools, never calculate or commit orders. */
 export const emptyCart = (): Cart => ({ items: [], revision: 0, status: 'building' });
@@ -125,18 +128,6 @@ export function limitNotice(lang: Language, cart: Cart): string {
 export const asksForPerson = (text: string) =>
   /\b(human|staff|manager|person|insaan)\b|عملہ|انسان|مینیجر/u.test(normalize(text));
 
-function normalize(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[۰-۹٠-٩]/g, (digit) =>
-      String(
-        '۰۱۲۳۴۵۶۷۸۹'.includes(digit) ? '۰۱۲۳۴۵۶۷۸۹'.indexOf(digit) : '٠١٢٣٤٥٦٧٨٩'.indexOf(digit),
-      ),
-    )
-    .replace(/[\u064b-\u065f]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
 function languageOf(text: string, previous: Language): Language {
   if (/[\u0600-\u06ff]/u.test(text)) return 'ur';
   if (
@@ -149,11 +140,6 @@ function languageOf(text: string, previous: Language): Language {
 }
 const say = (lang: Language, en: string, ur: string, roman: string) =>
   lang === 'ur' ? ur : lang === 'roman-ur' ? roman : en;
-const safeMoney = (n: number) => {
-  if (!Number.isSafeInteger(n) || n < 0)
-    throw new Error('Invalid catalog price. Please ask staff for help.');
-  return n;
-};
 function invalidate(cart: Cart) {
   cart.revision += 1;
   cart.status = 'building';
@@ -195,81 +181,67 @@ export function isOpen(company: Company, now: string): boolean {
     return false;
   }
 }
-
-export interface CartQuote {
-  items: OrderLine[];
-  subtotal: number;
-  deliveryFee: number;
-  total: number;
-  hash: string;
-}
-
-/** Variant prices replace the base price; modifier prices are added per unit. */
-export function quoteCart(company: Company, products: Product[], cart: Cart): CartQuote {
-  if (!cart.items.length)
-    throw new Error('Your cart is empty. Choose something from the menu first.');
-  if (cart.items.length > 40) throw new Error('Please ask staff to help with this large order.');
-  const items: OrderLine[] = cart.items.map((item) => {
-    const product = products.find((p) => p.id === item.productId && p.companyId === company.id);
-    if (!product || !product.available)
-      throw new Error(
-        `${product?.name ?? 'An item'} is unavailable. Remove it or ask staff for help.`,
-      );
-    if (!Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 50)
-      throw new Error('Choose a quantity between 1 and 50.');
-    const variant = product.variants.find((v) => v.id === item.variantId);
-    if ((item.variantId && !variant) || (product.variants.length && !variant))
-      throw new Error(
-        `Choose an option for ${product.name}: ${product.variants.map((v) => v.name).join(', ')}.`,
-      );
-    if (new Set(item.modifierIds).size !== item.modifierIds.length)
-      throw new Error('The same extra cannot be selected twice.');
-    const modifiers = item.modifierIds.map((id) => {
-      const option = product.modifiers.find((m) => m.id === id);
-      if (!option) throw new Error(`Invalid extra for ${product.name}.`);
-      return option;
-    });
-    const unitPrice = safeMoney(
-      safeMoney(variant?.price ?? product.price) +
-        modifiers.reduce((sum, m) => sum + safeMoney(m.price), 0),
-    );
-    return {
-      productId: product.id,
-      name: product.name,
-      quantity: item.quantity,
-      unitPrice,
-      variant: variant?.name,
-      modifiers: modifiers.map((m) => m.name),
-      notes: item.notes.slice(0, 300),
-      total: safeMoney(unitPrice * item.quantity),
-    };
-  });
-  let deliveryFee = 0;
-  if (cart.fulfillment === 'delivery') {
-    const zone = company.deliveryZones.find(
-      (z) => normalize(z.name) === normalize(cart.zone ?? ''),
-    );
-    if (!zone)
-      throw new Error(
-        `Choose a delivery area: ${company.deliveryZones.map((z) => z.name).join(', ')}.`,
-      );
-    deliveryFee = safeMoney(zone.fee);
-  }
-  const subtotal = safeMoney(items.reduce((sum, item) => sum + item.total, 0));
-  const total = safeMoney(subtotal + deliveryFee);
-  // An exact canonical snapshot avoids relying on a lossy checksum for confirmation.
-  const hash = JSON.stringify({
+export const orderIdFor = (submissionKey: string) => idFor(submissionKey);
+/** The pending order a confirmed cart becomes. Chat and menu-page orders share it. */
+export function buildOrder(
+  company: Company,
+  conversation: Pick<Conversation, 'id' | 'customerPhone' | 'channel'>,
+  cart: Cart,
+  quote: CartQuote,
+  now: string,
+  submissionKey: string,
+  source?: 'menu_page',
+): Order {
+  const id = idFor(submissionKey);
+  return {
+    id,
     companyId: company.id,
-    items,
-    subtotal,
-    deliveryFee,
-    total,
-    fulfillment: cart.fulfillment,
-    customerName: cart.customerName,
-    address: cart.address,
-    zone: cart.zone,
-  });
-  return { items, subtotal, deliveryFee, total, hash };
+    conversationId: conversation.id,
+    reference: `ORD-${id.replaceAll('-', '').slice(-8).toUpperCase()}`,
+    submissionKey,
+    customerName: cart.customerName!,
+    customerPhone: conversation.customerPhone,
+    fulfillment: cart.fulfillment!,
+    address: cart.fulfillment === 'delivery' ? cart.address : undefined,
+    zone: cart.fulfillment === 'delivery' ? cart.zone : undefined,
+    items: quote.items,
+    subtotal: quote.subtotal,
+    deliveryFee: quote.deliveryFee,
+    total: quote.total,
+    currency: 'PKR',
+    status: 'pending',
+    syncStatus: 'not_connected',
+    createdAt: now,
+    updatedAt: now,
+    sandbox: conversation.channel === 'demo',
+    phoneConfirmationRequired:
+      !!company.bot?.published && botConfig(company).requirePhoneConfirmation,
+    ...(source && { source }),
+  };
+}
+export function orderReceivedText(lang: Language, order: Order): string {
+  let reply = say(
+    lang,
+    `Order ${order.reference} received — ${money(order.total)}. Awaiting restaurant acceptance. Payment is cash ${order.fulfillment === 'pickup' ? 'at pickup' : 'on delivery'}.`,
+    `آرڈر ${order.reference} موصول ہوا — ${money(order.total)}۔ ریسٹورنٹ کی منظوری کا انتظار ہے۔ ادائیگی نقد ہوگی۔`,
+    `Order ${order.reference} receive ho gaya — ${money(order.total)}. Restaurant ki manzoori ka intezar hai. Payment cash hogi.`,
+  );
+  if (order.phoneConfirmationRequired)
+    reply += say(
+      lang,
+      '\nRestaurant staff will call to confirm before accepting your order.',
+      '\nعملہ آرڈر منظور کرنے سے پہلے فون پر تصدیق کرے گا۔',
+      '\nRestaurant staff order accept karne se pehle call kar ke confirm karega.',
+    );
+  return reply;
+}
+export function closedText(company: Company, lang: Language): string {
+  return say(
+    lang,
+    `We are currently closed. Ordering hours are ${company.openingHours.start}–${company.openingHours.end} (${company.timezone}).`,
+    `ہم اس وقت بند ہیں۔ آرڈر کا وقت ${company.openingHours.start}–${company.openingHours.end} ہے۔`,
+    `Hum is waqt band hain. Order ka waqt ${company.openingHours.start}–${company.openingHours.end} hai.`,
+  );
 }
 
 function missingDetails(company: Company, cart: Cart, lang: Language): string | undefined {
@@ -492,6 +464,7 @@ function menu(
   lang: Language,
   query?: string,
   guided = false,
+  link?: string,
 ) {
   const all = products.filter((p) => p.companyId === company.id);
   if (!all.length)
@@ -558,7 +531,73 @@ function menu(
     if (lines.join('\n').length + line.length > 2800 || lines.length >= 12) break;
     lines.push(line);
   }
-  return `${notFound}${company.name}\n${lines.join('\n')}${lines.length < own.length ? `\n\nShowing ${lines.length} of ${own.length} items. Ask for a category or item name to narrow the menu.` : ''}${guided ? '' : `\n\n${say(lang, 'Tell me the item and quantity, for example “2 chicken biryani”.', 'چیز کا نام اور تعداد بتائیں، جیسے “2 چکن بریانی”۔', 'Item aur quantity batayein, jaise “2 chicken biryani”.')}`}`;
+  const linkLine = link
+    ? `\n\n${say(lang, `See the full menu and order here: ${link}`, `پورا مینو دیکھیں اور یہاں آرڈر کریں: ${link}`, `Poora menu dekhein aur yahan order karein: ${link}`)}`
+    : '';
+  return `${notFound}${company.name}\n${lines.join('\n')}${lines.length < own.length ? `\n\nShowing ${lines.length} of ${own.length} items. Ask for a category or item name to narrow the menu.` : ''}${guided ? '' : `\n\n${say(lang, 'Tell me the item and quantity, for example “2 chicken biryani”.', 'چیز کا نام اور تعداد بتائیں، جیسے “2 چکن بریانی”۔', 'Item aur quantity batayein, jaise “2 chicken biryani”.')}`}${linkLine}`;
+}
+
+// The menu page link in owner wording (greeting, answers, rules). Without a link, each line
+// holding the placeholder is left out, so no sentence is half-finished.
+export function fillMenuLink(text: string, link?: string): string {
+  if (!text.includes('{menu_link}')) return text;
+  if (link) return text.replaceAll('{menu_link}', link);
+  return text
+    .split('\n')
+    .filter((line) => !line.includes('{menu_link}'))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+// Web links in AI wording. Addresses with a scheme, "www." or wa.me are always checked; a bare
+// domain only with a common ending in lower case, so "ready.in 20", "Rs.500" or a missing
+// space after a full stop ("available.Online") never count as links.
+const EXPLICIT_LINK = /\b(?:https?:\/\/|www\.)[^\s<>"]+|\bwa\.me\/\S*/giu;
+const BARE_DOMAIN =
+  /\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|net|org|pk|io|app|dev|page|ly|link|site|online|store|shop|xyz|info|biz)\b(?:\/\S*)?/giu;
+const BARE_ENDING =
+  /\.(?:com|net|org|pk|io|app|dev|page|ly|link|site|online|store|shop|xyz|info|biz)$/u;
+function linkHost(link: string): string {
+  return (link.replace(/^https?:\/\//i, '').split(/[/?#]/)[0] ?? '')
+    .replace(/^.*@/, '')
+    .replace(/:\d*$/, '')
+    .replace(/[.,;:!?)\]}'"’”۔،]+$/u, '')
+    .toLowerCase()
+    .replace(/^www\./, '');
+}
+function linksIn(text: string): string[] {
+  const bare = [...text.matchAll(BARE_DOMAIN)]
+    .map((m) => m[0])
+    .filter((m) => BARE_ENDING.test(m.split(/[/?#]/)[0] ?? ''));
+  return [...[...text.matchAll(EXPLICIT_LINK)].map((m) => m[0]), ...bare];
+}
+/** Web hosts the owner gave (business details, answers, bot settings) plus the app's own. */
+export function linkAllowlist(
+  company: Company,
+  configuration: BotConfig,
+  appHost?: string,
+): Set<string> {
+  const sources = [
+    company.name,
+    company.address,
+    ...company.faqs.flatMap((faq) => [faq.question, faq.answer]),
+    configuration.goal,
+    configuration.instructions,
+    configuration.greeting,
+    configuration.handoffMessage,
+    ...configuration.behaviorRules.map((rule) => rule.response),
+  ];
+  const hosts = new Set(sources.flatMap((text) => linksIn(text ?? '').map(linkHost)));
+  if (appHost) hosts.add(appHost.toLowerCase().replace(/^www\./, ''));
+  hosts.delete('');
+  return hosts;
+}
+/** Whether the text links to a website the owner never gave (matched by host). */
+export function inventsLink(text: string, hosts: Set<string>): boolean {
+  return linksIn(text).some((link) => {
+    const host = linkHost(link);
+    return !host || ![...hosts].some((allowed) => host === allowed || host.endsWith(`.${allowed}`));
+  });
 }
 
 const affirmative = (text: string) =>
@@ -878,6 +917,7 @@ const CORRECTION_TRACES = new Set([
   'unsafe_model_response_ignored',
   'invalid_model_prompt_ignored',
   'response_fallback',
+  'invented_link_ignored',
 ]);
 
 export function processTurn(
@@ -893,6 +933,9 @@ export function processTurn(
     throw new Error('Invalid message timestamp.');
   const next: Conversation = structuredClone(conversation);
   const configuration = botConfig(company);
+  // AI wording that states prices or outcomes, or links to a website the owner never gave.
+  const hosts = linkAllowlist(company, configuration, input.appHost);
+  const unsafe = (text: string) => unsafeModelText(text) || inventsLink(text, hosts);
   const traces: string[] = [];
   if (next.messages.some((m) => m.id === input.messageId))
     return {
@@ -938,6 +981,7 @@ export function processTurn(
   let tooManyActions = false;
   let modelAnswer: string | undefined;
   let answerUnsafe = false;
+  let answerUnsafeTrace = 'unsafe_model_response_ignored';
   let incompleteReviewQuestion: string | undefined;
   const finish = (): TurnResult => {
     if (traces.includes('human_mode_message_saved'))
@@ -975,10 +1019,7 @@ export function processTurn(
     const harmlessAskFor =
       modelResponse?.askFor === 'items' || modelResponse?.askFor === 'anything_else';
     const answerOnlyLabelSlip =
-      !validAskFor &&
-      grounded &&
-      !!modelResponse?.text.trim() &&
-      !unsafeModelText(modelResponse.text);
+      !validAskFor && grounded && !!modelResponse?.text.trim() && !unsafe(modelResponse.text);
     const matchedRule = configuration.behaviorRules.find(
       (rule) => rule.enabled && rule.id === modelResponse?.matchedRuleId,
     );
@@ -1037,7 +1078,7 @@ export function processTurn(
       grounded &&
       (validAskFor || (!reply && harmlessAskFor)) &&
       modelResponse?.text.trim() &&
-      !unsafeModelText(modelResponse.text)
+      !unsafe(modelResponse.text)
     ) {
       const modelFirst = traces.includes('menu') || traces.includes('clarify_item');
       parts =
@@ -1071,6 +1112,8 @@ export function processTurn(
     if (modelResponse && !grounded) traces.push('invalid_model_grounding_ignored');
     if (modelResponse?.text && unsafeModelText(modelResponse.text))
       traces.push('unsafe_model_response_ignored');
+    else if (modelResponse?.text && inventsLink(modelResponse.text, hosts))
+      traces.push('invented_link_ignored');
     if (modelResponse?.askFor && !validAskFor && !parts.includes('model'))
       traces.push('invalid_model_prompt_ignored');
     if (!reply && traces.includes('answer') && !answerOnlyLabelSlip) {
@@ -1113,6 +1156,7 @@ export function processTurn(
       }
     }
     if (modelText === 'used' && !parts.includes('model')) modelText = 'replaced';
+    if (reply) reply = fillMenuLink(reply, input.menuLink);
     if (reply)
       next.messages.push({
         id: `${input.messageId}:reply`,
@@ -1135,9 +1179,7 @@ export function processTurn(
       corrections: [
         ...(recapCorrected ? ['recap_shown'] : []),
         ...(tooManyActions ? ['too_many_actions'] : []),
-        ...(answerUnsafe && !traces.includes('unsafe_model_response_ignored')
-          ? ['unsafe_model_response_ignored']
-          : []),
+        ...(answerUnsafe && !traces.includes(answerUnsafeTrace) ? [answerUnsafeTrace] : []),
         ...traces.filter(
           (trace) => CORRECTION_TRACES.has(trace) || trace.startsWith('validation_failed:'),
         ),
@@ -1263,7 +1305,7 @@ export function processTurn(
         continue;
       }
       if (action.type === 'menu') {
-        reply = menu(company, products, lang, action.query, !!modelResponse);
+        reply = menu(company, products, lang, action.query, !!modelResponse, input.menuLink);
         continue;
       }
       if (action.type === 'cart_summary') {
@@ -1318,7 +1360,7 @@ export function processTurn(
             (action.text === f.answer && f.answer.trim()),
         );
         const proposed = action.text.trim();
-        const unsafeClaim = unsafeModelText(proposed);
+        const unsafeClaim = unsafe(proposed);
         if (modelResponse && !modelResponse.text.trim() && proposed && !unsafeClaim)
           modelResponse = { ...modelResponse, text: proposed };
         // Structured response metadata is validated in finish before deciding
@@ -1326,8 +1368,10 @@ export function processTurn(
         reply = faq?.answer ?? (modelResponse || unsafeClaim ? '' : proposed);
         // Explanation only: an answer the model wrote without a separate response object.
         if (!faq && !modelResponse && actions && !input.action && proposed) {
-          if (unsafeClaim) answerUnsafe = true;
-          else modelAnswer = proposed;
+          if (unsafeClaim) {
+            answerUnsafe = true;
+            if (!unsafeModelText(proposed)) answerUnsafeTrace = 'invented_link_ignored';
+          } else modelAnswer = proposed;
         }
         traces.push(faq ? 'approved_faq' : 'grounded_model_answer');
         continue;
@@ -1505,12 +1549,9 @@ export function processTurn(
           continue;
         }
         if (!isOpen(company, input.now)) {
-          reply = say(
-            lang,
-            `We are currently closed. Ordering hours are ${company.openingHours.start}–${company.openingHours.end} (${company.timezone}). Your cart is saved.`,
-            `ہم اس وقت بند ہیں۔ آرڈر کا وقت ${company.openingHours.start}–${company.openingHours.end} ہے۔ آپ کی ٹوکری محفوظ ہے۔`,
-            `Hum is waqt band hain. Order ka waqt ${company.openingHours.start}–${company.openingHours.end} hai. Cart save hai.`,
-          );
+          reply =
+            closedText(company, lang) +
+            say(lang, ' Your cart is saved.', ' آپ کی ٹوکری محفوظ ہے۔', ' Cart save hai.');
           continue;
         }
         const missing = missingDetails(company, cart, lang);
@@ -1532,46 +1573,10 @@ export function processTurn(
           continue;
         }
         const submissionKey = `${company.id}:${next.id}:${cart.revision}`;
-        const id = idFor(submissionKey);
-        order = {
-          id,
-          companyId: company.id,
-          conversationId: next.id,
-          reference: `ORD-${id.replaceAll('-', '').slice(-8).toUpperCase()}`,
-          submissionKey,
-          customerName: cart.customerName!,
-          customerPhone: next.customerPhone,
-          fulfillment: cart.fulfillment!,
-          address: cart.fulfillment === 'delivery' ? cart.address : undefined,
-          zone: cart.fulfillment === 'delivery' ? cart.zone : undefined,
-          items: quote.items,
-          subtotal: quote.subtotal,
-          deliveryFee: quote.deliveryFee,
-          total: quote.total,
-          currency: 'PKR',
-          status: 'pending',
-          syncStatus: 'not_connected',
-          createdAt: input.now,
-          updatedAt: input.now,
-          sandbox: conversation.channel === 'demo',
-          phoneConfirmationRequired:
-            !!company.bot?.published && configuration.requirePhoneConfirmation,
-        };
+        order = buildOrder(company, next, cart, quote, input.now, submissionKey);
         cart.status = 'submitted';
-        cart.orderId = id;
-        reply = say(
-          lang,
-          `Order ${order.reference} received — ${money(order.total)}. Awaiting restaurant acceptance. Payment is cash ${order.fulfillment === 'pickup' ? 'at pickup' : 'on delivery'}.`,
-          `آرڈر ${order.reference} موصول ہوا — ${money(order.total)}۔ ریسٹورنٹ کی منظوری کا انتظار ہے۔ ادائیگی نقد ہوگی۔`,
-          `Order ${order.reference} receive ho gaya — ${money(order.total)}. Restaurant ki manzoori ka intezar hai. Payment cash hogi.`,
-        );
-        if (order.phoneConfirmationRequired)
-          reply += say(
-            lang,
-            '\nRestaurant staff will call to confirm before accepting your order.',
-            '\nعملہ آرڈر منظور کرنے سے پہلے فون پر تصدیق کرے گا۔',
-            '\nRestaurant staff order accept karne se pehle call kar ke confirm karega.',
-          );
+        cart.orderId = order.id;
+        reply = orderReceivedText(lang, order);
         traces.push('order_pending_restaurant_acceptance');
         break;
       }
