@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { api, setAccessToken } from '../src/lib/api';
+import { api, setAccessToken, setSessionRejectedHandler } from '../src/lib/api';
 
 afterEach(() => {
   setAccessToken();
+  setSessionRejectedHandler();
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
 });
@@ -50,6 +51,67 @@ describe('frontend API routing', () => {
     vi.stubGlobal('fetch', fetch);
     await expect(api('/account')).rejects.toThrow('VITE_API_BASE_URL must be');
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  describe('a saved session the server no longer accepts', () => {
+    const rejected = () =>
+      Response.json({ error: 'Your session expired. Sign in again.' }, { status: 401 });
+
+    it('reports it, so the app can sign out locally and show the sign-in form', async () => {
+      vi.stubEnv('VITE_API_BASE_URL', '');
+      setAccessToken('revoked-token');
+      const handler = vi.fn();
+      setSessionRejectedHandler(handler);
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => rejected()),
+      );
+      await expect(api('/bootstrap')).rejects.toThrow('Your session expired. Sign in again.');
+      expect(handler).toHaveBeenCalledOnce();
+    });
+
+    it('ignores a 401 when no sign-in was sent', async () => {
+      vi.stubEnv('VITE_API_BASE_URL', '');
+      const handler = vi.fn();
+      setSessionRejectedHandler(handler);
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => rejected()),
+      );
+      await expect(api('/bootstrap')).rejects.toThrow();
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('ignores a 401 for a token that was refreshed while the request was in flight', async () => {
+      vi.stubEnv('VITE_API_BASE_URL', '');
+      setAccessToken('old-token');
+      const handler = vi.fn();
+      setSessionRejectedHandler(handler);
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => {
+          setAccessToken('fresh-token');
+          return rejected();
+        }),
+      );
+      await expect(api('/activity')).rejects.toThrow();
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('ignores other failures, such as a missing authenticator check', async () => {
+      vi.stubEnv('VITE_API_BASE_URL', '');
+      setAccessToken('valid-token');
+      const handler = vi.fn();
+      setSessionRejectedHandler(handler);
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () =>
+          Response.json({ error: 'Complete authenticator verification.' }, { status: 403 }),
+        ),
+      );
+      await expect(api('/bootstrap')).rejects.toThrow('Complete authenticator verification.');
+      expect(handler).not.toHaveBeenCalled();
+    });
   });
 
   it.each(['http://localhost:4000', 'http://127.0.0.1:4000', 'http://[::1]:4000'])(

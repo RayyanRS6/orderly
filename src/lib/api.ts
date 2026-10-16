@@ -28,8 +28,17 @@ function apiBaseUrl(): string {
   return url.href.replace(/\/+$/, '');
 }
 
+let onSessionRejected: (() => void) | undefined;
+
 export function setAccessToken(value?: string) {
   token = value;
+}
+/**
+ * Called when the backend rejects the sign-in this browser sent (HTTP 401): the session
+ * was revoked or ended elsewhere, though it is still saved here.
+ */
+export function setSessionRejectedHandler(handler?: () => void) {
+  onSessionRejected = handler;
 }
 export async function api<T>(
   path: string,
@@ -37,17 +46,21 @@ export async function api<T>(
   body?: unknown,
   method?: string,
 ): Promise<T> {
+  const sent = token;
   const response = await fetch(`${apiBaseUrl()}/api${path}`, {
     signal: AbortSignal.timeout(45000),
     method: method || (body !== undefined ? 'POST' : 'GET'),
     headers: {
       'Content-Type': 'application/json',
       ...(companyId ? { 'x-company-id': companyId } : {}),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(sent ? { Authorization: `Bearer ${sent}` } : {}),
     },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
   const result = await response.json().catch(() => ({}));
+  // Only when the rejected token is still the current one: a request that raced a token
+  // refresh must not sign anyone out.
+  if (response.status === 401 && sent && sent === token) onSessionRejected?.();
   if (!response.ok)
     throw new Error(
       typeof result.error === 'string'

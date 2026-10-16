@@ -26,7 +26,7 @@ import {
   X,
 } from 'lucide-react';
 import type { Bootstrap } from './shared/types';
-import { api, setAccessToken } from './lib/api';
+import { api, setAccessToken, setSessionRejectedHandler } from './lib/api';
 import { cn, initials, label } from './lib/utils';
 import {
   Workspace,
@@ -126,6 +126,8 @@ export default function App() {
   const [help, setHelp] = useState(false);
   const [firstBusiness, setFirstBusiness] = useState(false);
   const [navSearch, setNavSearch] = useState('');
+  // Shown on the sign-in form when the server rejected this browser's saved session.
+  const [sessionNotice, setSessionNotice] = useState('');
 
   useEffect(() => {
     let active = true;
@@ -143,6 +145,18 @@ export default function App() {
         const { createClient } = await import('@supabase/supabase-js');
         const auth = createClient(result.supabaseUrl, result.supabaseAnonKey);
         setClient(auth);
+        // The server rejected the saved session (revoked, or ended elsewhere) while this
+        // browser still holds it. Forget it here only, so the sign-in form appears instead
+        // of an error screen that can't be left.
+        let signingOut = false;
+        setSessionRejectedHandler(() => {
+          if (signingOut || !active) return;
+          signingOut = true;
+          setSessionNotice('Your session expired. Sign in again.');
+          void auth.auth.signOut({ scope: 'local' }).finally(() => {
+            signingOut = false;
+          });
+        });
         const acceptSession = async (present: boolean) => {
           if (!present) {
             if (active) {
@@ -163,6 +177,7 @@ export default function App() {
             }
           } else {
             setMfaFactor(undefined);
+            setSessionNotice('');
             setAuthenticated(true);
           }
         };
@@ -187,6 +202,7 @@ export default function App() {
     return () => {
       active = false;
       unsubscribe?.();
+      setSessionRejectedHandler(undefined);
     };
   }, []);
 
@@ -349,7 +365,8 @@ export default function App() {
         }}
       />
     );
-  if (config?.mode === 'live' && !authenticated && client) return <Login client={client} />;
+  if (config?.mode === 'live' && !authenticated && client)
+    return <Login client={client} notice={sessionNotice} />;
   if (!data && firstBusiness)
     return (
       <FirstBusiness
@@ -869,12 +886,12 @@ function FirstBusiness({ onCreated }: { onCreated: (id: string) => void }) {
   );
 }
 
-function Login({ client }: { client: SupabaseClient }) {
+function Login({ client, notice: initialNotice }: { client: SupabaseClient; notice?: string }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState<'' | 'signin' | 'reset'>('');
-  const [notice, setNotice] = useState('');
+  const [notice, setNotice] = useState(initialNotice ?? '');
   return (
     <div className="grid min-h-dvh place-items-center canvas-glow px-4 py-8">
       <div className="w-full max-w-md">
