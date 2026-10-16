@@ -6,7 +6,7 @@ Orderly uses Cloudflare Workers Static Assets for the dashboard and Supabase Edg
 
 Create one Supabase project for the platform. The existing Orderly project is in Sydney. Companies are isolated within it using `company_id`, membership checks and RLS. See `SETUP-STATUS.md` before applying migrations to an existing project.
 
-For a new installation, apply every file in `supabase/migrations` in filename order. The existing Orderly project already has migrations through `202610170001_business_keys_only.sql` (applied by hand in the SQL editor); `202610180001_spam_protection.sql` must be applied the same way before deploying the code that uses it. Earlier SQL-editor/management-API execution did not populate complete CLI migration history; reconcile it before using `supabase db push`, and do not reapply existing migrations blindly. All application tables use RLS; mutation RPCs and secrets are server-only.
+For a new installation, apply every file in `supabase/migrations` in filename order. The existing Orderly project already has migrations through `202610180001_spam_protection.sql` (applied by hand in the SQL editor). Earlier SQL-editor/management-API execution did not populate complete CLI migration history; reconcile it before using `supabase db push`, and do not reapply existing migrations blindly. All application tables use RLS; mutation RPCs and secrets are server-only.
 
 Use the [exact launch guide](ORDERLY-LAUNCH-STEPS-2026-09-18.md) for current client setup and the [audit closure](ORDERLY-AUDIT-CLOSURE-2026-09-18.md) for verified status.
 
@@ -17,7 +17,9 @@ insert into public.platform_admins(user_id)
 values ('FOUNDER_AUTH_USER_UUID');
 ```
 
-After signing into Orderly, the founder can create the first company. For each restaurant, prefer invitations from Orderly’s Security page. For controlled administrative bootstrapping only, existing Auth users can be assigned by ID:
+After signing into Orderly, the founder can create the first company. The founder then manages every restaurant’s owners and staff on the **People** page, which only platform admins see: add someone by email (an existing account is added straight away, anyone else gets an invitation), change a role, remove someone from a business, or delete an account. Deleting an account is permanent and needs the founder’s authenticator protection, which is set up in **Security & privacy**. Every business keeps at least one owner, so add the new owner before removing the old one. Owners can also add people by email in their own **Security & privacy** page. Platform admins are still granted only in SQL, as above.
+
+As an emergency fallback only, when the People page can’t be used, an existing Auth user can be assigned by ID:
 
 ```sql
 insert into public.company_memberships(company_id, user_id, role)
@@ -25,7 +27,7 @@ values ('COMPANY_ID_FROM_SETTINGS', 'EXISTING_AUTH_USER_UUID', 'owner')
 on conflict(company_id, user_id) do update set role=excluded.role;
 ```
 
-Use `staff` for employees who only handle orders and conversations. Owners can manage their own menu and connections. Only the founder creates companies. There are no Orderly-owned model keys: each business connects and pays for its own. Use Orderly’s Security page for team invitations and MFA, and its password-recovery flow. Configure production Auth SMTP before client invitations.
+Use `staff` for employees who only handle orders and conversations. Owners can manage their own menu and connections. Only the founder creates companies. There are no Orderly-owned model keys: each business connects and pays for its own. Use Orderly’s Security page for MFA, and its password-recovery flow. Configure production Auth SMTP before client invitations.
 
 ## 2. Supabase backend and Cloudflare frontend
 

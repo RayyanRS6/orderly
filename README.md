@@ -127,7 +127,7 @@ Follow [the deployment guide](docs/DEPLOYMENT.md) for Supabase, Cloudflare, Meta
 
 ## Scope and next milestones
 
-Live-account verification remains necessary. Owners can invite and manage team members in Security & privacy; subscription billing is not implemented. Orders and conversations support pagination and aggregate reporting, and older messages are stored in a paginated archive. The header bell reports unresolved live orders, handoffs and failed jobs. Browser alerts work while the app is open; external email/phone-push escalation is not configured. Opt-in retention is available in Security & privacy and starts disabled.
+Live-account verification remains necessary. Owners add team members by email and see their team’s emails in Security & privacy, and the platform admin manages everyone on the People page; subscription billing is not implemented. Orders and conversations support pagination and aggregate reporting, and older messages are stored in a paginated archive. The header bell reports unresolved live orders, handoffs and failed jobs. Browser alerts work while the app is open; external email/phone-push escalation is not configured. Opt-in retention is available in Security & privacy and starts disabled.
 
 Coexistence currently handles new staff echoes, including edit/delete notices. Historical chat imports, contact synchronization, full media rendering, voice-note transcription, payments, precise inventory reservations, delivery tracking, and arbitrary workflow building are outside this version. Media requests go to staff. Availability is an item on/off flag, not a stock count. Very large quotes that cannot fit a complete WhatsApp review are held for staff rather than truncated.
 
