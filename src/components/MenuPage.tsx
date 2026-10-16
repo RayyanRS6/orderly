@@ -833,7 +833,11 @@ export function MenuPage({ slug }: { slug: string }) {
                 maxLength={40}
                 placeholder="0300 1234567"
                 value={phone}
-                onChange={(e) => setPhone(e.target.value)}
+                onChange={(e) => {
+                  setPhone(e.target.value);
+                  // An earlier problem with the number no longer applies once it is edited.
+                  setError('');
+                }}
               />
             </Field>
           )}
