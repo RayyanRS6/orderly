@@ -37,6 +37,7 @@ import {
 import { dispatchJob, makeJob, recoverJobs } from './jobs.js';
 import { finishSignup, signupSchema } from './integrations/signup.js';
 import { managementRoutes } from './management.js';
+import { adminRoutes } from './admin.js';
 import { readiness } from './readiness.js';
 import { buildAgentFlow } from './agent-flow.js';
 import { verifyProviderKey } from './integrations/model-catalog.js';
@@ -54,7 +55,14 @@ import {
 } from './whatsapp/connections';
 
 type Env = {
-  Variables: { company: Company; role: Role; userId: string; allowedCompanies: Company[] };
+  Variables: {
+    company: Company;
+    role: Role;
+    userId: string;
+    allowedCompanies: Company[];
+    // The session passed an authenticator check (aal2). Always true in local demo mode.
+    mfaVerified: boolean;
+  };
 };
 const kindSchema = z.enum(['whatsapp', 'sheets', 'openai', 'anthropic', 'gemini']);
 const integrationKeys: Record<IntegrationKind, string[]> = {
@@ -293,6 +301,7 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
     const mode = appMode();
     let allowed: Company[];
     let userId = 'local-demo-admin';
+    let mfaVerified = mode === 'demo';
     if (mode === 'demo') {
       const hostname = new URL(c.req.url).hostname;
       if (!['127.0.0.1', 'localhost', '[::1]'].includes(hostname))
@@ -317,6 +326,7 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
             'Complete authenticator verification to access this workspace.',
             403,
           );
+        mfaVerified = true;
       }
       userId = data.user.id;
       if (!(await repo.consumeRateLimit(`user:${userId}`, 180))) {
@@ -326,6 +336,7 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
       allowed = await repo.listAllowedCompanies(userId);
     }
     c.set('userId', userId);
+    c.set('mfaVerified', mfaVerified);
     c.set('allowedCompanies', allowed);
     const slug = c.req.query('companySlug');
     const companyId = slug
@@ -353,7 +364,13 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
     c.set('company', company);
     c.set('role', role);
     await next();
-    if (c.res.ok && !['GET', 'OPTIONS'].includes(c.req.method) && c.req.path !== '/api/chat')
+    // Admin routes audit against the business they change, not the one that happens to be open.
+    if (
+      c.res.ok &&
+      !['GET', 'OPTIONS'].includes(c.req.method) &&
+      c.req.path !== '/api/chat' &&
+      !c.req.path.startsWith('/api/admin/')
+    )
       await repo.audit(
         company.id,
         userId,
@@ -361,6 +378,7 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
       );
   });
   app.route('/api', managementRoutes(repo));
+  app.route('/api/admin', adminRoutes(repo));
   for (const path of ['/api/integrations/whatsapp', '/api/whatsapp/signup'])
     app.use(path, async (c, next) => {
       if (c.req.method === 'POST') return withConnectionLock(repo, c.get('company').id, next);

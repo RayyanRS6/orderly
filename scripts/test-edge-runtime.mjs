@@ -57,8 +57,10 @@ try {
   if (!ready) throw new Error(`Deno startup failed: ${output.slice(-3000)}`);
   const unauthorized = await fetch(`http://127.0.0.1:${port}/orderly/api/account`);
   if (unauthorized.status !== 401) throw new Error('Deno API did not enforce user authentication.');
+  const people = await fetch(`http://127.0.0.1:${port}/orderly/api/admin/people`);
+  if (people.status !== 401) throw new Error('Deno admin API did not enforce user authentication.');
   console.log(
-    'Deno runtime smoke passed: real bundle started, health responded, private API rejected anonymous access.',
+    'Deno runtime smoke passed: real bundle started, health responded, private and admin APIs rejected anonymous access.',
   );
 } finally {
   child.kill();

@@ -1,7 +1,14 @@
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
-import type { Company, Role, ListFilter, BotSettings } from '../src/shared/types';
+import type {
+  Account,
+  Company,
+  Role,
+  ListFilter,
+  BotSettings,
+  TeamMember,
+} from '../src/shared/types';
 import type { Repository } from './repository';
 import { PublicError } from './security';
 import { botSchema } from './validation';
@@ -13,12 +20,18 @@ import { PROVIDER_NAMES } from '../src/shared/models';
 import { createConversation } from '../src/domain/engine';
 import { readiness } from './readiness';
 import { appMode } from './config';
-import { createClient } from '@supabase/supabase-js';
+import { addMemberByEmail } from './team';
 import { emailAlertsAvailable } from './integrations/alerts';
 import { disconnectGateway } from './whatsapp/connections';
 
 export type AppEnv = {
-  Variables: { company: Company; role: Role; userId: string; allowedCompanies: Company[] };
+  Variables: {
+    company: Company;
+    role: Role;
+    userId: string;
+    allowedCompanies: Company[];
+    mfaVerified: boolean;
+  };
 };
 export function managementRoutes(repo: Repository) {
   const app = new Hono<AppEnv>();
@@ -356,37 +369,43 @@ export function managementRoutes(repo: Repository) {
   });
   app.get('/team', async (c) => {
     owner(c.get('role'));
-    return c.json(await repo.listMembers(c.get('company').id));
+    const members = await repo.listMembers(c.get('company').id);
+    // Emails only, never sign-in times: those are account-wide and would show activity in
+    // other businesses.
+    const accounts = await repo.getAccounts(members.map((m) => m.userId)).catch(() => {
+      console.warn('Orderly: team emails unavailable.');
+      return [] as Account[];
+    });
+    const byId = new Map(accounts.map((a) => [a.userId, a]));
+    c.header('Cache-Control', 'no-store');
+    return c.json(
+      members.map((m): TeamMember => ({
+        userId: m.userId,
+        role: m.role,
+        email: byId.get(m.userId)?.email,
+        waiting: byId.has(m.userId) ? !byId.get(m.userId)!.lastSignInAt : undefined,
+        you: m.userId === c.get('userId'),
+      })),
+    );
   });
   app.post('/team/invite', async (c) => {
     owner(c.get('role'));
-    if (appMode() !== 'live') throw new PublicError('Invitations require the hosted workspace.');
     const { email, role } = z
-      .object({ email: z.email().max(254), role: z.enum(['owner', 'staff']) })
+      .object({
+        email: z.string().trim().pipe(z.email().max(254)),
+        role: z.enum(['owner', 'staff']),
+      })
       .parse(await c.req.json());
+    // Before any lookup, to slow down checking which emails have accounts.
     if (!(await repo.consumeRateLimit(`invite:${c.get('userId')}`, 5)))
       throw new PublicError('Please wait before sending another invitation.', 429);
-    const client = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!, {
-      auth: { persistSession: false },
-      global: {
-        fetch: (input, init) => fetch(input, { ...init, signal: AbortSignal.timeout(10000) }),
-      },
-    });
-    const result = await client.auth.admin.inviteUserByEmail(email, {
-      redirectTo: `${process.env.APP_URL}/login`,
-    });
-    if (result.error || !result.data.user)
-      throw new PublicError(
-        'Invitation could not be sent. Check email delivery settings; for an existing account, add its user ID instead.',
-        409,
-      );
-    await repo.setMember(
+    const r = await addMemberByEmail(repo, c.get('company').id, email, role, c.get('userId'));
+    await repo.audit(
       c.get('company').id,
-      { userId: result.data.user.id, role },
       c.get('userId'),
+      r.outcome === 'invited' ? 'team.invited' : 'team.member_added',
     );
-    await repo.audit(c.get('company').id, c.get('userId'), 'team.invited');
-    return c.json({ ok: true });
+    return c.json({ ok: true, outcome: r.outcome });
   });
   app.put('/team/:userId', async (c) => {
     owner(c.get('role'));
