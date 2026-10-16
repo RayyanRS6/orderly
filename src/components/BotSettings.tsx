@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   ArrowDown,
   ArrowUp,
@@ -11,6 +11,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import type {
+  AiLimitStatus,
   BotConfig,
   BotSettings as Settings,
   Company,
@@ -19,6 +20,8 @@ import type {
 } from '../shared/types';
 import { botConfig, MAX_BOT_INSTRUCTIONS, normalizeBotConfig, sameBotConfig } from '../shared/bot';
 import {
+  AI_LIMIT_RANGES,
+  effectiveAiLimits,
   KNOWN_MODEL_RATES,
   MODEL_DEFAULTS,
   PROVIDER_NAMES,
@@ -27,7 +30,22 @@ import {
 import { useAction, useWorkspace } from '../lib/workspace';
 import { api } from '../lib/api';
 import { cn, label, shortDate } from '../lib/utils';
-import { ActionButton, Badge, ConfirmDialog, CustomSelect, Field, PageHeading } from './ui';
+import {
+  ActionButton,
+  Badge,
+  clockTime,
+  ConfirmDialog,
+  CustomSelect,
+  Field,
+  PageHeading,
+} from './ui';
+
+type ReplyLimit = keyof typeof AI_LIMIT_RANGES;
+/** A typed reply limit the server accepts: a whole number inside its range. */
+function validReplyLimit(key: ReplyLimit, value: string) {
+  const [min, max] = AI_LIMIT_RANGES[key];
+  return /^\d+$/.test(value.trim()) && Number(value) >= min && Number(value) <= max;
+}
 
 const KEY_HINTS: Record<Provider, { placeholder: string; url: string; pricing: string }> = {
   anthropic: {
@@ -66,6 +84,14 @@ export function BotSettings() {
   const [checkedAt, setCheckedAt] = useState('');
   const [catalogNote, setCatalogNote] = useState('');
   const [loading, setLoading] = useState(false);
+  // Reply limits as typed, so a box can be cleared while editing.
+  const savedLimits = effectiveAiLimits(data.company.aiLimits);
+  const [repliesPerHour, setRepliesPerHour] = useState(() => String(savedLimits.repliesPerHour));
+  const [repliesPerCustomer, setRepliesPerCustomer] = useState(() =>
+    String(savedLimits.repliesPerCustomerPerHour),
+  );
+  const lastSavedLimits = useRef(savedLimits);
+  const [hourStatus, setHourStatus] = useState<AiLimitStatus>();
   const owner = data.role !== 'staff';
   const published = data.company.bot?.published;
   // Compared by meaning: the database reorders fields and the server trims text.
@@ -129,9 +155,84 @@ export function BotSettings() {
   useEffect(() => {
     if (owner) void discover();
   }, [ai.provider, savedKey]);
+  // Limits saved elsewhere (another tab or owner): follow along unless this box was edited.
+  useEffect(() => {
+    const before = lastSavedLimits.current;
+    lastSavedLimits.current = savedLimits;
+    setRepliesPerHour((typed) =>
+      Number(typed) === before.repliesPerHour ? String(savedLimits.repliesPerHour) : typed,
+    );
+    setRepliesPerCustomer((typed) =>
+      Number(typed) === before.repliesPerCustomerPerHour
+        ? String(savedLimits.repliesPerCustomerPerHour)
+        : typed,
+    );
+  }, [savedLimits.repliesPerHour, savedLimits.repliesPerCustomerPerHour]);
+  // How many AI replies this hour used. Only a hint: a server without the spam protection
+  // migration answers with an error, and then the line is simply left out.
+  useEffect(() => {
+    let active = true;
+    api<AiLimitStatus>('/ai-limits', data.company.id)
+      .then((status) => {
+        if (active) setHourStatus(status);
+      })
+      .catch(() => {
+        if (active) setHourStatus(undefined);
+      });
+    return () => {
+      active = false;
+    };
+  }, [
+    data.company.id,
+    data.summary,
+    savedLimits.repliesPerHour,
+    savedLimits.repliesPerCustomerPerHour,
+  ]);
   // Failures already show as a notification (from mutate); nothing else to do here.
   const act = (key: string, work: () => Promise<unknown>) =>
     void run(key, work).catch(() => undefined);
+  // Any of the three limits can be saved here, even while AI is off.
+  const monthlyChanged = ai.monthlyBudgetUsd !== data.company.ai.monthlyBudgetUsd;
+  const limitsChanged =
+    monthlyChanged ||
+    Number(repliesPerHour) !== savedLimits.repliesPerHour ||
+    Number(repliesPerCustomer) !== savedLimits.repliesPerCustomerPerHour;
+  const [minPerHour, maxPerHour] = AI_LIMIT_RANGES.repliesPerHour;
+  const [minPerCustomer, maxPerCustomer] = AI_LIMIT_RANGES.repliesPerCustomerPerHour;
+  const limitProblem =
+    monthlyChanged &&
+    !(
+      Number.isFinite(ai.monthlyBudgetUsd) &&
+      ai.monthlyBudgetUsd >= 0 &&
+      ai.monthlyBudgetUsd <= 10000
+    )
+      ? 'Choose a monthly limit from $0 to $10,000.'
+      : !validReplyLimit('repliesPerHour', repliesPerHour)
+        ? `Choose ${minPerHour} to ${maxPerHour.toLocaleString('en-US')} AI replies per hour.`
+        : !validReplyLimit('repliesPerCustomerPerHour', repliesPerCustomer)
+          ? `Choose ${minPerCustomer} to ${maxPerCustomer.toLocaleString('en-US')} AI replies per customer.`
+          : undefined;
+  const saveLimits = () =>
+    act('limits', () =>
+      mutate(
+        `/companies/${data.company.id}`,
+        {
+          ...data.company,
+          ai: {
+            ...data.company.ai,
+            monthlyBudgetUsd: monthlyChanged
+              ? ai.monthlyBudgetUsd
+              : data.company.ai.monthlyBudgetUsd,
+          },
+          aiLimits: {
+            repliesPerHour: Number(repliesPerHour),
+            repliesPerCustomerPerHour: Number(repliesPerCustomer),
+          },
+        },
+        'PUT',
+        { success: 'Limits saved.' },
+      ),
+    );
   const connect = () =>
     act('connect', async () => {
       await mutate(
@@ -411,20 +512,6 @@ export function BotSettings() {
                 </a>
               </div>
             )}
-            <Field
-              label="Monthly AI spending limit (USD)"
-              hint="When the limit is reached, customers get a short notice and staff take over."
-            >
-              <input
-                className="input"
-                type="number"
-                min="0"
-                max="10000"
-                step="1"
-                value={ai.monthlyBudgetUsd}
-                onChange={(e) => setAi({ ...ai, monthlyBudgetUsd: Number(e.target.value) })}
-              />
-            </Field>
           </div>
           {usesAi && (
             <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-ink/[0.06] bg-paper px-4 py-3 text-sm leading-6 transition-colors has-[:checked]:border-brand-500/25 has-[:checked]:bg-brand-50">
@@ -488,29 +575,6 @@ export function BotSettings() {
                 Turn AI off
               </ActionButton>
             )}
-            {data.company.ai.provider !== 'mock' &&
-              ai.monthlyBudgetUsd !== data.company.ai.monthlyBudgetUsd && (
-                <ActionButton
-                  loading={pending === 'limit'}
-                  loadingLabel="Saving…"
-                  onClick={() =>
-                    act('limit', () =>
-                      mutate(
-                        `/companies/${data.company.id}`,
-                        {
-                          ...data.company,
-                          ai: { ...data.company.ai, monthlyBudgetUsd: ai.monthlyBudgetUsd },
-                        },
-                        'PUT',
-                        { success: 'Spending limit saved.' },
-                      ),
-                    )
-                  }
-                >
-                  <Save className="size-4" />
-                  Save limit only
-                </ActionButton>
-              )}
             {savedKey && (
               <button
                 className="btn btn-quiet text-red-700 hover:bg-red-50 hover:text-red-800"
@@ -589,6 +653,87 @@ export function BotSettings() {
               </div>
             </details>
           )}
+          <div
+            role="group"
+            aria-labelledby="limits-title"
+            className="space-y-4 border-t border-ink/[0.06] pt-5"
+          >
+            <h3 id="limits-title" className="eyebrow">
+              Limits
+            </h3>
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              <Field
+                label="Monthly AI spending limit (USD)"
+                hint="When a limit is reached, customers get a short notice, staff can reply, and the bot answers again once the limit resets or you raise it."
+              >
+                <input
+                  className="input"
+                  type="number"
+                  min="0"
+                  max="10000"
+                  step="1"
+                  value={ai.monthlyBudgetUsd}
+                  onChange={(e) => setAi({ ...ai, monthlyBudgetUsd: Number(e.target.value) })}
+                />
+              </Field>
+              <Field
+                label="AI replies per hour (whole restaurant)"
+                hint="Stops a flood of messages from using up the month’s budget at once. A busy hour rarely needs more than a few hundred."
+              >
+                <input
+                  className="input"
+                  type="number"
+                  inputMode="numeric"
+                  min={minPerHour}
+                  max={maxPerHour}
+                  step="1"
+                  value={repliesPerHour}
+                  onChange={(e) => setRepliesPerHour(e.target.value)}
+                />
+              </Field>
+              <Field
+                label="AI replies per customer per hour"
+                hint="Stops one number from using the AI again and again. After an hour the bot answers them again."
+              >
+                <input
+                  className="input"
+                  type="number"
+                  inputMode="numeric"
+                  min={minPerCustomer}
+                  max={maxPerCustomer}
+                  step="1"
+                  value={repliesPerCustomer}
+                  onChange={(e) => setRepliesPerCustomer(e.target.value)}
+                />
+              </Field>
+            </div>
+            {hourStatus && (
+              <p className="text-xs leading-relaxed text-stone-500" aria-live="polite">
+                This hour so far: {hourStatus.repliesThisHour.toLocaleString('en-US')} AI{' '}
+                {hourStatus.repliesThisHour === 1 ? 'reply' : 'replies'}
+                {clockTime(hourStatus.hourResetsAt) &&
+                  ` (resets at ${clockTime(hourStatus.hourResetsAt)})`}
+                .
+              </p>
+            )}
+            {limitsChanged && (
+              <div className="step-in flex flex-wrap items-center gap-3">
+                <ActionButton
+                  disabled={!!limitProblem}
+                  title={limitProblem}
+                  loading={pending === 'limits'}
+                  loadingLabel="Saving…"
+                  onClick={saveLimits}
+                >
+                  <Save className="size-4" />
+                  Save limits
+                </ActionButton>
+                {limitProblem && (
+                  <p className="text-xs font-semibold text-brand-700">{limitProblem}</p>
+                )}
+              </div>
+            )}
+          </div>
         </section>
         <section className="card p-5 sm:p-6 space-y-5">
           <div className="flex flex-wrap items-center justify-between gap-3">

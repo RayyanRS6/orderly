@@ -15,6 +15,9 @@ import type {
   TeamMember,
   BotSettings,
   Message,
+  AiCallReservation,
+  AiLimitStatus,
+  BlockedCustomer,
 } from '../src/shared/types';
 import { DemoFileRepository, MemoryRepository } from './storage/memory';
 import { SupabaseRepository } from './storage/supabase';
@@ -153,13 +156,33 @@ export interface Repository {
   listTraces(companyId: string): Promise<Trace[]>;
   addUsage(usage: Usage): Promise<void>;
   listUsage(companyId: string): Promise<Usage[]>;
-  reserveBudget(
+  // Holds the cost of one AI call if the monthly budget allows it and, for a live customer
+  // chat (conversationId set), if the restaurant's hourly replies and that customer's replies
+  // since customerSince (at most the last hour) are under their limits.
+  reserveAiCall(
     companyId: string,
     reservationId: string,
     amountUsd: number,
     expiresAt: string,
-  ): Promise<boolean>;
+    conversationId?: string,
+    customerSince?: string,
+  ): Promise<AiCallReservation>;
   settleBudget(reservationId: string, usage: Usage): Promise<void>;
+  aiLimitStatus(companyId: string): Promise<AiLimitStatus>;
+  // Blocks every key and marks the conversation blocked, together. Returns the conversation.
+  blockCustomer(
+    companyId: string,
+    conversationId: string,
+    blockId: string,
+    keys: string[],
+    label: string,
+    actorId: string,
+  ): Promise<Conversation>;
+  // Removes the block and clears the mark on its conversations; false when it was not found.
+  unblockCustomer(companyId: string, blockId: string): Promise<boolean>;
+  // The block matching any key, counting the ignored message. Undefined when not blocked.
+  findBlockedCustomer(companyId: string, keys: string[]): Promise<string | undefined>;
+  listBlockedCustomers(companyId: string): Promise<BlockedCustomer[]>;
   insertJob(job: Job, dedupeKey?: string): Promise<boolean>;
   getJob(id: string): Promise<Job | undefined>;
   // Whether a reply written before this one to the same customer is still unsent: pending,

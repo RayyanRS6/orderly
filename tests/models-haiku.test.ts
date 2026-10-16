@@ -1,7 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRepository } from '../server/repository';
 import { encryptSecret } from '../server/security';
-import { AiModelAdapter, modelDefaults, modelRate } from '../server/integrations/models';
+import { APICallError, NoObjectGeneratedError, type LanguageModelUsage } from 'ai';
+import {
+  AiLimitError,
+  AiModelAdapter,
+  failedCallCharge,
+  modelDefaults,
+  modelRate,
+} from '../server/integrations/models';
 import {
   generationProfile,
   KNOWN_MODEL_RATES,
@@ -15,7 +22,12 @@ import { seedCompanies, seedProducts } from '../src/shared/seed';
 import type { Company, ModelInterpretation, Provider } from '../src/shared/types';
 
 const { generate } = vi.hoisted(() => ({ generate: vi.fn() }));
-vi.mock('ai', () => ({ generateText: generate, Output: { object: vi.fn() } }));
+// Keep the real error classes: the adapter uses them to decide what a failed call cost.
+vi.mock('ai', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('ai')>()),
+  generateText: generate,
+  Output: { object: vi.fn() },
+}));
 
 const company = seedCompanies[0]!;
 const products = seedProducts.filter((p) => p.companyId === company.id);
@@ -206,4 +218,137 @@ describe('AiModelAdapter generation settings and usage', () => {
       );
     },
   );
+
+  const refused = (statusCode: number, responseBody: unknown = '{"type":"error"}') =>
+    new APICallError({
+      message: 'refused',
+      url: 'https://api.anthropic.com/v1/messages',
+      requestBodyValues: {},
+      statusCode,
+      responseBody: responseBody as string,
+    });
+  const unusable = (inputTokens: number | undefined, outputTokens: number | undefined) =>
+    new NoObjectGeneratedError({
+      message: 'No object generated: response did not match schema.',
+      text: '{}',
+      response: { id: 'r1', timestamp: new Date(), modelId: 'claude-haiku-5-5' },
+      usage: {
+        inputTokens,
+        inputTokenDetails: {
+          noCacheTokens: undefined,
+          cacheReadTokens: undefined,
+          cacheWriteTokens: undefined,
+        },
+        outputTokens,
+        outputTokenDetails: { textTokens: undefined, reasoningTokens: undefined },
+        totalTokens: undefined,
+      } as LanguageModelUsage,
+      finishReason: 'stop',
+    });
+
+  it.each([400, 401, 403, 404, 413, 422, 429, 503, 529])(
+    'records no spending when the provider refuses the call with HTTP %i',
+    async (status) => {
+      const configured = await configure('anthropic', 'claude-haiku-5-5');
+      generate.mockRejectedValueOnce(refused(status));
+      await expect(interpret(configured)).rejects.toMatchObject({ status: 503 });
+      const [ledger] = await repo.listUsage(company.id);
+      expect(ledger).toMatchObject({
+        costUsd: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        estimated: false,
+        rejected: true,
+      });
+      // The hold is settled, so the whole monthly budget is available again.
+      expect(
+        await repo.reserveAiCall(
+          company.id,
+          'next',
+          10,
+          new Date(Date.now() + 60_000).toISOString(),
+        ),
+      ).toEqual({ ok: true });
+    },
+  );
+
+  it.each([
+    ['a timeout', new DOMException('The operation was aborted due to timeout', 'TimeoutError')],
+    ['a server error that may have generated text', refused(500)],
+    ['a gateway timeout', refused(504)],
+    ['an error reported inside a successful reply', refused(400, { object: 'response' })],
+    ['a network failure', new TypeError('fetch failed')],
+  ])('keeps the conservative charge after %s', async (_cause, error) => {
+    const configured = await configure('anthropic', 'claude-haiku-5-5');
+    generate.mockRejectedValueOnce(error);
+    await expect(interpret(configured)).rejects.toMatchObject({ status: 503 });
+    const [ledger] = await repo.listUsage(company.id);
+    expect(ledger).toMatchObject({ estimated: true, outputTokens: 4000 });
+    expect(ledger!.rejected).toBeUndefined();
+    expect(ledger!.costUsd).toBeGreaterThan(0);
+  });
+
+  it('charges what the provider reported for a reply in the wrong shape', async () => {
+    const configured = await configure('anthropic', 'claude-haiku-5-5');
+    generate.mockRejectedValueOnce(unusable(1000, 50));
+    await expect(interpret(configured)).rejects.toMatchObject({ status: 503 });
+    const [ledger] = await repo.listUsage(company.id);
+    expect(ledger).toMatchObject({ inputTokens: 1000, outputTokens: 50, estimated: false });
+    expect(ledger!.costUsd).toBeCloseTo((1000 * 0.1 + 50 * 0.5) / 1_000_000, 12);
+  });
+
+  it('falls back to the estimate for any token count a wrong-shape reply leaves out', async () => {
+    const configured = await configure('anthropic', 'claude-haiku-5-5');
+    generate.mockRejectedValueOnce(unusable(1000, undefined));
+    await expect(interpret(configured)).rejects.toMatchObject({ status: 503 });
+    const [ledger] = await repo.listUsage(company.id);
+    expect(ledger).toMatchObject({ inputTokens: 1000, outputTokens: 4000, estimated: true });
+  });
+
+  it('classifies failed calls by what the provider could have billed', () => {
+    expect(failedCallCharge(refused(429))).toEqual({ kind: 'none' });
+    expect(failedCallCharge(refused(429, undefined))).toEqual({ kind: 'none' });
+    expect(failedCallCharge(refused(408))).toEqual({ kind: 'reserved' });
+    expect(failedCallCharge(refused(502))).toEqual({ kind: 'reserved' });
+    expect(failedCallCharge(new Error('unknown'))).toEqual({ kind: 'reserved' });
+    expect(failedCallCharge(unusable(10, 20))).toEqual({
+      kind: 'actual',
+      inputTokens: 10,
+      outputTokens: 20,
+    });
+  });
+
+  it('applies the spam limits only to live WhatsApp chats', async () => {
+    const configured = await configure('anthropic', 'claude-haiku-5-5');
+    const reserve = vi.spyOn(repo, 'reserveAiCall');
+    generate.mockResolvedValue({ output: answer, usage: { inputTokens: 100, outputTokens: 10 } });
+    await interpret(configured);
+    expect(reserve.mock.calls[0]!.slice(4)).toEqual([undefined, undefined]);
+    const live = {
+      ...createConversation(company.id, '923000000322', 'whatsapp', new Date().toISOString()),
+      botResumedAt: '2026-10-16T10:00:00.000Z',
+      limitResumedAt: '2026-10-16T11:00:00.000Z',
+    };
+    await new AiModelAdapter(repo).interpret(configured, products, live, 'hi');
+    expect(reserve.mock.calls[1]!.slice(4)).toEqual([live.id, '2026-10-16T11:00:00.000Z']);
+  });
+
+  it('names the limit that stopped a call', async () => {
+    const configured = await configure('anthropic', 'claude-haiku-5-5');
+    vi.spyOn(repo, 'reserveAiCall').mockResolvedValue({
+      ok: false,
+      limit: 'hourly',
+      limitValue: 300,
+      resetAt: '2026-10-16T12:00:00.000Z',
+    });
+    const error = await interpret(configured).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(AiLimitError);
+    expect(error).toMatchObject({
+      status: 429,
+      limit: 'hourly',
+      limitValue: 300,
+      resetAt: '2026-10-16T12:00:00.000Z',
+    });
+    expect(generate).not.toHaveBeenCalled();
+  });
 });

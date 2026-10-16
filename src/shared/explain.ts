@@ -63,8 +63,12 @@ export const NOTICE_LABELS: Record<StaffNoticeCause, string> = {
   menu_sync: 'The menu Sheet could not be refreshed, so the chat was handed to staff.',
   ai_error:
     'The AI model failed or timed out (check the key, quota and model access), so the chat was handed to staff.',
-  ai_budget:
-    'The monthly AI budget or the provider’s rate limit was reached, so the chat was handed to staff.',
+  // Also describes older handoffs that stay with staff, so it promises no automatic return.
+  ai_budget: 'The monthly AI spending limit was reached, so staff were asked to reply.',
+  hourly_limit:
+    'The restaurant reached its AI replies for this hour, so staff were asked to reply. The bot answers again next hour, or sooner if the limit is raised.',
+  customer_limit:
+    'This customer reached their AI replies for the hour, so staff were asked to reply. The bot answers them again after an hour.',
 };
 
 const STEP_LABELS: Record<string, string> = {

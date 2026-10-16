@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { MAX_BOT_INSTRUCTIONS } from '../src/shared/bot.js';
-import { MODEL_LIMITS } from '../src/shared/models.js';
+import { AI_LIMIT_RANGES, MODEL_LIMITS } from '../src/shared/models.js';
 const text = (max: number) => z.string().trim().max(max);
 export const behaviorRuleSchema = z
   .object({
@@ -114,6 +114,21 @@ export const companySchema = z
         .tuple([z.number().positive().max(1000), z.number().positive().max(1000)])
         .optional(),
     }),
+    aiLimits: z
+      .object({
+        repliesPerHour: z
+          .number()
+          .int()
+          .min(AI_LIMIT_RANGES.repliesPerHour[0])
+          .max(AI_LIMIT_RANGES.repliesPerHour[1]),
+        repliesPerCustomerPerHour: z
+          .number()
+          .int()
+          .min(AI_LIMIT_RANGES.repliesPerCustomerPerHour[0])
+          .max(AI_LIMIT_RANGES.repliesPerCustomerPerHour[1]),
+      })
+      .strict()
+      .optional(),
     catalogSyncedAt: z.string().datetime().optional(),
     createdAt: z.string().datetime().optional(),
     privacy: z

@@ -96,6 +96,26 @@ export function sameAddress(a?: WhatsAppAddress, b?: WhatsAppAddress): boolean {
     a.peer === b.peer
   );
 }
+/**
+ * The identities a block matches, so it outlasts a reconnect or a switch between Meta and
+ * the linked phone. A phone number (Meta sends bare digits, the gateway '+digits' or a phone
+ * JID) becomes 'pn:<digits>'. A WhatsApp privacy ID ('…@lid') becomes 'lid:<digits>': it is
+ * not a phone number and is never compared with one. Test chats have no keys.
+ */
+export function customerKeys({ phone, peer }: { phone?: string; peer?: string }): string[] {
+  const keys = new Set<string>();
+  const phoneKey = (value: string) => {
+    const digits = value.replace(/[\s()+-]/g, '');
+    if (/^[1-9]\d{5,14}$/.test(digits)) keys.add(`pn:${digits}`);
+  };
+  if (phone) phoneKey(phone);
+  const jid = peer?.match(/^(\d{5,20})(?::\d+)?@(s\.whatsapp\.net|lid)$/);
+  if (jid) {
+    if (jid[2] === 'lid') keys.add(`lid:${jid[1]}`);
+    else phoneKey(jid[1]);
+  } else if (peer) phoneKey(peer);
+  return [...keys];
+}
 export function connectionMatches(
   connection: WhatsAppConnection | undefined,
   address: WhatsAppAddress,

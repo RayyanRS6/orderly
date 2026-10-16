@@ -4,6 +4,7 @@ import type { Conversation } from '../../src/shared/types';
 import {
   addressSchema,
   connectionMatches,
+  customerKeys,
   type WhatsAppConnection,
   type WhatsAppAddress,
   type GatewayEvent,
@@ -248,6 +249,16 @@ export async function receiveGatewayEvent(repo: Repository, event: GatewayEvent)
   const phone =
     event.phoneNumber ??
     (event.peer.endsWith('@s.whatsapp.net') ? `+${event.peer.split('@')[0]}` : '');
+  // A blocked number's message is dropped before anything is saved. Answering normally lets
+  // the gateway remove it from its queue; staff messages from the phone are never blocked.
+  if (
+    !event.fromMe &&
+    (await repo.findBlockedCustomer(
+      current.companyId,
+      customerKeys({ phone: event.phoneNumber ?? phone, peer: event.peer }),
+    ))
+  )
+    return;
   const dedupeKey = `baileys:${current.id}:${current.generation}:${event.messageId}:${event.peer}`;
   const job = makeJob(
     current.companyId,
@@ -281,12 +292,13 @@ export async function receiveGatewayEvent(repo: Repository, event: GatewayEvent)
       !!conversation?.botResumedAt && event.timestamp < conversation.botResumedAt;
     if (
       !handedBackLater &&
-      (conversation?.mode === 'bot' || conversation?.botPausedAt) &&
+      (conversation?.mode === 'bot' || conversation?.botPausedAt || conversation?.limitPause) &&
       !(await repo.saveConversation(
         {
           ...conversation,
           mode: 'human',
           botPausedAt: undefined,
+          limitPause: undefined,
           version: conversation.version + 1,
           updatedAt: event.timestamp,
         },

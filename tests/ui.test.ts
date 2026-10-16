@@ -21,6 +21,8 @@ import { Inbox, Playground } from '../src/components/Conversations';
 import { Businesses, Integrations, Settings } from '../src/components/Settings';
 import { WhatsAppSignup } from '../src/components/WhatsAppSignup';
 import { BotSettings } from '../src/components/BotSettings';
+import { SecuritySettings } from '../src/components/Operations';
+import { AI_LIMIT_DEFAULTS, AI_LIMIT_RANGES } from '../src/shared/models';
 import App from '../src/App';
 import { initials, label, shortDate } from '../src/lib/utils';
 import { seedCompanies, seedProducts, seedOrders, seedConversations } from '../src/shared/seed';
@@ -259,6 +261,104 @@ describe('Full Component Rendering with Workspace.Provider', () => {
     expect(html).toContain('maxLength="20000"');
     expect(html).toContain('20,000 characters');
     expect(html).not.toContain('Order collection flow');
+  });
+
+  it('shows the AI limits with their allowed ranges on Bot settings', () => {
+    const context = createMockWorkspaceContext(normalData, 'bot');
+    const html = renderToStaticMarkup(
+      createElement(Workspace.Provider, { value: context }, createElement(BotSettings)),
+    );
+    expect(html).toContain('Limits');
+    expect(html).toContain('Monthly AI spending limit (USD)');
+    expect(html).toContain('AI replies per hour (whole restaurant)');
+    expect(html).toContain('AI replies per customer per hour');
+    const [minPerHour, maxPerHour] = AI_LIMIT_RANGES.repliesPerHour;
+    const [minPerCustomer, maxPerCustomer] = AI_LIMIT_RANGES.repliesPerCustomerPerHour;
+    expect(html).toContain(`min="${minPerHour}" max="${maxPerHour}"`);
+    expect(html).toContain(`min="${minPerCustomer}" max="${maxPerCustomer}"`);
+    // Saved values (or the defaults) fill the boxes; nothing changed yet, so no save button.
+    expect(html).toContain(`value="${AI_LIMIT_DEFAULTS.repliesPerHour}"`);
+    expect(html).toContain(`value="${AI_LIMIT_DEFAULTS.repliesPerCustomerPerHour}"`);
+    expect(html).not.toContain('Save limits');
+    expect(html).not.toContain('Save limit only');
+    expect(html).toContain('once the limit resets or you raise it');
+
+    const custom = createMockBootstrap({
+      company: {
+        ...seedCompanies[0],
+        aiLimits: { repliesPerHour: 450, repliesPerCustomerPerHour: 12 },
+      },
+    });
+    const customHtml = renderToStaticMarkup(
+      createElement(
+        Workspace.Provider,
+        { value: createMockWorkspaceContext(custom, 'bot') },
+        createElement(BotSettings),
+      ),
+    );
+    expect(customHtml).toContain('value="450"');
+    expect(customHtml).toContain('value="12"');
+  });
+
+  it('marks blocked and AI-limited chats in the Inbox list', () => {
+    const base = seedConversations[0];
+    const now = new Date().toISOString();
+    const data = createMockBootstrap({
+      conversations: [
+        {
+          ...base,
+          id: 'blocked-chat',
+          customerName: 'Blocked Customer',
+          channel: 'whatsapp',
+          blocked: { at: now, blockId: 'block-1' },
+        },
+        {
+          ...base,
+          id: 'limited-chat',
+          customerName: 'Limited Customer',
+          channel: 'whatsapp',
+          mode: 'human',
+          limitPause: {
+            reason: 'customer',
+            at: now,
+            until: new Date(Date.now() + 3600000).toISOString(),
+            limit: 30,
+          },
+        },
+        { ...base, id: 'plain-chat', customerName: 'Plain Customer' },
+      ],
+    });
+    const html = renderToStaticMarkup(
+      createElement(
+        Workspace.Provider,
+        { value: createMockWorkspaceContext(data, 'inbox') },
+        createElement(Inbox),
+      ),
+    );
+    expect(html).toContain('Blocked Customer');
+    expect(html.match(/>Blocked</g)).toHaveLength(1);
+    expect(html.match(/>AI limit</g)).toHaveLength(1);
+    expect(html).toContain('Plain Customer');
+  });
+
+  it('shows the Blocked numbers card on Security & privacy to owners and staff', () => {
+    for (const role of ['owner', 'staff'] as const) {
+      const html = renderToStaticMarkup(
+        createElement(
+          Workspace.Provider,
+          { value: createMockWorkspaceContext(createMockBootstrap({ role }), 'security') },
+          createElement(SecuritySettings),
+        ),
+      );
+      expect(html).toContain('Blocked numbers');
+      expect(html).toContain('Messages from these numbers are ignored before they are saved.');
+      // Retention stays owner-only, and the blocked list comes before it.
+      if (role === 'owner')
+        expect(html.indexOf('Blocked numbers')).toBeLessThan(
+          html.indexOf('Automatic data retention'),
+        );
+      else expect(html).not.toContain('Automatic data retention');
+    }
   });
 
   it('renders Integrations, Settings, and Businesses pages cleanly', () => {

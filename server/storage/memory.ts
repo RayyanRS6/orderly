@@ -29,6 +29,7 @@ import type { Repository } from '../repository';
 import { transitionOrder } from '../../src/domain/engine';
 import { PublicError } from '../security';
 import { orderMatches, pageOf, summaryOf } from '../queries';
+import { effectiveAiLimits } from '../../src/shared/models';
 import {
   sameAddress,
   type WhatsAppConnection,
@@ -42,8 +43,52 @@ interface Reservation {
   expiresAt: string;
   createdAt?: string;
   settled: boolean;
+  /** Held for a live customer chat: counts toward the hourly replies while it runs. */
+  live?: boolean;
 }
+interface AiLimitHit {
+  companyId: string;
+  scope: 'monthly' | 'hourly';
+  windowKey: string;
+  limitValue: number;
+  resetsAt: string;
+  firstHitAt: string;
+  lastHitAt: string;
+}
+interface BlockedKey {
+  companyId: string;
+  key: string;
+  blockId: string;
+  label: string;
+  conversationId?: string;
+  blockedBy?: string;
+  createdAt: string;
+  blockedCount: number;
+  lastBlockedAt?: string;
+}
+const BLOCK_KEY = /^(pn|lid):[0-9]{5,20}$/;
+// Usage that counts as an AI reply toward the spam limits: a live chat's call that cost something.
+const countedReply = (u: Usage, companyId: string, since: number) =>
+  u.companyId === companyId && u.costUsd > 0 && !u.sandbox && Date.parse(u.createdAt) >= since;
+const hourStart = (now: number) => Math.floor(now / 3600000) * 3600000;
+// Mirrors SQL ai_replies_this_hour: settled replies plus live calls still running.
+const repliesThisHour = (state: State, companyId: string, now: number) => {
+  const hour = hourStart(now);
+  return (
+    state.usage.filter((u) => countedReply(u, companyId, hour)).length +
+    state.reservations.filter(
+      (r) =>
+        r.companyId === companyId &&
+        r.live &&
+        !r.settled &&
+        Date.parse(r.expiresAt) > now &&
+        Date.parse(r.createdAt ?? r.expiresAt) >= hour,
+    ).length
+  );
+};
 interface State {
+  aiLimitHits?: AiLimitHit[];
+  blockedCustomers?: BlockedKey[];
   gatewayNonces?: Record<string, number>;
   whatsappConnections?: WhatsAppConnection[];
   retention: Record<string, import('../../src/shared/types').RetentionStatus>;
@@ -272,7 +317,15 @@ export class MemoryRepository implements Repository {
   }
   async hasOverdueAttention(companyId: string, minutes: number) {
     const alerts = await this.staffAttention(companyId);
-    return alerts.items.some((a) => Date.parse(a.createdAt) < Date.now() - minutes * 60000);
+    const recentLimit = await this.read((s) =>
+      (s.aiLimitHits ?? []).some(
+        (h) => h.companyId === companyId && Date.parse(h.lastHitAt) > Date.now() - 3600000,
+      ),
+    );
+    return (
+      recentLimit ||
+      alerts.items.some((a) => Date.parse(a.createdAt) < Date.now() - minutes * 60000)
+    );
   }
   staffAttention(companyId: string) {
     return this.read((s) => {
@@ -291,7 +344,8 @@ export class MemoryRepository implements Repository {
               c.companyId === companyId &&
               c.channel === 'whatsapp' &&
               c.mode === 'human' &&
-              c.messages.at(-1)?.role !== 'staff',
+              c.messages.at(-1)?.role !== 'staff' &&
+              !c.blocked,
           )
           .map((c) => ({
             id: `handoff:${c.id}`,
@@ -309,7 +363,17 @@ export class MemoryRepository implements Repository {
           })),
       ];
       const month = new Date().toISOString().slice(0, 7);
-      const budget = s.companies.find((c) => c.id === companyId)?.ai.monthlyBudgetUsd ?? 0;
+      const company = s.companies.find((c) => c.id === companyId);
+      const budget = company?.ai?.monthlyBudgetUsd ?? 0;
+      const limits = (s.aiLimitHits ?? []).filter(
+        (h) =>
+          h.companyId === companyId &&
+          Date.parse(h.resetsAt) > Date.now() &&
+          (h.scope === 'monthly'
+            ? typeof company?.ai?.monthlyBudgetUsd !== 'number' ||
+              h.limitValue >= company.ai.monthlyBudgetUsd
+            : h.limitValue >= effectiveAiLimits(company?.aiLimits).repliesPerHour),
+      );
       const spent =
         s.usage
           .filter((u) => u.companyId === companyId && u.createdAt.startsWith(month))
@@ -322,12 +386,21 @@ export class MemoryRepository implements Repository {
               (r.createdAt ?? r.expiresAt).startsWith(month),
           )
           .reduce((n, r) => n + r.amountUsd, 0);
-      if (budget > 0 && spent >= budget * 0.8)
+      if (budget > 0 && spent >= budget * 0.8 && !limits.some((h) => h.scope === 'monthly'))
         items.push({
           id: `budget:${companyId}:${month}`,
           kind: 'budget',
           entityId: companyId,
           createdAt: month + '-01T00:00:00.000Z',
+        });
+      for (const h of limits)
+        items.push({
+          id: `limit:${h.scope}:${h.windowKey}`,
+          kind: 'limit',
+          entityId: companyId,
+          createdAt: h.firstHitAt,
+          scope: h.scope,
+          resetsAt: h.resetsAt,
         });
       return {
         total: items.length,
@@ -335,6 +408,7 @@ export class MemoryRepository implements Repository {
         handoffs: items.filter((a) => a.kind === 'handoff').length,
         failures: items.filter((a) => a.kind === 'job').length,
         budgets: items.filter((a) => a.kind === 'budget').length,
+        limits: items.filter((a) => a.kind === 'limit').length,
         items: items
           .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id))
           .slice(0, 30),
@@ -1086,8 +1160,16 @@ export class MemoryRepository implements Repository {
   listUsage(companyId: string) {
     return this.read((s) => s.usage.filter((u) => u.companyId === companyId));
   }
-  reserveBudget(companyId: string, reservationId: string, amountUsd: number, expiresAt: string) {
-    return this.mutate((s) => {
+  // Mirrors SQL reserve_ai_call.
+  reserveAiCall(
+    companyId: string,
+    reservationId: string,
+    amountUsd: number,
+    expiresAt: string,
+    conversationId?: string,
+    customerSince?: string,
+  ) {
+    return this.mutate((s): import('../../src/shared/types').AiCallReservation => {
       companyExists(s, companyId);
       validCost(amountUsd);
       const now = new Date();
@@ -1097,7 +1179,8 @@ export class MemoryRepository implements Repository {
         s.reservations.some((r) => r.id === reservationId) ||
         s.usage.some((u) => u.id === reservationId)
       )
-        return false;
+        return { ok: false, limit: 'duplicate' };
+      const company = s.companies.find((c) => c.id === companyId)!;
       const month = now.toISOString().slice(0, 7);
       const spent = s.usage
         .filter((u) => u.companyId === companyId && u.createdAt.slice(0, 7) === month)
@@ -1110,11 +1193,71 @@ export class MemoryRepository implements Repository {
             (r.createdAt ?? r.expiresAt).slice(0, 7) === month,
         )
         .reduce((sum, r) => sum + r.amountUsd, 0);
-      if (
-        spent + reserved + amountUsd >
-        s.companies.find((c) => c.id === companyId)!.ai.monthlyBudgetUsd + 1e-9
-      )
-        return false;
+      const hit = (
+        scope: AiLimitHit['scope'],
+        windowKey: string,
+        limitValue: number,
+        resetsAt: string,
+      ) => {
+        const hits = (s.aiLimitHits ??= []).filter(
+          (h) =>
+            h.companyId !== companyId || Date.parse(h.resetsAt) >= now.getTime() - 40 * 86400000,
+        );
+        const current = hits.find(
+          (h) => h.companyId === companyId && h.scope === scope && h.windowKey === windowKey,
+        );
+        if (current) {
+          current.limitValue = limitValue;
+          current.lastHitAt = now.toISOString();
+          if (resetsAt > current.resetsAt) current.resetsAt = resetsAt;
+        } else
+          hits.push({
+            companyId,
+            scope,
+            windowKey,
+            limitValue,
+            resetsAt,
+            firstHitAt: now.toISOString(),
+            lastHitAt: now.toISOString(),
+          });
+        s.aiLimitHits = hits;
+      };
+      if (spent + reserved + amountUsd > company.ai.monthlyBudgetUsd + 1e-9) {
+        const resetAt = new Date(
+          Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1),
+        ).toISOString();
+        hit('monthly', month, company.ai.monthlyBudgetUsd, resetAt);
+        return {
+          ok: false,
+          limit: 'monthly',
+          limitValue: company.ai.monthlyBudgetUsd,
+          resetAt,
+        };
+      }
+      if (conversationId) {
+        const limits = effectiveAiLimits(company.aiLimits);
+        const hour = hourStart(now.getTime());
+        if (repliesThisHour(s, companyId, now.getTime()) >= limits.repliesPerHour) {
+          const resetAt = new Date(hour + 3600000).toISOString();
+          hit('hourly', new Date(hour).toISOString().slice(0, 13), limits.repliesPerHour, resetAt);
+          return { ok: false, limit: 'hourly', limitValue: limits.repliesPerHour, resetAt };
+        }
+        const since = Math.max(
+          now.getTime() - 3600000,
+          Math.min(customerSince ? Date.parse(customerSince) : -Infinity, now.getTime()),
+        );
+        if (
+          s.usage.filter(
+            (u) => countedReply(u, companyId, since) && u.conversationId === conversationId,
+          ).length >= limits.repliesPerCustomerPerHour
+        )
+          return {
+            ok: false,
+            limit: 'customer',
+            limitValue: limits.repliesPerCustomerPerHour,
+            resetAt: new Date(now.getTime() + 3600000).toISOString(),
+          };
+      }
       s.reservations.push({
         id: reservationId,
         companyId,
@@ -1122,8 +1265,150 @@ export class MemoryRepository implements Repository {
         expiresAt,
         createdAt: now.toISOString(),
         settled: false,
+        live: !!conversationId,
       });
-      return true;
+      return { ok: true };
+    });
+  }
+  aiLimitStatus(companyId: string) {
+    return this.read((s) => {
+      companyExists(s, companyId);
+      const limits = effectiveAiLimits(s.companies.find((c) => c.id === companyId)!.aiLimits);
+      const hour = hourStart(Date.now());
+      return {
+        repliesThisHour: repliesThisHour(s, companyId, Date.now()),
+        ...limits,
+        hourResetsAt: new Date(hour + 3600000).toISOString(),
+      };
+    });
+  }
+  // Mirrors SQL block_customer.
+  blockCustomer(
+    companyId: string,
+    conversationId: string,
+    blockId: string,
+    keys: string[],
+    label: string,
+    actorId: string,
+  ) {
+    return this.mutate((s) => {
+      if (!blockId || !keys.length) throw new Error('Nothing to block');
+      if (keys.some((k) => !BLOCK_KEY.test(k))) throw new Error('Invalid block key');
+      const conversation = s.conversations.find(
+        (c) => c.companyId === companyId && c.id === conversationId,
+      );
+      if (!conversation) throw new Error('Unknown conversation');
+      if (conversation.channel !== 'whatsapp')
+        throw new Error('Only WhatsApp chats can be blocked');
+      if (conversation.blocked) return conversation;
+      const rows = (s.blockedCustomers ??= []);
+      const now = new Date().toISOString();
+      // One person, one block: join and merge the blocks that already hold these keys.
+      const holding = rows
+        .filter((r) => r.companyId === companyId && keys.includes(r.key))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.key.localeCompare(b.key));
+      const target = holding[0]?.blockId ?? blockId;
+      const merged = new Set(holding.map((r) => r.blockId));
+      for (const r of rows)
+        if (r.companyId === companyId && merged.has(r.blockId)) r.blockId = target;
+      for (const c of s.conversations)
+        if (
+          c.companyId === companyId &&
+          c.blocked &&
+          merged.has(c.blocked.blockId) &&
+          c.blocked.blockId !== target
+        ) {
+          c.blocked = { ...c.blocked, blockId: target };
+          c.version += 1;
+          c.updatedAt = now;
+        }
+      for (const key of new Set(keys))
+        if (!rows.some((r) => r.companyId === companyId && r.key === key))
+          rows.push({
+            companyId,
+            key,
+            blockId: target,
+            label: label.slice(0, 200),
+            conversationId,
+            blockedBy: actorId,
+            createdAt: now,
+            blockedCount: 0,
+          });
+      delete conversation.botPausedAt;
+      delete conversation.limitPause;
+      conversation.blocked = { at: now, blockId: target };
+      conversation.mode = 'bot';
+      conversation.version += 1;
+      conversation.updatedAt = now;
+      return conversation;
+    });
+  }
+  unblockCustomer(companyId: string, blockId: string) {
+    return this.mutate((s) => {
+      const rows = s.blockedCustomers ?? [];
+      const kept = rows.filter((r) => !(r.companyId === companyId && r.blockId === blockId));
+      const removed = rows.length - kept.length;
+      s.blockedCustomers = kept;
+      let cleared = 0;
+      const now = new Date().toISOString();
+      for (const c of s.conversations)
+        if (
+          c.companyId === companyId &&
+          c.blocked &&
+          !kept.some((r) => r.companyId === companyId && r.blockId === c.blocked!.blockId)
+        ) {
+          delete c.blocked;
+          c.version += 1;
+          c.updatedAt = now;
+          cleared += 1;
+        }
+      return removed > 0 || cleared > 0;
+    });
+  }
+  findBlockedCustomer(companyId: string, keys: string[]) {
+    return this.mutate((s) => {
+      const rows = (s.blockedCustomers ??= []);
+      const matched = rows
+        .filter((r) => r.companyId === companyId && keys.includes(r.key))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.key.localeCompare(b.key))[0];
+      if (!matched) return undefined;
+      matched.blockedCount += 1;
+      matched.lastBlockedAt = new Date().toISOString();
+      for (const key of new Set(keys))
+        if (BLOCK_KEY.test(key) && !rows.some((r) => r.companyId === companyId && r.key === key))
+          rows.push({ ...matched, key, blockedCount: 0, lastBlockedAt: undefined });
+      return matched.blockId;
+    });
+  }
+  listBlockedCustomers(companyId: string) {
+    return this.read((s) => {
+      const blocks = new Map<string, import('../../src/shared/types').BlockedCustomer>();
+      for (const r of (s.blockedCustomers ?? []).filter((row) => row.companyId === companyId)) {
+        const block = blocks.get(r.blockId);
+        if (!block)
+          blocks.set(r.blockId, {
+            blockId: r.blockId,
+            label: r.label,
+            keys: [r.key],
+            conversationId: r.conversationId,
+            blockedBy: r.blockedBy,
+            createdAt: r.createdAt,
+            blockedCount: r.blockedCount,
+            lastBlockedAt: r.lastBlockedAt,
+          });
+        else {
+          block.keys.push(r.key);
+          block.blockedCount += r.blockedCount;
+          if (r.createdAt < block.createdAt) block.createdAt = r.createdAt;
+          if (r.lastBlockedAt && (!block.lastBlockedAt || r.lastBlockedAt > block.lastBlockedAt))
+            block.lastBlockedAt = r.lastBlockedAt;
+        }
+      }
+      return [...blocks.values()]
+        .map((b) => ({ ...b, keys: b.keys.sort() }))
+        .sort(
+          (a, b) => b.createdAt.localeCompare(a.createdAt) || a.blockId.localeCompare(b.blockId),
+        );
     });
   }
   settleBudget(reservationId: string, usage: Usage) {

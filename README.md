@@ -55,7 +55,8 @@ Local demo mode does not automatically dispatch cloud queue jobs. Use **Integrat
 - Persistent cart, versioned customer review, explicit confirmation, and pending orders awaiting staff acceptance.
 - Order status workflow, export CSV, inbox, staff takeover and manual replies.
 - OpenAI, Anthropic and Gemini adapters. Every business uses its own API key, stored encrypted; Orderly never supplies one. Provider changes keep the same application rules.
-- Monthly AI budget reservations, bounded model context/actions, conservative accounting for uncertain calls, and message burst handoff.
+- Monthly AI budget reservations, bounded model context/actions, conservative accounting for uncertain calls ($0 for calls the provider refused), and message burst handoff.
+- Spam protection: AI replies per hour for the restaurant and per customer, one notice an hour, automatic return to the bot when a limit resets, limit alerts, and blocked numbers dropped on arrival.
 - Direct Meta webhook verification, message deduplication, outbound replies and status templates.
 - Embedded Signup UI, server code exchange, granted account/phone validation, subscription and optional number registration.
 - Coexistence live staff-message echoes pause automation and appear in the inbox. This requires eligible Meta Business App onboarding.

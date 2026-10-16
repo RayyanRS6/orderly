@@ -17,6 +17,7 @@ import type {
   TurnResult,
 } from '../shared/types';
 import { money } from '../shared/types';
+import { effectiveAiLimits } from '../shared/models';
 import { quantityFromText, resolveItemMention, resolvePendingItemChoice } from './menu-resolver';
 
 /** Pure application rules. Models can suggest tools, never calculate or commit orders. */
@@ -64,7 +65,64 @@ export function resumesAfterPause(conversation: Conversation): boolean {
     !conversation.messages.some((m) => m.role === 'staff' && !m.notice && m.createdAt >= pausedAt)
   );
 }
-const asksForPerson = (text: string) =>
+// A chat paused by an AI limit goes back to the bot once that limit resets or is raised,
+// again unless staff wrote since. Monthly $0 means "no AI", so it is never treated as raised.
+type PausedChat = Pick<Conversation, 'mode' | 'limitPause' | 'messages'>;
+export function limitPaused(conversation: PausedChat): boolean {
+  const pause = conversation.limitPause;
+  return (
+    conversation.mode === 'human' &&
+    !!pause &&
+    !conversation.messages.some((m) => m.role === 'staff' && !m.notice && m.createdAt >= pause.at)
+  );
+}
+export function resumesAfterLimit(
+  conversation: PausedChat,
+  company: Pick<Company, 'ai' | 'aiLimits'>,
+  now = Date.now(),
+): boolean {
+  const pause = conversation.limitPause;
+  if (!pause || !limitPaused(conversation)) return false;
+  if (now >= Date.parse(pause.until)) return true;
+  if (pause.reason === 'monthly') return company.ai.monthlyBudgetUsd > pause.limit;
+  const limits = effectiveAiLimits(company.aiLimits);
+  return (
+    (pause.reason === 'hourly' ? limits.repliesPerHour : limits.repliesPerCustomerPerHour) >
+    pause.limit
+  );
+}
+// The language a built-in notice answers this message in, as the engine would reply.
+export function noticeLanguage(company: Company, conversation: Conversation, text: string) {
+  const configured = botConfig(company).language;
+  return configured !== 'auto' ? configured : languageOf(text, conversation.language);
+}
+// What a customer is told when an AI limit pauses the bot. The same words for every limit:
+// customers need to know a person will answer and whether their order is safe, not why.
+export function limitNotice(lang: Language, cart: Cart): string {
+  const base = say(
+    lang,
+    'Thanks for your message! Our team will reply here soon.',
+    'آپ کے پیغام کا شکریہ! ہماری ٹیم جلد یہیں جواب دے گی۔',
+    'Aap ke message ka shukriya! Hamari team jald yahin jawab degi.',
+  );
+  const order = cart.orderId
+    ? say(
+        lang,
+        'Your order is not affected.',
+        'آپ کے آرڈر پر کوئی اثر نہیں پڑا۔',
+        'Aap ke order par koi asar nahi para.',
+      )
+    : cart.items.length
+      ? say(
+          lang,
+          'Your order hasn’t been placed yet.',
+          'آپ کا آرڈر ابھی نہیں دیا گیا۔',
+          'Aap ka order abhi place nahi hua.',
+        )
+      : '';
+  return order ? `${base} ${order}` : base;
+}
+export const asksForPerson = (text: string) =>
   /\b(human|staff|manager|person|insaan)\b|عملہ|انسان|مینیجر/u.test(normalize(text));
 
 function normalize(text: string): string {
@@ -1093,7 +1151,11 @@ export function processTurn(
     // (see resumesAfterPause), unless the customer asked for a person.
     if (next.mode === 'bot') next.botPausedAt = input.now;
     next.mode = 'human';
-    if (input.action?.type === 'handoff' || asksForPerson(input.text)) delete next.botPausedAt;
+    // Asking for a person makes it a real handoff: the bot must not take the chat back.
+    if (input.action?.type === 'handoff' || asksForPerson(input.text)) {
+      delete next.botPausedAt;
+      delete next.limitPause;
+    }
     traces.push('human_mode_message_saved');
     return finish();
   }
@@ -1168,6 +1230,7 @@ export function processTurn(
       if (action.type === 'handoff') {
         next.mode = 'human';
         delete next.botPausedAt;
+        delete next.limitPause;
         reply = say(
           lang,
           'This conversation is now assigned to staff. The bot is paused until they resume it.',

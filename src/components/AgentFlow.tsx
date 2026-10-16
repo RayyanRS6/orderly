@@ -843,7 +843,13 @@ function replayNotes(
           : ['Passed: the bot was allowed to answer.'];
     case 'agent':
     case 'model':
-      if (explanation.notice === 'ai_error' || explanation.notice === 'ai_budget')
+      // A failed call or a reached AI limit (monthly, hourly or per customer) stopped here.
+      if (
+        explanation.notice === 'ai_error' ||
+        explanation.notice === 'ai_budget' ||
+        explanation.notice === 'hourly_limit' ||
+        explanation.notice === 'customer_limit'
+      )
         return [NOTICE_LABELS[explanation.notice]];
       if (!ai.called) return ['The AI model was not used for this reply.'];
       return [

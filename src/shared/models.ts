@@ -57,6 +57,41 @@ export const MODEL_LIMITS = {
   budgetHoldMs: 120_000,
 } as const;
 
+/**
+ * Spam protection used when a business has not set its own values. The SQL function
+ * ai_limit_settings repeats these numbers; a test keeps the two equal.
+ */
+export const AI_LIMIT_DEFAULTS = {
+  repliesPerHour: 300,
+  repliesPerCustomerPerHour: 30,
+} as const;
+export const AI_LIMIT_RANGES = {
+  repliesPerHour: [20, 10000],
+  repliesPerCustomerPerHour: [5, 1000],
+} as const;
+/** How long a customer who reached their own limit waits before the bot answers again. */
+export const CUSTOMER_LIMIT_PAUSE_MS = 60 * 60 * 1000;
+/** A customer is told about a limit at most once in this time. */
+export const LIMIT_NOTICE_INTERVAL_MS = 60 * 60 * 1000;
+
+/** The limits in force: a saved value outside its range falls back to the default. */
+export function effectiveAiLimits(limits?: {
+  repliesPerHour?: unknown;
+  repliesPerCustomerPerHour?: unknown;
+}): { repliesPerHour: number; repliesPerCustomerPerHour: number } {
+  const pick = (key: keyof typeof AI_LIMIT_DEFAULTS) => {
+    const value = limits?.[key];
+    const [min, max] = AI_LIMIT_RANGES[key];
+    return typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max
+      ? value
+      : AI_LIMIT_DEFAULTS[key];
+  };
+  return {
+    repliesPerHour: pick('repliesPerHour'),
+    repliesPerCustomerPerHour: pick('repliesPerCustomerPerHour'),
+  };
+}
+
 export interface GenerationProfile {
   maxOutputTokens: number;
   /** Anthropic `effort`; set only for models that think by default. */

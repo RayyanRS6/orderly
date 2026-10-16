@@ -2,10 +2,44 @@ import { useEffect, useRef, useState } from 'react';
 import { Bell, X } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { api } from '../lib/api';
-import { useWorkspace } from '../lib/workspace';
+import { useWorkspace, type Page } from '../lib/workspace';
 import type { StaffAttention } from '../shared/types';
 import { EmailAlerts } from './EmailAlerts';
-import { keepOpenForToasts } from './ui';
+import { clockTime, keepOpenForToasts } from './ui';
+
+/**
+ * What one alert says and where it leads. A kind this dashboard does not know yet (from a
+ * newer server) still shows, and opens Activity.
+ */
+export function describeAlert(alert: StaffAttention['items'][number]): {
+  label: string;
+  page: Page;
+  id?: string;
+} {
+  switch (alert.kind) {
+    case 'order':
+      return { label: 'Order awaiting confirmation', page: 'orders', id: alert.entityId };
+    case 'handoff':
+      return { label: 'Conversation needs a person', page: 'inbox', id: alert.entityId };
+    case 'job':
+      return { label: 'Delivery or processing job failed', page: 'activity' };
+    case 'budget':
+      return { label: 'AI budget at 80% or more', page: 'bot' };
+    case 'limit': {
+      if (alert.scope === 'monthly') return { label: 'Monthly AI limit reached', page: 'bot' };
+      const back = clockTime(alert.resetsAt);
+      return {
+        label:
+          alert.scope === 'hourly'
+            ? `Hourly AI limit reached${back ? ` · back at ${back}` : ''}`
+            : 'AI limit reached',
+        page: 'bot',
+      };
+    }
+    default:
+      return { label: 'Something needs attention', page: 'activity' };
+  }
+}
 
 const preferenceKey = 'orderly-browser-alerts';
 function enabledHere() {
@@ -45,7 +79,7 @@ export function StaffAlerts() {
         ) {
           try {
             const note = new Notification('Orderly needs your attention', {
-              body: 'Open Orderly to review pending orders, staff handoffs or failed work.',
+              body: 'Open Orderly to review pending orders, staff handoffs, failed work or a reached AI limit.',
               tag: `orderly-${data.company.id}`,
             });
             note.onclick = () => {
@@ -135,7 +169,8 @@ export function StaffAlerts() {
             </Dialog.Close>
           </div>
           <Dialog.Description className="sr-only">
-            Unresolved orders, conversations and processing failures for this business.
+            Unresolved orders, conversations, processing failures and reached AI limits for this
+            business.
           </Dialog.Description>
           <div className="flex flex-wrap items-center justify-between gap-2">
             <p className="flex min-h-9 items-center gap-2.5 text-left text-sm font-semibold text-ink">
@@ -215,48 +250,46 @@ export function StaffAlerts() {
                       AI budget at 80% or more
                     </button>
                   )}
+                  {/* Older servers do not count limits. */}
+                  {!!(attention.limits ?? 0) && (
+                    <button
+                      className="btn border-sun/70 bg-sun/20 text-ink hover:border-sun hover:bg-sun/35"
+                      onClick={() => {
+                        setExpanded(false);
+                        navigate('bot');
+                      }}
+                    >
+                      AI limit reached
+                    </button>
+                  )}
                 </div>
               )}
               <ul className="stagger space-y-2">
-                {attention?.items.map((a) => (
-                  <li key={a.id}>
-                    <button
-                      className="lift flex min-h-11 w-full flex-wrap items-center justify-between gap-2 rounded-2xl border border-ink/[0.06] bg-white px-3.5 py-2.5 text-left"
-                      onClick={() => {
-                        setExpanded(false);
-                        navigate(
-                          a.kind === 'order'
-                            ? 'orders'
-                            : a.kind === 'handoff'
-                              ? 'inbox'
-                              : a.kind === 'budget'
-                                ? 'bot'
-                                : 'activity',
-                          a.kind === 'job' || a.kind === 'budget' ? undefined : a.entityId,
-                        );
-                      }}
-                    >
-                      <span className="font-medium text-ink">
-                        {a.kind === 'order'
-                          ? 'Order awaiting confirmation'
-                          : a.kind === 'handoff'
-                            ? 'Conversation needs a person'
-                            : a.kind === 'budget'
-                              ? 'AI budget at 80% or more'
-                              : 'Delivery or processing job failed'}
-                      </span>
-                      <time className="font-mono text-[11px] text-stone-500">
-                        {new Date(a.createdAt).toLocaleString()}
-                        {a.kind === 'handoff' &&
-                          Date.now() - Date.parse(a.createdAt) > 10 * 60000 && (
-                            <span className="pop-in ml-2 inline-flex rounded-full bg-red-50 px-2 py-0.5 font-sans text-[11px] font-semibold text-red-700">
-                              Waiting over 10 minutes
-                            </span>
-                          )}
-                      </time>
-                    </button>
-                  </li>
-                ))}
+                {attention?.items.map((a) => {
+                  const target = describeAlert(a);
+                  return (
+                    <li key={a.id}>
+                      <button
+                        className="lift flex min-h-11 w-full flex-wrap items-center justify-between gap-2 rounded-2xl border border-ink/[0.06] bg-white px-3.5 py-2.5 text-left"
+                        onClick={() => {
+                          setExpanded(false);
+                          navigate(target.page, target.id);
+                        }}
+                      >
+                        <span className="font-medium text-ink">{target.label}</span>
+                        <time className="font-mono text-[11px] text-stone-500">
+                          {new Date(a.createdAt).toLocaleString()}
+                          {a.kind === 'handoff' &&
+                            Date.now() - Date.parse(a.createdAt) > 10 * 60000 && (
+                              <span className="pop-in ml-2 inline-flex rounded-full bg-red-50 px-2 py-0.5 font-sans text-[11px] font-semibold text-red-700">
+                                Waiting over 10 minutes
+                              </span>
+                            )}
+                        </time>
+                      </button>
+                    </li>
+                  );
+                })}
               </ul>
               {(attention?.total ?? 0) > 30 && (
                 <p className="text-xs text-stone-500">

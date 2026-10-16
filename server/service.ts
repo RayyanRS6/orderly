@@ -15,12 +15,18 @@ import type {
 } from '../src/shared/types.js';
 import { attachExplanation, describeTurn } from './explanations.js';
 import {
+  asksForPerson,
   createConversation,
+  limitNotice,
+  limitPaused,
+  noticeLanguage,
   processTurn,
+  resumesAfterLimit,
   resumesAfterPause,
   transitionOrder,
 } from '../src/domain/engine.js';
-import { AiModelAdapter, providerKey } from './integrations/models.js';
+import { AiLimitError, AiModelAdapter, providerKey } from './integrations/models.js';
+import { CUSTOMER_LIMIT_PAUSE_MS, LIMIT_NOTICE_INTERVAL_MS } from '../src/shared/models.js';
 import { modelFingerprint } from './integrations/model-catalog.js';
 import { GoogleSheetsAdapter } from './integrations/sheets.js';
 import { WhatsAppAdapter } from './integrations/whatsapp.js';
@@ -31,7 +37,7 @@ import { dispatchJob, makeJob } from './jobs.js';
 import { sendStaffAlert } from './integrations/alerts.js';
 import { LinkedWhatsAppAdapter } from './integrations/linked-whatsapp';
 import { assertCurrentAddress, jobAddress, requireMeta } from './whatsapp/connections';
-import { sameAddress } from '../src/shared/whatsapp';
+import { customerKeys, sameAddress } from '../src/shared/whatsapp';
 
 // Paid Supabase workers have a 400s maximum lifetime. Include an 80s margin;
 // bounded upstream requests and database requests cannot survive this lease.
@@ -172,6 +178,37 @@ export async function handleTurn(
         );
       conversation = resumed;
     }
+    // A chat an AI limit paused goes back to the bot once the limit resets or is raised. A
+    // button or cancelling a submitted order needs no AI, so it goes back straight away; if
+    // the limit still applies, the next typed message pauses it again without a new notice
+    // and until the same time (the old pause is kept for that, inactive while in bot mode).
+    const resetOrRaised = resumesAfterLimit(conversation, company);
+    if (
+      !sandbox &&
+      company.botEnabled &&
+      limitPaused(conversation) &&
+      (resetOrRaised ||
+        (input.action && input.action.type !== 'handoff') ||
+        cancelsSubmittedOrder(conversation, input.text))
+    ) {
+      const resumed: Conversation = {
+        ...conversation,
+        mode: 'bot',
+        limitPause: resetOrRaised ? undefined : conversation.limitPause,
+        // A customer whose own pause ended starts with a full allowance again.
+        ...(resetOrRaised &&
+          conversation.limitPause?.reason === 'customer' && {
+            limitResumedAt: new Date().toISOString(),
+          }),
+        version: conversation.version + 1,
+      };
+      if (!(await repo.saveConversation(resumed, conversation.version)))
+        throw new PublicError(
+          'The conversation changed while processing. Please retry your message.',
+          409,
+        );
+      conversation = resumed;
+    }
     if (
       company.botEnabled &&
       conversation.mode === 'bot' &&
@@ -218,9 +255,7 @@ export async function handleTurn(
     let modelResponse: import('../src/shared/types.js').ModelResponse | undefined;
     let interpretation: ModelInterpretation | undefined;
     let ruleOverride: 'handoff' | 'reply' | undefined;
-    const submittedCancellation =
-      Boolean(conversation.cart.orderId) &&
-      /^(cancel|cancel order|منسوخ|order cancel)$/i.test(input.text.trim());
+    const submittedCancellation = cancelsSubmittedOrder(conversation, input.text);
     const skipped: ModelSkipReason | undefined = input.late
       ? 'late'
       : input.action
@@ -280,15 +315,21 @@ export async function handleTurn(
       } catch (error) {
         if (sandbox)
           throw error instanceof PublicError ? error : new PublicError(sanitizeError(error), 503);
-        return await saveHandoff(
-          repo,
-          company,
-          conversation,
-          input,
-          'I’m having trouble connecting right now. A staff member will help you; your order has not been submitted.',
-          error instanceof PublicError && error.status === 429 ? 'ai_budget' : 'ai_error',
-          error,
-        );
+        if (!(error instanceof AiLimitError))
+          return await saveHandoff(
+            repo,
+            company,
+            conversation,
+            input,
+            'I’m having trouble connecting right now. A staff member will help you; your order has not been submitted.',
+            'ai_error',
+            error,
+          );
+        if (!asksForPerson(input.text))
+          return await saveLimitPause(repo, company, conversation, input, error);
+        // Asking for a person needs no AI: the engine hands the chat to staff for good, and
+        // the bot does not take it back when the limit resets.
+        actions = [{ type: 'handoff' }];
       }
     }
     // A settings change during a slow model call takes effect before this turn acts.
@@ -342,6 +383,8 @@ export async function handleTurn(
       }
     }
     const result = processTurn(company, products, conversation, input, actions, modelResponse);
+    // The AI answered, so an older limit pause kept after a button tap has run its course.
+    if (interpretation) delete result.conversation.limitPause;
     if (result.reply && result.decision) {
       result.explanation = describeTurn({
         company,
@@ -421,6 +464,7 @@ async function saveHandoff(
   const c = structuredClone(conversation);
   c.mode = 'human';
   delete c.botPausedAt;
+  delete c.limitPause;
   c.version++;
   c.updatedAt = input.now;
   c.lastInboundAt = new Date(
@@ -470,6 +514,118 @@ async function saveHandoff(
   for (const job of jobs) await dispatchJob(repo, job);
   return { conversation: c, reply, traces: ['staff_attention'], explanation };
 }
+const LIMIT_NOTICE: Record<AiLimitError['limit'], StaffNoticeCause> = {
+  monthly: 'ai_budget',
+  hourly: 'hourly_limit',
+  customer: 'customer_limit',
+};
+// An AI limit stopped the bot. The chat waits for staff and goes back to the bot when the limit
+// resets (see resumesAfterLimit). The customer is told once an hour at most, so a flood of
+// messages gets one notice, not one per message.
+async function saveLimitPause(
+  repo: Repository,
+  company: Company,
+  conversation: Conversation,
+  input: TurnInput,
+  limit: AiLimitError,
+): Promise<TurnResult> {
+  const now = new Date();
+  const at = now.toISOString();
+  // A pause interrupted by a button tap continues until its original time.
+  const earlier = conversation.limitPause;
+  const until =
+    limit.limit === 'customer'
+      ? earlier?.reason === 'customer' && Date.parse(earlier.until) > now.getTime()
+        ? earlier.until
+        : new Date(now.getTime() + CUSTOMER_LIMIT_PAUSE_MS).toISOString()
+      : (limit.resetAt ??
+        (limit.limit === 'monthly'
+          ? new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString()
+          : new Date(Math.floor(now.getTime() / 3600000) * 3600000 + 3600000).toISOString()));
+  const notify =
+    !conversation.limitNoticeAt ||
+    now.getTime() - Date.parse(conversation.limitNoticeAt) >= LIMIT_NOTICE_INTERVAL_MS;
+  const c = structuredClone(conversation);
+  c.mode = 'human';
+  delete c.botPausedAt;
+  c.limitPause = {
+    reason: limit.limit,
+    at,
+    until,
+    // Before the migration only the monthly check exists, without the value.
+    limit: limit.limitValue ?? (limit.limit === 'monthly' ? company.ai.monthlyBudgetUsd : 0),
+  };
+  c.language = noticeLanguage(company, conversation, input.text);
+  c.version++;
+  c.updatedAt = input.now;
+  c.lastInboundAt = new Date(
+    Math.max(Date.parse(c.lastInboundAt), Date.parse(input.now)),
+  ).toISOString();
+  c.messages.push({
+    id: input.messageId,
+    role: 'customer',
+    text: input.text.slice(0, 4000),
+    createdAt: input.now,
+  });
+  let reply = '';
+  let explanation: TurnResult['explanation'];
+  if (notify) {
+    reply = limitNotice(c.language, c.cart);
+    c.limitNoticeAt = at;
+    explanation = describeTurn({
+      company,
+      conversation,
+      input,
+      steps: ['staff_attention'],
+      decision: { parts: ['notice'], modelText: 'none', corrections: [] },
+      outcome: 'staff',
+      notice: LIMIT_NOTICE[limit.limit],
+    });
+    c.messages.push({
+      id: randomUUID(),
+      role: 'assistant',
+      text: reply,
+      createdAt: input.now,
+      explanation,
+    });
+  }
+  const jobs =
+    notify && c.channel === 'whatsapp'
+      ? [
+          makeJob(company.id, 'whatsapp_send', {
+            ...jobAddress(c),
+            conversationId: c.id,
+            messageId: c.messages.at(-1)?.id,
+            text: reply,
+            source: 'notice',
+          }),
+        ]
+      : [];
+  if (!(await repo.commitTurn(company.id, c, conversation.version, undefined, jobs)))
+    throw new PublicError('Conversation changed. Retry your message.', 409);
+  await repo.addTrace({
+    id: randomUUID(),
+    companyId: company.id,
+    conversationId: c.id,
+    action: 'ai_limit_reached',
+    detail: `${limit.message} The bot answers again after ${until}.`,
+    code: `ai_limit_${limit.limit}`,
+    model: company.ai.model,
+    botVersion: company.bot?.published?.version,
+    createdAt: input.now,
+  });
+  for (const job of jobs) await dispatchJob(repo, job);
+  return {
+    conversation: c,
+    reply,
+    traces: [notify ? 'staff_attention' : 'human_mode_message_saved'],
+    explanation,
+  };
+}
+// "cancel" for an order already sent to the restaurant: the engine handles it without AI.
+const cancelsSubmittedOrder = (conversation: Conversation, text: string) =>
+  Boolean(conversation.cart.orderId) &&
+  /^(cancel|cancel order|منسوخ|order cancel)$/i.test(text.trim());
 export async function queueOrderSync(repo: Repository, order: Order) {
   if (
     order.sandbox ||
@@ -600,6 +756,25 @@ async function recordNotSent(repo: Repository, job: Job, reason: string) {
     reason,
   );
 }
+// Why a queued automatic message must not go out any more, if it must not. A reply written
+// before an AI limit paused the chat still goes: only staff taking over, the bot being
+// switched off or a block stop it. A block also stops automatic notices; staff replies go.
+export function droppedReplyReason(
+  job: Job,
+  conversation: Conversation,
+  company: Company,
+): string | undefined {
+  const automatic = job.payload.source === 'bot' || job.payload.source === 'notice';
+  if (automatic && conversation.blocked) return 'Not sent: this number was blocked.';
+  if (job.payload.source !== 'bot') return undefined;
+  if (!company.botEnabled || conversation.botPausedAt)
+    return 'Not sent: the bot was switched off before the reply went out.';
+  const writtenBeforePause =
+    !!conversation.limitPause && job.createdAt <= conversation.limitPause.at;
+  if (conversation.mode === 'human' && !writtenBeforePause)
+    return 'Not sent: staff took over this chat before the reply went out.';
+  return undefined;
+}
 export async function processJob(repo: Repository, id: string) {
   const job = await repo.claimJob(
     id,
@@ -653,6 +828,15 @@ export async function processJob(repo: Repository, id: string) {
     if (job.kind === 'incoming') {
       const phone = String(job.payload.phone);
       const address = await assertCurrentAddress(repo, company.id, job.payload.whatsappAddress);
+      // Blocked senders are dropped on arrival; this catches a message queued just before the
+      // block. Staff messages from the business phone are never blocked.
+      if (
+        !job.payload.echo &&
+        (await repo.findBlockedCustomer(company.id, customerKeys({ phone, peer: address?.peer })))
+      ) {
+        await repo.saveJob({ ...job, status: 'done', leaseUntil: undefined, error: undefined });
+        return;
+      }
       const existing = address
         ? await repo.findWhatsAppConversation(company.id, address)
         : await repo.findConversation(company.id, phone, 'whatsapp');
@@ -696,7 +880,11 @@ export async function processJob(repo: Repository, id: string) {
             const handedBackLater = !!current.botResumedAt && job.createdAt < current.botResumedAt;
             const next: Conversation = {
               ...current,
-              ...(!handedBackLater && { mode: 'human' as const, botPausedAt: undefined }),
+              ...(!handedBackLater && {
+                mode: 'human' as const,
+                botPausedAt: undefined,
+                limitPause: undefined,
+              }),
               version: current.version + 1,
               updatedAt: job.createdAt,
               messages: [
@@ -759,15 +947,10 @@ export async function processJob(repo: Repository, id: string) {
         String(job.payload.conversationId),
       );
       if (!conversation) throw new PublicError('Conversation not found.', 404);
-      if (job.payload.source === 'bot' && (!company.botEnabled || conversation.mode === 'human')) {
+      const dropped = droppedReplyReason(job, conversation, company);
+      if (dropped) {
         // Best effort: a failed note must not turn a dropped reply into a retrying job.
-        await recordNotSent(
-          repo,
-          job,
-          !company.botEnabled || conversation.botPausedAt
-            ? 'Not sent: the bot was switched off before the reply went out.'
-            : 'Not sent: staff took over this chat before the reply went out.',
-        ).catch(() => undefined);
+        await recordNotSent(repo, job, dropped).catch(() => undefined);
         await repo.saveJob({ ...job, status: 'done', leaseUntil: undefined, error: undefined });
         return;
       }
@@ -861,12 +1044,17 @@ export async function processJob(repo: Repository, id: string) {
         : await repo.findConversation(job.companyId, String(job.payload.phone), 'whatsapp');
       if (current) {
         failedConversationId = current.id;
-        if (current.mode === 'bot' || current.botPausedAt)
+        // A blocked number's chat stays as it is: no message of theirs will be processed.
+        if (
+          !current.blocked &&
+          (current.mode === 'bot' || current.botPausedAt || current.limitPause)
+        )
           await repo.saveConversation(
             {
               ...current,
               mode: 'human',
               botPausedAt: undefined,
+              limitPause: undefined,
               version: current.version + 1,
               updatedAt: new Date().toISOString(),
             },

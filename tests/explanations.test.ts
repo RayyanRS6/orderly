@@ -4,6 +4,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { MemoryRepository } from '../server/repository';
 import { handleTurn } from '../server/service';
+import { APICallError } from 'ai';
 import { PublicError, encryptSecret } from '../server/security';
 import { modelFingerprint } from '../server/integrations/model-catalog';
 import { createConversation, processTurn } from '../src/domain/engine';
@@ -32,7 +33,12 @@ import type {
 } from '../src/shared/types';
 
 const { generate } = vi.hoisted(() => ({ generate: vi.fn() }));
-vi.mock('ai', () => ({ generateText: generate, Output: { object: vi.fn() } }));
+// Keep the real error classes: the adapter uses them to decide what a failed call cost.
+vi.mock('ai', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('ai')>()),
+  generateText: generate,
+  Output: { object: vi.fn() },
+}));
 
 const company = seedCompanies[0]!;
 const products = seedProducts.filter((p) => p.companyId === company.id);
@@ -321,7 +327,7 @@ describe('explanation wording and flow path', () => {
       nodes: ['channel', 'gates', 'menu', 'router', 'reply', 'staff'],
       stoppedAt: 'menu',
     });
-    for (const notice of ['ai_error', 'ai_budget'] as const) {
+    for (const notice of ['ai_error', 'ai_budget', 'hourly_limit', 'customer_limit'] as const) {
       const path = explanationPath(explanation({ ...staff, notice }));
       expect(path.stoppedAt).toBe('model');
       expect(path.nodes).toEqual(['channel', 'gates', ...aiNodes, 'router', 'reply', 'staff']);
@@ -434,9 +440,9 @@ describe('explanation wording and flow path', () => {
     // Replies saved before keys became business-only still carry the old label.
     const older = { ...explanation(), keyMode: 'platform' } as TurnExplanation;
     expect(describeConfig(older)).toBe('Draft settings (revision 3) · Anthropic claude-haiku-5-5');
-    expect(describeConfig(explanation({ config: { target: 'live', revision: 4, version: 2 } }))).toBe(
-      'Live settings v2 · Anthropic claude-haiku-5-5',
-    );
+    expect(
+      describeConfig(explanation({ config: { target: 'live', revision: 4, version: 2 } })),
+    ).toBe('Live settings v2 · Anthropic claude-haiku-5-5');
     expect(
       describeConfig(explanation({ config: { target: 'live', revision: 0 }, provider: 'mock' })),
     ).toBe('Default settings (nothing published) · no AI model');
@@ -741,15 +747,41 @@ describe('handleTurn reply explanations', () => {
     },
     {
       cause: 'a provider rate limit',
-      notice: 'ai_budget',
+      notice: 'ai_error',
       fail: () =>
-        generate.mockRejectedValueOnce(new PublicError('Provider rate limit reached.', 429)),
+        generate.mockRejectedValueOnce(
+          new APICallError({
+            message: 'rate limited',
+            url: 'https://api.anthropic.com/v1/messages',
+            requestBodyValues: {},
+            statusCode: 429,
+            responseBody: '{"type":"error","error":{"type":"rate_limit_error"}}',
+          }),
+        ),
     },
     {
       cause: 'the monthly budget',
       notice: 'ai_budget',
       fail: (target: MemoryRepository) =>
-        vi.spyOn(target, 'reserveBudget').mockResolvedValue(false),
+        vi
+          .spyOn(target, 'reserveAiCall')
+          .mockResolvedValue({ ok: false, limit: 'monthly', limitValue: 10 }),
+    },
+    {
+      cause: 'the hourly AI replies',
+      notice: 'hourly_limit',
+      fail: (target: MemoryRepository) =>
+        vi
+          .spyOn(target, 'reserveAiCall')
+          .mockResolvedValue({ ok: false, limit: 'hourly', limitValue: 300 }),
+    },
+    {
+      cause: 'one customer’s AI replies',
+      notice: 'customer_limit',
+      fail: (target: MemoryRepository) =>
+        vi
+          .spyOn(target, 'reserveAiCall')
+          .mockResolvedValue({ ok: false, limit: 'customer', limitValue: 30 }),
     },
   ] as const)('hands a WhatsApp chat to staff after $cause', async ({ notice, fail }) => {
     fail(repo);

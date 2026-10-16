@@ -16,6 +16,9 @@ import type {
   TeamMember,
   BotSettings,
   Message,
+  AiCallReservation,
+  AiLimitStatus,
+  BlockedCustomer,
 } from '../../src/shared/types';
 import type { Repository } from '../repository';
 import { PublicError } from '../security';
@@ -26,6 +29,48 @@ function unwrap<T>(result: Result<T>): T | null {
   if (result.error) throw new Error(`Database operation failed: ${result.error.message}`);
   return result.data;
 }
+// A function or table the hand-applied migrations have not created yet.
+const migrationMissing = (error: { code?: string } | null) =>
+  ['PGRST202', '42883', '42P01', 'PGRST205'].includes(error?.code ?? '');
+const spamMigrationError = () =>
+  new PublicError('Apply the spam protection database migration first.', 503);
+const warned = new Set<string>();
+function warnOnce(name: string) {
+  if (warned.has(name)) return;
+  warned.add(name);
+  console.warn(`Orderly: ${name} is missing. Apply 202610180001_spam_protection.sql.`);
+}
+// Named arguments shared with the SQL tests, so a renamed parameter fails there too.
+export const reserveAiCallArgs = (
+  companyId: string,
+  reservationId: string,
+  amountUsd: number,
+  expiresAt: string,
+  conversationId?: string,
+  customerSince?: string,
+) => ({
+  p_company_id: companyId,
+  p_reservation_id: reservationId,
+  p_amount_usd: amountUsd,
+  p_expires_at: expiresAt,
+  p_conversation_id: conversationId ?? null,
+  p_customer_since: customerSince ?? null,
+});
+export const blockCustomerArgs = (
+  companyId: string,
+  conversationId: string,
+  blockId: string,
+  keys: string[],
+  label: string,
+  actorId: string,
+) => ({
+  p_company_id: companyId,
+  p_conversation_id: conversationId,
+  p_block_id: blockId,
+  p_keys: keys,
+  p_label: label,
+  p_actor_id: actorId,
+});
 // Businesses saved before every business used its own key carry a "keyMode" label. It
 // means nothing now; dropping it keeps dashboards opened before that change from seeing
 // their test chats as out of date.
@@ -616,16 +661,86 @@ export class SupabaseRepository implements Repository {
     }
     return result;
   }
-  reserveBudget(companyId: string, reservationId: string, amountUsd: number, expiresAt: string) {
-    return this.rpc<boolean>('reserve_budget', {
-      p_company_id: companyId,
-      p_reservation_id: reservationId,
-      p_amount_usd: amountUsd,
-      p_expires_at: expiresAt,
-    });
+  async reserveAiCall(
+    companyId: string,
+    reservationId: string,
+    amountUsd: number,
+    expiresAt: string,
+    conversationId?: string,
+    customerSince?: string,
+  ): Promise<AiCallReservation> {
+    const result = await this.client.rpc(
+      'reserve_ai_call',
+      reserveAiCallArgs(
+        companyId,
+        reservationId,
+        amountUsd,
+        expiresAt,
+        conversationId,
+        customerSince,
+      ),
+    );
+    if (migrationMissing(result.error)) {
+      // Only the monthly budget applies until the spam protection migration is applied.
+      warnOnce('reserve_ai_call');
+      const reserved = await this.rpc<boolean>('reserve_budget', {
+        p_company_id: companyId,
+        p_reservation_id: reservationId,
+        p_amount_usd: amountUsd,
+        p_expires_at: expiresAt,
+      });
+      return reserved ? { ok: true } : { ok: false, limit: 'monthly' };
+    }
+    return unwrap(result) as AiCallReservation;
   }
   async settleBudget(reservationId: string, usage: Usage) {
     await this.rpc('settle_budget', { p_reservation_id: reservationId, p_usage: usage });
+  }
+  async aiLimitStatus(companyId: string) {
+    const result = await this.client.rpc('ai_limit_status', { p_company_id: companyId });
+    if (migrationMissing(result.error)) throw spamMigrationError();
+    return unwrap(result) as AiLimitStatus;
+  }
+  async blockCustomer(
+    companyId: string,
+    conversationId: string,
+    blockId: string,
+    keys: string[],
+    label: string,
+    actorId: string,
+  ) {
+    const result = await this.client.rpc(
+      'block_customer',
+      blockCustomerArgs(companyId, conversationId, blockId, keys, label, actorId),
+    );
+    if (migrationMissing(result.error)) throw spamMigrationError();
+    return unwrap(result) as Conversation;
+  }
+  async unblockCustomer(companyId: string, blockId: string) {
+    const result = await this.client.rpc('unblock_customer', {
+      p_company_id: companyId,
+      p_block_id: blockId,
+    });
+    if (migrationMissing(result.error)) throw spamMigrationError();
+    return unwrap(result) as boolean;
+  }
+  async findBlockedCustomer(companyId: string, keys: string[]) {
+    if (!keys.length) return undefined;
+    const result = await this.client.rpc('blocked_customer_hit', {
+      p_company_id: companyId,
+      p_keys: keys,
+    });
+    // Incoming messages are never lost to a missing migration: nobody is blocked yet then.
+    if (migrationMissing(result.error)) {
+      warnOnce('blocked_customer_hit');
+      return undefined;
+    }
+    return (unwrap(result) as string | null) ?? undefined;
+  }
+  async listBlockedCustomers(companyId: string) {
+    const result = await this.client.rpc('list_blocked_customers', { p_company_id: companyId });
+    if (migrationMissing(result.error)) throw spamMigrationError();
+    return unwrap(result) as BlockedCustomer[];
   }
   insertJob(job: Job, dedupeKey?: string) {
     return this.rpc<boolean>('insert_job', { p_job: job, p_dedupe_key: dedupeKey ?? null });

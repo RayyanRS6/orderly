@@ -52,6 +52,15 @@ export function managementRoutes(repo: Repository) {
     });
   });
   app.get('/attention', async (c) => c.json(await repo.staffAttention(c.get('company').id)));
+  // Spam protection: the AI replies used this hour, and the numbers staff blocked.
+  app.get('/ai-limits', async (c) => c.json(await repo.aiLimitStatus(c.get('company').id)));
+  app.get('/blocked', async (c) => c.json(await repo.listBlockedCustomers(c.get('company').id)));
+  app.delete('/blocked/:blockId', async (c) => {
+    const blockId = z.string().min(1).max(100).parse(c.req.param('blockId'));
+    if (!(await repo.unblockCustomer(c.get('company').id, blockId)))
+      throw new PublicError('This number is not blocked any more.', 404);
+    return c.json({ ok: true });
+  });
   const retentionDays = z
     .number()
     .int()

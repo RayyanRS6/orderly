@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { BlockedNumbers } from './BlockedNumbers';
 import { RetentionSettings } from './RetentionSettings';
 import type { TeamMember, Job } from '../shared/types';
 import { api } from '../lib/api';
@@ -524,6 +525,12 @@ export function SecuritySettings() {
               Bot controls
             </button>
           </section>
+        </>
+      )}
+      {/* Everyone on the team can block a number, so everyone can see and undo blocks. */}
+      <BlockedNumbers />
+      {owner && (
+        <>
           <RetentionSettings />
           <section className="card p-5 sm:p-6">
             <h2 className="panel-title">Retention and support</h2>

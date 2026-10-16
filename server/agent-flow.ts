@@ -8,7 +8,12 @@ import type {
   SetupStep,
 } from '../src/shared/agent-flow.js';
 import { botConfig, sameBotConfig } from '../src/shared/bot.js';
-import { generationProfile, MODEL_LIMITS, PROVIDER_NAMES } from '../src/shared/models.js';
+import {
+  effectiveAiLimits,
+  generationProfile,
+  MODEL_LIMITS,
+  PROVIDER_NAMES,
+} from '../src/shared/models.js';
 import { isOpen } from '../src/domain/engine.js';
 import type { Repository } from './repository.js';
 import { appMode, env } from './config.js';
@@ -48,6 +53,7 @@ export async function buildAgentFlow(
   const ready = (id: string) => checks.find((check) => check.id === id)?.ready ?? false;
   const published = botConfig(company);
   const ai = company.ai;
+  const limits = effectiveAiLimits(company.aiLimits);
   const usesAi = ai.provider !== 'mock';
   let keyAvailable = !usesAi;
   let verified = false;
@@ -209,15 +215,21 @@ export async function buildAgentFlow(
         value: `${usd(summary.monthlySpend)} of ${usd(ai.monthlyBudgetUsd)}`,
         tone: summary.monthlySpend >= ai.monthlyBudgetUsd * 0.8 ? 'warn' : 'ok',
       },
+      { label: 'AI replies per hour', value: `Up to ${limits.repliesPerHour}` },
+      {
+        label: 'AI replies per customer',
+        value: `Up to ${limits.repliesPerCustomerPerHour} an hour`,
+      },
     ],
     affects: [
       'When replies are paused, messages are saved for staff and the bot stays quiet.',
-      'When the monthly budget runs out, customers get a short notice and staff take over.',
+      'When the monthly budget, the hourly replies or one customer’s replies run out, that customer gets one short notice, staff can reply, and the bot answers again once the limit resets or you raise it.',
     ],
     fixed: [
       'A chat a staff member has taken over stays with staff until they hand it back.',
       '15 or more messages from one customer within a minute go to staff.',
       'If the menu Sheet cannot be refreshed, the chat goes to staff.',
+      'Messages from a number staff blocked are ignored before they are saved.',
     ],
     todo: company.botEnabled
       ? undefined

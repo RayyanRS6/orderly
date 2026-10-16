@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { generateText, Output } from 'ai';
+import { APICallError, generateText, NoObjectGeneratedError, Output } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { z } from 'zod';
 import type {
+  AiLimitKind,
   BotAction,
   Company,
   Conversation,
@@ -29,6 +30,53 @@ import {
 } from '../../src/shared/models.js';
 
 export const modelDefaults = MODEL_DEFAULTS;
+
+/** An AI limit stopped this call before it was made. */
+export class AiLimitError extends PublicError {
+  constructor(
+    readonly limit: AiLimitKind,
+    readonly resetAt: string | undefined,
+    readonly limitValue: number | undefined,
+  ) {
+    super(
+      limit === 'monthly'
+        ? 'This restaurant has reached its monthly AI spending limit. Raise it in Bot settings, or staff can continue the conversation.'
+        : limit === 'hourly'
+          ? 'This restaurant has reached its AI replies for this hour. Raise the limit in Bot settings, or staff can continue the conversation.'
+          : 'This customer has reached their AI replies for the hour. Staff can continue the conversation.',
+      429,
+    );
+  }
+}
+
+// Statuses where the provider refused the request before generating anything, so it was not
+// billed. A timeout (408) or other server error may have generated text first: those keep
+// the conservative charge.
+const REFUSED_STATUSES = new Set([400, 401, 403, 404, 413, 422, 429, 503, 529]);
+type FailedCallCharge =
+  | { kind: 'none' }
+  | { kind: 'reserved' }
+  | { kind: 'actual'; inputTokens?: number; outputTokens?: number };
+/** What a failed generateText call cost. Retries are off, so errors arrive unwrapped. */
+export function failedCallCharge(error: unknown): FailedCallCharge {
+  if (
+    APICallError.isInstance(error) &&
+    typeof error.statusCode === 'number' &&
+    REFUSED_STATUSES.has(error.statusCode) &&
+    // OpenAI reports some errors inside a successful (billed) reply; those carry the parsed
+    // body as an object instead of the provider's error text.
+    (error.responseBody === undefined || typeof error.responseBody === 'string')
+  )
+    return { kind: 'none' };
+  // The provider answered, but not in the requested shape: it billed what it reports.
+  if (NoObjectGeneratedError.isInstance(error) && error.usage)
+    return {
+      kind: 'actual',
+      inputTokens: error.usage.inputTokens,
+      outputTokens: error.usage.outputTokens,
+    };
+  return { kind: 'reserved' };
+}
 export function modelRate(
   model: string,
   custom?: [number, number],
@@ -201,18 +249,27 @@ ${JSON.stringify({ name: config.name, personality: config.personality, language:
     const maxOutputTokens = profile.maxOutputTokens;
     const [inputRate, outputRate] = modelRate(company.ai.model, company.ai.pricing, reservedInput);
     const reservedCost = (reservedInput * inputRate + maxOutputTokens * outputRate) / 1_000_000;
-    if (
-      !(await this.repo.reserveBudget(
-        company.id,
-        reservationId,
-        reservedCost,
-        new Date(Date.now() + MODEL_LIMITS.budgetHoldMs).toISOString(),
-      ))
-    )
-      throw new PublicError(
-        'This restaurant has reached its AI spending limit. Staff can continue the conversation.',
-        429,
-      );
+    // The spam limits count a live customer's replies; test chats and model checks only
+    // count toward the monthly budget. A customer's allowance starts again when the bot
+    // took the chat back (staff resuming it, or the end of a per-customer pause).
+    const live = conversation.channel === 'whatsapp';
+    const customerSince = [conversation.botResumedAt, conversation.limitResumedAt]
+      .filter((value): value is string => !!value)
+      .sort()
+      .at(-1);
+    const reservation = await this.repo.reserveAiCall(
+      company.id,
+      reservationId,
+      reservedCost,
+      new Date(Date.now() + MODEL_LIMITS.budgetHoldMs).toISOString(),
+      live ? conversation.id : undefined,
+      live ? customerSince : undefined,
+    );
+    if (!reservation.ok) {
+      if (reservation.limit === 'duplicate')
+        throw new PublicError('This AI call was already made. Retry your message.', 409);
+      throw new AiLimitError(reservation.limit, reservation.resetAt, reservation.limitValue);
+    }
     const usage: Usage = {
       id: reservationId,
       companyId: company.id,
@@ -236,6 +293,30 @@ ${JSON.stringify({ name: config.name, personality: config.personality, language:
         maxRetries: MODEL_LIMITS.retries,
         abortSignal: AbortSignal.timeout(MODEL_LIMITS.timeoutMs),
         ...(profile.effort && { providerOptions: { anthropic: { effort: profile.effort } } }),
+      }).catch((error: unknown) => {
+        // Record what the failed call really cost before it is settled below.
+        const charge = failedCallCharge(error);
+        if (charge.kind === 'none')
+          Object.assign(usage, {
+            inputTokens: 0,
+            outputTokens: 0,
+            costUsd: 0,
+            estimated: false,
+            rejected: true,
+          });
+        else if (charge.kind === 'actual') {
+          usage.inputTokens = charge.inputTokens ?? reservedInput;
+          usage.outputTokens = charge.outputTokens ?? maxOutputTokens;
+          const [usedInputRate, usedOutputRate] = modelRate(
+            company.ai.model,
+            company.ai.pricing,
+            usage.inputTokens,
+          );
+          usage.costUsd =
+            (usage.inputTokens * usedInputRate + usage.outputTokens * usedOutputRate) / 1_000_000;
+          usage.estimated = charge.inputTokens === undefined || charge.outputTokens === undefined;
+        }
+        throw error;
       });
       usage.inputTokens = result.usage.inputTokens ?? reservedInput;
       usage.outputTokens = result.usage.outputTokens ?? maxOutputTokens;
@@ -272,7 +353,9 @@ ${JSON.stringify({ name: config.name, personality: config.personality, language:
         },
       };
     } catch (error) {
-      // If an upstream timeout hides actual usage, retain a conservative charge in our usage ledger.
+      // A refused call is settled at $0 and a billed but unusable reply at its real usage
+      // (see failedCallCharge). If an upstream timeout hides actual usage, retain a
+      // conservative charge in our usage ledger.
       await this.repo.settleBudget(reservationId, usage);
       throw error instanceof PublicError
         ? error

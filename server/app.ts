@@ -44,7 +44,7 @@ import { WhatsAppAdapter } from './integrations/whatsapp.js';
 import { whatsappRoutes } from './whatsapp/routes';
 import { gatewaySecret } from './whatsapp/client';
 import { verifySigned } from './whatsapp/signing';
-import { gatewayEventSchema } from '../src/shared/whatsapp';
+import { customerKeys, gatewayEventSchema } from '../src/shared/whatsapp';
 import {
   receiveGatewayEvent,
   jobAddress,
@@ -243,6 +243,9 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
         }
         for (const message of value.messages ?? []) {
           if (typeof message.id !== 'string' || typeof message.from !== 'string') continue;
+          // A blocked number's message is dropped before anything is saved; Meta still gets 200.
+          if (await repo.findBlockedCustomer(company.id, customerKeys({ phone: message.from })))
+            continue;
           let text = String(
             message.text?.body ??
               message.interactive?.button_reply?.title ??
@@ -586,12 +589,14 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
     const { mode } = z.object({ mode: z.enum(['bot', 'human']) }).parse(await c.req.json());
     const conversation = await repo.getConversation(c.get('company').id, c.req.param('id'));
     if (!conversation) throw new PublicError('Conversation not found.', 404);
+    if (conversation.blocked) throw new PublicError('Unblock this number first.', 409);
     const now = new Date().toISOString();
     const next = {
       ...conversation,
       mode,
       // Staff decided explicitly; the bot must not take the chat back on its own.
       botPausedAt: undefined,
+      limitPause: undefined,
       botResumedAt: mode === 'bot' ? now : conversation.botResumedAt,
       version: conversation.version + 1,
       updatedAt: now,
@@ -599,6 +604,43 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
     if (!(await repo.saveConversation(next, conversation.version)))
       throw new PublicError('Conversation changed. Try again.', 409);
     return c.json(next);
+  });
+  // Any team member can block a number, like taking over a chat. The block covers every
+  // identity known for the customer, so it still applies after WhatsApp reconnects.
+  app.post('/api/conversations/:id/block', async (c) => {
+    const { blocked } = z
+      .object({ blocked: z.boolean() })
+      .strict()
+      .parse(await c.req.json());
+    const company = c.get('company');
+    const conversation = await repo.getConversation(company.id, c.req.param('id'));
+    if (!conversation) throw new PublicError('Conversation not found.', 404);
+    const keys = customerKeys({
+      phone: conversation.customerPhone,
+      peer: conversation.whatsappAddress?.peer,
+    });
+    if (!blocked) {
+      // Unblock the person, not only this chat's mark: any block holding one of their numbers
+      // goes too, so "Number unblocked" is true.
+      const blockIds = new Set(conversation.blocked ? [conversation.blocked.blockId] : []);
+      if (keys.length)
+        for (const block of await repo.listBlockedCustomers(company.id))
+          if (block.keys.some((key) => keys.includes(key))) blockIds.add(block.blockId);
+      for (const blockId of blockIds) await repo.unblockCustomer(company.id, blockId);
+    } else {
+      if (conversation.channel !== 'whatsapp' || !keys.length)
+        throw new PublicError('Only a real WhatsApp customer can be blocked.', 400);
+      await repo.blockCustomer(
+        company.id,
+        conversation.id,
+        randomUUID(),
+        keys,
+        conversation.customerName || conversation.customerPhone || 'WhatsApp contact',
+        c.get('userId'),
+      );
+    }
+    // Read back like the other chat routes, so delivery ticks stay on the messages.
+    return c.json((await repo.getConversation(company.id, conversation.id)) ?? conversation);
   });
   app.post('/api/conversations/:id/reply', async (c) => {
     const { text } = z
@@ -616,8 +658,11 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
       );
     const next = {
       ...conversation,
-      mode: 'human' as const,
+      // A blocked number sends nothing more to answer, so a reply to it must not put the chat
+      // back under "Needs staff".
+      mode: conversation.blocked ? conversation.mode : ('human' as const),
       botPausedAt: undefined,
+      limitPause: undefined,
       version: conversation.version + 1,
       updatedAt: new Date().toISOString(),
       messages: [

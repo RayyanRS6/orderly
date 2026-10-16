@@ -58,6 +58,9 @@ export interface Company {
     monthlyBudgetUsd: number;
     pricing?: [number, number];
   };
+  // Spam protection on top of the monthly budget. Missing values use AI_LIMIT_DEFAULTS. Kept
+  // outside `ai`, which connecting a model or turning AI off rebuilds from scratch.
+  aiLimits?: AiLimits;
   catalogSyncedAt?: string;
   createdAt: string;
   bot?: BotSettings;
@@ -145,7 +148,17 @@ export interface ReplyDecision {
 }
 export type ModelSkipReason =
   'button' | 'late' | 'local_rules' | 'staff_mode' | 'paused' | 'cancellation';
-export type StaffNoticeCause = 'burst' | 'menu_sync' | 'ai_error' | 'ai_budget';
+// 'ai_budget' is the monthly AI spending limit; 'hourly_limit' and 'customer_limit' are the
+// AI replies per hour for the whole restaurant and for one customer.
+export type StaffNoticeCause =
+  'burst' | 'menu_sync' | 'ai_error' | 'ai_budget' | 'hourly_limit' | 'customer_limit';
+export interface AiLimits {
+  /** AI replies per clock hour across all live customers. */
+  repliesPerHour?: number;
+  /** AI replies one customer may receive within an hour. */
+  repliesPerCustomerPerHour?: number;
+}
+export type AiLimitKind = 'monthly' | 'hourly' | 'customer';
 export interface TurnExplanation {
   v: 1;
   channel: 'demo' | 'whatsapp';
@@ -189,6 +202,16 @@ export interface Conversation {
   // When staff last handed the chat back to the bot. A staff phone message older than this
   // (replayed after the gateway reconnects) is recorded but does not take the chat back.
   botResumedAt?: string;
+  // Set when an AI limit stopped the bot answering this chat. Staff see it under "Needs staff";
+  // the bot takes the chat back after `until`, or once the limit is raised, unless staff wrote.
+  limitPause?: { reason: AiLimitKind; at: string; until: string; limit: number };
+  // When this customer was last told about a limit: at most one such notice an hour.
+  limitNoticeAt?: string;
+  // When the bot last took the chat back after a per-customer pause. Replies counted toward the
+  // customer limit start here, so the customer gets a full allowance again.
+  limitResumedAt?: string;
+  // Staff blocked this customer's number. Their messages are dropped before they are saved.
+  blocked?: { at: string; blockId: string };
   messages: Message[];
   cart: Cart;
   pendingItemChoice?: {
@@ -286,6 +309,8 @@ export interface Usage {
   conversationId?: string;
   sandbox?: boolean;
   estimated?: boolean;
+  /** The provider refused the request before answering, so it cost nothing. */
+  rejected?: boolean;
 }
 export interface PageResult<T> {
   items: T[];
@@ -343,13 +368,42 @@ export interface StaffAttention {
   handoffs: number;
   failures: number;
   budgets: number;
+  /** Missing from servers older than the AI limits. */
+  limits?: number;
   items: {
     id: string;
-    kind: 'order' | 'handoff' | 'job' | 'budget';
+    kind: 'order' | 'handoff' | 'job' | 'budget' | 'limit';
     entityId: string;
     createdAt: string;
+    /** For 'limit': which limit, and when the bot answers again. */
+    scope?: 'monthly' | 'hourly';
+    resetsAt?: string;
   }[];
 }
+export interface AiLimitStatus {
+  repliesThisHour: number;
+  repliesPerHour: number;
+  repliesPerCustomerPerHour: number;
+  hourResetsAt: string;
+}
+export interface BlockedCustomer {
+  blockId: string;
+  label: string;
+  keys: string[];
+  conversationId?: string;
+  blockedBy?: string;
+  createdAt: string;
+  blockedCount: number;
+  lastBlockedAt?: string;
+}
+export type AiCallReservation =
+  | { ok: true }
+  | {
+      ok: false;
+      limit: 'duplicate' | AiLimitKind;
+      resetAt?: string;
+      limitValue?: number;
+    };
 export interface AlertPreferences {
   enabled: boolean;
   responseMinutes: number;

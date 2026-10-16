@@ -44,7 +44,7 @@ export async function sendStaffAlert(repo: Repository, job: Job) {
       recipientHash,
       firstAttemptAt: new Date().toISOString(),
       from: requiredEnv('ALERT_FROM_EMAIL'),
-      text: `Orderly has unresolved work or an AI budget warning for a business you manage. Sign in to review pending orders, human handoffs, failed jobs and spending.\n\n${origin.origin}/app\n\nYou opted in to these alerts. To stop them, open Staff alerts in that business and turn off email alerts. No customer details are included in this email.`,
+      text: `Orderly has unresolved work, an AI budget warning or a reached AI limit for a business you manage. Sign in to review pending orders, human handoffs, failed jobs, spending and limits.\n\n${origin.origin}/app\n\nYou opted in to these alerts. To stop them, open Staff alerts in that business and turn off email alerts. No customer details are included in this email.`,
     };
     await repo.saveJob(job);
   }

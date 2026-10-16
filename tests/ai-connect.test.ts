@@ -7,7 +7,12 @@ import { seedCompanies } from '../src/shared/seed';
 import type { Company } from '../src/shared/types';
 
 const { generate } = vi.hoisted(() => ({ generate: vi.fn() }));
-vi.mock('ai', () => ({ generateText: generate, Output: { object: vi.fn() } }));
+// Keep the real error classes: the adapter uses them to decide what a failed call cost.
+vi.mock('ai', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('ai')>()),
+  generateText: generate,
+  Output: { object: vi.fn() },
+}));
 
 const company = seedCompanies[0]!;
 const key = 'sk-ant-business-test-key-0001';

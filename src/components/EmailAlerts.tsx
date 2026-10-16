@@ -78,9 +78,9 @@ export function EmailAlerts() {
       <ErrorNotice message={error} />
       <p className="text-xs leading-5 text-stone-500">
         Opt in for this business using your verified Orderly account email. A scheduler checks every
-        five minutes and queues at most one reminder per hour while overdue work or an 80% AI budget
-        warning remains. Notifications contain no customer details. Mail-provider acceptance does
-        not guarantee inbox delivery.
+        five minutes and queues at most one reminder per hour while overdue work, an 80% AI budget
+        warning or a reached AI limit remains. Notifications contain no customer details.
+        Mail-provider acceptance does not guarantee inbox delivery.
       </p>
       {preferences && !preferences.available && (
         <p className="step-in rounded-xl border border-sun/50 bg-sun/10 px-3.5 py-2.5 text-xs leading-5 text-stone-800">
@@ -108,7 +108,7 @@ export function EmailAlerts() {
       </label>
       <Field
         label="Alert when work waits this many minutes"
-        hint="5–120 minutes. Budget warnings do not wait for this threshold."
+        hint="5–120 minutes. Budget warnings and reached AI limits do not wait for this threshold."
       >
         <input
           type="number"

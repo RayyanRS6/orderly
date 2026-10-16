@@ -5,8 +5,19 @@ import { randomUUID } from 'node:crypto';
 import { seedCompanies, seedProducts } from '../src/shared/seed';
 import { createConversation, processTurn } from '../src/domain/engine';
 import { makeJob } from '../server/jobs';
-import type { BotAction, Company, Conversation, Order } from '../src/shared/types';
+import type {
+  AiCallReservation,
+  AiLimitStatus,
+  BlockedCustomer,
+  BotAction,
+  Company,
+  Conversation,
+  Order,
+  StaffAttention,
+} from '../src/shared/types';
 import { defaultBot } from '../src/shared/bot';
+import { AI_LIMIT_DEFAULTS, AI_LIMIT_RANGES, effectiveAiLimits } from '../src/shared/models';
+import { blockCustomerArgs, reserveAiCallArgs } from '../server/storage/supabase';
 
 const db = new PGlite();
 const company = seedCompanies[0];
@@ -68,14 +79,13 @@ beforeAll(async () => {
     '202609180003_platform_budget.sql',
     '202609200001_whatsapp_gateway.sql',
     '202610170001_business_keys_only.sql',
+    '202610180001_spam_protection.sql',
   ])
     await db.exec(readFileSync(`supabase/migrations/${migration}`, 'utf8'));
   await db.query('insert into auth.users(id) values($1),($2)', [ownerId, outsiderId]);
 }, 30000);
 beforeEach(async () => {
-  await db.exec(
-    'reset role; update auth.users set email=null,email_confirmed_at=null',
-  );
+  await db.exec('reset role; update auth.users set email=null,email_confirmed_at=null');
   await db.exec(
     "reset role; truncate public.companies cascade; delete from public.platform_admins; delete from auth.mfa_factors; select set_config('request.jwt.claims','',false);",
   );
@@ -212,9 +222,10 @@ describe('opt-in retention and staff attention', () => {
       (await db.query<{ data: Company }>('select data from companies where id=$1', [own.id]))
         .rows[0]!.data.botEnabled,
     ).toBe(true);
-    await db.query("update companies set data=jsonb_set(data,'{ai,keyMode}','\"own\"') where id=$1", [
-      own.id,
-    ]);
+    await db.query(
+      "update companies set data=jsonb_set(data,'{ai,keyMode}','\"own\"') where id=$1",
+      [own.id],
+    );
     const rows = (
       await db.query<{ id: string; data: Record<string, any> }>(
         'select id,data from companies where id = any($1)',
@@ -974,5 +985,1008 @@ describe('real Postgres migrations and transactional invariants', () => {
     await db.exec('set role authenticated');
     expect(await scalar('select count(*)::int as value from companies')).toBe(2);
     await expect(db.exec('select * from integration_secrets')).rejects.toThrow('permission denied');
+  });
+});
+
+describe('spam protection', () => {
+  const HOUR_START = "date_trunc('hour', now() at time zone 'UTC') at time zone 'UTC'";
+  const MONTH_START = "date_trunc('month', now() at time zone 'UTC') at time zone 'UTC'";
+  const ISO = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/;
+  const DENIED = /permission denied for (function|table)/;
+  const hourStart = () => Math.floor(Date.now() / 3600000) * 3600000;
+  const hourKey = () => new Date(hourStart()).toISOString().slice(0, 13);
+  const nextHour = () => new Date(hourStart() + 3600000).toISOString();
+  const monthKey = () => new Date().toISOString().slice(0, 7);
+  const nextMonth = () => {
+    const d = new Date();
+    return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1)).toISOString();
+  };
+  const expiry = () => new Date(Date.now() + 60000).toISOString();
+  // Calls with the named arguments the server sends, so a renamed SQL parameter fails here too.
+  function named<T>(name: string, args: Record<string, unknown>) {
+    const keys = Object.keys(args);
+    return scalar(
+      `select public.${name}(${keys.map((k, i) => `${k} => $${i + 1}`).join(',')}) as value`,
+      Object.values(args),
+    ) as Promise<T>;
+  }
+  const reserve = (
+    id: string,
+    {
+      conversationId,
+      since,
+      amount = 0.01,
+      companyId = company.id,
+    }: { conversationId?: string; since?: string; amount?: number; companyId?: string } = {},
+  ) =>
+    named<AiCallReservation>(
+      'reserve_ai_call',
+      reserveAiCallArgs(companyId, id, amount, expiry(), conversationId, since),
+    );
+  const block = (
+    conversationId: string,
+    blockId: string,
+    keys: string[],
+    { companyId = company.id, label = 'Spam sender' } = {},
+  ) =>
+    named<Conversation>(
+      'block_customer',
+      blockCustomerArgs(companyId, conversationId, blockId, keys, label, ownerId),
+    );
+  const hit = (keys: string[] | null, companyId = company.id) =>
+    rpc('blocked_customer_hit', [companyId, keys]) as Promise<string | null>;
+  // Settled AI calls. "at" is a SQL time, so a test can put them in an earlier hour or month.
+  async function usage(
+    count: number,
+    {
+      cost = 0.01,
+      conversationId,
+      sandbox,
+      at = 'now()',
+      companyId = company.id,
+    }: {
+      cost?: number;
+      conversationId?: string;
+      sandbox?: boolean;
+      at?: string;
+      companyId?: string;
+    } = {},
+  ) {
+    const extra = {
+      provider: 'openai',
+      model: 'gpt-5.4-mini',
+      inputTokens: 1,
+      outputTokens: 1,
+      ...(conversationId === undefined ? {} : { conversationId }),
+      ...(sandbox === undefined ? {} : { sandbox }),
+    };
+    await db.query(
+      `insert into usage_events(id,company_id,cost_usd,data,created_at)
+       select $1::text||'-'||i, $2::text, $3::numeric, jsonb_build_object('id',$1::text||'-'||i,
+         'companyId',$2::text,'costUsd',$3::numeric,'createdAt',${at})||$4::jsonb, ${at}
+       from generate_series(1,$5::int) i`,
+      [randomUUID(), companyId, cost, extra, count],
+    );
+  }
+  const setLimits = (aiLimits: unknown, companyId = company.id) =>
+    db.query("update companies set data=jsonb_set(data,'{aiLimits}',$2::jsonb) where id=$1", [
+      companyId,
+      JSON.stringify(aiLimits),
+    ]);
+  const setBudget = (usd: number) =>
+    db.query(
+      "update companies set data=jsonb_set(data,'{ai,monthlyBudgetUsd}',to_jsonb($2::numeric)) where id=$1",
+      [company.id, usd],
+    );
+  async function hits(companyId = company.id) {
+    return (
+      await db.query<{
+        scope: string;
+        window_key: string;
+        limit_value: number;
+        resets_at: Date;
+        first_hit_at: Date;
+        last_hit_at: Date;
+      }>(
+        'select scope,window_key,limit_value::float8 as limit_value,resets_at,first_hit_at,last_hit_at from ai_limit_hits where company_id=$1 order by scope,window_key',
+        [companyId],
+      )
+    ).rows;
+  }
+  const attention = (companyId = company.id) =>
+    rpc('staff_attention', [companyId]) as Promise<StaffAttention>;
+  async function whatsappChat(
+    phone: string,
+    extra: Partial<Conversation> = {},
+    companyId = company.id,
+  ) {
+    const chat = {
+      ...createConversation(companyId, phone, 'whatsapp', now()),
+      ...extra,
+      version: 1,
+    };
+    expect(await rpc('save_conversation', [chat, 0])).toBe(true);
+    return chat;
+  }
+  async function stored(id: string) {
+    return (
+      await db.query<{ version: number; data: Conversation }>(
+        'select version,data from conversations where id=$1',
+        [id],
+      )
+    ).rows[0]!;
+  }
+  async function blockRows(companyId = company.id) {
+    return (
+      await db.query<{
+        key: string;
+        block_id: string;
+        label: string;
+        conversation_id: string | null;
+        blocked_by: string | null;
+        blocked_count: number;
+        last_blocked_at: Date | null;
+        created_at: Date;
+      }>(
+        'select key,block_id,label,conversation_id,blocked_by,blocked_count,last_blocked_at,created_at from blocked_customers where company_id=$1 order by key',
+        [companyId],
+      )
+    ).rows;
+  }
+
+  beforeEach(async () => {
+    // Counts by clock hour would straddle two hours if a test began in an hour's last seconds.
+    const left = 3600000 - (Date.now() % 3600000);
+    if (left < 5000) await new Promise((resolve) => setTimeout(resolve, left + 100));
+  });
+
+  it('reads the limits from settings, using the defaults for anything that is not a whole number in range', async () => {
+    const settings = async (data: string | null) =>
+      (
+        await db.query<{ replies_per_hour: number; replies_per_customer: number }>(
+          'select * from public.ai_limit_settings($1::jsonb)',
+          [data],
+        )
+      ).rows[0];
+    const expected = (perHour: number, perCustomer: number) => ({
+      replies_per_hour: perHour,
+      replies_per_customer: perCustomer,
+    });
+    const defaults = expected(
+      AI_LIMIT_DEFAULTS.repliesPerHour,
+      AI_LIMIT_DEFAULTS.repliesPerCustomerPerHour,
+    );
+    expect(defaults).toEqual(expected(300, 30));
+    expect(await settings(null)).toEqual(defaults);
+    expect(await settings('null')).toEqual(defaults);
+    expect(await settings(JSON.stringify(company))).toEqual(defaults);
+    const [hourMin, hourMax] = AI_LIMIT_RANGES.repliesPerHour;
+    const [customerMin, customerMax] = AI_LIMIT_RANGES.repliesPerCustomerPerHour;
+    const cases: [unknown, ReturnType<typeof expected>][] = [
+      [{ repliesPerHour: 120, repliesPerCustomerPerHour: 12 }, expected(120, 12)],
+      [{ repliesPerHour: hourMin, repliesPerCustomerPerHour: customerMax }, expected(20, 1000)],
+      [{ repliesPerHour: hourMax, repliesPerCustomerPerHour: customerMin }, expected(10000, 5)],
+      [{ repliesPerHour: 120 }, expected(120, 30)],
+      [{ repliesPerCustomerPerHour: 12 }, expected(300, 12)],
+    ];
+    for (const bad of [
+      '120',
+      true,
+      120.5,
+      hourMin - 1,
+      hourMax + 1,
+      -120,
+      0,
+      1e30,
+      null,
+      [120],
+      {},
+    ])
+      cases.push([{ repliesPerHour: bad, repliesPerCustomerPerHour: 12 }, expected(300, 12)]);
+    for (const bad of [
+      '12',
+      false,
+      12.5,
+      customerMin - 1,
+      customerMax + 1,
+      -12,
+      0,
+      1e30,
+      null,
+      [12],
+    ])
+      cases.push([{ repliesPerHour: 120, repliesPerCustomerPerHour: bad }, expected(120, 30)]);
+    for (const bad of ['fast', 120, true, [120, 12], null]) cases.push([bad, defaults]);
+    for (const [aiLimits, want] of cases) {
+      expect(await settings(JSON.stringify({ aiLimits })), JSON.stringify(aiLimits)).toEqual(want);
+      // The dashboard and the in-memory store read the same settings the same way.
+      const app = effectiveAiLimits(aiLimits as Parameters<typeof effectiveAiLimits>[0]);
+      expect(expected(app.repliesPerHour, app.repliesPerCustomerPerHour)).toEqual(want);
+    }
+    // Whole numbers written with a decimal point are still whole numbers.
+    expect(
+      await settings('{"aiLimits":{"repliesPerHour":120.0,"repliesPerCustomerPerHour":12.00}}'),
+    ).toEqual(expected(120, 12));
+    // A bad saved value never breaks AI calls, alerts or the status line.
+    await setLimits({ repliesPerHour: 'lots', repliesPerCustomerPerHour: 1.5 });
+    expect(await reserve('call', { conversationId: 'chat-1' })).toEqual({ ok: true });
+    expect(await attention()).toMatchObject({ total: 0, limits: 0 });
+    expect(await rpc('ai_limit_status', [company.id])).toMatchObject({
+      repliesPerHour: 300,
+      repliesPerCustomerPerHour: 30,
+    });
+    await setLimits('lots');
+    expect(await reserve('call-2', { conversationId: 'chat-1' })).toEqual({ ok: true });
+  });
+
+  it('reserves an AI call once, with the same checks as reserve_budget', async () => {
+    expect(await reserve('call', { conversationId: 'chat-1', amount: 0.25 })).toEqual({ ok: true });
+    expect(
+      await scalar(
+        'select amount_usd::float8 as value from budget_reservations where id=$1 and company_id=$2 and settled_at is null',
+        ['call', company.id],
+      ),
+    ).toBe(0.25);
+    expect(await reserve('call', { conversationId: 'chat-1' })).toEqual({
+      ok: false,
+      limit: 'duplicate',
+    });
+    await rpc('settle_budget', [
+      'call',
+      { id: 'call', companyId: company.id, costUsd: 0.2, createdAt: now() },
+    ]);
+    await db.query("delete from budget_reservations where id='call'");
+    // A settled call's id stays taken.
+    expect(await reserve('call')).toEqual({ ok: false, limit: 'duplicate' });
+    await expect(reserve('negative', { amount: -1 })).rejects.toThrow('Invalid budget reservation');
+    await expect(
+      named(
+        'reserve_ai_call',
+        reserveAiCallArgs(company.id, 'expired', 0.01, new Date(Date.now() - 1000).toISOString()),
+      ),
+    ).rejects.toThrow('Invalid budget reservation');
+    await expect(reserve('nobody', { companyId: 'missing' })).rejects.toThrow('Unknown company');
+    await db.query(
+      "update companies set data=jsonb_set(data,'{ai,monthlyBudgetUsd}','-1') where id=$1",
+      [company.id],
+    );
+    await expect(reserve('bad-budget')).rejects.toThrow('Invalid company budget');
+    expect(await hits()).toEqual([]);
+  });
+
+  it('refuses at the monthly budget like reserve_budget, says when it resets, and checks it first', async () => {
+    const budget = company.ai.monthlyBudgetUsd;
+    expect(budget).toBe(10);
+    // Last month's spending and holds do not count.
+    await usage(1, { cost: 50, at: `${MONTH_START} - interval '1 minute'` });
+    expect(await reserve('last-month', { amount: 5 })).toEqual({ ok: true });
+    await db.query(
+      `update budget_reservations set created_at=${MONTH_START} - interval '1 minute' where id='last-month'`,
+    );
+    // This month: $0.50 spent, and a $9 call still running that may already have cost money.
+    await usage(1, { cost: 0.5 });
+    await usage(3, { cost: 1, companyId: other.id });
+    expect(await reserve('running', { amount: 9 })).toEqual({ ok: true });
+    const results: [boolean, boolean][] = [];
+    for (const amount of [0.49, 0.5, 0.51]) {
+      const legacy = (await rpc('reserve_budget', [
+        company.id,
+        `legacy-${amount}`,
+        amount,
+        expiry(),
+      ])) as boolean;
+      await db.query('delete from budget_reservations where id=$1', [`legacy-${amount}`]);
+      const result = await reserve(`new-${amount}`, { amount, conversationId: 'chat-1' });
+      await db.query('delete from budget_reservations where id=$1', [`new-${amount}`]);
+      results.push([legacy, result.ok]);
+    }
+    expect(results).toEqual([
+      [true, true],
+      [true, true],
+      [false, false],
+    ]);
+    const refusal = await reserve('over', { amount: 0.51, conversationId: 'chat-1' });
+    expect(refusal).toEqual({
+      ok: false,
+      limit: 'monthly',
+      limitValue: budget,
+      resetAt: nextMonth(),
+    });
+    expect(
+      await scalar("select count(*)::int as value from budget_reservations where id='over'"),
+    ).toBe(0);
+    // Both refusals this month share one row.
+    expect(await hits()).toEqual([
+      {
+        scope: 'monthly',
+        window_key: monthKey(),
+        limit_value: budget,
+        resets_at: new Date(nextMonth()),
+        first_hit_at: expect.any(Date),
+        last_hit_at: expect.any(Date),
+      },
+    ]);
+    // With the hourly and the customer limits also reached, the monthly one is what is reported.
+    await setLimits({ repliesPerHour: 20, repliesPerCustomerPerHour: 5 });
+    await usage(20, { cost: 0.000001, conversationId: 'chat-1' });
+    expect(await reserve('all-limits', { amount: 0.51, conversationId: 'chat-1' })).toMatchObject({
+      limit: 'monthly',
+    });
+    // Within the budget, the hourly limit comes before the customer's own.
+    expect(
+      await reserve('hour-and-customer', { amount: 0.000001, conversationId: 'chat-1' }),
+    ).toMatchObject({ limit: 'hourly' });
+  });
+
+  it('refuses live chat replies at the hourly limit until the next clock hour', async () => {
+    await setLimits({ repliesPerHour: 20, repliesPerCustomerPerHour: 1000 });
+    await usage(18);
+    await usage(1, { sandbox: false, conversationId: 'chat-1' });
+    // Not replies: test chats, calls the provider refused, the previous hour, another business.
+    await usage(10, { sandbox: true });
+    await usage(10, { cost: 0 });
+    await usage(10, { at: `${HOUR_START} - interval '1 second'` });
+    await usage(30, { companyId: other.id });
+    expect(await reserve('20th', { conversationId: 'chat-1' })).toEqual({ ok: true });
+    // A live call still running counts too, so many numbers writing at once cannot all pass.
+    const refusal = await reserve('21st', { conversationId: 'chat-2' });
+    expect(refusal).toEqual({ ok: false, limit: 'hourly', limitValue: 20, resetAt: nextHour() });
+    expect(
+      await scalar("select count(*)::int as value from budget_reservations where id='21st'"),
+    ).toBe(0);
+    expect(await hits()).toEqual([
+      {
+        scope: 'hourly',
+        window_key: hourKey(),
+        limit_value: 20,
+        resets_at: new Date(nextHour()),
+        first_hit_at: expect.any(Date),
+        last_hit_at: expect.any(Date),
+      },
+    ]);
+    // Test chats and model checks (no conversation) keep only the monthly budget.
+    expect(await reserve('test-chat')).toEqual({ ok: true });
+    // The other business counts only its own replies.
+    expect(await reserve('other', { conversationId: 'chat-x', companyId: other.id })).toEqual({
+      ok: true,
+    });
+    expect(await hits(other.id)).toEqual([]);
+    // A running call the provider then refused settles at $0 and stops counting.
+    await rpc('settle_budget', [
+      '20th',
+      {
+        id: '20th',
+        companyId: company.id,
+        provider: 'openai',
+        model: 'gpt-5.4-mini',
+        inputTokens: 0,
+        outputTokens: 0,
+        costUsd: 0,
+        createdAt: new Date().toISOString(),
+        conversationId: 'chat-1',
+        rejected: true,
+      },
+    ]);
+    expect(await reserve('after-refusal', { conversationId: 'chat-2' })).toEqual({ ok: true });
+    // A live call left behind by a killed worker stops counting once its hold expires.
+    await db.exec(
+      "update budget_reservations set expires_at=now()-interval '1 second' where id='after-refusal'",
+    );
+    expect(await reserve('after-expiry', { conversationId: 'chat-3' })).toEqual({ ok: true });
+    // Raising the limit lets replies through straight away.
+    await setLimits({ repliesPerHour: 21, repliesPerCustomerPerHour: 1000 });
+    expect(await reserve('raised', { conversationId: 'chat-4' })).toEqual({ ok: true });
+    expect(await reserve('over-again', { conversationId: 'chat-5' })).toMatchObject({
+      limit: 'hourly',
+    });
+  });
+
+  it('refuses one customer at their own limit, counting from the later of an hour ago and the bot taking the chat back', async () => {
+    await setLimits({ repliesPerHour: 10000, repliesPerCustomerPerHour: 5 });
+    await usage(4, { conversationId: 'chat-1', at: "now() - interval '59 minutes'" });
+    // Not counted: over an hour ago, refused by the provider, other chats, no chat at all.
+    await usage(10, { conversationId: 'chat-1', at: "now() - interval '61 minutes'" });
+    await usage(10, { conversationId: 'chat-1', cost: 0 });
+    await usage(10, { conversationId: 'chat-2' });
+    await usage(10);
+    await usage(10, { conversationId: 'chat-1', companyId: other.id });
+    expect(await reserve('a', { conversationId: 'chat-1' })).toEqual({ ok: true });
+    await usage(1, { conversationId: 'chat-1' });
+    const before = Date.now();
+    const refusal = await reserve('b', { conversationId: 'chat-1' });
+    expect(refusal).toEqual({
+      ok: false,
+      limit: 'customer',
+      limitValue: 5,
+      resetAt: expect.stringMatching(ISO),
+    });
+    const resetAt = Date.parse((refusal as { resetAt: string }).resetAt);
+    expect(resetAt).toBeGreaterThanOrEqual(before + 3600000 - 1);
+    expect(resetAt).toBeLessThanOrEqual(Date.now() + 3600000);
+    // Unlike the limits for the whole business, one customer's limit does not ring the bell.
+    expect(await hits()).toEqual([]);
+    expect(await reserve('other-customer', { conversationId: 'chat-3' })).toEqual({ ok: true });
+    expect(await reserve('no-chat')).toEqual({ ok: true });
+    expect(
+      await reserve('other-business', { conversationId: 'chat-1', companyId: other.id }),
+    ).toEqual({ ok: true });
+    // When the bot takes the chat back, the customer starts again with a full allowance...
+    const resumed = new Date().toISOString();
+    expect(await reserve('c', { conversationId: 'chat-1', since: resumed })).toEqual({ ok: true });
+    // ...and the replies after that count.
+    await usage(5, { conversationId: 'chat-1' });
+    expect(await reserve('d', { conversationId: 'chat-1', since: resumed })).toMatchObject({
+      limit: 'customer',
+    });
+    // A resume time long ago does not reach back past the hour.
+    await usage(10, { conversationId: 'chat-4', at: "now() - interval '2 hours'" });
+    expect(
+      await reserve('e', {
+        conversationId: 'chat-4',
+        since: new Date(Date.now() - 3 * 3600000).toISOString(),
+      }),
+    ).toEqual({ ok: true });
+    // A resume time ahead of the database clock counts from now, so replies stamped by a server
+    // clock that runs slightly ahead still count.
+    await usage(5, { conversationId: 'chat-5', at: "now() + interval '1 minute'" });
+    expect(
+      await reserve('f', {
+        conversationId: 'chat-5',
+        since: new Date(Date.now() + 86400000).toISOString(),
+      }),
+    ).toMatchObject({ limit: 'customer' });
+  });
+
+  it('keeps one limit hit per window, updating it on each refusal, and prunes hits over 40 days old', async () => {
+    const old = "now() - interval '41 days'";
+    const recent = "now() - interval '39 days'";
+    await db.query(
+      `insert into ai_limit_hits(company_id,scope,window_key,limit_value,resets_at,first_hit_at,last_hit_at) values
+        ($1,'hourly','old',20,${old},${old},${old}),
+        ($1,'monthly','recent',10,${recent},${recent},${recent}),
+        ($2,'hourly','other-old',20,${old},${old},${old})`,
+      [company.id, other.id],
+    );
+    await setLimits({ repliesPerHour: 20 });
+    await usage(20);
+    expect(await reserve('a', { conversationId: 'chat-1' })).toMatchObject({ limit: 'hourly' });
+    expect((await hits()).map((h) => h.window_key)).toEqual([hourKey(), 'recent']);
+    // Each business prunes only its own.
+    expect((await hits(other.id)).map((h) => h.window_key)).toEqual(['other-old']);
+    await db.query(
+      "update ai_limit_hits set last_hit_at=now()-interval '10 minutes',resets_at=resets_at-interval '1 minute' where window_key=$1",
+      [hourKey()],
+    );
+    const first = (await hits()).find((h) => h.scope === 'hourly')!;
+    // A lower limit later in the same hour updates the same row.
+    await setLimits({ repliesPerHour: 25 });
+    await usage(5);
+    expect(await reserve('b', { conversationId: 'chat-1' })).toMatchObject({
+      limit: 'hourly',
+      limitValue: 25,
+    });
+    const hourly = (await hits()).filter((h) => h.scope === 'hourly');
+    expect(hourly).toHaveLength(1);
+    expect(hourly[0]).toEqual({
+      ...first,
+      limit_value: 25,
+      resets_at: new Date(nextHour()),
+      last_hit_at: expect.any(Date),
+    });
+    expect(hourly[0].last_hit_at.getTime()).toBeGreaterThan(Date.now() - 60000);
+  });
+
+  it('shows a reached hourly limit in the bell until the hour ends or the limit is raised', async () => {
+    await setLimits({ repliesPerHour: 20 });
+    await usage(20);
+    await reserve('a', { conversationId: 'chat-1' });
+    const alerts = await attention();
+    expect(alerts).toMatchObject({ total: 1, limits: 1, budgets: 0, orders: 0 });
+    expect(alerts.items).toEqual([
+      {
+        id: `limit:hourly:${hourKey()}`,
+        kind: 'limit',
+        entityId: company.id,
+        createdAt: expect.any(String),
+        scope: 'hourly',
+        resetsAt: expect.any(String),
+      },
+    ]);
+    expect(Date.parse(alerts.items[0].resetsAt!)).toBe(hourStart() + 3600000);
+    expect(Date.parse(alerts.items[0].createdAt)).toBeLessThanOrEqual(Date.now());
+    expect(await attention(other.id)).toMatchObject({ total: 0, limits: 0, items: [] });
+    await setLimits({ repliesPerHour: 21 });
+    expect(await attention()).toMatchObject({ total: 0, limits: 0, items: [] });
+    // Lowering it back shows the limit reached again; an unreadable setting means the default 300.
+    await setLimits({ repliesPerHour: 20 });
+    expect(await attention()).toMatchObject({ total: 1, limits: 1 });
+    await setLimits({ repliesPerHour: '20' });
+    expect(await attention()).toMatchObject({ total: 0, limits: 0 });
+    await setLimits({ repliesPerHour: 20 });
+    await db.query("update ai_limit_hits set resets_at=now()-interval '1 second'");
+    expect(await attention()).toMatchObject({ total: 0, limits: 0, items: [] });
+  });
+
+  it('replaces the 80% budget warning with the reached monthly limit until the budget is raised', async () => {
+    expect(await reserve('running', { amount: 9 })).toEqual({ ok: true });
+    expect(await attention()).toMatchObject({ total: 1, budgets: 1, limits: 0 });
+    expect(await reserve('over', { amount: 2, conversationId: 'chat-1' })).toMatchObject({
+      limit: 'monthly',
+    });
+    const alerts = await attention();
+    expect(alerts).toMatchObject({ total: 1, budgets: 0, limits: 1 });
+    expect(alerts.items).toEqual([
+      {
+        id: `limit:monthly:${monthKey()}`,
+        kind: 'limit',
+        entityId: company.id,
+        createdAt: expect.any(String),
+        scope: 'monthly',
+        resetsAt: expect.any(String),
+      },
+    ]);
+    expect(Date.parse(alerts.items[0].resetsAt!)).toBe(Date.parse(nextMonth()));
+    // $9 of $11 is still over 80%, so the warning comes back in its place.
+    await setBudget(11);
+    expect(await attention()).toMatchObject({ total: 1, budgets: 1, limits: 0 });
+    await setBudget(20);
+    expect(await attention()).toMatchObject({ total: 0, budgets: 0, limits: 0 });
+    await setBudget(10);
+    expect(await attention()).toMatchObject({ total: 1, budgets: 0, limits: 1 });
+    await db.query("update ai_limit_hits set resets_at=now()-interval '1 second'");
+    expect(await attention()).toMatchObject({ total: 1, budgets: 1, limits: 0 });
+  });
+
+  it('keeps the order, handoff, job and budget items exactly as before', async () => {
+    const { conversation, order } = pendingOrder();
+    await commit(conversation, order);
+    await db.query(
+      "update conversations set data=jsonb_set(data,'{mode}','\"human\"') where id=$1",
+      [conversation.id],
+    );
+    await rpc('insert_job', [
+      { ...makeJob(company.id, 'sheet_sync', { orderId: order.id }), status: 'failed' },
+    ]);
+    await reserve('running', { amount: 9 });
+    const alerts = await attention();
+    expect(alerts).toMatchObject({
+      total: 4,
+      orders: 1,
+      handoffs: 1,
+      failures: 1,
+      budgets: 1,
+      limits: 0,
+    });
+    expect(alerts.items.map((item) => item.kind).sort()).toEqual([
+      'budget',
+      'handoff',
+      'job',
+      'order',
+    ]);
+    for (const item of alerts.items)
+      expect(Object.keys(item).sort()).toEqual(['createdAt', 'entityId', 'id', 'kind']);
+    expect(alerts.items.find((item) => item.kind === 'budget')!.id).toBe(
+      `budget:${company.id}:${monthKey()}`,
+    );
+  });
+
+  it('asks for an email alert while a limit was reached within the last hour', async () => {
+    await db.query("insert into company_memberships values($1,$2,'staff')", [company.id, ownerId]);
+    await db.query(
+      "update auth.users set email='staff@example.test',email_confirmed_at=now() where id=$1",
+      [ownerId],
+    );
+    await rpc('configure_alerts', [company.id, ownerId, true, 10]);
+    expect(await rpc('has_overdue_attention', [company.id, 10])).toBe(false);
+    expect(await rpc('queue_staff_alerts', [])).toBe(0);
+    await setLimits({ repliesPerHour: 20 });
+    await usage(20);
+    await reserve('a', { conversationId: 'chat-1' });
+    expect(await rpc('has_overdue_attention', [company.id, 10])).toBe(true);
+    expect(await rpc('has_overdue_attention', [other.id, 10])).toBe(false);
+    expect(await rpc('queue_staff_alerts', [])).toBe(1);
+    await db.query("update ai_limit_hits set last_hit_at=now()-interval '59 minutes'");
+    expect(await rpc('has_overdue_attention', [company.id, 10])).toBe(true);
+    await db.query("update ai_limit_hits set last_hit_at=now()-interval '61 minutes'");
+    expect(await rpc('has_overdue_attention', [company.id, 10])).toBe(false);
+  });
+
+  it('reports this hour’s live AI replies and the limits in force', async () => {
+    await setLimits({ repliesPerHour: 50, repliesPerCustomerPerHour: 10 });
+    await usage(3);
+    await usage(1, { conversationId: 'chat-1', sandbox: false });
+    await usage(2, { sandbox: true });
+    await usage(2, { cost: 0 });
+    await usage(2, { at: `${HOUR_START} - interval '1 second'` });
+    await usage(5, { companyId: other.id });
+    expect(await rpc('ai_limit_status', [company.id])).toEqual<AiLimitStatus>({
+      repliesThisHour: 4,
+      repliesPerHour: 50,
+      repliesPerCustomerPerHour: 10,
+      hourResetsAt: nextHour(),
+    });
+    expect(await rpc('ai_limit_status', [other.id])).toEqual<AiLimitStatus>({
+      repliesThisHour: 5,
+      repliesPerHour: AI_LIMIT_DEFAULTS.repliesPerHour,
+      repliesPerCustomerPerHour: AI_LIMIT_DEFAULTS.repliesPerCustomerPerHour,
+      hourResetsAt: nextHour(),
+    });
+    expect(await rpc('ai_limit_status', ['missing'])).toBeNull();
+  });
+
+  it('blocks a customer’s keys and marks their chat in one step', async () => {
+    const chat = await whatsappChat('+923001234567', {
+      mode: 'human',
+      botPausedAt: now(),
+      limitPause: { reason: 'customer', at: now(), until: now(), limit: 30 },
+    });
+    const demo = { ...createConversation(company.id, '+923001234567', 'demo', now()), version: 1 };
+    await rpc('save_conversation', [demo, 0]);
+    const phone = 'pn:923001234567';
+    await expect(block(chat.id, 'block-1', [])).rejects.toThrow('Nothing to block');
+    await expect(block(chat.id, '', [phone])).rejects.toThrow('Nothing to block');
+    for (const keys of [
+      ['923001234567'],
+      ['pn:+923001234567'],
+      ['pn:1234'],
+      ['pn:123456789012345678901'],
+      ['tel:923001234567'],
+      ['lid:100000001@lid'],
+      [phone, 'junk'],
+    ])
+      await expect(block(chat.id, 'block-1', keys), keys.join()).rejects.toThrow(
+        'Invalid block key',
+      );
+    await expect(block('missing', 'block-1', [phone])).rejects.toThrow('Unknown conversation');
+    await expect(block(chat.id, 'block-1', [phone], { companyId: other.id })).rejects.toThrow(
+      'Unknown conversation',
+    );
+    await expect(block(demo.id, 'block-1', [phone])).rejects.toThrow(
+      'Only WhatsApp chats can be blocked',
+    );
+    expect(await blockRows()).toEqual([]);
+    expect((await stored(chat.id)).version).toBe(1);
+
+    const result = await block(chat.id, 'block-1', [phone, 'lid:100000001', phone], {
+      label: 'x'.repeat(250),
+    });
+    const {
+      botPausedAt: _paused,
+      limitPause: _limit,
+      ...rest
+    } = JSON.parse(JSON.stringify(chat)) as Conversation;
+    expect(result).toEqual({
+      ...rest,
+      mode: 'bot',
+      version: 2,
+      updatedAt: result.blocked!.at,
+      blocked: { at: expect.stringMatching(ISO), blockId: 'block-1' },
+    });
+    expect(Math.abs(Date.parse(result.blocked!.at) - Date.now())).toBeLessThan(60000);
+    expect(await stored(chat.id)).toEqual({ version: 2, data: result });
+    expect(await blockRows()).toEqual(
+      ['lid:100000001', phone].map((key) => ({
+        key,
+        block_id: 'block-1',
+        label: 'x'.repeat(200),
+        conversation_id: chat.id,
+        blocked_by: ownerId,
+        blocked_count: 0,
+        last_blocked_at: null,
+        created_at: expect.any(Date),
+      })),
+    );
+    // Blocking an already blocked chat changes nothing.
+    expect(await block(chat.id, 'block-2', ['pn:923009999999'])).toEqual(result);
+    expect(await stored(chat.id)).toEqual({ version: 2, data: result });
+    expect((await blockRows()).map((row) => row.block_id)).toEqual(['block-1', 'block-1']);
+  });
+
+  it('keeps one block per person, joining and merging blocks that share an identity', async () => {
+    const first = await whatsappChat('+923001111111');
+    const second = await whatsappChat('+923002222222');
+    const third = await whatsappChat('+923003333333');
+    await block(first.id, 'block-a', ['pn:923001111111', 'lid:100000001']);
+    await block(third.id, 'block-c', ['pn:923003333333']);
+    await db.query(
+      "update blocked_customers set created_at=now()-interval '1 day' where block_id='block-a'",
+    );
+    // The same person again, under a new number with the same privacy ID, and sharing the
+    // third chat's number: the newest block takes them all.
+    const result = await block(
+      second.id,
+      'block-b',
+      ['pn:923002222222', 'lid:100000001', 'pn:923003333333'],
+      { label: 'Again' },
+    );
+    expect(result.blocked).toMatchObject({ blockId: 'block-c' });
+    expect(
+      (await blockRows()).map((row) => [row.key, row.block_id, row.conversation_id, row.label]),
+    ).toEqual([
+      ['lid:100000001', 'block-c', first.id, 'Spam sender'],
+      ['pn:923001111111', 'block-c', first.id, 'Spam sender'],
+      ['pn:923002222222', 'block-c', second.id, 'Again'],
+      ['pn:923003333333', 'block-c', third.id, 'Spam sender'],
+    ]);
+    const repointed = await stored(first.id);
+    expect(repointed.version).toBe(3);
+    expect(repointed.data.version).toBe(3);
+    expect(repointed.data.blocked).toMatchObject({ blockId: 'block-c' });
+    expect((await stored(third.id)).version).toBe(2);
+    expect(await hit(['lid:100000001'])).toBe('block-c');
+    expect(
+      ((await rpc('list_blocked_customers', [company.id])) as BlockedCustomer[]).map(
+        (b) => b.blockId,
+      ),
+    ).toEqual(['block-c']);
+    // Unblocking the one block unblocks the person in every chat.
+    expect(await rpc('unblock_customer', [company.id, 'block-c'])).toBe(true);
+    expect(await blockRows()).toEqual([]);
+    for (const chat of [first, second, third])
+      expect((await stored(chat.id)).data).not.toHaveProperty('blocked');
+  });
+
+  it('unblocks atomically, also clearing chats whose block lost all its keys', async () => {
+    const first = await whatsappChat('+923001111111');
+    const second = await whatsappChat('+923002222222');
+    const outside = await whatsappChat('+923001111111', {}, other.id);
+    await block(first.id, 'block-a', ['pn:923001111111']);
+    await block(outside.id, 'block-o', ['pn:923001111111'], { companyId: other.id });
+    expect(await rpc('unblock_customer', [company.id, 'missing'])).toBe(false);
+    expect(await rpc('unblock_customer', [company.id, 'block-o'])).toBe(false);
+    expect(await rpc('unblock_customer', [other.id, 'block-a'])).toBe(false);
+    expect((await stored(first.id)).version).toBe(2);
+    expect((await blockRows()).map((row) => row.block_id)).toEqual(['block-a']);
+
+    expect(await rpc('unblock_customer', [company.id, 'block-a'])).toBe(true);
+    expect(await blockRows()).toEqual([]);
+    const unblocked = await stored(first.id);
+    expect(unblocked.version).toBe(3);
+    expect(unblocked.data.version).toBe(3);
+    expect(unblocked.data).not.toHaveProperty('blocked');
+    expect(unblocked.data.updatedAt).toMatch(ISO);
+    expect(await rpc('unblock_customer', [company.id, 'block-a'])).toBe(false);
+    expect((await stored(outside.id)).data.blocked).toMatchObject({ blockId: 'block-o' });
+    expect((await blockRows(other.id)).map((row) => row.block_id)).toEqual(['block-o']);
+
+    // A later block of the same person joins the earlier one, so either chat's mark unblocks
+    // the person and clears both chats.
+    await block(first.id, 'block-c', ['lid:100000001']);
+    await block(second.id, 'block-d', ['lid:100000001', 'pn:923002222222']);
+    expect(
+      ((await rpc('list_blocked_customers', [company.id])) as BlockedCustomer[]).map(
+        (b) => b.blockId,
+      ),
+    ).toEqual(['block-c']);
+    expect((await stored(second.id)).data.blocked).toMatchObject({ blockId: 'block-c' });
+    expect(await rpc('unblock_customer', [company.id, 'block-c'])).toBe(true);
+    for (const [id, version] of [
+      [first.id, 5],
+      [second.id, 3],
+    ] as const) {
+      const chat = await stored(id);
+      expect(chat.version).toBe(version);
+      expect(chat.data.version).toBe(version);
+      expect(chat.data).not.toHaveProperty('blocked');
+    }
+    expect(await blockRows()).toEqual([]);
+    // A mark whose block has no rows any more (never written by these functions) is cleared
+    // by the next unblock.
+    await db.query(
+      `update conversations set data=jsonb_set(data,'{blocked}','{"at":"2026-10-16T10:00:00.000Z","blockId":"gone"}') where id=$1`,
+      [first.id],
+    );
+    expect(await rpc('unblock_customer', [company.id, 'gone'])).toBe(true);
+    expect((await stored(first.id)).data).not.toHaveProperty('blocked');
+  });
+
+  it('drops a blocked customer’s messages by phone or privacy ID, learning new identities', async () => {
+    const chat = await whatsappChat('+923001234567');
+    const outside = await whatsappChat('+923007654321', {}, other.id);
+    await block(chat.id, 'block-1', ['pn:923001234567']);
+    await block(outside.id, 'block-o', ['lid:100000009'], { companyId: other.id });
+    expect(await hit([])).toBeNull();
+    expect(await hit(null)).toBeNull();
+    expect(await hit(['pn:923009999999'])).toBeNull();
+    expect(await hit(['lid:100000009'])).toBeNull();
+    expect(await hit(['pn:923001234567'], other.id)).toBeNull();
+    expect(await hit(['pn:923001234567'])).toBe('block-1');
+    // A message carrying the phone and a privacy ID: one count, and the ID joins the block.
+    expect(await hit(['lid:100000001', 'pn:923001234567', 'lid:100000001', 'junk'])).toBe(
+      'block-1',
+    );
+    let rows = await blockRows();
+    expect(rows.map((row) => [row.key, row.block_id, row.blocked_count])).toEqual([
+      ['lid:100000001', 'block-1', 0],
+      ['pn:923001234567', 'block-1', 2],
+    ]);
+    expect(rows[0]).toMatchObject({
+      label: rows[1].label,
+      conversation_id: chat.id,
+      blocked_by: ownerId,
+      created_at: rows[1].created_at,
+      last_blocked_at: null,
+    });
+    expect(rows[1].last_blocked_at!.getTime()).toBeGreaterThan(Date.now() - 60000);
+    // The privacy ID alone is now enough.
+    expect(await hit(['lid:100000001'])).toBe('block-1');
+    rows = await blockRows();
+    expect(rows.reduce((sum, row) => sum + row.blocked_count, 0)).toBe(3);
+    expect((await blockRows(other.id)).map((row) => [row.key, row.blocked_count])).toEqual([
+      ['lid:100000009', 0],
+    ]);
+  });
+
+  it('lists blocks newest first with their keys and ignored-message counts', async () => {
+    const a = await whatsappChat('+923001111111');
+    const b = await whatsappChat('+923002222222');
+    const outside = await whatsappChat('+923001111111', {}, other.id);
+    await block(a.id, 'block-a', ['pn:923001111111', 'lid:100000001'], { label: 'First' });
+    await db.query("update blocked_customers set created_at=now()-interval '1 day'");
+    await block(b.id, 'block-b', ['pn:923002222222'], { label: 'Second' });
+    await block(outside.id, 'block-o', ['pn:923001111111'], { companyId: other.id });
+    await hit(['pn:923001111111']);
+    await hit(['pn:923001111111']);
+    await hit(['lid:100000001']);
+    const list = (await rpc('list_blocked_customers', [company.id])) as BlockedCustomer[];
+    expect(list).toEqual([
+      {
+        blockId: 'block-b',
+        label: 'Second',
+        keys: ['pn:923002222222'],
+        conversationId: b.id,
+        blockedBy: ownerId,
+        createdAt: expect.stringMatching(ISO),
+        blockedCount: 0,
+      },
+      {
+        blockId: 'block-a',
+        label: 'First',
+        keys: ['lid:100000001', 'pn:923001111111'],
+        conversationId: a.id,
+        blockedBy: ownerId,
+        createdAt: expect.stringMatching(ISO),
+        blockedCount: 3,
+        lastBlockedAt: expect.stringMatching(ISO),
+      },
+    ]);
+    expect(Date.now() - Date.parse(list[1].createdAt)).toBeGreaterThan(86400000 - 60000);
+    expect(Date.now() - Date.parse(list[1].lastBlockedAt!)).toBeLessThan(60000);
+    expect(await rpc('list_blocked_customers', [other.id])).toEqual([
+      expect.objectContaining({ blockId: 'block-o', keys: ['pn:923001111111'], blockedCount: 0 }),
+    ]);
+    expect(await rpc('list_blocked_customers', ['missing'])).toEqual([]);
+  });
+
+  it.each(['anon', 'authenticated'])(
+    'denies %s every spam protection function and table',
+    async (role) => {
+      const calls: [string, unknown[]][] = [
+        ['ai_limit_value', ['20', 5, 1000, 30]],
+        ['ai_limit_settings', ['{}']],
+        ['record_ai_limit_hit', [company.id, 'hourly', 'x', 20, expiry()]],
+        ['ai_limit_status', [company.id]],
+        ['ai_replies_this_hour', [company.id]],
+        ['fail_exhausted_orderly_jobs', [20]],
+        ['unblock_customer', [company.id, 'block-1']],
+        ['blocked_customer_hit', [company.id, ['pn:923001234567']]],
+        ['list_blocked_customers', [company.id]],
+        ['staff_attention', [company.id]],
+        ['has_overdue_attention', [company.id, 10]],
+      ];
+      await db.exec(`set role ${role}`);
+      try {
+        for (const [name, args] of calls)
+          await expect(rpc(name, args), name).rejects.toThrow(DENIED);
+        await expect(reserve('browser', { conversationId: 'chat-1' })).rejects.toThrow(DENIED);
+        await expect(block('chat-1', 'block-1', ['pn:923001234567'])).rejects.toThrow(DENIED);
+        for (const table of ['ai_limit_hits', 'blocked_customers']) {
+          await expect(db.query(`select * from public.${table}`), table).rejects.toThrow(DENIED);
+          await expect(db.query(`delete from public.${table}`), table).rejects.toThrow(DENIED);
+        }
+      } finally {
+        await db.exec('reset role');
+      }
+    },
+  );
+
+  it('lets the server role use them', async () => {
+    const chat = await whatsappChat('+923001234567');
+    await db.exec('set role service_role');
+    try {
+      expect(
+        await scalar("select replies_per_hour as value from public.ai_limit_settings('{}')"),
+      ).toBe(300);
+      expect(await reserve('server', { conversationId: chat.id })).toEqual({ ok: true });
+      expect(await block(chat.id, 'block-1', ['pn:923001234567'])).toMatchObject({
+        blocked: { blockId: 'block-1' },
+      });
+      expect(await hit(['pn:923001234567'])).toBe('block-1');
+      expect(await rpc('list_blocked_customers', [company.id])).toHaveLength(1);
+      // The reply reserved above is still running, and it counts.
+      expect(await rpc('ai_limit_status', [company.id])).toMatchObject({ repliesThisHour: 1 });
+      expect(await rpc('unblock_customer', [company.id, 'block-1'])).toBe(true);
+      expect(await scalar('select count(*)::int as value from public.ai_limit_hits')).toBe(0);
+      expect(await rpc('fail_exhausted_orderly_jobs', [20])).toBe(0);
+    } finally {
+      await db.exec('reset role');
+    }
+  });
+
+  it('fails an exhausted message like the worker does: pause cleared, blocked chats left alone', async () => {
+    const pause = {
+      reason: 'customer',
+      at: now(),
+      until: new Date(Date.now() + 3600000).toISOString(),
+      limit: 30,
+    } as const;
+    const paused = await whatsappChat('+923001111111', { mode: 'human', limitPause: pause });
+    const spam = await whatsappChat('+923002222222');
+    await block(spam.id, 'block-1', ['pn:923002222222']);
+    const bystander = await whatsappChat('+923003333333', { mode: 'human', limitPause: pause });
+    for (const phone of ['+923001111111', '+923002222222'])
+      await rpc('insert_job', [
+        {
+          ...makeJob(company.id, 'incoming', { phone, messageId: randomUUID(), text: 'hi' }),
+          status: 'processing',
+          attempts: 5,
+          leaseUntil: new Date(Date.now() - 60000).toISOString(),
+        },
+      ]);
+    await db.exec("update jobs set lease_until=now()-interval '1 minute'");
+    expect(await rpc('fail_exhausted_orderly_jobs', [20])).toBe(2);
+    const failed = await stored(paused.id);
+    expect(failed.version).toBe(2);
+    expect(failed.data).toMatchObject({ mode: 'human', version: 2 });
+    expect(failed.data).not.toHaveProperty('limitPause');
+    const blocked = await stored(spam.id);
+    expect(blocked.version).toBe(2);
+    expect(blocked.data).toMatchObject({ mode: 'bot', blocked: { blockId: 'block-1' } });
+    expect((await stored(bystander.id)).data.limitPause).toEqual(pause);
+  });
+
+  it('never asks staff about a blocked number', async () => {
+    const chat = await whatsappChat('+923001111111', {
+      mode: 'human',
+      messages: [{ id: 'm1', role: 'customer', text: 'spam', createdAt: now() }],
+    });
+    await db.exec("update conversations set updated_at=now()-interval '1 hour'");
+    expect(await attention()).toMatchObject({ handoffs: 1 });
+    expect(await rpc('has_overdue_attention', [company.id, 10])).toBe(true);
+    // A blocked chat that ended up with staff (for example after a failed job) stays quiet.
+    await db.query(
+      `update conversations set data=jsonb_set(data,'{blocked}','{"at":"2026-10-16T10:00:00.000Z","blockId":"b"}') where id=$1`,
+      [chat.id],
+    );
+    expect(await attention()).toMatchObject({ handoffs: 0 });
+    expect(await rpc('has_overdue_attention', [company.id, 10])).toBe(false);
+  });
+
+  it('can be applied again without losing limits or blocks', async () => {
+    const chat = await whatsappChat('+923001234567');
+    await block(chat.id, 'block-1', ['pn:923001234567']);
+    await hit(['pn:923001234567', 'lid:100000001']);
+    await setLimits({ repliesPerHour: 20 });
+    await usage(20);
+    await reserve('a', { conversationId: 'chat-1' });
+    const snapshot = async () => ({
+      list: await rpc('list_blocked_customers', [company.id]),
+      hits: await hits(),
+      chat: await stored(chat.id),
+      attention: await attention(),
+      status: await rpc('ai_limit_status', [company.id]),
+    });
+    const before = await snapshot();
+    expect(before.hits).toHaveLength(1);
+    await db.exec(readFileSync('supabase/migrations/202610180001_spam_protection.sql', 'utf8'));
+    expect(await snapshot()).toEqual(before);
+    expect(await hit(['lid:100000001'])).toBe('block-1');
+    await db.exec('set role authenticated');
+    try {
+      await expect(rpc('list_blocked_customers', [company.id])).rejects.toThrow(DENIED);
+      await expect(reserve('browser')).rejects.toThrow(DENIED);
+    } finally {
+      await db.exec('reset role');
+    }
   });
 });

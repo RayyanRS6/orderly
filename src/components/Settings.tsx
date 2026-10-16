@@ -87,7 +87,10 @@ export function Settings() {
           e.preventDefault();
           const before = edits.current;
           void run('settings', async () => {
-            await mutate(`/companies/${draft.id}`, draft, 'PUT', { success: 'Settings saved.' });
+            // The spam limits are edited in Bot settings. Leaving them out keeps the saved
+            // ones, instead of undoing a change made there after this page opened.
+            const { aiLimits: _limits, ...body } = draft;
+            await mutate(`/companies/${draft.id}`, body, 'PUT', { success: 'Settings saved.' });
             // Edits typed while saving are not saved yet.
             if (edits.current === before) setSaved(true);
           }).catch(() => undefined);

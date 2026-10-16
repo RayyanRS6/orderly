@@ -66,6 +66,19 @@ export function ActionButton({
     </button>
   );
 }
+/**
+ * A time of day such as “4:00 pm” in this browser’s time zone, for “back at …” notes.
+ * The space before am/pm never breaks, so the time stays on one line.
+ */
+export function clockTime(value?: string | number | Date | null) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date
+    .toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+}
 /** For a dialog's onInteractOutside: dismissing a notification must not close the dialog. */
 export function keepOpenForToasts(event: { target: EventTarget | null; preventDefault(): void }) {
   if ((event.target as Element | null)?.closest?.('[data-toaster]')) event.preventDefault();
