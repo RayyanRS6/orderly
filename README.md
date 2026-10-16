@@ -57,6 +57,9 @@ Local demo mode does not automatically dispatch cloud queue jobs. Use **Integrat
 - OpenAI, Anthropic and Gemini adapters. Every business uses its own API key, stored encrypted; Orderly never supplies one. Provider changes keep the same application rules.
 - Monthly AI budget reservations, bounded model context/actions, conservative accounting for uncertain calls ($0 for calls the provider refused), and message burst handoff.
 - Spam protection: AI replies per hour for the restaurant and per customer, one notice an hour, automatic return to the bot when a limit resets, limit alerts, and blocked numbers dropped on arrival.
+- Public menu page per business (`/m/<slug>`) with item photos: one-tap ordering from the link the bot sends, and Instagram/QR orders confirmed by sending a short code from the customer's own WhatsApp, with no AI call.
+- Anthropic prompt caching of the fixed instructions (same words, lower cost), priced in the usage ledger.
+- A platform-admin People page listing every business's owners and staff, with add, role change, removal and account deletion.
 - Direct Meta webhook verification, message deduplication, outbound replies and status templates.
 - Embedded Signup UI, server code exchange, granted account/phone validation, subscription and optional number registration.
 - Coexistence live staff-message echoes pause automation and appear in the inbox. This requires eligible Meta Business App onboarding.

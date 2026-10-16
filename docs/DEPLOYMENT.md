@@ -48,6 +48,8 @@ Save server environment variables in an ignored file, such as `.local/supabase.e
 | `META_APP_ID`, `META_APP_SECRET`                        | Your platform Meta app credentials                                                |
 | `META_VERIFY_TOKEN`                                     | Random secret you will also enter in Meta’s webhook setup                         |
 | `META_EMBEDDED_SIGNUP_CONFIG_ID`                        | Your Facebook Login for Business / Embedded Signup v4 configuration               |
+| `PROMPT_CACHE` (optional)                               | `off` stops reusing the AI instructions from Anthropic's cache (see §3)           |
+| `MENU_LINK_SECRET` (optional)                           | Base64 of 32+ random bytes; otherwise derived from the encryption key (see §6)    |
 
 Reuse the existing encryption key when migrating. Generate one only for a new installation:
 
@@ -67,7 +69,7 @@ npx supabase functions deploy orderly --project-ref zygsuxgqkeedgcbjhfzx --use-a
 
 `supabase/config.toml` disables only gateway JWT verification, since Meta cannot send a Supabase JWT. The API still verifies user tokens and company membership, Meta webhook signatures, and the private worker bearer token on their respective routes. Never replace these checks with a public worker endpoint.
 
-Build and deploy the frontend separately:
+Build and deploy the frontend separately, and only after the backend for the same commit is live (the **Deploy Supabase backend** run is green): a newer dashboard calls routes an older backend does not have. Roll back in the reverse order, frontend first.
 
 ```powershell
 $env:VITE_API_BASE_URL = 'https://zygsuxgqkeedgcbjhfzx.supabase.co/functions/v1/orderly'
@@ -158,7 +160,7 @@ Orders first commit to Postgres, then synchronize in the background. Sheet downt
 
 ## 6. Menu page
 
-Each business can switch on a public menu page at `/m/<slug>` (**Your menu → Menu page**). The slug is copied from the business once and never changes, so printed QR codes keep working after a rename. The bot adds the link to menu replies, and owners can put `{menu_link}` on its own line in the greeting or answers. A reply sent to a customer carries their own one-tap link (`#t=…`, signed for that send, valid for 2 hours and one order); the stored message, the inbox and the AI only ever see the public link. Customers from Instagram or a QR code type their WhatsApp number and get an order code (`OM-XXXX-XXXX`, 30 minutes); the order is placed only when they send that code from their own WhatsApp, without any AI call. Every menu-page order is pending, with a **Menu page** badge in Orders.
+Each business can switch on a public menu page at `/m/<slug>` (**Your menu → Menu page**). The slug is copied from the business once and never changes, so printed QR codes keep working after a rename. The bot adds the link to menu replies, and owners can write `{menu_link}` in the greeting, handoff message, knowledge answers or rule responses; while the page is off only the placeholder (and a separator such as `:` before it) is left out. A reply sent to a customer carries their own one-tap link (`#t=…`, signed for that send, valid for 2 hours and one order); the stored message, the inbox and the AI only ever see the public link. Customers from Instagram or a QR code type their WhatsApp number and get an order code (`OM-XXXX-XXXX`, 30 minutes); the order is placed only when they send that code from their own WhatsApp, without any AI call. Every menu-page order is pending, with a **Menu page** badge in Orders.
 
 Photos are optional `https://` links: the menu editor's **Photo link** field, or an `image` (also `image_url` or `photo`) column in a CSV import or after column J in the menu Sheet. A bad link is skipped, never failing a sync. Photos are never sent to the AI.
 
@@ -172,7 +174,13 @@ All three are additive and safe to rerun; existing functions and triggers are un
 
 No new secret is required: the link, order-code and rate-limit keys are derived from `CREDENTIAL_ENCRYPTION_KEY`. An optional `MENU_LINK_SECRET` (base64 of at least 32 random bytes, set in Supabase → Edge Functions → Secrets) overrides that base; changing either ends personal links sent in the last 2 hours and codes from the last 30 minutes. The frontend build writes `dist/menu.html`, the `/m/* /menu 200` rewrite and `noindex` headers for `/m/*`; after the first frontend deploy, open a menu link to confirm the rewrite works.
 
-To roll back, turn the menu page off for each business and remove any `{menu_link}` placeholder from greetings first (older code would send it literally), then revert the code and `npx wrangler rollback` the frontend. The tables can stay. Only if you want the objects gone:
+To roll back, first turn the menu page off for each business and remove every `{menu_link}` placeholder (greeting, handoff message, knowledge answers and rule responses, then publish the bot settings), because older code would send it literally. This must return no rows before you continue:
+
+```sql
+select id, data->>'name' from public.companies where data::text like '%{menu_link}%';
+```
+
+Then `npx wrangler rollback` the frontend, and only after that revert and push the backend. The tables can stay. Only if you want the objects gone (the same statements are kept in `.local/backups/rollback-menu-page.sql`; run the `cron.unschedule` line on its own, since it errors when the job is absent):
 
 ```sql
 select cron.unschedule('orderly-menu-purge');

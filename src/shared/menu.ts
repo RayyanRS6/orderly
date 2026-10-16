@@ -135,8 +135,9 @@ export const maskPhone = (digits: string) => `+${digits.slice(0, 2)} ••• $
 
 /** Digits of a number a customer typed, or undefined. 03xx numbers are Pakistani (+92). */
 export function normalizeTypedPhone(value: string): string | undefined {
-  // Typed with + or 00, the number already starts with its country code.
-  const international = /^\s*(?:\+|00)/.test(value);
+  // Typed with + or 00, the number already starts with its country code. Numbers copied from
+  // WhatsApp often carry invisible direction marks, which are ignored.
+  const international = /^\s*(?:\+|00)/.test(value.replace(/\p{Cf}/gu, ''));
   let digits = value.replace(/\D/g, '');
   if (digits.startsWith('00')) digits = digits.slice(2);
   if (/^03\d{9}$/.test(digits)) digits = `92${digits.slice(1)}`;

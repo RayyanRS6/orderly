@@ -552,9 +552,10 @@ const hasMenuLink = (text: string, link: string) =>
 // placeholder is left out with a separator just before it ("Menu: {menu_link}" becomes
 // "Menu"), and a line left with no words is dropped.
 const MENU_LINK_GAP = /\s*(?:[:：=|>\-–—→➡👉]\u{FE0F}?\s*)*\{menu_link\}/gu;
-// A placeholder that starts a line takes the separators after it too ("{menu_link} - order").
+// A placeholder that starts a line (after any list marker, which stays) takes the separators
+// after it too ("{menu_link} - order", "• {menu_link} ⬅️ tap").
 const MENU_LINK_LEAD =
-  /^\s*(?:[:：=|>\-–—→➡👉]\u{FE0F}?\s*)*\{menu_link\}\s*(?:[:：=|>\-–—→➡👈]\u{FE0F}?\s*)*/u;
+  /^(\s*(?:[•·*]|\d+[.)])\s+)?\s*(?:[:：=|>\-–—→➡👉]\u{FE0F}?\s*)*\{menu_link\}\s*(?:[:：=|>\-–—→➡←⬅👈]\u{FE0F}?\s*)*/u;
 export function fillMenuLink(text: string, link?: string): string {
   if (!text.includes('{menu_link}')) return text;
   if (link) return text.replaceAll('{menu_link}', link);
@@ -563,7 +564,7 @@ export function fillMenuLink(text: string, link?: string): string {
     .flatMap((line) => {
       if (!line.includes('{menu_link}')) return [line];
       const left = line
-        .replace(MENU_LINK_LEAD, '')
+        .replace(MENU_LINK_LEAD, '$1')
         .replace(MENU_LINK_GAP, '')
         .replace(/\s*(?:\(\s*\)|\[\s*\])/g, '')
         .trim();
@@ -581,6 +582,8 @@ const BARE_DOMAIN =
   /\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|net|org|pk|io|app|dev|page|ly|link|site|online|store|shop|xyz|info|biz)\b(?:\/\S*)?/giu;
 const BARE_ENDING =
   /\.(?:com|net|org|pk|io|app|dev|page|ly|link|site|online|store|shop|xyz|info|biz)$/u;
+// Endings that are also words: "Lahore.info about…" is a missing space, not a link.
+const WORD_ENDING = /\.(?:app|page|link|site|online|store|shop|info)$/u;
 function linkHost(link: string): string {
   return (link.replace(/^https?:\/\//i, '').split(/[/?#]/)[0] ?? '')
     .replace(/^.*@/, '')
@@ -592,7 +595,11 @@ function linkHost(link: string): string {
 function linksIn(text: string): string[] {
   const bare = [...text.matchAll(BARE_DOMAIN)]
     .map((m) => m[0])
-    .filter((m) => BARE_ENDING.test(m.split(/[/?#]/)[0] ?? ''));
+    .filter((m) => {
+      const host = m.split(/[/?#]/)[0] ?? '';
+      if (!BARE_ENDING.test(host)) return false;
+      return !(WORD_ENDING.test(host) && !m.includes('/') && /[A-Z]/.test(host));
+    });
   return [...[...text.matchAll(EXPLICIT_LINK)].map((m) => m[0]), ...bare];
 }
 // Allowed hosts are read loosely: everything detection finds, plus any ending in any case, an
@@ -979,8 +986,8 @@ export function processTurn(
   const configuration = botConfig(company);
   // AI wording that states prices or outcomes, or links to a website the owner never gave.
   // The owner's hosts are only collected when the AI wrote a link, which is rare. A link the
-  // customer sent may be repeated back to them: it is found by plain text search over the
-  // history the AI sees, so a long or crafted message never costs more than reading it.
+  // customer or staff sent in the history the AI sees may be repeated: its hosts are read one
+  // short word at a time, so a long or crafted message never costs more than reading it.
   let ownerHosts: Set<string> | undefined;
   const hosts = () =>
     (ownerHosts ??= linkAllowlist(company, configuration, input.appHost, [
@@ -989,17 +996,25 @@ export function processTurn(
         .filter((product) => product.companyId === company.id)
         .flatMap((product) => [product.name, product.description]),
     ]));
-  const customerText = [
-    input.text,
-    ...conversation.messages
-      .slice(-MODEL_LIMITS.historyMessages)
-      .filter((m) => m.role === 'customer')
-      .map((m) => m.text.slice(0, MODEL_LIMITS.historyMessageChars)),
-  ]
-    .join('\n')
-    .toLowerCase();
-  const fromCustomer = (host: string) => customerText.includes(host);
-  const invents = (text: string) => inventsLink(text, hosts, fromCustomer);
+  // Never the bot's own earlier wording, so an invented link can't vouch for itself.
+  let chatHosts: Set<string> | undefined;
+  const fromChat = (host: string) => {
+    chatHosts ??= new Set(
+      [
+        input.text,
+        ...conversation.messages
+          .slice(-MODEL_LIMITS.historyMessages)
+          .filter((m) => m.role === 'customer' || m.role === 'staff')
+          .map((m) => m.text.slice(0, MODEL_LIMITS.historyMessageChars)),
+      ]
+        .join('\n')
+        .split(/[^\p{L}\p{N}.@-]+/u)
+        .filter((word) => word.includes('.') && word.length <= 253)
+        .flatMap(hostsIn),
+    );
+    return [...chatHosts].some((known) => host === known || host.endsWith(`.${known}`));
+  };
+  const invents = (text: string) => inventsLink(text, hosts, fromChat);
   // The menu page's own address is not an outcome claim, whatever words its slug holds.
   const claims = (text: string) =>
     unsafeModelText(input.menuLink ? text.replaceAll(input.menuLink, '') : text);

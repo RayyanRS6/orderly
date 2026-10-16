@@ -496,7 +496,8 @@ export function MenuPage({ slug }: { slug: string }) {
             Your order is placed only after you send the message. The code works for 30 minutes.
           </p>
           <p className="mt-2 text-[13px] leading-relaxed text-stone-500">
-            Already sent it? Your order is placed. Check WhatsApp for the confirmation.
+            Already sent it? The restaurant’s reply in WhatsApp confirms your order, or tells you
+            what to fix.
           </p>
           <button
             type="button"

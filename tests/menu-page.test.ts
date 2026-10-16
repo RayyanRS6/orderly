@@ -920,6 +920,9 @@ describe('typed WhatsApp numbers', () => {
     // Typed with + or 00, a 10-digit number starting with 3 keeps its own country code.
     expect(normalizeTypedPhone('+354 611 2345')).toBe('3546112345');
     expect(normalizeTypedPhone('00372 512 3456')).toBe('3725123456');
+    // Copied from WhatsApp, with invisible direction marks around it.
+    expect(normalizeTypedPhone('‪+354 611 2345‬')).toBe('3546112345');
+    expect(normalizeTypedPhone('‎0300 1234567')).toBe('923001234567');
     for (const bad of ['', '12345', '0300 123456', '0300 12345678'])
       expect(normalizeTypedPhone(bad), bad).toBeUndefined();
   });

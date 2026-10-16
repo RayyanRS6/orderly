@@ -245,7 +245,9 @@ describe('order code kept across a reload', () => {
     expect(html).toContain(`href="${saved.whatsappUrl.replaceAll('&', '&amp;')}"`);
     expect(html).toContain('Not sent yet? Change order');
     // Someone who already sent the code is not told to send it again.
-    expect(html).toContain('Already sent it? Your order is placed.');
+    // Nothing here claims the order went through: only the WhatsApp reply knows.
+    expect(html).toContain('Already sent it? The restaurant’s reply in WhatsApp confirms');
+    expect(html).not.toContain('Your order is placed.');
     expect(html).toContain('Start a new order');
     expect(html).not.toContain('Opening the menu…');
     expect(loadCart(slug)).toEqual(cart);

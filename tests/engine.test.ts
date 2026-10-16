@@ -705,6 +705,11 @@ describe('menu page link', () => {
     expect(fillMenuLink('Hi!\n{menu_link} → menu\n- Biryani - Rs. 450')).toBe(
       'Hi!\nmenu\n- Biryani - Rs. 450',
     );
+    expect(fillMenuLink('{menu_link} ⬅️ tap to order')).toBe('tap to order');
+    expect(fillMenuLink('{menu_link} ← tap')).toBe('tap');
+    expect(fillMenuLink('• {menu_link} - full menu')).toBe('• full menu');
+    expect(fillMenuLink('1. {menu_link} - full menu\n2. Call us')).toBe('1. full menu\n2. Call us');
+    expect(fillMenuLink('• {menu_link}\n• Call us')).toBe('• Call us');
   });
 
   it('never reads words in the menu page address as an order claim', () => {
@@ -1153,6 +1158,67 @@ describe('web links in AI wording', () => {
         'I can’t email ali.khan@gmail.com from here, but staff can help with a receipt.',
       );
       expect(email.conversation.mode).toBe('bot');
+    });
+
+    it('lets the AI repeat a link staff sent in this chat, but not its own earlier wording', () => {
+      const c = fresh();
+      c.messages = [
+        {
+          id: 'staff-pin',
+          role: 'staff',
+          text: 'Our location pin: https://maps.app.goo.gl/Dk7pQ2xYz',
+          createdAt: now,
+        },
+        {
+          id: 'old-bot',
+          role: 'assistant',
+          text: 'See https://made-up.example/deals',
+          createdAt: now,
+        },
+      ];
+      const turn = (modelText: string) =>
+        processTurn(
+          company,
+          products,
+          structuredClone(c),
+          { messageId: `staff-link-${++message}`, text: 'location dobara bhej dein', now },
+          [{ type: 'answer', text: '' }],
+          { text: modelText, askFor: 'none' },
+        );
+      const pin = turn('Ji, hamari location yeh hai: https://maps.app.goo.gl/Dk7pQ2xYz');
+      expect(pin.conversation.mode).toBe('bot');
+      expect(pin.traces).not.toContain('invented_link_ignored');
+      expect(turn('Deals: https://made-up.example/deals').traces).toContain(
+        'invented_link_ignored',
+      );
+    });
+
+    it('matches a customer’s link by its whole host, not by a few letters inside it', () => {
+      for (const [sent, invented] of [
+        ['https://maps.app.goo.gl/Ab12Cd', 'Our shop is here: https://goo.gl/maps/Zx9Qw'],
+        ['https://maps.google.com/?q=24.86,67.01', 'Find us: https://www.google.com/maps/place/x'],
+        ['karachibites.com.pk', 'Order at https://karachibites.com'],
+        ['foodpanda.pk', 'Also on https://panda.pk/deals'],
+        ['devil.com', 'See https://evil.com'],
+      ]) {
+        const result = reply(`${sent} where is your shop?`, invented);
+        expect(result.traces, invented).toContain('invented_link_ignored');
+      }
+      // A subdomain of a host the customer sent is still theirs.
+      const sub = reply('my site is foo.com', 'Got it, https://m.foo.com is noted.');
+      expect(sub.traces).not.toContain('invented_link_ignored');
+    });
+
+    it('does not read a missing space before a word as a link', () => {
+      const result = reply(
+        'how many branches?',
+        'We have one branch in Lahore.info about a second branch is coming soon.',
+      );
+      expect(result.traces).not.toContain('invented_link_ignored');
+      expect(result.conversation.mode).toBe('bot');
+      expect(reply('site?', 'Visit lahore.info for more').traces).toContain(
+        'invented_link_ignored',
+      );
     });
 
     it('still drops a link the customer never sent', () => {

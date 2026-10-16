@@ -58,9 +58,9 @@ grant all on public.menu_drafts to service_role;
 -- Saves a draft that expires p_minutes from now (database clock). A business never holds more
 -- than about p_max_open unconfirmed drafts (a storage backstop), and one network address
 -- (ipKey, when known) no more than 15, so no single source can use up a business's drafts. A
--- number keeps one open draft: a new one ends its older ones. No company row lock: anonymous
--- requests must never queue behind, or hold up, live chat turns. A code collision is reported
--- so the server retries.
+-- number keeps one open draft: a new one ends its older ones. It never takes the company row
+-- lock that chat turns use (FOR UPDATE); the company foreign key only holds a brief KEY SHARE
+-- lock while each insert commits. A code collision is reported so the server retries.
 create or replace function public.create_menu_draft(p_draft jsonb, p_minutes integer default 30, p_max_open integer default 2000)
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare expires timestamptz; ip text := p_draft->>'ipKey';
