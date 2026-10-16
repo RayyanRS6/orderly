@@ -657,6 +657,20 @@ describe('menu page link', () => {
       'مینو',
       'مینو بھیجیں',
       'پورا مینو',
+      'menu chahiye',
+      'menu bhej dain',
+      'mujhe menu bhejo',
+      'bhai menu bhejo',
+      'menu ka link bhejo',
+      'Can I see the menu?',
+      'Can you send me the menu?',
+      'Send the menu again',
+      'Menu 🙏',
+      'Menu pleaseee',
+      'مینو چاہیے',
+      'مجھے مینو بھیجیں',
+      'پورا مینو بھیج دیں',
+      'مينو',
     ])
       expect(asksForMenu(text), text).toBe(true);
     for (const text of [
@@ -666,6 +680,12 @@ describe('menu page link', () => {
       '2 chicken biryani',
       'hi',
       'cancel',
+      'menu nahi chahiye',
+      'menu bhej diya tha',
+      'menu link not working',
+      'menu se 2 biryani',
+      'i want 2 biryani from the menu',
+      'مینو نہیں چاہیے',
     ])
       expect(asksForMenu(text), text).toBe(false);
   });
@@ -707,6 +727,34 @@ describe('menu page link', () => {
       const result = ask('Menu', link, 'Our menu is here: {menu_link}');
       expect(result.reply).toBe(`Our menu is here: ${link}`);
       expect(result.reply.split(link)).toHaveLength(2);
+    });
+
+    it('keeps an owner’s exact rule reply word for word', () => {
+      const exact = 'Our sections: BBQ, Karahi, Rice. Which one would you like?';
+      const result = processTurn(
+        {
+          ...company,
+          bot: publishedConfig({
+            behaviorRules: [
+              {
+                id: 'menu-rule',
+                enabled: true,
+                when: 'The customer asks for the menu.',
+                action: 'reply',
+                response: exact,
+                responseMode: 'exact',
+              },
+            ],
+          }),
+        },
+        products,
+        fresh(),
+        { messageId: `exact-menu-${++message}`, text: 'Menu', now, menuLink: link },
+        [{ type: 'answer', text: '' }],
+        { text: 'Here you go!', askFor: 'none', matchedRuleId: 'menu-rule' },
+      );
+      expect(result.reply).toBe(exact);
+      expect(result.decision?.parts).toEqual(['exact_rule']);
     });
   });
 
@@ -1384,6 +1432,25 @@ describe('after a cancelled order', () => {
     expect(result.reply).toBe('Send “new order” to start a fresh cart.');
     expect(result.decision?.modelText).toBe('protected');
     expect(result.conversation.cart.items).toEqual([]);
+  });
+
+  it('offers no AI promise when the customer starts choosing a dish', () => {
+    const chicken = products.filter((p) => /chicken/i.test(p.name)).slice(0, 2);
+    expect(chicken).toHaveLength(2);
+    const result = turn(
+      cancelled(),
+      'chicken please',
+      [
+        {
+          type: 'clarify_item',
+          candidateProductIds: chicken.map((p) => p.id),
+          quantity: 1,
+        },
+      ],
+      'Sure, I’ll add that to your order. Which one?',
+    );
+    expect(result.reply).not.toContain('I’ll add that');
+    expect(result.decision?.modelText).toBe('protected');
   });
 
   it('still lets only the engine word the cancellation itself', () => {

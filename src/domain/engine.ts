@@ -545,7 +545,7 @@ const menuLinkLine = (lang: Language, link: string) =>
 // The bot may answer it with sections or a question instead of the engine's menu, so the
 // menu page link is added under whatever it replied.
 const MENU_REQUEST =
-  /^(?:(?:please |plz |pls )?(?:send|share|show|give)(?: me)?(?: the| your| ur)?(?: full| whole| complete)? menu|(?:the |your )?(?:full |whole |complete )?menu(?: card| list)?|menu (?:dikhao|dikhayein|dikhaen|dikha do|bhejo|bhej do|bhej dein|bhej den|bhejein|bhejiye|send karo|send kardo|send kar dein)|(?:pura|poora|pora) menu(?: bhej do| bhej dein| bhejo| dikhao)?|مینو(?: بھیجیں| بھیجو| بھیج دیں| دکھائیں| دکھاؤ)?|پورا مینو(?: بھیجیں| دکھائیں)?)(?: please| plz| pls)?[.!?؟،۔\s]*$/u;
+  /^(?:(?:hi|hello|salam|aoa|bhai|sir|ji|please|pls|plz|zara|mujhe|ذرا|مجھے|براہ کرم|پلیز)[,،]? ){0,2}(?:(?:(?:can|could|may|would) (?:i|we|you) (?:please )?(?:see|have|get|send|share|show|give)(?: me| us)?|i (?:want|need|would like)(?: to see| to have)?|(?:send|share|show|give)(?: me| us)?) (?:the |your |ur )?(?:full |whole |complete )?menu(?: card| list| link)?(?: again)?|(?:the |your )?(?:full |whole |complete )?menu(?: card| list| link| again)?|(?:(?:pura|poora|pora) )?menu(?: ka)?(?: link)? (?:bhejo|bhej ?do|bhej (?:dein|den|dain|dijiye|dijye)|bhej(?:ein|en|ain|iye)|send (?:karo|kardo|kar do|kar dein|karein|kro|krdo|kr do)|dikhao|dikha ?do|dikha (?:dein|den|dain)|dikha(?:yein|yen|en|ain|iye|ein)|chahiye|chaiye|chahye|chahie|de (?:do|dein|den|dain)|dein|batao|batayein|bata do)|(?:pura|poora|pora) menu|(?:پورا )?(?:مینو|مینیو|مينو|مينيو)(?: کارڈ| کا لنک)?(?: بھیجیں| بھیجو| بھیج دیں| بھیج دو| بھیج دیجیے| بھیج دیجئے| بھجیں| دکھائیں| دکھاؤ| دکھا دیں| دکھا دو| چاہیے| چاہئے| دیں| دے دیں| دے دو| بتائیں| ارسال کریں)?)(?: please| pls| plz| plez| pleas+e*| پلیز)?[.!?؟،۔\s\p{Extended_Pictographic}\u{FE0F}\u{200D}\u{1F3FB}-\u{1F3FF}]*$/u;
 export const asksForMenu = (text: string) => MENU_REQUEST.test(normalize(text));
 // The exact link, not a longer address that starts with it, so it is personalised when sent.
 const hasMenuLink = (text: string, link: string) =>
@@ -1265,11 +1265,14 @@ export function processTurn(
     if (reply) reply = fillMenuLink(reply, input.menuLink);
     if (!reply && next.mode === 'bot') fallback();
     // A request for the menu carries the menu page link, however the bot answered it, unless
-    // there is nothing on the menu to show.
+    // there is nothing on the menu to show. The owner's exact wording (a rule or an approved
+    // answer) stays exact: they can write {menu_link} in it instead.
     if (
       input.menuLink &&
       reply &&
       next.mode === 'bot' &&
+      !parts.includes('exact_rule') &&
+      !parts.includes('approved_answer') &&
       asksForMenu(input.text) &&
       !hasMenuLink(reply, input.menuLink) &&
       products.some((product) => product.companyId === company.id)
@@ -1410,6 +1413,8 @@ export function processTurn(
           )
           .filter((product): product is Product => Boolean(product));
         if (candidates.length < 2) throw new Error('That menu choice is no longer available.');
+        // A step towards adding to a cancelled cart: no AI wording promising the dish.
+        if (cart.status === 'cancelled') cancelledCartRefused = true;
         next.pendingItemChoice = {
           candidateProductIds: candidates.map((product) => product.id),
           quantity: action.quantity,
