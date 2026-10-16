@@ -46,10 +46,29 @@ await writeFile(
     `<meta name="robots" content="noindex,nofollow" />${preloadTags}</head>`,
   ),
 );
-// A restaurant's menu page (/m/<slug>, rewritten to this file) loads its own small chunk, so
-// it preloads nothing from the workspace.
+// A restaurant's menu page (/m/<slug>, rewritten to this file) fetches its own small chunk and
+// the chunks it imports alongside the entry script. It must never reach the workspace or the
+// dialog library, which would make every Instagram/QR visitor download the dashboard.
 if (!manifest['src/components/MenuPage.tsx'])
   throw new Error('The menu page chunk (src/components/MenuPage.tsx) is missing from the build.');
+const menuPreload = new Set();
+const visitMenu = (key) => {
+  const chunk = manifest[key];
+  if (!chunk || chunk.isEntry || menuPreload.has(chunk.file)) return;
+  if (key === 'src/App.tsx' || /(^|\/)node_modules\/@radix-ui\//.test(key))
+    throw new Error(`The menu page must stay light, but it loads ${key}.`);
+  menuPreload.add(chunk.file);
+  for (const dep of chunk.imports ?? []) visitMenu(dep);
+};
+visitMenu('src/components/MenuPage.tsx');
+// Shared chunks have no source path in the manifest and the bundler can merge Radix into one,
+// so also look for the attribute its focus guards add.
+for (const file of menuPreload)
+  if ((await readFile(`dist/${file}`, 'utf8')).includes('data-radix-'))
+    throw new Error(`The menu page must stay light, but ${file} contains the dialog library.`);
+const menuPreloadTags = [...menuPreload]
+  .map((file) => `<link rel="modulepreload" crossorigin href="/${file}" />`)
+  .join('');
 await writeFile(
   'dist/menu.html',
   shell
@@ -60,7 +79,7 @@ await writeFile(
       /<meta\s+name="description"\s+content="[^"]*"\s*\/>/,
       '<meta name="description" content="See the menu and order on WhatsApp." />',
     )
-    .replace('</head>', '<meta name="robots" content="noindex" /></head>'),
+    .replace('</head>', `<meta name="robots" content="noindex" />${menuPreloadTags}</head>`),
 );
 // The manifest is a build detail, not something to publish.
 await rm('dist/.vite', { recursive: true, force: true });

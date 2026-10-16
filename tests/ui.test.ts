@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { createElement, Component } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { LegalPage } from '../src/components/Legal';
 import {
   Badge,
@@ -555,22 +555,86 @@ describe('Theme Polish: Dropdowns, Scrollbars, and Sidebar Scrolling', () => {
 });
 
 describe('light public pages', () => {
-  it('keeps the basic controls free of the dialog library and the workspace', () => {
+  const src = join(process.cwd(), 'src');
+  // Any of these pulls the dashboard or the dialog library into the menu page's chunk.
+  const banned = ['App.tsx', 'lib/workspace.tsx', 'components/ui.tsx'].map((file) =>
+    join(src, file),
+  );
+  const real = (file: string) => readFileSync(file, 'utf8');
+
+  // Every module a file loads: imports, re-exports, side-effect imports and import(). A whole
+  // `import type` or `export type` line is skipped because the compiler drops it.
+  function specifiers(code: string): string[] {
+    const lines = code.replace(/^\s*\/\/.*$/gm, '');
+    const statics = [
+      ...lines.matchAll(
+        /^\s*(?:import|export)\s+(type\s+)?(?:[\w\s{},*$]*\sfrom\s*)?['"]([^'"]+)['"]/gm,
+      ),
+    ];
+    const dynamic = [...lines.matchAll(/\bimport\(\s*['"]([^'"]+)['"]\s*\)/g)];
+    return [...statics.filter((m) => !m[1]).map((m) => m[2]), ...dynamic.map((m) => m[1])];
+  }
+
+  // Follows the light files' imports through src/ and lists each import of a banned module.
+  function heavyImports(read = real): string[] {
+    const problems: string[] = [];
+    const seen = new Set<string>();
+    const walk = (file: string) => {
+      if (seen.has(file)) return;
+      seen.add(file);
+      const from = relative(process.cwd(), file).replaceAll(sep, '/');
+      for (const spec of specifiers(read(file))) {
+        if (spec === '@radix-ui' || spec.startsWith('@radix-ui/')) {
+          problems.push(`${from} imports ${spec}`);
+          continue;
+        }
+        if (!spec.startsWith('.')) continue;
+        const target = ['', '.ts', '.tsx', '/index.ts', '/index.tsx']
+          .map((ext) => resolve(dirname(file), spec.split('?')[0] + ext))
+          .find((path) => existsSync(path) && statSync(path).isFile());
+        if (!target) problems.push(`${from} imports ${spec}, which was not found`);
+        else if (banned.includes(target)) problems.push(`${from} imports ${spec}`);
+        else if (target.startsWith(src + sep) && /\.tsx?$/.test(target)) walk(target);
+      }
+    };
     for (const file of [
-      'src/components/ui-basic.tsx',
-      'src/components/MenuPage.tsx',
-      'src/lib/menu-cart.ts',
-      'src/shared/menu.ts',
-      'src/domain/pricing.ts',
-    ]) {
-      const imports = readFileSync(join(process.cwd(), file), 'utf8').match(/from '[^']+'/g) ?? [];
-      for (const banned of ['@radix-ui', '../lib/workspace', './App', './ui'])
-        expect(
-          imports.filter((i) => i === `from '${banned}'` || i.startsWith(`from '${banned}/`)),
-          `${file} imports ${banned}`,
-        ).toEqual([]);
-      expect(imports.join(' ')).not.toContain('@radix-ui');
-    }
+      'components/ui-basic.tsx',
+      'components/MenuPage.tsx',
+      'lib/menu-cart.ts',
+      'shared/menu.ts',
+      'domain/pricing.ts',
+    ])
+      walk(join(src, file));
+    return problems;
+  }
+
+  it('keeps the basic controls free of the dialog library and the workspace', () => {
+    expect(heavyImports()).toEqual([]);
+  });
+
+  it('catches the workspace or the dialog library however the menu page reaches it', () => {
+    const adding = (file: string, line: string) => (path: string) =>
+      path === join(src, file) ? `${line}\n${real(path)}` : real(path);
+    expect(heavyImports(adding('components/MenuPage.tsx', "import App from '../App';"))).toEqual([
+      'src/components/MenuPage.tsx imports ../App',
+    ]);
+    expect(
+      heavyImports(adding('lib/menu-cart.ts', "import { useWorkspace } from './workspace';")),
+    ).toEqual(['src/lib/menu-cart.ts imports ./workspace']);
+    // Through a helper the page imports, as a re-export, a side-effect import or import().
+    expect(
+      heavyImports(adding('lib/utils.ts', "export { Modal } from '../components/ui';")),
+    ).toEqual(['src/lib/utils.ts imports ../components/ui']);
+    expect(heavyImports(adding('domain/pricing.ts', "import '@radix-ui/react-dialog';"))).toEqual([
+      'src/domain/pricing.ts imports @radix-ui/react-dialog',
+    ]);
+    expect(
+      heavyImports(adding('components/ui-basic.tsx', "const app = () => import('../App');")),
+    ).toEqual(['src/components/ui-basic.tsx imports ../App']);
+    // Type-only imports are dropped at build time, so they cost the page nothing.
+    expect(
+      heavyImports(adding('lib/menu-cart.ts', "import type { Page } from './workspace';")),
+    ).toEqual([]);
   });
 });
 
