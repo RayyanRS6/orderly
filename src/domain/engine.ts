@@ -1,6 +1,7 @@
 import { botConfig } from '../shared/bot';
 import type {
   BotAction,
+  BotConfig,
   Cart,
   Company,
   Conversation,
@@ -463,6 +464,7 @@ function menu(
   lang: Language,
   query?: string,
   guided = false,
+  link?: string,
 ) {
   const all = products.filter((p) => p.companyId === company.id);
   if (!all.length)
@@ -529,7 +531,73 @@ function menu(
     if (lines.join('\n').length + line.length > 2800 || lines.length >= 12) break;
     lines.push(line);
   }
-  return `${notFound}${company.name}\n${lines.join('\n')}${lines.length < own.length ? `\n\nShowing ${lines.length} of ${own.length} items. Ask for a category or item name to narrow the menu.` : ''}${guided ? '' : `\n\n${say(lang, 'Tell me the item and quantity, for example “2 chicken biryani”.', 'چیز کا نام اور تعداد بتائیں، جیسے “2 چکن بریانی”۔', 'Item aur quantity batayein, jaise “2 chicken biryani”.')}`}`;
+  const linkLine = link
+    ? `\n\n${say(lang, `See the full menu and order here: ${link}`, `پورا مینو دیکھیں اور یہاں آرڈر کریں: ${link}`, `Poora menu dekhein aur yahan order karein: ${link}`)}`
+    : '';
+  return `${notFound}${company.name}\n${lines.join('\n')}${lines.length < own.length ? `\n\nShowing ${lines.length} of ${own.length} items. Ask for a category or item name to narrow the menu.` : ''}${guided ? '' : `\n\n${say(lang, 'Tell me the item and quantity, for example “2 chicken biryani”.', 'چیز کا نام اور تعداد بتائیں، جیسے “2 چکن بریانی”۔', 'Item aur quantity batayein, jaise “2 chicken biryani”.')}`}${linkLine}`;
+}
+
+// The menu page link in owner wording (greeting, answers, rules). Without a link, each line
+// holding the placeholder is left out, so no sentence is half-finished.
+export function fillMenuLink(text: string, link?: string): string {
+  if (!text.includes('{menu_link}')) return text;
+  if (link) return text.replaceAll('{menu_link}', link);
+  return text
+    .split('\n')
+    .filter((line) => !line.includes('{menu_link}'))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+// Web links in AI wording. Addresses with a scheme, "www." or wa.me are always checked; a bare
+// domain only with a common ending in lower case, so "ready.in 20", "Rs.500" or a missing
+// space after a full stop ("available.Online") never count as links.
+const EXPLICIT_LINK = /\b(?:https?:\/\/|www\.)[^\s<>"]+|\bwa\.me\/\S*/giu;
+const BARE_DOMAIN =
+  /\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|net|org|pk|io|app|dev|page|ly|link|site|online|store|shop|xyz|info|biz)\b(?:\/\S*)?/giu;
+const BARE_ENDING =
+  /\.(?:com|net|org|pk|io|app|dev|page|ly|link|site|online|store|shop|xyz|info|biz)$/u;
+function linkHost(link: string): string {
+  return (link.replace(/^https?:\/\//i, '').split(/[/?#]/)[0] ?? '')
+    .replace(/^.*@/, '')
+    .replace(/:\d*$/, '')
+    .replace(/[.,;:!?)\]}'"’”۔،]+$/u, '')
+    .toLowerCase()
+    .replace(/^www\./, '');
+}
+function linksIn(text: string): string[] {
+  const bare = [...text.matchAll(BARE_DOMAIN)]
+    .map((m) => m[0])
+    .filter((m) => BARE_ENDING.test(m.split(/[/?#]/)[0] ?? ''));
+  return [...[...text.matchAll(EXPLICIT_LINK)].map((m) => m[0]), ...bare];
+}
+/** Web hosts the owner gave (business details, answers, bot settings) plus the app's own. */
+export function linkAllowlist(
+  company: Company,
+  configuration: BotConfig,
+  appHost?: string,
+): Set<string> {
+  const sources = [
+    company.name,
+    company.address,
+    ...company.faqs.flatMap((faq) => [faq.question, faq.answer]),
+    configuration.goal,
+    configuration.instructions,
+    configuration.greeting,
+    configuration.handoffMessage,
+    ...configuration.behaviorRules.map((rule) => rule.response),
+  ];
+  const hosts = new Set(sources.flatMap((text) => linksIn(text ?? '').map(linkHost)));
+  if (appHost) hosts.add(appHost.toLowerCase().replace(/^www\./, ''));
+  hosts.delete('');
+  return hosts;
+}
+/** Whether the text links to a website the owner never gave (matched by host). */
+export function inventsLink(text: string, hosts: Set<string>): boolean {
+  return linksIn(text).some((link) => {
+    const host = linkHost(link);
+    return !host || ![...hosts].some((allowed) => host === allowed || host.endsWith(`.${allowed}`));
+  });
 }
 
 const affirmative = (text: string) =>
@@ -849,6 +917,7 @@ const CORRECTION_TRACES = new Set([
   'unsafe_model_response_ignored',
   'invalid_model_prompt_ignored',
   'response_fallback',
+  'invented_link_ignored',
 ]);
 
 export function processTurn(
@@ -864,6 +933,9 @@ export function processTurn(
     throw new Error('Invalid message timestamp.');
   const next: Conversation = structuredClone(conversation);
   const configuration = botConfig(company);
+  // AI wording that states prices or outcomes, or links to a website the owner never gave.
+  const hosts = linkAllowlist(company, configuration, input.appHost);
+  const unsafe = (text: string) => unsafeModelText(text) || inventsLink(text, hosts);
   const traces: string[] = [];
   if (next.messages.some((m) => m.id === input.messageId))
     return {
@@ -909,6 +981,7 @@ export function processTurn(
   let tooManyActions = false;
   let modelAnswer: string | undefined;
   let answerUnsafe = false;
+  let answerUnsafeTrace = 'unsafe_model_response_ignored';
   let incompleteReviewQuestion: string | undefined;
   const finish = (): TurnResult => {
     if (traces.includes('human_mode_message_saved'))
@@ -946,10 +1019,7 @@ export function processTurn(
     const harmlessAskFor =
       modelResponse?.askFor === 'items' || modelResponse?.askFor === 'anything_else';
     const answerOnlyLabelSlip =
-      !validAskFor &&
-      grounded &&
-      !!modelResponse?.text.trim() &&
-      !unsafeModelText(modelResponse.text);
+      !validAskFor && grounded && !!modelResponse?.text.trim() && !unsafe(modelResponse.text);
     const matchedRule = configuration.behaviorRules.find(
       (rule) => rule.enabled && rule.id === modelResponse?.matchedRuleId,
     );
@@ -1008,7 +1078,7 @@ export function processTurn(
       grounded &&
       (validAskFor || (!reply && harmlessAskFor)) &&
       modelResponse?.text.trim() &&
-      !unsafeModelText(modelResponse.text)
+      !unsafe(modelResponse.text)
     ) {
       const modelFirst = traces.includes('menu') || traces.includes('clarify_item');
       parts =
@@ -1042,6 +1112,8 @@ export function processTurn(
     if (modelResponse && !grounded) traces.push('invalid_model_grounding_ignored');
     if (modelResponse?.text && unsafeModelText(modelResponse.text))
       traces.push('unsafe_model_response_ignored');
+    else if (modelResponse?.text && inventsLink(modelResponse.text, hosts))
+      traces.push('invented_link_ignored');
     if (modelResponse?.askFor && !validAskFor && !parts.includes('model'))
       traces.push('invalid_model_prompt_ignored');
     if (!reply && traces.includes('answer') && !answerOnlyLabelSlip) {
@@ -1084,6 +1156,7 @@ export function processTurn(
       }
     }
     if (modelText === 'used' && !parts.includes('model')) modelText = 'replaced';
+    if (reply) reply = fillMenuLink(reply, input.menuLink);
     if (reply)
       next.messages.push({
         id: `${input.messageId}:reply`,
@@ -1106,9 +1179,7 @@ export function processTurn(
       corrections: [
         ...(recapCorrected ? ['recap_shown'] : []),
         ...(tooManyActions ? ['too_many_actions'] : []),
-        ...(answerUnsafe && !traces.includes('unsafe_model_response_ignored')
-          ? ['unsafe_model_response_ignored']
-          : []),
+        ...(answerUnsafe && !traces.includes(answerUnsafeTrace) ? [answerUnsafeTrace] : []),
         ...traces.filter(
           (trace) => CORRECTION_TRACES.has(trace) || trace.startsWith('validation_failed:'),
         ),
@@ -1234,7 +1305,7 @@ export function processTurn(
         continue;
       }
       if (action.type === 'menu') {
-        reply = menu(company, products, lang, action.query, !!modelResponse);
+        reply = menu(company, products, lang, action.query, !!modelResponse, input.menuLink);
         continue;
       }
       if (action.type === 'cart_summary') {
@@ -1289,7 +1360,7 @@ export function processTurn(
             (action.text === f.answer && f.answer.trim()),
         );
         const proposed = action.text.trim();
-        const unsafeClaim = unsafeModelText(proposed);
+        const unsafeClaim = unsafe(proposed);
         if (modelResponse && !modelResponse.text.trim() && proposed && !unsafeClaim)
           modelResponse = { ...modelResponse, text: proposed };
         // Structured response metadata is validated in finish before deciding
@@ -1297,8 +1368,10 @@ export function processTurn(
         reply = faq?.answer ?? (modelResponse || unsafeClaim ? '' : proposed);
         // Explanation only: an answer the model wrote without a separate response object.
         if (!faq && !modelResponse && actions && !input.action && proposed) {
-          if (unsafeClaim) answerUnsafe = true;
-          else modelAnswer = proposed;
+          if (unsafeClaim) {
+            answerUnsafe = true;
+            if (!unsafeModelText(proposed)) answerUnsafeTrace = 'invented_link_ignored';
+          } else modelAnswer = proposed;
         }
         traces.push(faq ? 'approved_faq' : 'grounded_model_answer');
         continue;

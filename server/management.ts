@@ -16,6 +16,7 @@ import { appMode } from './config';
 import { createClient } from '@supabase/supabase-js';
 import { emailAlertsAvailable } from './integrations/alerts';
 import { disconnectGateway } from './whatsapp/connections';
+import { baseSlug, menuLinkStatus, refreshDisplayNumber, whatsappNumberFor } from './menu';
 
 export type AppEnv = {
   Variables: { company: Company; role: Role; userId: string; allowedCompanies: Company[] };
@@ -453,6 +454,20 @@ export function managementRoutes(repo: Repository) {
     const deleted = await repo.eraseCustomer(c.get('company').id, phone);
     await repo.audit(c.get('company').id, c.get('userId'), 'privacy.customer_erased');
     return c.json({ deleted });
+  });
+  // The public menu page: anyone on the team sees it, owners switch it on or off.
+  app.get('/menu-link', async (c) => c.json(await menuLinkStatus(repo, c.get('company'))));
+  app.put('/menu-link', async (c) => {
+    owner(c.get('role'));
+    const { enabled } = z
+      .object({ enabled: z.boolean() })
+      .strict()
+      .parse(await c.req.json());
+    const company = c.get('company');
+    if (enabled && !(await whatsappNumberFor(repo, company.id).catch(() => undefined)))
+      await refreshDisplayNumber(repo, company.id);
+    await repo.setMenuLink(company.id, enabled, baseSlug(company));
+    return c.json(await menuLinkStatus(repo, company));
   });
   return app;
 }

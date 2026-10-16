@@ -46,7 +46,7 @@ export const MODEL_TEXT_LABELS: Record<ModelTextOutcome, string> = {
   invalid_question:
     'The AI asked for a detail the customer already gave, so its question was dropped.',
   unsafe:
-    'The AI’s wording mentioned prices, totals or a confirmed order, which only the engine may state, so it was dropped.',
+    'The AI’s wording mentioned prices, totals, a confirmed order or a web link you didn’t provide, so it was dropped.',
 };
 
 export const SKIP_LABELS: Record<ModelSkipReason, string> = {
@@ -56,6 +56,7 @@ export const SKIP_LABELS: Record<ModelSkipReason, string> = {
   staff_mode: 'Staff are handling this chat, so the AI was not used.',
   paused: 'Automatic replies are paused, so the AI was not used.',
   cancellation: 'The customer asked to cancel a submitted order, so no AI was needed.',
+  menu_page: 'The customer ordered from your menu page, so no AI was needed.',
 };
 
 export const NOTICE_LABELS: Record<StaffNoticeCause, string> = {
@@ -90,6 +91,7 @@ const STEP_LABELS: Record<string, string> = {
   order_cancelled: 'Cancelled the order',
   staff_attention: 'Notified staff',
   human_mode_message_saved: 'Saved for staff',
+  menu_page_order: 'Saved an order from the menu page',
 };
 
 const CORRECTION_LABELS: Record<string, string> = {
@@ -113,6 +115,8 @@ const CORRECTION_LABELS: Record<string, string> = {
   invalid_model_prompt_ignored:
     'The AI’s follow-up question didn’t fit the order so far, so its wording was dropped.',
   response_fallback: 'There was no usable reply text, so a built-in next question was sent.',
+  invented_link_ignored:
+    'The AI’s wording included a web link you didn’t provide, so it was dropped.',
 };
 
 const humanize = (value: string) => value.replaceAll('_', ' ');

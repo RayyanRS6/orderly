@@ -38,6 +38,7 @@ import { sendStaffAlert } from './integrations/alerts.js';
 import { LinkedWhatsAppAdapter } from './integrations/linked-whatsapp';
 import { assertCurrentAddress, jobAddress, requireMeta } from './whatsapp/connections';
 import { customerKeys, sameAddress } from '../src/shared/whatsapp';
+import { appHost, menuPublicUrl } from './menu.js';
 
 // Paid Supabase workers have a 400s maximum lifetime. Include an 80s margin;
 // bounded upstream requests and database requests cannot survive this lease.
@@ -251,6 +252,8 @@ export async function handleTurn(
       }
     }
     const products = await repo.listProducts(company.id);
+    // The public menu page, when it is on: menu replies share it and fill {menu_link}.
+    const menuUrl = await menuPublicUrl(repo, company.id).catch(() => undefined);
     let actions: BotAction[] | undefined;
     let modelResponse: import('../src/shared/types.js').ModelResponse | undefined;
     let interpretation: ModelInterpretation | undefined;
@@ -382,7 +385,14 @@ export async function handleTurn(
         };
       }
     }
-    const result = processTurn(company, products, conversation, input, actions, modelResponse);
+    const result = processTurn(
+      company,
+      products,
+      conversation,
+      { ...input, menuLink: menuUrl, appHost: appHost() },
+      actions,
+      modelResponse,
+    );
     // The AI answered, so an older limit pause kept after a button tap has run its course.
     if (interpretation) delete result.conversation.limitPause;
     if (result.reply && result.decision) {
@@ -420,6 +430,8 @@ export async function handleTurn(
           text: result.reply,
           cartRevision: result.conversation.cart.revision,
           source: result.conversation.mode === 'human' ? 'notice' : 'bot',
+          // Personalised for this customer only when sent; the stored text keeps the public link.
+          ...(menuUrl && result.reply.includes(menuUrl) && { menuLink: true }),
         }),
       );
     if (

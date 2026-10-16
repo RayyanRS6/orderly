@@ -57,8 +57,12 @@ try {
   if (!ready) throw new Error(`Deno startup failed: ${output.slice(-3000)}`);
   const unauthorized = await fetch(`http://127.0.0.1:${port}/orderly/api/account`);
   if (unauthorized.status !== 401) throw new Error('Deno API did not enforce user authentication.');
+  // The public menu routes sit before sign-in and answer for themselves.
+  const menu = await fetch(`http://127.0.0.1:${port}/orderly/api/public/menu/Not_A_Menu`);
+  if (menu.status !== 404 || (await menu.json()).code !== 'not_found')
+    throw new Error('Deno API did not serve the public menu routes before sign-in.');
   console.log(
-    'Deno runtime smoke passed: real bundle started, health responded, private API rejected anonymous access.',
+    'Deno runtime smoke passed: real bundle started, health responded, private API rejected anonymous access, public menu routes answered.',
   );
 } finally {
   child.kill();

@@ -19,6 +19,7 @@ import type {
   AiLimitStatus,
   BlockedCustomer,
 } from '../src/shared/types';
+import type { MenuLink } from '../src/shared/menu';
 import { DemoFileRepository, MemoryRepository } from './storage/memory';
 import { SupabaseRepository } from './storage/supabase';
 import { appMode } from './config';
@@ -197,6 +198,11 @@ export interface Repository {
   claimJob(id: string, now: string, leaseUntil: string): Promise<Job | undefined>;
   saveJob(job: Job): Promise<void>;
   findCompanyByPhoneNumberId(id: string): Promise<Company | undefined>;
+  // Public menu page. Before its migration, reads find no link (the page is off).
+  getMenuLink(companyId: string): Promise<MenuLink | undefined>;
+  findMenuLink(slug: string): Promise<MenuLink | undefined>;
+  // Turns the link on or off. The slug is used only the first time; it never changes after.
+  setMenuLink(companyId: string, enabled: boolean, slug: string): Promise<MenuLink>;
 }
 
 export { DemoFileRepository, MemoryRepository, SupabaseRepository };

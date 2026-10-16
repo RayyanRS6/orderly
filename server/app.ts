@@ -37,6 +37,7 @@ import {
 import { dispatchJob, makeJob, recoverJobs } from './jobs.js';
 import { finishSignup, signupSchema } from './integrations/signup.js';
 import { managementRoutes } from './management.js';
+import { publicMenuRoutes } from './public-menu.js';
 import { readiness } from './readiness.js';
 import { buildAgentFlow } from './agent-flow.js';
 import { verifyProviderKey } from './integrations/model-catalog.js';
@@ -289,6 +290,8 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
     // action, avoiding an unbounded sweep of idle restaurants here.
     return c.json({ dispatched });
   });
+  // The public menu page needs no sign-in, so its routes come before the auth check below.
+  app.route('/api/public', publicMenuRoutes(repo));
   app.use('/api/*', async (c, next) => {
     const mode = appMode();
     let allowed: Company[];
@@ -718,7 +721,8 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
         body.secret || decryptSecret((await repo.getSecret(c.get('company').id, kind)) || '');
       const adapter = new WhatsAppAdapter(integration, token);
       await adapter.verifyOwnership();
-      await adapter.test();
+      const { displayPhoneNumber } = (await adapter.test()) ?? {};
+      if (displayPhoneNumber) integration.config.displayPhoneNumber = displayPhoneNumber;
       await adapter.subscribe();
       integration.config.ownershipVerifiedAt = new Date().toISOString();
       integration.status = 'connected';
@@ -754,12 +758,19 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
     const integration = (await repo.getIntegrations(company.id)).find((i) => i.kind === kind);
     if (!integration?.configured) throw new PublicError('Save the connection credentials first.');
     try {
-      if (kind === 'sheets' || kind === 'whatsapp')
+      let displayPhoneNumber: string | undefined;
+      if (kind === 'whatsapp')
+        ({ displayPhoneNumber } =
+          (await (await integrationAdapter(repo, company.id, 'whatsapp')).test()) ?? {});
+      else if (kind === 'sheets')
         await (await integrationAdapter(repo, company.id, kind as 'sheets')).test();
       else await verifyProviderKey(kind, await providerKey(repo, company, kind));
       const checkedAt = new Date().toISOString();
       const updated = {
         ...integration!,
+        ...(displayPhoneNumber && {
+          config: { ...integration!.config, displayPhoneNumber },
+        }),
         status: 'connected' as const,
         checkedAt,
         error: undefined,

@@ -84,6 +84,8 @@ export interface Product {
   aliases: string[];
   variants: ProductOption[];
   modifiers: ProductOption[];
+  /** An https photo link for the menu page. Never sent to the AI. */
+  imageUrl?: string;
 }
 export interface CartItem {
   productId: string;
@@ -147,7 +149,7 @@ export interface ReplyDecision {
   corrections: string[];
 }
 export type ModelSkipReason =
-  'button' | 'late' | 'local_rules' | 'staff_mode' | 'paused' | 'cancellation';
+  'button' | 'late' | 'local_rules' | 'staff_mode' | 'paused' | 'cancellation' | 'menu_page';
 // 'ai_budget' is the monthly AI spending limit; 'hourly_limit' and 'customer_limit' are the
 // AI replies per hour for the whole restaurant and for one customer.
 export type StaffNoticeCause =
@@ -493,6 +495,10 @@ export interface TurnInput {
   testTarget?: 'draft' | 'published';
   /** Set when a queued message was processed too late and is handed to staff instead. */
   late?: boolean;
+  /** Server only: the public menu page URL when it is on, for menu replies and {menu_link}. */
+  menuLink?: string;
+  /** Server only: the app's own web host, always allowed in AI wording. */
+  appHost?: string;
 }
 export interface TurnResult {
   conversation: Conversation;

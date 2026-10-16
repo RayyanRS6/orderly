@@ -18,6 +18,7 @@ import type {
   TeamMember,
   Message,
 } from '../../src/shared/types';
+import type { MenuLink } from '../../src/shared/menu';
 import {
   seedCompanies,
   seedConversations,
@@ -87,6 +88,7 @@ const repliesThisHour = (state: State, companyId: string, now: number) => {
   );
 };
 interface State {
+  menuLinks?: MenuLink[];
   aiLimitHits?: AiLimitHit[];
   blockedCustomers?: BlockedKey[];
   gatewayNonces?: Record<string, number>;
@@ -1508,6 +1510,36 @@ export class MemoryRepository implements Repository {
         (i) => i.integration.kind === 'whatsapp' && i.integration.config.phoneNumberId === id,
       );
       return integration ? s.companies.find((c) => c.id === integration.companyId) : undefined;
+    });
+  }
+  getMenuLink(companyId: string) {
+    return this.read((s) => s.menuLinks?.find((l) => l.companyId === companyId));
+  }
+  findMenuLink(slug: string) {
+    return this.read((s) => s.menuLinks?.find((l) => l.slug === slug));
+  }
+  // Mirrors SQL set_menu_link.
+  setMenuLink(companyId: string, enabled: boolean, slug: string) {
+    return this.mutate((s) => {
+      companyExists(s, companyId);
+      const rows = (s.menuLinks ??= []);
+      const updatedAt = new Date().toISOString();
+      const existing = rows.find((l) => l.companyId === companyId);
+      if (existing) {
+        existing.enabled = enabled;
+        existing.updatedAt = updatedAt;
+        return existing;
+      }
+      if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug) || slug.length < 3 || slug.length > 72)
+        throw new Error('Invalid menu link');
+      let chosen = slug;
+      for (let attempt = 2; rows.some((l) => l.slug === chosen); attempt++) {
+        if (attempt > 50) throw new Error('Could not choose a free menu link');
+        chosen = `${slug}-${attempt}`;
+      }
+      const link: MenuLink = { companyId, slug: chosen, enabled, updatedAt };
+      rows.push(link);
+      return link;
     });
   }
 }

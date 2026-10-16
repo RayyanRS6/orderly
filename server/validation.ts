@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { MAX_BOT_INSTRUCTIONS } from '../src/shared/bot.js';
 import { AI_LIMIT_RANGES, MODEL_LIMITS } from '../src/shared/models.js';
+import { PHOTO_URL_RE } from '../src/shared/menu.js';
 const text = (max: number) => z.string().trim().max(max);
 export const behaviorRuleSchema = z
   .object({
@@ -62,6 +63,15 @@ export const productSchema = z
     aliases: z.array(text(100)).max(20).default([]),
     variants: z.array(optionSchema).max(15).default([]),
     modifiers: z.array(optionSchema).max(20).default([]),
+    imageUrl: z.preprocess(
+      (v) => (v === '' ? undefined : v),
+      z
+        .string()
+        .trim()
+        .max(500)
+        .regex(PHOTO_URL_RE, 'Use a photo link that starts with https://')
+        .optional(),
+    ),
   })
   .superRefine((p, ctx) => {
     for (const key of ['variants', 'modifiers'] as const)

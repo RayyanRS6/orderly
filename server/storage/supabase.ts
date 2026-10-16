@@ -20,6 +20,7 @@ import type {
   AiLimitStatus,
   BlockedCustomer,
 } from '../../src/shared/types';
+import type { MenuLink } from '../../src/shared/menu';
 import type { Repository } from '../repository';
 import { PublicError } from '../security';
 import { env } from '../config';
@@ -35,10 +36,10 @@ const migrationMissing = (error: { code?: string } | null) =>
 const spamMigrationError = () =>
   new PublicError('Apply the spam protection database migration first.', 503);
 const warned = new Set<string>();
-function warnOnce(name: string) {
+function warnOnce(name: string, migration = '202610180001_spam_protection.sql') {
   if (warned.has(name)) return;
   warned.add(name);
-  console.warn(`Orderly: ${name} is missing. Apply 202610180001_spam_protection.sql.`);
+  console.warn(`Orderly: ${name} is missing. Apply ${migration}.`);
 }
 // Named arguments shared with the SQL tests, so a renamed parameter fails there too.
 export const reserveAiCallArgs = (
@@ -796,5 +797,47 @@ export class SupabaseRepository implements Repository {
         .maybeSingle(),
     ) as { company_id: string } | null;
     return row ? this.getCompany(row.company_id as string) : undefined;
+  }
+  // Public menu page. A missing table means the link is off until the migration is applied.
+  getMenuLink(companyId: string) {
+    return this.menuLinkWhere('company_id', companyId);
+  }
+  findMenuLink(slug: string) {
+    return this.menuLinkWhere('slug', slug);
+  }
+  private async menuLinkWhere(column: 'company_id' | 'slug', value: string) {
+    const result = await this.client
+      .from('menu_links')
+      .select('company_id,slug,enabled,updated_at')
+      .eq(column, value)
+      .maybeSingle();
+    if (migrationMissing(result.error)) {
+      warnOnce('menu_links', '202610190001_menu_page.sql');
+      return undefined;
+    }
+    const row = unwrap(result) as {
+      company_id: string;
+      slug: string;
+      enabled: boolean;
+      updated_at: string;
+    } | null;
+    return row
+      ? {
+          companyId: row.company_id,
+          slug: row.slug,
+          enabled: row.enabled,
+          updatedAt: row.updated_at,
+        }
+      : undefined;
+  }
+  async setMenuLink(companyId: string, enabled: boolean, slug: string) {
+    const result = await this.client.rpc('set_menu_link', {
+      p_company_id: companyId,
+      p_enabled: enabled,
+      p_slug: slug,
+    });
+    if (migrationMissing(result.error))
+      throw new PublicError('Apply the menu page database migration first.', 503);
+    return unwrap(result) as MenuLink;
   }
 }

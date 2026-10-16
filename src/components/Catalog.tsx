@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import type { Product, ProductOption } from '../shared/types';
 import { money } from '../shared/types';
+import { isPhotoUrl } from '../shared/menu';
 import { useAction, useWorkspace } from '../lib/workspace';
 import { cn, shortDate } from '../lib/utils';
 import {
@@ -28,6 +29,7 @@ import {
   PageHeading,
   Spinner,
 } from './ui';
+import { MenuLinkCard } from './MenuLinkCard';
 
 export function Catalog() {
   const { data, mutate, navigate } = useWorkspace();
@@ -84,6 +86,7 @@ export function Catalog() {
           )
         )}
       </PageHeading>
+      <MenuLinkCard />
       <div className="card mb-6 flex flex-wrap items-center justify-between gap-3 rounded-[22px] py-2.5 pr-2.5 pl-5 lg:rounded-full">
         <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-stone-500">
           <span className="live-dot size-2 shrink-0 rounded-full bg-current text-success-500" />
@@ -318,6 +321,7 @@ function ProductEditor({ product, onDone }: { product?: Product; onDone: () => v
   const [available, setAvailable] = useState(product?.available ?? true);
   const [variants, setVariants] = useState<ProductOption[]>(product?.variants || []);
   const [modifiers, setModifiers] = useState<ProductOption[]>(product?.modifiers || []);
+  const [imageUrl, setImageUrl] = useState(product?.imageUrl || '');
   const [error, setError] = useState('');
   const sharedAliases = aliases
     .split(',')
@@ -360,6 +364,7 @@ function ProductEditor({ product, onDone }: { product?: Product; onDone: () => v
               available,
               variants,
               modifiers,
+              imageUrl: imageUrl.trim(),
             },
             undefined,
             { dialog: true, success: `${name.trim()} saved.` },
@@ -398,6 +403,37 @@ function ProductEditor({ product, onDone }: { product?: Product; onDone: () => v
           placeholder="What makes this one special?"
           onChange={(e) => setDescription(e.target.value)}
         />
+      </Field>
+      <Field
+        label="Photo link (optional)"
+        hint="Shown on your menu page only. Paste a link that starts with https://."
+      >
+        <div className="flex items-center gap-3">
+          <input
+            className="input flex-1"
+            type="url"
+            maxLength={500}
+            value={imageUrl}
+            placeholder="https://…"
+            onChange={(e) => setImageUrl(e.target.value)}
+          />
+          {isPhotoUrl(imageUrl.trim()) && (
+            <img
+              key={imageUrl.trim()}
+              src={imageUrl.trim()}
+              alt=""
+              width={64}
+              height={64}
+              loading="lazy"
+              decoding="async"
+              referrerPolicy="no-referrer"
+              className="size-16 shrink-0 rounded-2xl bg-paper object-cover"
+              onError={(e) => {
+                e.currentTarget.hidden = true;
+              }}
+            />
+          )}
+        </div>
       </Field>
       <div className="grid grid-cols-2 gap-4">
         <Field label="Category">

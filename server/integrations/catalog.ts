@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { Product } from '../../src/shared/types.js';
 import { productSchema } from '../validation.js';
 import { PublicError } from '../security.js';
+import { isPhotoUrl } from '../../src/shared/menu.js';
 export const catalogHeaders = [
   'id',
   'name',
@@ -14,6 +15,7 @@ export const catalogHeaders = [
   'aliases',
   'variants',
   'modifiers',
+  'image',
 ];
 export function parseCsv(input: string): string[][] {
   if (input.length > 500000) throw new PublicError('CSV files must be smaller than 500 KB.');
@@ -73,6 +75,8 @@ export function catalogFromRows(companyId: string, rows: string[][]): Product[] 
                 .parse(JSON.parse(value))
                 .map((o) => ({ ...o, price: Math.round(o.price * 100) }))
             : [];
+        // A missing or bad photo link is left out: it must never fail the row (or a Sheets sync).
+        const photo = [v.image, v.image_url, v.photo].find((x) => x && isPhotoUrl(x));
         return {
           ...productSchema.parse({
             id: z.string().uuid().safeParse(v.id).success
@@ -88,6 +92,7 @@ export function catalogFromRows(companyId: string, rows: string[][]): Product[] 
             aliases: (v.aliases || '').split('|').filter(Boolean),
             variants: options(v.variants),
             modifiers: options(v.modifiers),
+            imageUrl: photo,
           }),
           companyId,
         } as Product;

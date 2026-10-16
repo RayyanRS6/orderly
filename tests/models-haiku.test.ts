@@ -176,6 +176,40 @@ describe('AiModelAdapter generation settings and usage', () => {
     expect(ledger!.costUsd).toBeCloseTo(result.usage!.costUsd, 12);
   });
 
+  it('sends the AI exactly the same prompt whether or not dishes have photos', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-16T10:00:00.000Z'));
+    try {
+      const configured = await configure('anthropic', 'claude-haiku-5-5');
+      generate.mockResolvedValue({
+        output: answer,
+        usage: { inputTokens: 2000, outputTokens: 300 },
+      });
+      const conversation = createConversation(
+        company.id,
+        '923000000321',
+        'demo',
+        '2026-10-16T09:00:00.000Z',
+      );
+      const ask = (catalog: typeof products) =>
+        new AiModelAdapter(repo).interpret(configured, catalog, conversation, '2 chicken biryani');
+      await ask(products);
+      const withPhotos = products.map((p) => ({
+        ...p,
+        imageUrl: `https://images.example/${p.id}.jpg`,
+      }));
+      await ask(withPhotos);
+      const [plain, photos] = generate.mock.calls.map((call) => call[0]);
+      expect(plain.prompt).toContain('"candidateCatalog":[{');
+      expect(photos.prompt).toBe(plain.prompt);
+      expect(photos.system).toBe(plain.system);
+      expect(photos.prompt).not.toContain('imageUrl');
+      expect(photos.prompt).not.toContain('images.example');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('charges the long-prompt rate when Claude Haiku 5.5 reports more than 100,000 input tokens', async () => {
     const configured = await configure('anthropic', 'claude-haiku-5-5');
     generate.mockResolvedValueOnce({

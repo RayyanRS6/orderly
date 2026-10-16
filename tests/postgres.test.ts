@@ -80,6 +80,7 @@ beforeAll(async () => {
     '202609200001_whatsapp_gateway.sql',
     '202610170001_business_keys_only.sql',
     '202610180001_spam_protection.sql',
+    '202610190001_menu_page.sql',
   ])
     await db.exec(readFileSync(`supabase/migrations/${migration}`, 'utf8'));
   await db.query('insert into auth.users(id) values($1),($2)', [ownerId, outsiderId]);
@@ -1987,6 +1988,51 @@ describe('spam protection', () => {
       await expect(reserve('browser')).rejects.toThrow(DENIED);
     } finally {
       await db.exec('reset role');
+    }
+  });
+});
+
+describe('menu page', () => {
+  const DENIED = /permission denied for (function|table)/;
+  const link = (companyId: string, enabled: boolean, slug: string) =>
+    scalar(
+      'select public.set_menu_link(p_company_id => $1, p_enabled => $2, p_slug => $3) as value',
+      [companyId, enabled, slug],
+    ) as Promise<{ companyId: string; slug: string; enabled: boolean; updatedAt: string }>;
+
+  it('chooses the slug once, numbers a taken one, and keeps it when switched off and on', async () => {
+    const first = await link(company.id, true, 'laziza');
+    expect(first).toMatchObject({ companyId: company.id, slug: 'laziza', enabled: true });
+    expect(first.updatedAt).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/);
+    expect(await link(other.id, true, 'laziza')).toMatchObject({ slug: 'laziza-2' });
+    expect(await link(company.id, false, 'renamed-business')).toMatchObject({
+      slug: 'laziza',
+      enabled: false,
+    });
+    expect(await link(company.id, true, 'renamed-business')).toMatchObject({
+      slug: 'laziza',
+      enabled: true,
+    });
+    await expect(link(randomUUID(), true, 'nobody')).rejects.toThrow('Unknown company');
+    await db.query('delete from menu_links');
+    await expect(link(company.id, true, 'Bad Slug')).rejects.toThrow('Invalid menu link');
+    await expect(link(company.id, true, 'ab')).rejects.toThrow('Invalid menu link');
+  });
+
+  it('is server-only and can be applied again without changing links', async () => {
+    await link(company.id, true, 'laziza');
+    await db.exec(readFileSync('supabase/migrations/202610190001_menu_page.sql', 'utf8'));
+    expect(
+      await scalar('select slug value from menu_links where company_id=$1', [company.id]),
+    ).toBe('laziza');
+    for (const role of ['anon', 'authenticated']) {
+      await db.exec(`set role ${role}`);
+      try {
+        await expect(link(company.id, false, 'laziza')).rejects.toThrow(DENIED);
+        await expect(db.query('select * from menu_links')).rejects.toThrow(DENIED);
+      } finally {
+        await db.exec('reset role');
+      }
     }
   });
 });

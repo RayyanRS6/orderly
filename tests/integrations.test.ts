@@ -1,9 +1,14 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PGlite } from '@electric-sql/pglite';
 import { readFileSync } from 'node:fs';
+import { generateKeyPairSync } from 'node:crypto';
 import { createApp } from '../server/app';
 import { MemoryRepository, SupabaseRepository } from '../server/repository';
 import { WhatsAppAdapter } from '../server/integrations/whatsapp';
+import { GoogleSheetsAdapter } from '../server/integrations/sheets';
+import { catalogFromRows, parseCsv } from '../server/integrations/catalog';
+import { productSchema } from '../server/validation';
+import { menuPublicUrl } from '../server/menu';
 import { seedCompanies } from '../src/shared/seed';
 import type { Integration } from '../src/shared/types';
 
@@ -140,6 +145,123 @@ describe('integration destination and registration safeguards', () => {
         body: JSON.stringify({ messaging_product: 'whatsapp', pin: '123456' }),
       }),
     );
+  });
+});
+
+describe('before the menu page migration', () => {
+  it('treats the link as off and asks for the migration before switching it on', async () => {
+    vi.mocked(fetch).mockImplementation(async (url) =>
+      Response.json(
+        String(url).includes('/rpc/')
+          ? { code: 'PGRST202', message: 'Could not find the function' }
+          : { code: 'PGRST205', message: 'Could not find the table' },
+        { status: 404 },
+      ),
+    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const supabase = new SupabaseRepository('https://test.supabase.co', 'fake-service-role-key');
+    expect(await supabase.getMenuLink(company.id)).toBeUndefined();
+    expect(await supabase.findMenuLink('dastarkhwan')).toBeUndefined();
+    expect(await menuPublicUrl(supabase, company.id)).toBeUndefined();
+    await expect(supabase.setMenuLink(company.id, true, 'dastarkhwan')).rejects.toMatchObject({
+      status: 503,
+      message: 'Apply the menu page database migration first.',
+    });
+    expect(warn.mock.calls.flat().join(' ')).toContain('202610190001_menu_page.sql');
+  });
+});
+
+describe('menu photos', () => {
+  const header = 'id,name,description,category,price,available,emoji,aliases,variants,modifiers';
+  it('reads an image column from CSV and drops bad links without failing the import', () => {
+    const products = catalogFromRows(
+      company.id,
+      parseCsv(
+        `${header},image\n` +
+          `a,Biryani,,Mains,450,true,,,,,https://cdn.example/biryani.jpg\n` +
+          `b,Karahi,,Mains,1200,true,,,,,http://cdn.example/karahi.jpg\n` +
+          `c,Naan,,Sides,100,true,,,,,not a link\n` +
+          `d,Lassi,,Drinks,280,true,,,,,https://cdn.example/${'x'.repeat(500)}.jpg\n` +
+          `e,Raita,,Sides,80,true,,,,,`,
+      ),
+    );
+    expect(products.map((p) => p.imageUrl)).toEqual([
+      'https://cdn.example/biryani.jpg',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]);
+    const photoColumn = catalogFromRows(
+      company.id,
+      parseCsv(
+        `name,category,price,available,photo\nTea,Drinks,50,true,https://cdn.example/tea.png`,
+      ),
+    );
+    expect(photoColumn[0]!.imageUrl).toBe('https://cdn.example/tea.png');
+  });
+
+  it('refuses a non-https photo link typed in the menu editor', () => {
+    const base = { name: 'Tea', category: 'Drinks', price: 5000, available: true };
+    expect(
+      productSchema.safeParse({ ...base, imageUrl: 'http://cdn.example/tea.png' }).success,
+    ).toBe(false);
+    expect(productSchema.parse({ ...base, imageUrl: '' }).imageUrl).toBeUndefined();
+    expect(
+      productSchema.parse({ ...base, imageUrl: ' https://cdn.example/tea.png ' }).imageUrl,
+    ).toBe('https://cdn.example/tea.png');
+  });
+
+  describe('Google Sheets', () => {
+    const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+    const pem = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+    async function read(values: string[][]) {
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(Response.json({ access_token: 'token' }))
+        .mockResolvedValueOnce(Response.json({ values }));
+      const adapter = new GoogleSheetsAdapter(
+        {
+          kind: 'sheets',
+          configured: true,
+          status: 'connected',
+          config: { spreadsheetId, clientEmail: 'menu@example.iam.gserviceaccount.com' },
+        },
+        pem,
+      );
+      return adapter.readCatalog(company.id);
+    }
+    const head = header.split(',');
+    const row = (price: string) => ['a', 'Biryani', '', 'Mains', price, 'true', '', '', '', ''];
+
+    it('asks for columns up to Z and reads a photo column after J', async () => {
+      const products = await read([
+        [...head, 'Image'],
+        [...row('450'), 'https://cdn.example/biryani.jpg'],
+      ]);
+      expect(String(vi.mocked(fetch).mock.calls[1]![0])).toContain(encodeURIComponent('!A1:Z502'));
+      expect(products[0]).toMatchObject({
+        price: 45000,
+        imageUrl: 'https://cdn.example/biryani.jpg',
+      });
+    });
+
+    it('parses columns A–J as before when a later column repeats a header', async () => {
+      const products = await read([
+        [...head, 'notes', 'internal', 'price'],
+        [...row('450'), 'spicy', 'x', '999'],
+      ]);
+      expect(products[0]!.price).toBe(45000);
+      expect(products[0]!.imageUrl).toBeUndefined();
+    });
+
+    it('drops a bad photo link instead of failing the sync', async () => {
+      const products = await read([
+        [...head, 'photo'],
+        [...row('450'), 'javascript:alert(1)'],
+      ]);
+      expect(products).toHaveLength(1);
+      expect(products[0]!.imageUrl).toBeUndefined();
+    });
   });
 });
 

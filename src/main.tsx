@@ -27,6 +27,8 @@ function getLegalKind(): 'privacy' | 'terms' | 'data-deletion' | undefined {
 
 const legalKind = getLegalKind();
 const pathname = window.location.pathname.replace(/\/+$/, '') || '/';
+// A restaurant's public menu page (/m/<slug>) is its own small chunk.
+const menuSlug = pathname.match(/^\/m\/([a-z0-9]+(?:-[a-z0-9]+)*)$/)?.[1];
 const publicPaths = ['/', '/pricing', '/contact'];
 // The workspace (dashboard, dialogs, sign-in) is its own chunk that only /app and /login
 // download, so the public pages load a fraction of the JavaScript.
@@ -56,7 +58,13 @@ function LoadFailed({ error }: { error: Error }): never {
 }
 
 if (rootElement) {
-  if (isWorkspace) {
+  if (menuSlug) {
+    // The page's "Opening the menu…" shell stays up until the code arrives (no hydration).
+    import('./components/MenuPage').then(
+      ({ MenuPage }) => ReactDOM.createRoot(rootElement).render(wrap(<MenuPage slug={menuSlug} />)),
+      (error: Error) => ReactDOM.createRoot(rootElement).render(wrap(<LoadFailed error={error} />)),
+    );
+  } else if (isWorkspace) {
     // The page's own "Opening your workspace…" shell stays up until the code arrives.
     import('./App').then(
       ({ default: App }) => ReactDOM.createRoot(rootElement).render(wrap(<App />)),
