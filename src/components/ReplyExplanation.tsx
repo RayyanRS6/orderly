@@ -67,8 +67,11 @@ export function ReplyExplanation({
                 )}
                 {ai.usage && (
                   <span className="mt-1.5 block font-mono text-[11px] text-stone-500">
-                    {ai.usage.inputTokens.toLocaleString('en-US')} in /{' '}
-                    {ai.usage.outputTokens.toLocaleString('en-US')} out tokens · about $
+                    {ai.usage.inputTokens.toLocaleString('en-US')} in
+                    {ai.usage.cacheReadTokens
+                      ? ` (${ai.usage.cacheReadTokens.toLocaleString('en-US')} reused)`
+                      : ''}{' '}
+                    / {ai.usage.outputTokens.toLocaleString('en-US')} out tokens · about $
                     {ai.usage.costUsd.toFixed(4)} · {(ai.usage.durationMs / 1000).toFixed(1)}s
                     {ai.usage.estimated ? ' (estimated)' : ''}
                   </span>

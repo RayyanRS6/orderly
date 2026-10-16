@@ -1254,6 +1254,33 @@ describe('spam protection', () => {
     expect(await hits()).toEqual([]);
   });
 
+  it('stores prompt-cache token counts as sent and still counts the reply toward the limits', async () => {
+    expect(await reserve('cached', { conversationId: 'chat-1' })).toEqual({ ok: true });
+    await rpc('settle_budget', [
+      'cached',
+      {
+        id: 'cached',
+        companyId: company.id,
+        provider: 'anthropic',
+        model: 'claude-haiku-5-5',
+        inputTokens: 4000,
+        cacheReadTokens: 900,
+        cacheWriteTokens: 100,
+        outputTokens: 120,
+        costUsd: 0.0002,
+        createdAt: now(),
+        conversationId: 'chat-1',
+      },
+    ]);
+    const row = (
+      await db.query<{ read: string; write: string; cost: number }>(
+        "select data->>'cacheReadTokens' as read, data->>'cacheWriteTokens' as write, cost_usd::float8 as cost from usage_events where id='cached'",
+      )
+    ).rows[0];
+    expect(row).toEqual({ read: '900', write: '100', cost: 0.0002 });
+    expect(await rpc('ai_replies_this_hour', [company.id])).toBe(1);
+  });
+
   it('refuses at the monthly budget like reserve_budget, says when it resets, and checks it first', async () => {
     const budget = company.ai.monthlyBudgetUsd;
     expect(budget).toBe(10);

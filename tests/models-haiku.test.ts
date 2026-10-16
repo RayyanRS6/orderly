@@ -211,6 +211,8 @@ describe('AiModelAdapter generation settings and usage', () => {
       const result = await interpret(configured);
       const call = generate.mock.calls[0]![0];
       expect('providerOptions' in call).toBe(false);
+      // Only Anthropic gets the instruction text wrapped with a cache marker.
+      expect(typeof call.system).toBe(provider === 'anthropic' ? 'object' : 'string');
       expect(call.maxOutputTokens).toBe(1200);
       expect(result.usage!.costUsd).toBeCloseTo(
         (1000 * inputRate + 100 * outputRate) / 1_000_000,
@@ -227,7 +229,11 @@ describe('AiModelAdapter generation settings and usage', () => {
       statusCode,
       responseBody: responseBody as string,
     });
-  const unusable = (inputTokens: number | undefined, outputTokens: number | undefined) =>
+  const unusable = (
+    inputTokens: number | undefined,
+    outputTokens: number | undefined,
+    cache: { cacheReadTokens?: number; cacheWriteTokens?: number } = {},
+  ) =>
     new NoObjectGeneratedError({
       message: 'No object generated: response did not match schema.',
       text: '{}',
@@ -236,8 +242,8 @@ describe('AiModelAdapter generation settings and usage', () => {
         inputTokens,
         inputTokenDetails: {
           noCacheTokens: undefined,
-          cacheReadTokens: undefined,
-          cacheWriteTokens: undefined,
+          cacheReadTokens: cache.cacheReadTokens,
+          cacheWriteTokens: cache.cacheWriteTokens,
         },
         outputTokens,
         outputTokenDetails: { textTokens: undefined, reasoningTokens: undefined },
@@ -315,6 +321,12 @@ describe('AiModelAdapter generation settings and usage', () => {
       kind: 'actual',
       inputTokens: 10,
       outputTokens: 20,
+    });
+    expect(failedCallCharge(unusable(10, 20, { cacheReadTokens: 5 }))).toEqual({
+      kind: 'actual',
+      inputTokens: 10,
+      outputTokens: 20,
+      cacheReadTokens: 5,
     });
   });
 

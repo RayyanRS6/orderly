@@ -486,6 +486,25 @@ describe('ReplyExplanation component', () => {
     expect(html).toContain(describeCorrection('invalid_model_prompt_ignored'));
     expect(html).toContain('Rejected add item');
     expect(html).not.toContain('AI wording');
+    expect(html).not.toContain('reused');
+  });
+
+  it('shows how many prompt tokens were reused from the cache', () => {
+    const value = explanation({
+      ai: {
+        called: true,
+        usage: {
+          inputTokens: 3200,
+          cacheReadTokens: 900,
+          outputTokens: 80,
+          costUsd: 0.0001,
+          durationMs: 420,
+          estimated: false,
+        },
+      },
+    });
+    const html = renderToStaticMarkup(createElement(ReplyExplanation, { explanation: value }));
+    expect(html).toContain('3,200 in (900 reused) / 80 out tokens');
   });
 
   it('explains a rule and the fate of the AI wording', () => {

@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRepository } from '../server/repository';
 import { encryptSecret } from '../server/security';
@@ -81,12 +82,52 @@ describe('the request Anthropic receives', () => {
     return { url, init, body: JSON.parse(String(init.body)) as Record<string, unknown>, result };
   }
 
-  it('sends the request captured before prompt caching', async () => {
+  it('sends the request captured before prompt caching, plus one cache marker', async () => {
     const { url, init, body } = await interpret();
     expect(url).toBe('https://api.anthropic.com/v1/messages');
     expect(new Headers(init.headers).get('anthropic-beta')).toBeNull();
+    const system = body.system as Record<string, unknown>[];
+    expect(system[0]!.cache_control).toEqual({ type: 'ephemeral' });
+    expect(body.cache_control).toBeUndefined();
+    expect(JSON.stringify(body).match(/cache_control/g)).toHaveLength(1);
+    expect((body.output_config as { effort?: string }).effort).toBe('low');
+    // Without the marker, every byte matches the request captured before caching existed.
+    const withoutMarker = structuredClone(body);
+    delete (withoutMarker.system as Record<string, unknown>[])[0]!.cache_control;
+    const golden = JSON.parse(
+      readFileSync(
+        new URL('./__snapshots__/anthropic-request.default.json', import.meta.url),
+        'utf8',
+      ),
+    ) as unknown;
+    expect(withoutMarker).toEqual(golden);
+  });
+
+  it('sends the plain request when PROMPT_CACHE=off', async () => {
+    vi.stubEnv('PROMPT_CACHE', 'off');
+    const { body } = await interpret();
+    expect(JSON.stringify(body)).not.toContain('cache_control');
     await expect(JSON.stringify(body, null, 2)).toMatchFileSnapshot(
       './__snapshots__/anthropic-request.default.json',
     );
+  });
+
+  it('records reused tokens and prices them at a tenth of the input rate', async () => {
+    usage = { ...usage, cache_read_input_tokens: 3000 };
+    const { result } = await interpret();
+    const [ledger] = await repo.listUsage(company.id);
+    expect(ledger).toMatchObject({ inputTokens: 7000, cacheReadTokens: 3000, outputTokens: 120 });
+    expect(ledger!.cacheWriteTokens).toBeUndefined();
+    const expected = (4000 * 0.1 + 3000 * 0.01 + 120 * 0.5) / 1_000_000;
+    expect(ledger!.costUsd).toBeCloseTo(expected, 12);
+    expect(result.usage).toMatchObject({ inputTokens: 7000, cacheReadTokens: 3000 });
+  });
+
+  it('prices tokens saved to the cache at 1.25 times the input rate', async () => {
+    usage = { ...usage, cache_creation_input_tokens: 2500 };
+    await interpret();
+    const [ledger] = await repo.listUsage(company.id);
+    expect(ledger).toMatchObject({ inputTokens: 6500, cacheWriteTokens: 2500 });
+    expect(ledger!.costUsd).toBeCloseTo((4000 * 0.1 + 2500 * 0.125 + 120 * 0.5) / 1_000_000, 12);
   });
 });

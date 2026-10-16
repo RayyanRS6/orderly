@@ -1,5 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { APICallError, generateText, NoObjectGeneratedError, Output } from 'ai';
+import {
+  APICallError,
+  generateText,
+  NoObjectGeneratedError,
+  Output,
+  type SystemModelMessage,
+} from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
@@ -21,6 +27,7 @@ import { botConfig } from '../../src/shared/bot.js';
 import { resolveItemMention } from '../../src/domain/menu-resolver.js';
 import { isOpen, parseActions } from '../../src/domain/engine.js';
 import {
+  cacheMultipliers,
   generationProfile,
   KNOWN_MODEL_RATES,
   LONG_PROMPT_RATES,
@@ -56,7 +63,13 @@ const REFUSED_STATUSES = new Set([400, 401, 403, 404, 413, 422, 429, 503, 529]);
 type FailedCallCharge =
   | { kind: 'none' }
   | { kind: 'reserved' }
-  | { kind: 'actual'; inputTokens?: number; outputTokens?: number };
+  | {
+      kind: 'actual';
+      inputTokens?: number;
+      outputTokens?: number;
+      cacheReadTokens?: number;
+      cacheWriteTokens?: number;
+    };
 /** What a failed generateText call cost. Retries are off, so errors arrive unwrapped. */
 export function failedCallCharge(error: unknown): FailedCallCharge {
   if (
@@ -74,6 +87,8 @@ export function failedCallCharge(error: unknown): FailedCallCharge {
       kind: 'actual',
       inputTokens: error.usage.inputTokens,
       outputTokens: error.usage.outputTokens,
+      cacheReadTokens: error.usage.inputTokenDetails?.cacheReadTokens,
+      cacheWriteTokens: error.usage.inputTokenDetails?.cacheWriteTokens,
     };
   return { kind: 'reserved' };
 }
@@ -102,6 +117,52 @@ export function modelRate(
       'Enter the provider’s input and output token prices in Bot settings before using this model.',
     );
   return value;
+}
+/** PROMPT_CACHE=off sends the plain instruction string again (emergency switch). */
+export function promptCacheEnabled(): boolean {
+  return (process.env.PROMPT_CACHE ?? '').trim().toLowerCase() !== 'off';
+}
+/**
+ * Every provider gets the same instruction text. Anthropic is also asked to keep a 5-minute
+ * copy of it, so repeat messages reuse it at a lower price; the words the AI reads are unchanged.
+ */
+export function systemInstruction(provider: Provider, system: string): string | SystemModelMessage {
+  return provider === 'anthropic' && promptCacheEnabled()
+    ? {
+        role: 'system',
+        content: system,
+        providerOptions: { anthropic: { cacheControl: { type: 'ephemeral' } } },
+      }
+    : system;
+}
+export interface TokenCounts {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+}
+const clampTokens = (value: number | undefined, max: number) =>
+  Math.max(0, Math.min(value ?? 0, max));
+/** What a call cost, with prompt tokens reused from or saved to the cache at cache prices. */
+export function usageCost(ai: Company['ai'], tokens: TokenCounts): number {
+  const [inputRate, outputRate] = modelRate(ai.model, ai.pricing, tokens.inputTokens);
+  const cache = cacheMultipliers(ai.provider, ai.model, ai.pricing);
+  const read = cache ? clampTokens(tokens.cacheReadTokens, tokens.inputTokens) : 0;
+  const write = cache ? clampTokens(tokens.cacheWriteTokens, tokens.inputTokens - read) : 0;
+  const input =
+    tokens.inputTokens - read - write + read * (cache?.read ?? 0) + write * (cache?.write ?? 0);
+  return (input * inputRate + tokens.outputTokens * outputRate) / 1_000_000;
+}
+/** The cache counts worth recording: Anthropic only, and only when above zero. */
+export function cacheCounts(
+  provider: Provider,
+  details?: { cacheReadTokens?: number; cacheWriteTokens?: number },
+): Pick<Usage, 'cacheReadTokens' | 'cacheWriteTokens'> {
+  if (provider !== 'anthropic' || !details) return {};
+  return {
+    ...(details.cacheReadTokens ? { cacheReadTokens: details.cacheReadTokens } : {}),
+    ...(details.cacheWriteTokens ? { cacheWriteTokens: details.cacheWriteTokens } : {}),
+  };
 }
 export function validateModelConfiguration(company: Company): void {
   if (company.ai.provider !== 'mock') modelRate(company.ai.model, company.ai.pricing);
@@ -286,7 +347,7 @@ ${JSON.stringify({ name: config.name, personality: config.personality, language:
     try {
       const result = await generateText({
         model: makeModel(company.ai.provider, company.ai.model, apiKey),
-        system,
+        system: systemInstruction(company.ai.provider, system),
         prompt,
         output: Output.object({ schema: modelOutputSchema }),
         maxOutputTokens,
@@ -307,26 +368,18 @@ ${JSON.stringify({ name: config.name, personality: config.personality, language:
         else if (charge.kind === 'actual') {
           usage.inputTokens = charge.inputTokens ?? reservedInput;
           usage.outputTokens = charge.outputTokens ?? maxOutputTokens;
-          const [usedInputRate, usedOutputRate] = modelRate(
-            company.ai.model,
-            company.ai.pricing,
-            usage.inputTokens,
-          );
-          usage.costUsd =
-            (usage.inputTokens * usedInputRate + usage.outputTokens * usedOutputRate) / 1_000_000;
+          if (charge.inputTokens !== undefined)
+            Object.assign(usage, cacheCounts(company.ai.provider, charge));
+          usage.costUsd = usageCost(company.ai, usage);
           usage.estimated = charge.inputTokens === undefined || charge.outputTokens === undefined;
         }
         throw error;
       });
       usage.inputTokens = result.usage.inputTokens ?? reservedInput;
       usage.outputTokens = result.usage.outputTokens ?? maxOutputTokens;
-      const [usedInputRate, usedOutputRate] = modelRate(
-        company.ai.model,
-        company.ai.pricing,
-        usage.inputTokens,
-      );
-      usage.costUsd =
-        (usage.inputTokens * usedInputRate + usage.outputTokens * usedOutputRate) / 1_000_000;
+      if (result.usage.inputTokens !== undefined)
+        Object.assign(usage, cacheCounts(company.ai.provider, result.usage.inputTokenDetails));
+      usage.costUsd = usageCost(company.ai, usage);
       usage.estimated =
         result.usage.inputTokens === undefined || result.usage.outputTokens === undefined;
       await this.repo.settleBudget(reservationId, usage);
@@ -334,7 +387,7 @@ ${JSON.stringify({ name: config.name, personality: config.personality, language:
         id: randomUUID(),
         companyId: company.id,
         action: 'model.completed',
-        detail: `Structured response validated. Context: ${eligible.length} catalog items, ${company.faqs.length} knowledge entries, ${Math.min(MODEL_LIMITS.historyMessages, conversation.messages.length)} history messages, ${config.behaviorRules.filter((rule) => rule.enabled).length} enabled rules. ${usage.inputTokens} input / ${usage.outputTokens} output tokens; estimated $${usage.costUsd.toFixed(5)}.`,
+        detail: `Structured response validated. Context: ${eligible.length} catalog items, ${company.faqs.length} knowledge entries, ${Math.min(MODEL_LIMITS.historyMessages, conversation.messages.length)} history messages, ${config.behaviorRules.filter((rule) => rule.enabled).length} enabled rules. ${usage.inputTokens} input${usage.cacheReadTokens || usage.cacheWriteTokens ? ` (${usage.cacheReadTokens ?? 0} reused from cache, ${usage.cacheWriteTokens ?? 0} saved to cache)` : ''} / ${usage.outputTokens} output tokens; estimated $${usage.costUsd.toFixed(5)}.`,
         model: company.ai.model,
         botVersion: company.bot?.published?.version,
         durationMs: Date.now() - started,
@@ -346,6 +399,7 @@ ${JSON.stringify({ name: config.name, personality: config.personality, language:
         response: parsed.response,
         usage: {
           inputTokens: usage.inputTokens,
+          ...cacheCounts(company.ai.provider, usage),
           outputTokens: usage.outputTokens,
           costUsd: usage.costUsd,
           durationMs: Date.now() - started,

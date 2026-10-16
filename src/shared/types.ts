@@ -175,6 +175,10 @@ export interface TurnExplanation {
     ruleOverride?: 'handoff' | 'reply';
     usage?: {
       inputTokens: number;
+      /** Prompt tokens reused from the provider's cache (Anthropic). Part of inputTokens. */
+      cacheReadTokens?: number;
+      /** Prompt tokens saved to the provider's cache (Anthropic). Part of inputTokens. */
+      cacheWriteTokens?: number;
       outputTokens: number;
       costUsd: number;
       durationMs: number;
@@ -303,6 +307,10 @@ export interface Usage {
   provider: Provider;
   model: string;
   inputTokens: number;
+  /** Prompt tokens reused from the provider's cache (Anthropic). Part of inputTokens. */
+  cacheReadTokens?: number;
+  /** Prompt tokens saved to the provider's cache (Anthropic). Part of inputTokens. */
+  cacheWriteTokens?: number;
   outputTokens: number;
   costUsd: number;
   createdAt: string;

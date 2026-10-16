@@ -134,6 +134,27 @@ describe('buildAgentFlow', () => {
     expect(step(flow, 'ai')).toMatchObject({ done: false, page: 'bot' });
   });
 
+  it('says whether the fixed instructions are reused from the prompt cache', async () => {
+    const reuse = async () =>
+      fact(
+        node(await buildAgentFlow(repo, await current(), 'owner'), 'model'),
+        'Reused instructions',
+      );
+    expect(await reuse()).toBe('Not used with this provider');
+    await useHaiku();
+    expect(await reuse()).toContain('5-minute copy of your fixed instructions');
+    expect(await reuse()).toContain('The text the AI reads is unchanged.');
+    vi.stubEnv('PROMPT_CACHE', 'off');
+    expect(await reuse()).toBe('Turned off');
+    vi.stubEnv('PROMPT_CACHE', '');
+    await useHaiku({
+      ai: { provider: 'anthropic', model: 'claude-haiku-4-5', monthlyBudgetUsd: 10 },
+    });
+    expect(await reuse()).toBe('Used only when your instructions are very long on this model');
+    await useHaiku({ ai: { provider: 'openai', model: 'gpt-5.4-mini', monthlyBudgetUsd: 10 } });
+    expect(await reuse()).toBe('Not used with this provider');
+  });
+
   it('marks a tested model ready without exposing the business key', async () => {
     // A server-wide key is never used: only the business's saved key counts.
     vi.stubEnv('ANTHROPIC_API_KEY', serverSecret);

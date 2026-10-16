@@ -38,6 +38,28 @@ export const LONG_PROMPT_RATES: Record<
   'claude-haiku-5-5': { aboveInputTokens: 100_000, rate: [0.5, 2.5] },
 };
 
+export interface CacheMultipliers {
+  read: number;
+  write: number;
+}
+/** Anthropic 5-minute prompt-cache prices as multiples of the input price. */
+export const KNOWN_CACHE_MULTIPLIERS: Record<string, CacheMultipliers> = {
+  'claude-haiku-5-5': { read: 0.1, write: 1.25 },
+  'claude-haiku-4-5': { read: 0.1, write: 1.25 },
+  'claude-haiku-4-5-20251001': { read: 0.1, write: 1.25 },
+};
+/** Other Claude models, or prices typed in by the owner: reused tokens count at full price. */
+export const CONSERVATIVE_CACHE_MULTIPLIERS: CacheMultipliers = { read: 1, write: 1.25 };
+/** How cached prompt tokens are priced; undefined for providers whose cache Orderly does not use. */
+export function cacheMultipliers(
+  provider: Provider,
+  model: string,
+  custom?: [number, number],
+): CacheMultipliers | undefined {
+  if (provider !== 'anthropic') return undefined;
+  return (!custom && KNOWN_CACHE_MULTIPLIERS[model]) || CONSERVATIVE_CACHE_MULTIPLIERS;
+}
+
 export const MODEL_LIMITS = {
   /** Most recent conversation messages sent as memory. */
   historyMessages: 24,

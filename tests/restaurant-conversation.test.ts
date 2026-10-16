@@ -9,6 +9,7 @@ import { seedCompanies, seedProducts } from '../src/shared/seed';
 import { createConversation, parseActions, processTurn } from '../src/domain/engine';
 import { resolveItemMention, resolvePendingItemChoice } from '../src/domain/menu-resolver';
 import type { ModelInterpretation, Product, TurnResult } from '../src/shared/types';
+import { promptObject, systemText } from './helpers/model-call';
 
 const { generate } = vi.hoisted(() => ({ generate: vi.fn() }));
 // Keep the real error classes: the adapter uses them to decide what a failed call cost.
@@ -459,7 +460,12 @@ describe('restaurant intent and response regressions', () => {
   });
 });
 
-describe('configured model pipeline', () => {
+// Anthropic receives the same instruction text wrapped with a prompt-cache marker, so the
+// pipeline runs on both forms.
+describe.each([
+  ['gemini', 'gemini-3.5-flash-lite'],
+  ['anthropic', 'claude-haiku-5-5'],
+] as const)('configured model pipeline (%s)', (provider, model) => {
   let repo: MemoryRepository;
   beforeEach(async () => {
     generate.mockReset();
@@ -470,7 +476,7 @@ describe('configured model pipeline', () => {
     vi.stubEnv('CREDENTIAL_ENCRYPTION_KEY', Buffer.alloc(32, 7).toString('base64'));
     await repo.saveIntegration(
       company.id,
-      { kind: 'gemini', configured: true, status: 'connected', config: {} },
+      { kind: provider, configured: true, status: 'connected', config: {} },
       encryptSecret('fictional-test-key'),
     );
     const configured = {
@@ -478,8 +484,8 @@ describe('configured model pipeline', () => {
       botEnabled: true,
       ai: {
         ...company.ai,
-        provider: 'gemini' as const,
-        model: 'gemini-3.5-flash-lite',
+        provider,
+        model,
       },
       privacy: { aiDataApproved: true, retentionDays: 0 },
       bot: {
@@ -518,7 +524,7 @@ describe('configured model pipeline', () => {
     return result as TurnResult;
   }
 
-  it('replays the reported conversation through Gemini interpretation on every message', async () => {
+  it('replays the reported conversation through the model on every message', async () => {
     let result = await chat('hi id like to order', {
       actions: [{ type: 'answer', text: '' }],
       response: { text: 'Welcome! What is your name?', askFor: 'name' },
@@ -547,8 +553,10 @@ describe('configured model pipeline', () => {
     expect(generate).toHaveBeenCalledTimes(3);
     expect(await repo.listCompanyJobs(company.id)).toEqual([]);
     const call = generate.mock.calls[2]![0];
-    expect(call.system).toContain('Ask for a name first. Answer interruptions and keep the cart.');
-    const prompt = JSON.parse(call.prompt);
+    expect(systemText(call.system)).toContain(
+      'Ask for a name first. Answer interruptions and keep the cart.',
+    );
+    const prompt = promptObject(call) as Record<string, any>;
     expect(prompt.business.openingHours).toEqual(company.openingHours);
     expect(prompt.business.faqs).toContainEqual({
       question: 'Parking',
@@ -648,7 +656,7 @@ describe('configured model pipeline', () => {
       actions: [{ type: 'answer', text: '' }],
       response: { text: 'Our menu includes herb-grilled dishes.', askFor: 'none' },
     });
-    const prompt = JSON.parse(generate.mock.calls[0]![0].prompt);
+    const prompt = promptObject(generate.mock.calls[0]![0]) as Record<string, any>;
     expect(prompt.catalogIndex).toHaveLength(products.length + 205);
     expect(prompt.catalogIndex.find((p: { name: string }) => p.name === 'Dish 204')).toMatchObject({
       description: 'Grilled with herbs.',

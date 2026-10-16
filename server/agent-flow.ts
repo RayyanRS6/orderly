@@ -18,7 +18,7 @@ import { isOpen } from '../src/domain/engine.js';
 import type { Repository } from './repository.js';
 import { appMode, env } from './config.js';
 import { readiness } from './readiness.js';
-import { modelRate, providerKey } from './integrations/models.js';
+import { modelRate, promptCacheEnabled, providerKey } from './integrations/models.js';
 import { modelFingerprint } from './integrations/model-catalog.js';
 import { gatewayAvailable } from './whatsapp/client.js';
 
@@ -286,6 +286,17 @@ export async function buildAgentFlow(
         tone: rates ? undefined : 'warn',
       },
       { label: 'Thinking', value: profile.summary },
+      {
+        label: 'Reused instructions',
+        value:
+          ai.provider !== 'anthropic'
+            ? 'Not used with this provider'
+            : !promptCacheEnabled()
+              ? 'Turned off'
+              : ai.model.startsWith('claude-haiku-4-5')
+                ? 'Used only when your instructions are very long on this model'
+                : 'Anthropic keeps a 5-minute copy of your fixed instructions, so repeat messages cost less. The text the AI reads is unchanged.',
+      },
       { label: 'Time limit', value: `${MODEL_LIMITS.timeoutMs / 1000}s, no automatic retry` },
       {
         label: 'Spent this month',

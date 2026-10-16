@@ -856,7 +856,7 @@ function replayNotes(
         `Proposed: ${ai.proposed?.map((action) => action.type.replaceAll('_', ' ')).join(', ') || 'nothing'}.`,
         ...(ai.usage
           ? [
-              `${ai.usage.inputTokens.toLocaleString('en-US')} input and ${ai.usage.outputTokens.toLocaleString('en-US')} output tokens, about $${ai.usage.costUsd.toFixed(4)}, ${(ai.usage.durationMs / 1000).toFixed(1)}s.`,
+              `${ai.usage.inputTokens.toLocaleString('en-US')} input${ai.usage.cacheReadTokens ? ` (${ai.usage.cacheReadTokens.toLocaleString('en-US')} reused from cache)` : ''} and ${ai.usage.outputTokens.toLocaleString('en-US')} output tokens, about $${ai.usage.costUsd.toFixed(4)}, ${(ai.usage.durationMs / 1000).toFixed(1)}s.`,
             ]
           : []),
       ];
