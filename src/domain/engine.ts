@@ -541,6 +541,12 @@ const menuLinkLine = (lang: Language, link: string) =>
     `پورا مینو دیکھیں اور یہاں آرڈر کریں: ${link}`,
     `Poora menu dekhein aur yahan order karein: ${link}`,
   );
+// A whole message asking for the menu ("menu", "send the full menu", "menu bhej dein", "مینو").
+// The bot may answer it with sections or a question instead of the engine's menu, so the
+// menu page link is added under whatever it replied.
+const MENU_REQUEST =
+  /^(?:(?:please |plz |pls )?(?:send|share|show|give)(?: me)?(?: the| your| ur)?(?: full| whole| complete)? menu|(?:the |your )?(?:full |whole |complete )?menu(?: card| list)?|menu (?:dikhao|dikhayein|dikhaen|dikha do|bhejo|bhej do|bhej dein|bhej den|bhejein|bhejiye|send karo|send kardo|send kar dein)|(?:pura|poora|pora) menu(?: bhej do| bhej dein| bhejo| dikhao)?|مینو(?: بھیجیں| بھیجو| بھیج دیں| دکھائیں| دکھاؤ)?|پورا مینو(?: بھیجیں| دکھائیں)?)(?: please| plz| pls)?[.!?؟،۔\s]*$/u;
+export const asksForMenu = (text: string) => MENU_REQUEST.test(normalize(text));
 // The exact link, not a longer address that starts with it, so it is personalised when sent.
 const hasMenuLink = (text: string, link: string) =>
   text
@@ -1070,6 +1076,8 @@ export function processTurn(
   let modelAnswer: string | undefined;
   let answerUnsafe = false;
   let answerUnsafeTrace = 'unsafe_model_response_ignored';
+  // A cart change refused because the cart was cancelled: only the engine may word that reply.
+  let cancelledCartRefused = false;
   let incompleteReviewQuestion: string | undefined;
   const finish = (): TurnResult => {
     if (traces.includes('human_mode_message_saved'))
@@ -1143,7 +1151,9 @@ export function processTurn(
           ].includes(trace),
       ) ||
       (traces.includes('review') && !incompleteReviewQuestion) ||
-      cart.status === 'cancelled';
+      // The cancellation itself, or a change the cancelled cart refused. A later question is
+      // answered normally rather than handed to staff.
+      (cart.status === 'cancelled' && (traces.includes('cancel') || cancelledCartRefused));
     if (cartFacts.length) reply = [cartFacts.join('\n'), reply].filter(Boolean).join('\n\n');
     // Explanation only: record which source wrote each part of the reply.
     let parts: ReplyPart[] = [];
@@ -1254,6 +1264,19 @@ export function processTurn(
     // Any placeholder left in other wording; a bot reply it empties takes the fallback above.
     if (reply) reply = fillMenuLink(reply, input.menuLink);
     if (!reply && next.mode === 'bot') fallback();
+    // A request for the menu carries the menu page link, however the bot answered it, unless
+    // there is nothing on the menu to show.
+    if (
+      input.menuLink &&
+      reply &&
+      next.mode === 'bot' &&
+      asksForMenu(input.text) &&
+      !hasMenuLink(reply, input.menuLink) &&
+      products.some((product) => product.companyId === company.id)
+    ) {
+      reply = `${reply}\n\n${menuLinkLine(lang, input.menuLink)}`;
+      if (!parts.includes('engine')) parts.push('engine');
+    }
     if (modelText === 'used' && !parts.includes('model')) modelText = 'replaced';
     if (reply)
       next.messages.push({
@@ -1488,6 +1511,7 @@ export function processTurn(
         continue;
       }
       if (cart.status === 'cancelled') {
+        cancelledCartRefused = true;
         reply = say(
           lang,
           'Send “new order” to start a fresh cart.',

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  asksForMenu,
   buildOrder,
   closedText,
   createConversation,
@@ -17,7 +18,7 @@ import {
 } from '../src/domain/engine';
 import { seedCompanies, seedProducts } from '../src/shared/seed';
 import { defaultBot } from '../src/shared/bot';
-import type { BotAction, Company, Conversation, Product } from '../src/shared/types';
+import type { BotAction, Company, Conversation, Language, Product } from '../src/shared/types';
 
 const now = '2026-09-09T13:30:00.000Z';
 const company = seedCompanies[0]!;
@@ -639,6 +640,75 @@ describe('menu page link', () => {
       published: { version: 1, config: bot, publishedAt: now, publishedBy: 'test' },
     };
   }
+
+  it('recognises a whole message asking for the menu, and nothing else', () => {
+    for (const text of [
+      'Menu',
+      'menu?',
+      'menu please',
+      'send me the full menu please',
+      'send whole menu',
+      'show your menu',
+      'full menu',
+      'menu card',
+      'menu bhej dein',
+      'Menu dikhao',
+      'poora menu bhej do',
+      'مینو',
+      'مینو بھیجیں',
+      'پورا مینو',
+    ])
+      expect(asksForMenu(text), text).toBe(true);
+    for (const text of [
+      'is chicken karahi on the menu?',
+      "what's on the menu today",
+      'menu mein biryani hai?',
+      '2 chicken biryani',
+      'hi',
+      'cancel',
+    ])
+      expect(asksForMenu(text), text).toBe(false);
+  });
+
+  describe('a menu request answered in the bot’s own words', () => {
+    const sections =
+      'Here are our menu sections: Starters, BBQ, Karahi & Handi. Which one would you like to see?';
+    const ask = (text: string, menuLink?: string, modelText = sections, lang?: Language) =>
+      processTurn(
+        lang ? { ...company, bot: publishedConfig({ language: lang }) } : company,
+        products,
+        fresh(),
+        { messageId: `ask-menu-${++message}`, text, now, menuLink },
+        [{ type: 'answer', text: '' }],
+        { text: modelText, askFor: 'none' },
+      );
+
+    it('adds the menu page link under the bot’s answer', () => {
+      const result = ask('Menu', link);
+      expect(result.reply).toBe(`${sections}\n\nSee the full menu and order here: ${link}`);
+      expect(result.conversation.mode).toBe('bot');
+      expect(result.decision?.parts).toEqual(['model', 'engine']);
+      expect(result.decision?.modelText).toBe('used');
+      expect(
+        ask('menu bhej dein', link, 'Ji, sections yeh hain: BBQ, Karahi.', 'roman-ur').reply,
+      ).toBe(
+        `Ji, sections yeh hain: BBQ, Karahi.\n\nPoora menu dekhein aur yahan order karein: ${link}`,
+      );
+    });
+
+    it('leaves the reply untouched when the page is off or the customer asked something else', () => {
+      expect(ask('Menu').reply).toBe(sections);
+      const hours = ask('what time do you open?', link, 'We are open all day.');
+      expect(hours.reply).toBe('We are open all day.');
+      expect(ask('is chicken karahi on the menu?', link, 'Yes, it is!').reply).toBe('Yes, it is!');
+    });
+
+    it('shares the link once when the bot already gave it', () => {
+      const result = ask('Menu', link, 'Our menu is here: {menu_link}');
+      expect(result.reply).toBe(`Our menu is here: ${link}`);
+      expect(result.reply.split(link)).toHaveLength(2);
+    });
+  });
 
   it('adds the link line to menu replies, and nothing without a link', () => {
     const plain = menuTurn('en');
@@ -1265,5 +1335,61 @@ describe('web links in AI wording', () => {
     expect(result.reply).toBe(text);
     expect(result.decision?.modelText).toBe('used');
     expect(result.traces).not.toContain('invented_link_ignored');
+  });
+});
+
+describe('after a cancelled order', () => {
+  const cancelled = () => {
+    const c = fresh();
+    c.cart = { ...c.cart, status: 'cancelled', items: [], revision: 3 };
+    return c;
+  };
+  const turn = (
+    conversation: Conversation,
+    text: string,
+    actions: BotAction[],
+    modelText: string,
+  ) =>
+    processTurn(
+      company,
+      products,
+      conversation,
+      { messageId: `after-cancel-${++message}`, text, now },
+      actions,
+      { text: modelText, askFor: 'none' },
+    );
+
+  it('answers a question normally instead of handing the chat to staff', () => {
+    const result = turn(
+      cancelled(),
+      'Menu',
+      [{ type: 'answer', text: '' }],
+      'Here are our menu sections: Starters, BBQ. Which one would you like to see?',
+    );
+    expect(result.reply).toBe(
+      'Here are our menu sections: Starters, BBQ. Which one would you like to see?',
+    );
+    expect(result.conversation.mode).toBe('bot');
+    expect(result.traces).not.toContain('handoff');
+    expect(result.decision?.modelText).toBe('used');
+  });
+
+  it('still lets only the engine word a change the cancelled cart refuses', () => {
+    const result = turn(
+      cancelled(),
+      '1 chicken biryani',
+      [{ type: 'add_item', productId: products[0]!.id, quantity: 1 }],
+      'Added a chicken biryani for you!',
+    );
+    expect(result.reply).toBe('Send “new order” to start a fresh cart.');
+    expect(result.decision?.modelText).toBe('protected');
+    expect(result.conversation.cart.items).toEqual([]);
+  });
+
+  it('still lets only the engine word the cancellation itself', () => {
+    const c = fresh();
+    const result = turn(c, 'cancel', [{ type: 'cancel' }], 'Done! Anything else?');
+    expect(result.reply).toBe('Your cart has been cancelled. Send “new order” to start again.');
+    expect(result.decision?.modelText).toBe('protected');
   });
 });
