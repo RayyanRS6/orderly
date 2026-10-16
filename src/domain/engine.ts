@@ -19,6 +19,8 @@ import type {
 import { money } from '../shared/types';
 import { effectiveAiLimits } from '../shared/models';
 import { quantityFromText, resolveItemMention, resolvePendingItemChoice } from './menu-resolver';
+import { normalizeText as normalize, quoteCart, type CartQuote } from './pricing';
+export { quoteCart, type CartQuote } from './pricing';
 
 /** Pure application rules. Models can suggest tools, never calculate or commit orders. */
 export const emptyCart = (): Cart => ({ items: [], revision: 0, status: 'building' });
@@ -125,18 +127,6 @@ export function limitNotice(lang: Language, cart: Cart): string {
 export const asksForPerson = (text: string) =>
   /\b(human|staff|manager|person|insaan)\b|عملہ|انسان|مینیجر/u.test(normalize(text));
 
-function normalize(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[۰-۹٠-٩]/g, (digit) =>
-      String(
-        '۰۱۲۳۴۵۶۷۸۹'.includes(digit) ? '۰۱۲۳۴۵۶۷۸۹'.indexOf(digit) : '٠١٢٣٤٥٦٧٨٩'.indexOf(digit),
-      ),
-    )
-    .replace(/[\u064b-\u065f]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
 function languageOf(text: string, previous: Language): Language {
   if (/[\u0600-\u06ff]/u.test(text)) return 'ur';
   if (
@@ -149,11 +139,6 @@ function languageOf(text: string, previous: Language): Language {
 }
 const say = (lang: Language, en: string, ur: string, roman: string) =>
   lang === 'ur' ? ur : lang === 'roman-ur' ? roman : en;
-const safeMoney = (n: number) => {
-  if (!Number.isSafeInteger(n) || n < 0)
-    throw new Error('Invalid catalog price. Please ask staff for help.');
-  return n;
-};
 function invalidate(cart: Cart) {
   cart.revision += 1;
   cart.status = 'building';
@@ -195,81 +180,67 @@ export function isOpen(company: Company, now: string): boolean {
     return false;
   }
 }
-
-export interface CartQuote {
-  items: OrderLine[];
-  subtotal: number;
-  deliveryFee: number;
-  total: number;
-  hash: string;
-}
-
-/** Variant prices replace the base price; modifier prices are added per unit. */
-export function quoteCart(company: Company, products: Product[], cart: Cart): CartQuote {
-  if (!cart.items.length)
-    throw new Error('Your cart is empty. Choose something from the menu first.');
-  if (cart.items.length > 40) throw new Error('Please ask staff to help with this large order.');
-  const items: OrderLine[] = cart.items.map((item) => {
-    const product = products.find((p) => p.id === item.productId && p.companyId === company.id);
-    if (!product || !product.available)
-      throw new Error(
-        `${product?.name ?? 'An item'} is unavailable. Remove it or ask staff for help.`,
-      );
-    if (!Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 50)
-      throw new Error('Choose a quantity between 1 and 50.');
-    const variant = product.variants.find((v) => v.id === item.variantId);
-    if ((item.variantId && !variant) || (product.variants.length && !variant))
-      throw new Error(
-        `Choose an option for ${product.name}: ${product.variants.map((v) => v.name).join(', ')}.`,
-      );
-    if (new Set(item.modifierIds).size !== item.modifierIds.length)
-      throw new Error('The same extra cannot be selected twice.');
-    const modifiers = item.modifierIds.map((id) => {
-      const option = product.modifiers.find((m) => m.id === id);
-      if (!option) throw new Error(`Invalid extra for ${product.name}.`);
-      return option;
-    });
-    const unitPrice = safeMoney(
-      safeMoney(variant?.price ?? product.price) +
-        modifiers.reduce((sum, m) => sum + safeMoney(m.price), 0),
-    );
-    return {
-      productId: product.id,
-      name: product.name,
-      quantity: item.quantity,
-      unitPrice,
-      variant: variant?.name,
-      modifiers: modifiers.map((m) => m.name),
-      notes: item.notes.slice(0, 300),
-      total: safeMoney(unitPrice * item.quantity),
-    };
-  });
-  let deliveryFee = 0;
-  if (cart.fulfillment === 'delivery') {
-    const zone = company.deliveryZones.find(
-      (z) => normalize(z.name) === normalize(cart.zone ?? ''),
-    );
-    if (!zone)
-      throw new Error(
-        `Choose a delivery area: ${company.deliveryZones.map((z) => z.name).join(', ')}.`,
-      );
-    deliveryFee = safeMoney(zone.fee);
-  }
-  const subtotal = safeMoney(items.reduce((sum, item) => sum + item.total, 0));
-  const total = safeMoney(subtotal + deliveryFee);
-  // An exact canonical snapshot avoids relying on a lossy checksum for confirmation.
-  const hash = JSON.stringify({
+export const orderIdFor = (submissionKey: string) => idFor(submissionKey);
+/** The pending order a confirmed cart becomes. Chat and menu-page orders share it. */
+export function buildOrder(
+  company: Company,
+  conversation: Pick<Conversation, 'id' | 'customerPhone' | 'channel'>,
+  cart: Cart,
+  quote: CartQuote,
+  now: string,
+  submissionKey: string,
+  source?: 'menu_page',
+): Order {
+  const id = idFor(submissionKey);
+  return {
+    id,
     companyId: company.id,
-    items,
-    subtotal,
-    deliveryFee,
-    total,
-    fulfillment: cart.fulfillment,
-    customerName: cart.customerName,
-    address: cart.address,
-    zone: cart.zone,
-  });
-  return { items, subtotal, deliveryFee, total, hash };
+    conversationId: conversation.id,
+    reference: `ORD-${id.replaceAll('-', '').slice(-8).toUpperCase()}`,
+    submissionKey,
+    customerName: cart.customerName!,
+    customerPhone: conversation.customerPhone,
+    fulfillment: cart.fulfillment!,
+    address: cart.fulfillment === 'delivery' ? cart.address : undefined,
+    zone: cart.fulfillment === 'delivery' ? cart.zone : undefined,
+    items: quote.items,
+    subtotal: quote.subtotal,
+    deliveryFee: quote.deliveryFee,
+    total: quote.total,
+    currency: 'PKR',
+    status: 'pending',
+    syncStatus: 'not_connected',
+    createdAt: now,
+    updatedAt: now,
+    sandbox: conversation.channel === 'demo',
+    phoneConfirmationRequired:
+      !!company.bot?.published && botConfig(company).requirePhoneConfirmation,
+    ...(source && { source }),
+  };
+}
+export function orderReceivedText(lang: Language, order: Order): string {
+  let reply = say(
+    lang,
+    `Order ${order.reference} received — ${money(order.total)}. Awaiting restaurant acceptance. Payment is cash ${order.fulfillment === 'pickup' ? 'at pickup' : 'on delivery'}.`,
+    `آرڈر ${order.reference} موصول ہوا — ${money(order.total)}۔ ریسٹورنٹ کی منظوری کا انتظار ہے۔ ادائیگی نقد ہوگی۔`,
+    `Order ${order.reference} receive ho gaya — ${money(order.total)}. Restaurant ki manzoori ka intezar hai. Payment cash hogi.`,
+  );
+  if (order.phoneConfirmationRequired)
+    reply += say(
+      lang,
+      '\nRestaurant staff will call to confirm before accepting your order.',
+      '\nعملہ آرڈر منظور کرنے سے پہلے فون پر تصدیق کرے گا۔',
+      '\nRestaurant staff order accept karne se pehle call kar ke confirm karega.',
+    );
+  return reply;
+}
+export function closedText(company: Company, lang: Language): string {
+  return say(
+    lang,
+    `We are currently closed. Ordering hours are ${company.openingHours.start}–${company.openingHours.end} (${company.timezone}).`,
+    `ہم اس وقت بند ہیں۔ آرڈر کا وقت ${company.openingHours.start}–${company.openingHours.end} ہے۔`,
+    `Hum is waqt band hain. Order ka waqt ${company.openingHours.start}–${company.openingHours.end} hai.`,
+  );
 }
 
 function missingDetails(company: Company, cart: Cart, lang: Language): string | undefined {
@@ -1505,12 +1476,9 @@ export function processTurn(
           continue;
         }
         if (!isOpen(company, input.now)) {
-          reply = say(
-            lang,
-            `We are currently closed. Ordering hours are ${company.openingHours.start}–${company.openingHours.end} (${company.timezone}). Your cart is saved.`,
-            `ہم اس وقت بند ہیں۔ آرڈر کا وقت ${company.openingHours.start}–${company.openingHours.end} ہے۔ آپ کی ٹوکری محفوظ ہے۔`,
-            `Hum is waqt band hain. Order ka waqt ${company.openingHours.start}–${company.openingHours.end} hai. Cart save hai.`,
-          );
+          reply =
+            closedText(company, lang) +
+            say(lang, ' Your cart is saved.', ' آپ کی ٹوکری محفوظ ہے۔', ' Cart save hai.');
           continue;
         }
         const missing = missingDetails(company, cart, lang);
@@ -1532,46 +1500,10 @@ export function processTurn(
           continue;
         }
         const submissionKey = `${company.id}:${next.id}:${cart.revision}`;
-        const id = idFor(submissionKey);
-        order = {
-          id,
-          companyId: company.id,
-          conversationId: next.id,
-          reference: `ORD-${id.replaceAll('-', '').slice(-8).toUpperCase()}`,
-          submissionKey,
-          customerName: cart.customerName!,
-          customerPhone: next.customerPhone,
-          fulfillment: cart.fulfillment!,
-          address: cart.fulfillment === 'delivery' ? cart.address : undefined,
-          zone: cart.fulfillment === 'delivery' ? cart.zone : undefined,
-          items: quote.items,
-          subtotal: quote.subtotal,
-          deliveryFee: quote.deliveryFee,
-          total: quote.total,
-          currency: 'PKR',
-          status: 'pending',
-          syncStatus: 'not_connected',
-          createdAt: input.now,
-          updatedAt: input.now,
-          sandbox: conversation.channel === 'demo',
-          phoneConfirmationRequired:
-            !!company.bot?.published && configuration.requirePhoneConfirmation,
-        };
+        order = buildOrder(company, next, cart, quote, input.now, submissionKey);
         cart.status = 'submitted';
-        cart.orderId = id;
-        reply = say(
-          lang,
-          `Order ${order.reference} received — ${money(order.total)}. Awaiting restaurant acceptance. Payment is cash ${order.fulfillment === 'pickup' ? 'at pickup' : 'on delivery'}.`,
-          `آرڈر ${order.reference} موصول ہوا — ${money(order.total)}۔ ریسٹورنٹ کی منظوری کا انتظار ہے۔ ادائیگی نقد ہوگی۔`,
-          `Order ${order.reference} receive ho gaya — ${money(order.total)}. Restaurant ki manzoori ka intezar hai. Payment cash hogi.`,
-        );
-        if (order.phoneConfirmationRequired)
-          reply += say(
-            lang,
-            '\nRestaurant staff will call to confirm before accepting your order.',
-            '\nعملہ آرڈر منظور کرنے سے پہلے فون پر تصدیق کرے گا۔',
-            '\nRestaurant staff order accept karne se pehle call kar ke confirm karega.',
-          );
+        cart.orderId = order.id;
+        reply = orderReceivedText(lang, order);
         traces.push('order_pending_restaurant_acceptance');
         break;
       }

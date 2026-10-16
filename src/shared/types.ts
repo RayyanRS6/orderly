@@ -283,6 +283,8 @@ export interface Order {
     at: string;
     actorId: string;
   };
+  /** Placed on the public menu page (/m/<slug>) instead of in the chat. */
+  source?: 'menu_page';
 }
 export interface Trace {
   id: string;

@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildOrder,
+  closedText,
   createConversation,
   emptyCart,
   isOpen,
+  orderIdFor,
+  orderReceivedText,
   parseActions,
   processTurn,
   quoteCart,
@@ -537,5 +541,78 @@ describe('restaurant status transitions', () => {
     next = transitionOrder(next, 'completed', now);
     expect(() => transitionOrder(next, 'accepted', now)).toThrow();
     expect(order.status).toBe('pending');
+  });
+});
+
+describe('order builder and sentences shared with the menu page', () => {
+  it('builds exactly the chat order and confirmation text it did before', () => {
+    const c = reviewed();
+    const result = turn(c, 'confirm');
+    const order = result.order!;
+    const submissionKey = `${company.id}:${c.id}:${c.cart.revision}`;
+    expect(Object.keys(order)).toEqual([
+      'id',
+      'companyId',
+      'conversationId',
+      'reference',
+      'submissionKey',
+      'customerName',
+      'customerPhone',
+      'fulfillment',
+      'address',
+      'zone',
+      'items',
+      'subtotal',
+      'deliveryFee',
+      'total',
+      'currency',
+      'status',
+      'syncStatus',
+      'createdAt',
+      'updatedAt',
+      'sandbox',
+      'phoneConfirmationRequired',
+    ]);
+    expect(order).toMatchObject({
+      id: orderIdFor(submissionKey),
+      submissionKey,
+      conversationId: c.id,
+      customerName: 'Ali',
+      customerPhone: c.customerPhone,
+      fulfillment: 'pickup',
+      total: 90000,
+      status: 'pending',
+      syncStatus: 'not_connected',
+      createdAt: now,
+      sandbox: true,
+      phoneConfirmationRequired: false,
+    });
+    expect(order.reference).toBe(`ORD-${order.id.replaceAll('-', '').slice(-8).toUpperCase()}`);
+    expect(result.conversation.cart).toMatchObject({ status: 'submitted', orderId: order.id });
+    expect(result.reply).toBe(
+      `Order ${order.reference} received — Rs. 900. Awaiting restaurant acceptance. Payment is cash at pickup.`,
+    );
+    expect(orderReceivedText('en', order)).toBe(result.reply);
+    expect(orderReceivedText('roman-ur', { ...order, phoneConfirmationRequired: true })).toBe(
+      `Order ${order.reference} receive ho gaya — Rs. 900. Restaurant ki manzoori ka intezar hai. Payment cash hogi.\nRestaurant staff order accept karne se pehle call kar ke confirm karega.`,
+    );
+    const quote = quoteCart(company, products, c.cart);
+    const web = buildOrder(company, c, c.cart, quote, now, submissionKey, 'menu_page');
+    expect(web).toEqual({ ...order, source: 'menu_page' });
+  });
+  it('keeps the closed sentence, with the cart note only in the chat', () => {
+    const closed: Company = {
+      ...company,
+      openingHours: { start: '09:00', end: '10:00', days: [] },
+    };
+    expect(turn(reviewed(), 'confirm', undefined, products, closed).reply).toBe(
+      'We are currently closed. Ordering hours are 09:00–10:00 (Asia/Karachi). Your cart is saved.',
+    );
+    expect(closedText(closed, 'en')).toBe(
+      'We are currently closed. Ordering hours are 09:00–10:00 (Asia/Karachi).',
+    );
+    expect(closedText(closed, 'roman-ur')).toBe(
+      'Hum is waqt band hain. Order ka waqt 09:00–10:00 hai.',
+    );
   });
 });

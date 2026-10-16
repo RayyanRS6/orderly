@@ -40,18 +40,35 @@ export function setAccessToken(value?: string) {
 export function setSessionRejectedHandler(handler?: () => void) {
   onSessionRejected = handler;
 }
+/** A failed request: the server's message, plus its status, code and body for callers that need them. */
+export class ApiError extends Error {
+  status: number;
+  code?: string;
+  data: unknown;
+  constructor(message: string, status: number, data: unknown) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.data = data;
+    const code = (data as { code?: unknown } | null)?.code;
+    if (typeof code === 'string') this.code = code;
+  }
+}
 export async function api<T>(
   path: string,
   companyId?: string,
   body?: unknown,
   method?: string,
+  init: Pick<RequestInit, 'cache'> = {},
 ): Promise<T> {
   const sent = token;
   const response = await fetch(`${apiBaseUrl()}/api${path}`, {
+    ...init,
     signal: AbortSignal.timeout(45000),
     method: method || (body !== undefined ? 'POST' : 'GET'),
+    // Content-Type only with a body: a plain GET then needs no CORS preflight.
     headers: {
-      'Content-Type': 'application/json',
+      ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
       ...(companyId ? { 'x-company-id': companyId } : {}),
       ...(sent ? { Authorization: `Bearer ${sent}` } : {}),
     },
@@ -62,12 +79,14 @@ export async function api<T>(
   // refresh must not sign anyone out.
   if (response.status === 401 && sent && sent === token) onSessionRejected?.();
   if (!response.ok)
-    throw new Error(
+    throw new ApiError(
       typeof result.error === 'string'
         ? result.error
         : result.error?.message ||
             result.message ||
             `Request failed (${response.status}). Please try again.`,
+      response.status,
+      result,
     );
   return result as T;
 }

@@ -551,6 +551,20 @@ describe('Theme Polish: Dropdowns, Scrollbars, and Sidebar Scrolling', () => {
   });
 });
 
+describe('light public pages', () => {
+  it('keeps the basic controls free of the dialog library and the workspace', () => {
+    for (const file of ['src/components/ui-basic.tsx']) {
+      const imports = readFileSync(join(process.cwd(), file), 'utf8').match(/from '[^']+'/g) ?? [];
+      for (const banned of ['@radix-ui', '../lib/workspace', './App', './ui'])
+        expect(
+          imports.filter((i) => i === `from '${banned}'` || i.startsWith(`from '${banned}/`)),
+          `${file} imports ${banned}`,
+        ).toEqual([]);
+      expect(imports.join(' ')).not.toContain('@radix-ui');
+    }
+  });
+});
+
 describe('UI Helper Utilities and Edge Case Resilience', () => {
   it('handles initials safely with nullish, whitespace, or empty input', () => {
     expect(initials(null)).toBe('O');
