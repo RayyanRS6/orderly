@@ -71,7 +71,15 @@ export function RetentionSettings() {
         and related logs from Orderly. Unfinished orders, human handoffs and outstanding jobs are
         protected. Sheet copies, providers, exports and backups require separate handling.
       </p>
-      <p className="text-sm font-semibold">
+      <p
+        className={
+          !status
+            ? 'skeleton inline-flex items-center rounded-full px-3.5 py-1.5 text-[13px] font-semibold text-stone-600'
+            : status.days
+              ? 'enter-pop inline-flex items-center rounded-full bg-success-700/10 px-3.5 py-1.5 text-[13px] font-semibold text-success-800'
+              : 'enter-pop inline-flex items-center rounded-full bg-ink/[0.06] px-3.5 py-1.5 text-[13px] font-semibold text-stone-700'
+        }
+      >
         {status
           ? status.days
             ? `Enabled: ${status.days} days of inactivity`
@@ -107,8 +115,8 @@ export function RetentionSettings() {
       </ActionButton>
       {/* A preview that arrived after the number changed belongs to another number. */}
       {preview && preview.days === Number(days) && (
-        <div className="space-y-3 text-sm">
-          <p>
+        <div className="step-in space-y-3 rounded-2xl border border-ink/[0.06] bg-paper p-4 text-sm">
+          <p className="font-medium text-ink">
             {preview.days === 0
               ? 'This will disable automatic deletion.'
               : `${preview.count}${preview.count === 100 ? '+' : ''} conversations currently qualify for the next batch. Counts can change as customers and staff act.`}

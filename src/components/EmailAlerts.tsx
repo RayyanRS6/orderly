@@ -71,8 +71,10 @@ export function EmailAlerts() {
           ? 'Choose between 5 and 120 minutes.'
           : undefined;
   return (
-    <section className="mt-5 space-y-3 border-t border-ink/10 pt-4">
-      <h3 className="font-semibold">Email escalation</h3>
+    <section className="mt-6 space-y-3.5 border-t border-ink/[0.08] pt-5">
+      <h3 className="font-serif text-[22px] font-normal leading-[1.05] tracking-[-0.01em] text-ink">
+        Email escalation
+      </h3>
       <ErrorNotice message={error} />
       <p className="text-xs leading-5 text-stone-500">
         Opt in for this business using your verified Orderly account email. A scheduler checks every
@@ -81,18 +83,20 @@ export function EmailAlerts() {
         not guarantee inbox delivery.
       </p>
       {preferences && !preferences.available && (
-        <p className="text-xs text-amber-800">
+        <p className="step-in rounded-xl border border-sun/50 bg-sun/10 px-3.5 py-2.5 text-xs leading-5 text-stone-800">
           Not configured yet. Orderly needs a mail-service key and verified sending address. Browser
           and in-app alerts remain available.
         </p>
       )}
       {preferences && !preferences.emailVerified && (
-        <p className="text-xs text-stone-500">A verified hosted account email is required.</p>
+        <p className="step-in text-xs font-medium text-stone-600">
+          A verified hosted account email is required.
+        </p>
       )}
-      <label className="flex items-start gap-3 text-sm">
+      <label className="flex cursor-pointer items-center gap-3 rounded-2xl border border-ink/[0.06] bg-white/70 px-4 py-3 text-sm font-medium text-ink transition-colors has-[:checked]:border-brand-500/25 has-[:checked]:bg-brand-50 has-[:disabled]:cursor-not-allowed">
         <input
           type="checkbox"
-          className="mt-1 accent-brand-500"
+          className="toggle"
           checked={enabled}
           disabled={!preferences || cannotEnable}
           onChange={(e) => {
@@ -120,6 +124,7 @@ export function EmailAlerts() {
         />
       </Field>
       <ActionButton
+        className="btn-ink"
         disabled={!!saveBlocked}
         title={saveBlocked}
         loading={pending === 'save'}
@@ -128,7 +133,10 @@ export function EmailAlerts() {
       >
         Save email preferences
       </ActionButton>
-      <p role="status" className="text-xs text-green-800">
+      <p
+        role="status"
+        className={message ? 'step-in text-xs font-medium text-success-700' : 'text-xs'}
+      >
         {message}
       </p>
     </section>

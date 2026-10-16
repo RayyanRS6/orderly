@@ -194,8 +194,9 @@ export function Inbox() {
                 { value: 'bot', label: 'Bot conversations' },
               ]}
             />
-            <label className="flex items-center gap-2 text-xs">
+            <label className="flex w-fit cursor-pointer items-center gap-2.5 text-xs font-medium text-stone-600">
               <input
+                className="toggle"
                 type="checkbox"
                 checked={sandbox}
                 onChange={(e) => {
@@ -206,26 +207,27 @@ export function Inbox() {
               Show sandbox conversations
             </label>
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto">
+          <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
             {result.items.map((c) => (
               <button
                 key={c.id}
                 className={cn(
-                  'w-full border-b border-ink/[0.05] p-4 text-left hover:bg-white/50',
-                  c.id === detailId && 'bg-white/80',
+                  'w-full rounded-2xl p-3.5 text-left transition-[background-color,box-shadow] duration-200 hover:bg-white/60',
+                  c.id === detailId &&
+                    'bg-white shadow-[inset_3px_0_0_var(--color-brand-500),0_0_0_1px_rgb(14_6_4/0.06),0_12px_22px_-16px_rgb(14_6_4/0.45)] hover:bg-white',
                 )}
                 onClick={() => navigate('inbox', c.id)}
               >
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <strong className="text-sm break-words">
+                  <strong className="text-[13.5px] font-semibold break-words text-ink">
                     {c.customerName || c.customerPhone}
                   </strong>
                   {c.mode === 'human' && <Status value="human" />}
                 </div>
-                <p className="mt-2 truncate text-xs text-stone-500">
+                <p className="mt-1.5 truncate text-xs text-stone-500">
                   {c.messages.at(-1)?.text || 'New conversation'}
                 </p>
-                <p className="mt-2 text-xs text-stone-400">
+                <p className="mt-1.5 text-[11px] text-stone-400">
                   {c.channel === 'demo' ? 'Sandbox' : 'WhatsApp'} · {shortDate(c.updatedAt)}
                 </p>
               </button>
@@ -259,7 +261,7 @@ export function Inbox() {
         >
           {conversation ? (
             <>
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-ink/[0.06] p-4">
+              <div className="step-in flex flex-wrap items-center justify-between gap-3 border-b border-ink/[0.06] bg-white/40 px-4 py-3.5">
                 <div className="flex min-w-0 items-center gap-2">
                   <button
                     className="icon-btn md:hidden"
@@ -269,10 +271,10 @@ export function Inbox() {
                     <ArrowLeft className="size-5" />
                   </button>
                   <div className="min-w-0">
-                    <strong className="block truncate text-sm">
+                    <strong className="block truncate font-serif text-[24px] leading-[1.2] font-normal tracking-[-0.005em] text-ink">
                       {conversation.customerName || 'Customer'}
                     </strong>
-                    <p className="text-xs text-stone-500">
+                    <p className="mt-0.5 font-mono text-[11px] tracking-[0.02em] text-stone-500">
                       {conversation.customerPhone || 'WhatsApp contact · phone number not shared'}
                     </p>
                   </div>
@@ -280,7 +282,7 @@ export function Inbox() {
                 <div className="flex flex-wrap items-center gap-2">
                   {conversation.mode === 'human' && conversation.botPausedAt && (
                     <>
-                      <span className="text-xs text-stone-500">
+                      <span className="rounded-xl bg-sun/20 px-3 py-1.5 text-xs leading-relaxed text-stone-700">
                         Waiting for staff while the bot is off. The bot answers again once it is on.
                       </span>
                       <ActionButton
@@ -300,6 +302,7 @@ export function Inbox() {
                     </>
                   )}
                   <ActionButton
+                    className={conversation.mode === 'bot' ? 'btn-ink' : 'btn-primary'}
                     loading={pending === 'mode'}
                     loadingLabel={conversation.mode === 'bot' ? 'Taking over…' : 'Resuming…'}
                     onClick={() =>
@@ -317,9 +320,13 @@ export function Inbox() {
                   </ActionButton>
                 </div>
               </div>
-              <div className="min-h-0 flex-1 space-y-4 overflow-y-auto bg-canvas/50 p-4">
+              <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto bg-canvas/50 bg-[radial-gradient(rgb(14_6_4/0.07)_1px,transparent_1.5px)] bg-[length:18px_18px] p-4 sm:px-6">
                 {hasOlder && (
-                  <button className="btn mx-auto" disabled={loading} onClick={() => void older()}>
+                  <button
+                    className="btn mx-auto shrink-0"
+                    disabled={loading}
+                    onClick={() => void older()}
+                  >
                     Load older messages
                   </button>
                 )}
@@ -327,10 +334,12 @@ export function Inbox() {
                   <div
                     key={m.id}
                     className={cn(
-                      'max-w-[90%] rounded-xl border p-3 text-[13px]',
+                      'w-fit max-w-[85%] shrink-0 p-3 text-[13px] leading-[1.45]',
                       m.role === 'customer'
-                        ? 'ml-auto border-ink bg-ink text-cream'
-                        : 'border-white bg-white/80',
+                        ? 'bubble-us bubble-in-right ml-auto'
+                        : m.role === 'staff'
+                          ? 'bubble-them bubble-in-left bg-brand-50'
+                          : 'bubble-them bubble-in-left',
                     )}
                   >
                     <p dir="auto" className="whitespace-pre-wrap break-words">
@@ -338,8 +347,8 @@ export function Inbox() {
                     </p>
                     <p
                       className={cn(
-                        'mt-2 text-xs',
-                        m.role === 'customer' ? 'text-cream/50' : 'text-stone-500',
+                        'mt-1.5 text-[11px]',
+                        m.role === 'customer' ? 'text-cream/60' : 'text-stone-400',
                       )}
                     >
                       {m.role === 'staff' ? 'Staff · ' : ''}
@@ -347,7 +356,9 @@ export function Inbox() {
                       {deliveryLabel(conversation, m) && ` · ${deliveryLabel(conversation, m)}`}
                     </p>
                     {m.deliveryError && (
-                      <p className="mt-2 text-xs text-red-700">{m.deliveryError}</p>
+                      <p className="mt-2 rounded-lg bg-red-600/10 px-2 py-1 text-[11.5px] font-medium text-red-700">
+                        {m.deliveryError}
+                      </p>
                     )}
                     {m.role === 'assistant' && m.explanation && (
                       <WhyToggle explanation={m.explanation} />
@@ -357,7 +368,7 @@ export function Inbox() {
                 <div ref={end} />
               </div>
               <form
-                className="border-t border-ink/[0.06] p-4"
+                className="border-t border-ink/[0.06] bg-white/40 p-3 sm:p-4"
                 onSubmit={(e) => {
                   e.preventDefault();
                   const sent = text;
@@ -368,9 +379,9 @@ export function Inbox() {
                     .catch(() => undefined);
                 }}
               >
-                <div className="flex gap-2">
+                <div className="flex items-center gap-2 rounded-full border border-ink/10 bg-white p-1 pl-1.5 shadow-[0_12px_24px_-18px_rgb(14_6_4/0.5)] transition-[border-color,box-shadow] duration-200 focus-within:border-brand-500/50 focus-within:shadow-[0_0_0_4px_var(--accent-muted)]">
                   <input
-                    className="input min-w-0"
+                    className="input min-w-0 rounded-full border-transparent bg-transparent shadow-none hover:border-transparent focus:border-transparent focus:bg-transparent focus:shadow-none"
                     aria-label="Reply as restaurant staff"
                     placeholder="Reply as staff…"
                     value={text}
@@ -379,7 +390,7 @@ export function Inbox() {
                   />
                   <ActionButton
                     type="submit"
-                    className="btn-primary shrink-0"
+                    className="btn-primary size-11 shrink-0 p-0 md:size-10"
                     aria-label={pending === 'reply' ? 'Sending staff reply' : 'Send staff reply'}
                     title={!text.trim() ? 'Type a reply first.' : undefined}
                     disabled={!text.trim() && pending !== 'reply'}
@@ -389,7 +400,7 @@ export function Inbox() {
                     <Send className="size-4" />
                   </ActionButton>
                 </div>
-                <p className="mt-2 text-xs text-stone-500">
+                <p className="mt-2 px-3 text-[11.5px] leading-relaxed text-stone-500">
                   Replying pauses this conversation’s bot. Free-form WhatsApp replies require an
                   open 24-hour customer service window.
                 </p>

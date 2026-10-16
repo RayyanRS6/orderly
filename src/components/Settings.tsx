@@ -93,10 +93,10 @@ export function Settings() {
           }).catch(() => undefined);
         }}
       >
-        <fieldset disabled={!canEdit} className="space-y-6 disabled:opacity-70">
-          <section className="card p-6">
+        <fieldset disabled={!canEdit} className="stagger space-y-6 disabled:opacity-70">
+          <section className="card group p-6">
             <div className="mb-6 flex items-center gap-3">
-              <Building2 className="size-5 text-brand-500" />
+              <Building2 className="box-content size-[18px] shrink-0 -rotate-6 rounded-xl bg-ink p-[9px] text-brand-500 shadow-[0_10px_20px_-10px_rgb(14_6_4/0.7)] transition-transform duration-300 ease-[var(--ease-spring)] group-hover:rotate-0" />
               <h2 className="panel-title">Business details</h2>
             </div>
             <div className="grid gap-5 sm:grid-cols-2">
@@ -171,22 +171,22 @@ export function Settings() {
               </Field>
               <div className="sm:col-span-2">
                 <span className="field-label">Open days · Asia/Karachi</span>
-                <div className="flex flex-wrap gap-2">
+                <div className="stagger flex flex-wrap gap-2">
                   {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day, i) => {
                     const openDays = draft.openingHours?.days || [];
                     return (
                       <label
                         key={day}
                         className={cn(
-                          'flex min-h-9 items-center gap-2 rounded-[9px] border px-3.5 text-xs font-semibold cursor-pointer transition-all',
+                          'flex min-h-9 cursor-pointer items-center gap-2 rounded-full border px-3.5 text-xs font-semibold transition-[background-color,border-color,color,box-shadow,scale] duration-200 ease-[var(--ease-soft)] active:scale-95',
                           openDays.includes(i)
-                            ? 'border-brand-500/40 bg-brand-500/10 text-ink'
-                            : 'border-ink/8 bg-white/70 text-stone-600 hover:bg-white',
+                            ? 'border-ink bg-ink text-cream shadow-[0_8px_18px_-8px_rgb(14_6_4/0.7)]'
+                            : 'border-ink/10 bg-white/70 text-stone-600 hover:border-ink/25 hover:bg-white hover:text-ink',
                         )}
                       >
                         <input
                           type="checkbox"
-                          className="accent-brand-500"
+                          className="size-3.5 accent-brand-500"
                           checked={openDays.includes(i)}
                           onChange={(e) =>
                             update({
@@ -226,11 +226,11 @@ export function Settings() {
               with cash payment.
             </p>
             {!(draft.deliveryZones || []).length && (
-              <p className="rounded-[10px] border border-white/60 bg-white/40 p-4 text-[13px] text-stone-500">
+              <p className="step-in rounded-2xl border border-dashed border-ink/15 bg-cream/60 p-4 text-[13px] text-stone-500">
                 Pickup only. Add an area to offer delivery.
               </p>
             )}
-            <div className="space-y-3">
+            <div className="stagger space-y-3">
               {(draft.deliveryZones || []).map((zone, i) => (
                 <div className="flex items-end gap-3" key={i}>
                   <div className="flex-1">
@@ -269,7 +269,7 @@ export function Settings() {
                     </Field>
                   </div>
                   <button
-                    className="icon-btn"
+                    className="icon-btn hover:bg-red-50 hover:text-red-700"
                     type="button"
                     aria-label={`Remove delivery area ${zone.name || i + 1}`}
                     onClick={() =>
@@ -284,14 +284,14 @@ export function Settings() {
               ))}
             </div>
           </section>
-          <section className="card p-6">
+          <section className="card group p-6">
             <div className="mb-6 flex items-center gap-3">
-              <Bot className="size-5 text-brand-500" />
+              <Bot className="box-content size-[18px] shrink-0 -rotate-6 rounded-xl bg-ink p-[9px] text-brand-500 shadow-[0_10px_20px_-10px_rgb(14_6_4/0.7)] transition-transform duration-300 ease-[var(--ease-spring)] group-hover:rotate-0" />
               <h2 className="panel-title">Assistant & menu</h2>
             </div>
             <div className="grid gap-5 sm:grid-cols-2">
               <div className="sm:col-span-2">
-                <button type="button" className="btn" onClick={() => navigate('bot')}>
+                <button type="button" className="btn btn-ink" onClick={() => navigate('bot')}>
                   Open bot behavior & model settings
                 </button>
               </div>
@@ -308,8 +308,9 @@ export function Settings() {
                   ]}
                 />
               </Field>
-              <label className="flex items-center gap-3 self-start rounded-xl border border-white bg-white/50 p-4 text-[13px]">
+              <label className="flex cursor-pointer items-center gap-3 self-start rounded-2xl border border-ink/[0.06] bg-paper p-4 text-[13px] transition-colors has-[:checked]:border-brand-500/25 has-[:checked]:bg-brand-50">
                 <input
+                  className="toggle"
                   type="checkbox"
                   checked={draft.botEnabled}
                   onChange={(e) => update({ botEnabled: e.target.checked })}
@@ -344,9 +345,9 @@ export function Settings() {
             <p className="mb-5 text-sm text-stone-500">
               Give your assistant approved answers about your restaurant.
             </p>
-            <div className="space-y-5">
+            <div className="stagger space-y-4">
               {(draft.faqs || []).map((faq, i) => (
-                <div key={i} className="rounded-xl border border-white p-4 sm:p-5 bg-white/50">
+                <div key={i} className="rounded-2xl border border-ink/[0.06] bg-paper p-4 sm:p-5">
                   <div className="mb-3 flex gap-2">
                     <div className="flex-1">
                       <Field label="Question">
@@ -365,7 +366,7 @@ export function Settings() {
                       </Field>
                     </div>
                     <button
-                      className="icon-btn self-end"
+                      className="icon-btn self-end hover:bg-red-50 hover:text-red-700"
                       type="button"
                       aria-label={`Remove question ${i + 1}`}
                       onClick={() => update({ faqs: (draft.faqs || []).filter((_, j) => j !== i) })}
@@ -392,7 +393,10 @@ export function Settings() {
             </div>
           </section>
           <div className="flex items-center justify-end gap-4">
-            <span role="status" className="text-[13px] font-medium text-success-700">
+            <span
+              role="status"
+              className={cn('text-[13px] font-semibold text-success-700', saved && 'enter-pop')}
+            >
               {saved ? 'Settings saved.' : !canEdit ? 'Only an owner can edit settings.' : ''}
             </span>
             <ActionButton
@@ -409,13 +413,13 @@ export function Settings() {
       </form>
       <section className="card mt-6 p-6">
         <h2 className="panel-title">AI usage this month</h2>
-        <p className="mt-3 text-2xl font-semibold tabular-nums">
+        <p className="pop-up mt-4 font-serif text-[44px] font-normal leading-none tracking-[-0.01em] text-ink tabular-nums">
           ${recordedSpend.toFixed(4)}
-          <span className="ml-2 text-sm font-normal text-stone-500">
+          <span className="ml-2 font-sans text-sm font-normal tracking-normal text-stone-500">
             recorded / ${(data.company.ai?.monthlyBudgetUsd ?? 10).toFixed(2)} allowance
           </span>
         </p>
-        <p className="mt-2 text-xs leading-relaxed text-stone-500">
+        <p className="mt-3 text-xs leading-relaxed text-stone-500">
           UTC calendar month. Unsettled requests also reserve budget. Estimates use paid token rates
           even when your provider usage is free; this is not a billing invoice. WhatsApp and hosting
           are separate.
@@ -532,13 +536,13 @@ export function Integrations() {
         title="Everything, connected."
         description="Choose the tools behind your business. Each connection belongs to this workspace."
       />
-      <div className="notice mb-7 flex items-start gap-3.5 rounded-[18px] p-5 sm:p-6">
-        <ShieldCheck className="mt-0.5 size-5 shrink-0 text-brand-500" />
+      <div className="notice mb-7 flex items-start gap-4 rounded-[22px] p-5 sm:p-6">
+        <ShieldCheck className="pop-in box-content size-5 shrink-0 -rotate-6 rounded-xl bg-brand-500 p-2 text-ink shadow-[0_12px_24px_-12px_rgb(255_105_44/0.8)]" />
         <div>
-          <h2 className="font-serif text-[17px] font-bold text-cream">
+          <h2 className="font-serif text-[24px] font-normal leading-[1.05] tracking-[-0.01em] text-cream">
             Your keys stay on the server.
           </h2>
-          <p className="mt-1 text-[13px] leading-relaxed text-cream/65">
+          <p className="mt-1.5 text-[13px] leading-relaxed text-cream/70">
             Credentials are encrypted before storage. The local playground works without keys; live
             WhatsApp requires the deployed backend and your chosen connection setup.
           </p>
@@ -557,29 +561,29 @@ export function Integrations() {
             }
           />
         </div>
-        <p className="mt-3 text-sm text-stone-700">
+        <p className="mt-3 inline-block max-w-full break-words rounded-full border border-ink/[0.06] bg-paper px-3.5 py-1.5 text-[13px] font-semibold text-ink">
           {(providers[data.company.ai?.provider] || providers.mock).name}
           {data.company.ai?.provider !== 'mock' && ` · ${data.company.ai.model}`}
         </p>
-        <p className="mt-2 text-xs leading-relaxed text-stone-500">
+        <p className="mt-3 text-xs leading-relaxed text-stone-500">
           The AI provider, this business’s API key and the model are all set up in one place: Bot
           settings → AI model. Paste the key there and click Connect and test.
         </p>
-        <button className="btn mt-4" onClick={() => navigate('bot')}>
+        <button className="btn btn-ink mt-4" onClick={() => navigate('bot')}>
           Set up the AI model
           <ArrowRight className="size-4" />
         </button>
       </section>
-      <div className="grid gap-5 md:grid-cols-2">
+      <div className="stagger grid gap-5 md:grid-cols-2">
         {(data.integrations || [])
           .filter((integration) => integration.kind === 'whatsapp' || integration.kind === 'sheets')
           .map((integration) => {
             const info = integrationInfo[integration.kind];
             if (!info) return null;
             return (
-              <section key={integration.kind} className="card flex flex-col p-6">
+              <section key={integration.kind} className="card group flex flex-col p-6">
                 <div className="mb-5 flex items-center justify-between gap-3">
-                  <div className="flex size-11 items-center justify-center rounded-xl bg-ink text-brand-500">
+                  <div className="flex size-11 -rotate-6 items-center justify-center rounded-xl bg-ink text-brand-500 shadow-[0_10px_20px_-10px_rgb(14_6_4/0.7)] transition-transform duration-300 ease-[var(--ease-spring)] group-hover:rotate-0 group-hover:scale-110">
                     <info.icon className="size-5" />
                   </div>
                   <Status value={integration.status} />
@@ -589,11 +593,13 @@ export function Integrations() {
                   {info.description}
                 </p>
                 {integration.error && (
-                  <p className="mb-4 text-xs text-red-700">{integration.error}</p>
+                  <p className="mb-4 rounded-xl bg-red-50 px-3 py-2 text-xs font-medium text-red-700">
+                    {integration.error}
+                  </p>
                 )}
                 <div className="mt-auto flex flex-wrap gap-2">
                   <button
-                    className="btn"
+                    className={cn('btn', !integration.configured && 'btn-primary')}
                     disabled={!canEdit}
                     onClick={() => {
                       setEditing(integration);
@@ -633,7 +639,7 @@ export function Integrations() {
                 {integration.configured && (
                   <button
                     disabled={!canEdit}
-                    className="btn mt-3 text-red-700"
+                    className="btn mt-3 text-red-700 hover:border-red-200 hover:bg-red-50 hover:text-red-800"
                     onClick={() => {
                       setDisconnectError('');
                       setDisconnecting(integration);
@@ -643,7 +649,7 @@ export function Integrations() {
                   </button>
                 )}
                 {integration.checkedAt && (
-                  <p className="mt-4 text-xs text-stone-400">
+                  <p className="mt-4 font-mono text-[11px] text-stone-400">
                     Last checked {new Date(integration.checkedAt).toLocaleString()}
                   </p>
                 )}
@@ -655,14 +661,14 @@ export function Integrations() {
         <h2 className="panel-title">Before connecting a restaurant number</h2>
         <div className="mt-4 grid gap-6 text-sm leading-relaxed text-stone-500 md:grid-cols-2">
           <div>
-            <p className="font-medium text-stone-800">Customers stay in WhatsApp.</p>
+            <p className="font-semibold text-ink">Customers stay in WhatsApp.</p>
             <p className="mt-1">
               Messages arrive at the company number and bot replies appear in the same chat. Your
               team can monitor conversations and take over in the Inbox.
             </p>
           </div>
           <div>
-            <p className="font-medium text-stone-800">Want the WhatsApp Business mobile app too?</p>
+            <p className="font-semibold text-ink">Want the WhatsApp Business mobile app too?</p>
             <p className="mt-1">
               Use Meta’s eligible Business App coexistence onboarding. Standard Cloud API setup
               alone does not provide a mobile inbox. Account eligibility and Meta approval apply.
@@ -719,7 +725,7 @@ export function Integrations() {
       >
         {editing && (
           <form
-            className="space-y-5"
+            className="stagger space-y-5"
             onSubmit={(e) => {
               e.preventDefault();
               // Errors show inside this dialog (Modal), so no notification is needed.
@@ -777,7 +783,7 @@ export function Integrations() {
               )}
             </Field>
             {editing.kind === 'sheets' && (
-              <p className="rounded-xl border border-white bg-white/60 p-3.5 text-xs leading-relaxed text-stone-600">
+              <p className="rounded-2xl border border-ink/[0.06] bg-paper p-3.5 text-xs leading-relaxed text-stone-600">
                 Create separate Menu and Orders tabs. Share this spreadsheet with the service
                 account email as Editor. Menu columns: id, name, description, category, price,
                 available, emoji, aliases, variants, modifiers. Prices in the sheet use PKR rupees.
@@ -819,16 +825,16 @@ export function Businesses() {
           </button>
         )}
       </PageHeading>
-      <div className="grid gap-5 md:grid-cols-2">
+      <div className="stagger grid gap-5 md:grid-cols-2">
         {data.companies.map((company) => (
-          <section key={company.id} className="card p-6 sm:p-7">
+          <section key={company.id} className="card group p-6 sm:p-7">
             <div className="flex items-start justify-between gap-3">
-              <div className="flex size-12 items-center justify-center rounded-xl bg-ink-soft font-semibold text-brand-500">
+              <div className="flex size-12 -rotate-6 items-center justify-center rounded-xl bg-ink font-serif text-[24px] font-normal leading-none text-brand-500 shadow-[0_10px_20px_-10px_rgb(14_6_4/0.7)] transition-transform duration-300 ease-[var(--ease-spring)] group-hover:rotate-0 group-hover:scale-110">
                 {initials(company.name)}
               </div>
               {company.id === data.company.id && (
                 <Badge tone="green">
-                  <Check className="size-3" />
+                  <Check className="pop-spin size-3" />
                   Current workspace
                 </Badge>
               )}
@@ -845,7 +851,7 @@ export function Businesses() {
               </Badge>
             </div>
             <button
-              className="btn w-full"
+              className="btn btn-ink w-full"
               disabled={company.id === data.company.id}
               onClick={() => switchCompany(company.id)}
             >
@@ -855,8 +861,8 @@ export function Businesses() {
           </section>
         ))}
       </div>
-      <div className="mt-7 flex gap-3 text-sm text-stone-500">
-        <ShieldCheck className="size-5 shrink-0 text-brand-500" />
+      <div className="mt-7 flex items-start gap-3 rounded-2xl border border-ink/[0.05] bg-cream/70 px-4 py-3.5 text-sm leading-relaxed text-stone-600">
+        <ShieldCheck className="mt-px size-5 shrink-0 text-brand-600" />
         <p>
           Access is checked for each request. Owners manage their business; staff handle
           conversations and orders. Only the platform administrator can add businesses.
@@ -869,7 +875,7 @@ export function Businesses() {
         description="Start with an empty menu and a paused assistant."
       >
         <form
-          className="space-y-5"
+          className="stagger space-y-5"
           onSubmit={(e) => {
             e.preventDefault();
             void run('create', async () => {

@@ -43,13 +43,15 @@ function Messages({ conversation, waiting }: { conversation?: Conversation; wait
       end.current?.scrollIntoView({ block: 'nearest' });
   }, [conversation?.messages?.length, waiting]);
   return (
-    <div className="min-h-0 flex-1 space-y-5 overflow-y-auto bg-canvas/50 p-5 sm:p-6">
+    <div className="min-h-0 flex-1 space-y-3.5 overflow-y-auto bg-paper/70 p-5 sm:p-6">
       {!conversation?.messages?.length && (
         <div className="py-2 text-center sm:py-8">
-          <div className="mx-auto mb-4 hidden size-14 items-center justify-center rounded-xl bg-ink text-brand-500 sm:flex">
+          <div className="bob mx-auto mb-5 hidden size-14 -rotate-6 items-center justify-center rounded-2xl bg-ink text-brand-500 shadow-[0_16px_30px_-14px_rgb(14_6_4/0.75)] sm:flex">
             <MessageCircle className="size-7" />
           </div>
-          <h3 className="panel-title">Every good order starts with a hello.</h3>
+          <h3 className="panel-title text-[28px] leading-[1.05] tracking-[-0.01em]">
+            Every good order starts with a hello.
+          </h3>
           <p className="mx-auto mt-2 max-w-xs text-sm leading-relaxed text-stone-500">
             Ask for the menu, build a cart, and see how your restaurant responds.
           </p>
@@ -59,12 +61,19 @@ function Messages({ conversation, waiting }: { conversation?: Conversation; wait
         <div
           key={message.id}
           className={cn(
-            'flex gap-2.5',
-            message.role === 'customer' ? 'justify-end' : 'justify-start',
+            'flex items-end gap-2.5',
+            message.role === 'customer'
+              ? 'bubble-in-right justify-end'
+              : 'bubble-in-left justify-start',
           )}
         >
           {message.role !== 'customer' && (
-            <span className="mt-1 flex size-7 shrink-0 items-center justify-center rounded-lg bg-ink-soft text-brand-500">
+            <span
+              className={cn(
+                'mb-0.5 flex size-7 shrink-0 items-center justify-center rounded-[10px] shadow-[0_8px_16px_-8px_rgb(14_6_4/0.6)]',
+                message.role === 'staff' ? 'bg-sun text-ink' : 'bg-ink text-brand-500',
+              )}
+            >
               {message.role === 'staff' ? (
                 <UserRound className="size-3.5" />
               ) : (
@@ -74,10 +83,8 @@ function Messages({ conversation, waiting }: { conversation?: Conversation; wait
           )}
           <div
             className={cn(
-              'max-w-[85%] rounded-xl px-4 py-3 text-[13px] leading-relaxed',
-              message.role === 'customer'
-                ? 'rounded-tr-sm bg-ink text-cream'
-                : 'rounded-tl-sm border border-white bg-white/80 text-stone-700',
+              'max-w-[85%] px-4 py-3 text-[13px] leading-relaxed',
+              message.role === 'customer' ? 'bubble-us' : 'bubble-them text-stone-700',
             )}
           >
             <p dir="auto" className="whitespace-pre-wrap break-words">
@@ -85,8 +92,8 @@ function Messages({ conversation, waiting }: { conversation?: Conversation; wait
             </p>
             <p
               className={cn(
-                'mt-2 text-right text-[10px]',
-                message.role === 'customer' ? 'text-cream/50' : 'text-stone-400',
+                'mt-1.5 text-right font-mono text-[11px] tracking-[0.02em]',
+                message.role === 'customer' ? 'text-cream/55' : 'text-stone-400',
               )}
             >
               {message.role === 'staff' ? 'Staff · ' : ''}
@@ -109,7 +116,7 @@ function Messages({ conversation, waiting }: { conversation?: Conversation; wait
       {waiting && (
         <div
           role="status"
-          className="w-fit rounded-xl rounded-tl-sm border border-white bg-white/80 px-4 py-3 text-[13px] text-stone-500"
+          className="bubble-them bubble-in-left ml-[38px] w-fit px-4 py-3 text-[13px] text-stone-500"
         >
           Preparing a response…
         </div>
@@ -240,9 +247,10 @@ export function Playground({ active = true }: { active?: boolean }) {
           Refresh chat
         </button>
       </PageHeading>
-      <div className="notice mb-4 grid gap-4 p-4 text-[13px] text-cream sm:grid-cols-[minmax(12rem,18rem)_1fr] sm:items-end">
+      <div className="notice mb-5 grid gap-4 p-4 text-[13px] text-cream sm:grid-cols-[minmax(12rem,18rem)_1fr] sm:items-end sm:p-5">
         <Field label="Configuration to test">
           <CustomSelect
+            className="rounded-xl border-white/10 bg-white/[0.06] text-cream hover:border-white/20 hover:bg-white/10 focus-visible:border-brand-500/60 focus-visible:bg-white/10 focus-visible:ring-brand-500/25"
             value={testTarget}
             disabled={restoring}
             onChange={(value) => {
@@ -261,7 +269,7 @@ export function Playground({ active = true }: { active?: boolean }) {
             ]}
           />
         </Field>
-        <div className="space-y-1 text-xs text-cream/60">
+        <div className="space-y-1 text-xs leading-relaxed text-cream/65">
           <p>
             AI: <strong className="text-cream">{data.company.ai?.model || 'Not connected'}</strong>
             {' · '}Menu:{' '}
@@ -279,14 +287,16 @@ export function Playground({ active = true }: { active?: boolean }) {
       </div>
       <div className="grid gap-5 xl:grid-cols-3">
         <div className="card flex h-[calc(100dvh-29rem)] min-h-[20rem] max-h-[44rem] flex-col overflow-hidden sm:h-[calc(100dvh-23rem)] xl:col-span-2">
-          <div className="flex items-center justify-between gap-3 border-b border-ink/[0.06] px-5 sm:px-6 py-4">
-            <div className="flex items-center gap-3">
-              <div className="flex size-10 items-center justify-center rounded-[10px] bg-ink text-brand-500">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-ink/[0.06] bg-linear-to-b from-white/70 to-white/30 px-5 py-3.5 sm:px-6">
+            <div className="flex min-w-0 flex-1 basis-48 items-center gap-3">
+              <div className="flex size-10 shrink-0 -rotate-6 items-center justify-center rounded-xl bg-ink text-brand-500 shadow-[0_10px_20px_-10px_rgb(14_6_4/0.75)]">
                 <MessageCircle className="size-5" />
               </div>
-              <div>
-                <p className="text-[14.5px] font-semibold text-ink">{data.company.name}</p>
-                <p className="mt-0.5 text-xs text-stone-400">
+              <div className="min-w-0">
+                <p className="truncate text-[15px] font-[650] tracking-[-0.01em] text-ink">
+                  {data.company.name}
+                </p>
+                <p className="mt-0.5 truncate text-xs text-stone-500">
                   Preview conversation · no WhatsApp delivery
                 </p>
               </div>
@@ -297,7 +307,7 @@ export function Playground({ active = true }: { active?: boolean }) {
               </Badge>
               <button
                 type="button"
-                className="btn px-3"
+                className="icon-btn-glass max-md:size-11"
                 onClick={() => resetChat()}
                 aria-label="Refresh chat — start a new test conversation"
                 title="Refresh chat — start a new test conversation"
@@ -307,28 +317,31 @@ export function Playground({ active = true }: { active?: boolean }) {
             </div>
           </div>
           {restoring && (
-            <p role="status" className="px-5 py-3 text-sm text-stone-500">
+            <p
+              role="status"
+              className="step-in border-b border-ink/[0.04] bg-white/40 px-5 py-2.5 text-[13px] text-stone-500 sm:px-6"
+            >
               Restoring your saved test conversation…
             </p>
           )}
           <Messages conversation={conversation} waiting={!!pending} />
           {conversation?.mode === 'human' && (
-            <div className="border-t border-white/[0.06] bg-ink px-5 py-3 text-xs text-cream/75 font-medium">
+            <div className="step-in glow-dark border-t border-white/[0.06] bg-ink px-5 py-3 text-xs font-medium text-cream/75 sm:px-6">
               This conversation is waiting for staff.{' '}
               <button
-                className="font-semibold text-brand-500 hover:text-brand-400 ml-1"
+                className="ml-1 rounded-full bg-brand-500 px-2.5 py-0.5 font-semibold text-ink shadow-[0_8px_16px_-8px_rgb(255_105_44/0.9)] transition-colors hover:bg-brand-400"
                 onClick={() => navigate('inbox')}
               >
                 Open inbox
               </button>
             </div>
           )}
-          <div className="border-t border-ink/[0.06] p-4 sm:p-5">
-            <div className="mb-3 flex flex-wrap gap-2">
+          <div className="border-t border-ink/[0.06] bg-linear-to-b from-white/50 to-white/80 p-4 sm:p-5">
+            <div className="stagger mb-3 flex flex-wrap gap-2">
               {['Show menu', 'Repeat my order', 'Review order', 'Talk to staff'].map((title) => (
                 <button
                   key={String(title)}
-                  className="inline-flex items-center gap-1.5 rounded-[9px] border border-ink/8 bg-white/70 hover:bg-white hover:border-ink/14 px-3.5 py-1.5 text-xs font-semibold text-stone-700 hover:text-ink transition-all disabled:opacity-50"
+                  className="inline-flex items-center gap-1.5 rounded-full border border-ink/10 bg-white/85 px-3.5 py-1.5 text-xs font-semibold text-stone-700 shadow-[inset_0_1px_0_#fff,0_6px_14px_-10px_rgb(14_6_4/0.35)] transition-[background-color,border-color,color,translate,scale] duration-200 ease-[var(--ease-soft)] hover:-translate-y-px hover:border-brand-500/40 hover:bg-white hover:text-ink active:scale-95 disabled:opacity-50 disabled:hover:translate-y-0 aria-busy:border-ink aria-busy:bg-ink aria-busy:text-cream"
                   disabled={blocked}
                   title={blockedReason}
                   aria-busy={pending === `quick-${title}` || undefined}
@@ -348,7 +361,7 @@ export function Playground({ active = true }: { active?: boolean }) {
               }
             />
             <form
-              className="mt-2 flex gap-2"
+              className="mt-2 flex items-center gap-1.5 rounded-full border border-ink/10 bg-white/90 p-1.5 shadow-[inset_0_1px_0_#fff,0_16px_30px_-22px_rgb(14_6_4/0.5)] transition-colors focus-within:border-brand-500/55 focus-within:shadow-[inset_0_1px_0_#fff,0_0_0_4px_rgb(255_105_44/0.14)]"
               onSubmit={(e) => {
                 e.preventDefault();
                 if (text.trim()) void send(text);
@@ -359,7 +372,7 @@ export function Playground({ active = true }: { active?: boolean }) {
               </label>
               <input
                 id="chat-message"
-                className="input pl-4 pr-4"
+                className="input flex-1 rounded-full border-0 bg-transparent pr-2 pl-4 shadow-none focus:bg-transparent focus:shadow-none"
                 value={text}
                 onChange={(e) => setText(e.target.value)}
                 placeholder="Type a message… or try ‘2 biryani’"
@@ -368,7 +381,7 @@ export function Playground({ active = true }: { active?: boolean }) {
               />
               <ActionButton
                 type="submit"
-                className="btn-primary px-4"
+                className="btn-primary size-10 shrink-0 rounded-full p-0 max-md:size-11"
                 aria-label={pending === 'send' ? 'Sending message' : 'Send message'}
                 disabled={blocked || (!text.trim() && pending !== 'send')}
                 title={blockedReason ?? (!text.trim() ? 'Type a message first.' : undefined)}
@@ -378,7 +391,7 @@ export function Playground({ active = true }: { active?: boolean }) {
                 <Send className="size-4" />
               </ActionButton>
             </form>
-            <p className="mt-2 text-center text-[10px] font-medium text-stone-400">
+            <p className="mt-2.5 text-center text-[11px] font-medium text-stone-400">
               English · اردو · Roman Urdu · Chat stays saved until you refresh it
             </p>
           </div>
@@ -387,36 +400,41 @@ export function Playground({ active = true }: { active?: boolean }) {
           <section className="card p-5">
             <div className="mb-4 flex items-center justify-between">
               <h2 className="panel-title flex items-center gap-2">
-                <ShoppingBag className="size-4" />
+                <ShoppingBag className="size-4 text-brand-600" />
                 Current order
               </h2>
-              <span className="text-xs tabular-nums text-stone-400">
+              <span className="rounded-full bg-ink/[0.05] px-2.5 py-1 text-[11px] font-semibold tabular-nums text-stone-600">
                 {conversation?.cart.items.reduce((n, i) => n + i.quantity, 0) || 0} items
               </span>
             </div>
             {!conversation?.cart.items.length ? (
-              <p className="py-5 text-center text-sm text-stone-400">
+              <p className="rounded-2xl border border-dashed border-ink/10 bg-paper/70 px-4 py-5 text-center text-sm text-stone-400">
                 Your cart is waiting for something good.
               </p>
             ) : (
-              <div className="space-y-3">
+              <div className="stagger space-y-2">
                 {conversation.cart.items.map((item, i) => {
                   const product = data.products.find((p) => p.id === item.productId);
                   return (
-                    <div key={`${item.productId}-${i}`} className="flex items-start gap-3">
-                      <span className="text-xl">{product?.emoji || '🍽️'}</span>
+                    <div
+                      key={`${item.productId}-${i}`}
+                      className="flex items-center gap-3 rounded-2xl bg-white/70 p-2 pr-2.5 shadow-[0_0_0_1px_rgb(14_6_4/0.04),0_8px_18px_-14px_rgb(14_6_4/0.35)]"
+                    >
+                      <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-paper text-xl">
+                        {product?.emoji || '🍽️'}
+                      </span>
                       <div className="min-w-0 flex-1">
-                        <p className="text-sm font-medium">
+                        <p className="text-sm font-semibold text-ink">
                           {item.quantity} × {product?.name || 'Unavailable item'}
                         </p>
-                        <p className="mt-1 text-xs text-stone-500">
+                        <p className="mt-0.5 text-xs text-stone-500">
                           {product?.variants.find((v) => v.id === item.variantId)?.name}
                           {item.modifierIds.length ? ` · ${item.modifierIds.length} extras` : ''}
                         </p>
                       </div>
                       {conversation.cart.status !== 'submitted' && (
                         <button
-                          className="text-stone-400 hover:text-red-600"
+                          className="icon-btn size-8 text-stone-400 hover:bg-red-50 hover:text-red-600"
                           aria-label={`Remove ${product?.name}`}
                           aria-busy={pending === `remove-${i}` || undefined}
                           onClick={() => void send(`Remove ${product?.name}`, `remove-${i}`)}
@@ -429,12 +447,12 @@ export function Playground({ active = true }: { active?: boolean }) {
                 })}
               </div>
             )}
-            <div className="mt-4 border-t border-ink/[0.06] pt-4">
-              <div className="flex justify-between text-sm">
+            <div className="mt-4 border-t border-dashed border-ink/10 pt-4">
+              <div className="flex items-baseline justify-between text-sm">
                 <span className="text-stone-500">
                   Total {fulfillment === 'delivery' ? 'with delivery' : ''}
                 </span>
-                <strong className="tabular-nums text-ink">
+                <strong className="font-serif text-[26px] leading-none font-normal tracking-[-0.01em] tabular-nums text-ink">
                   {total !== undefined ? money(total) : '—'}
                 </strong>
               </div>
@@ -445,11 +463,11 @@ export function Playground({ active = true }: { active?: boolean }) {
                 </p>
               )}
               {conversation?.cart.status === 'submitted' ? (
-                <div className="mt-4 rounded-xl border border-success-700/15 bg-success-700/[0.07] p-4 text-[13px] text-success-800">
-                  <Check className="mb-1 size-4" />
+                <div className="enter-pop mt-4 rounded-2xl border border-success-700/15 bg-success-700/[0.07] p-4 text-[13px] text-success-800">
+                  <Check className="pop-spin mb-2 block size-6 rounded-full bg-success-700 p-1 text-white shadow-[0_8px_16px_-8px_rgb(23_124_74/0.9)]" />
                   Order received. Waiting for the restaurant.
                   <button
-                    className="mt-2 block font-semibold underline"
+                    className="mt-2 block font-semibold underline decoration-success-700/40 underline-offset-2 transition-colors hover:decoration-success-700"
                     onClick={() => navigate('orders')}
                   >
                     View orders
@@ -468,7 +486,7 @@ export function Playground({ active = true }: { active?: boolean }) {
                   </button>
                   {conversation?.cart.status === 'awaiting_confirmation' && (
                     <ActionButton
-                      className="btn-primary mt-2 w-full"
+                      className="btn-primary enter-pop mt-2 w-full"
                       loading={pending === 'confirm'}
                       loadingLabel="Confirming…"
                       onClick={() => void send('Confirm order', 'confirm')}
@@ -488,26 +506,26 @@ export function Playground({ active = true }: { active?: boolean }) {
                 Choose an item to add it to the conversation.
               </p>
             </div>
-            <div className="max-h-80 overflow-y-auto">
+            <div className="stagger max-h-80 space-y-1 overflow-y-auto p-2">
               {data.products.map((product) => (
                 <button
                   key={product.id}
-                  className="flex w-full items-center gap-3 border-b border-ink/[0.05] p-4 text-left hover:bg-white/50 disabled:opacity-40"
+                  className="group flex w-full items-center gap-3 rounded-2xl p-2.5 text-left transition-colors duration-200 hover:bg-white/80 disabled:opacity-40"
                   disabled={!product.available || conversation?.cart.status === 'submitted'}
                   title={!product.available ? 'Sold out' : undefined}
                   onClick={() => setSelected(product)}
                 >
-                  <span className="flex size-10 items-center justify-center rounded-[10px] bg-ink/5 text-2xl">
+                  <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-paper text-2xl shadow-[inset_0_0_0_1px_rgb(14_6_4/0.05)] transition-transform duration-300 ease-[var(--ease-spring)] group-enabled:group-hover:-rotate-6 group-enabled:group-hover:scale-110">
                     {product.emoji}
                   </span>
-                  <span className="flex-1">
+                  <span className="min-w-0 flex-1">
                     <span className="block text-[13px] font-semibold text-ink">{product.name}</span>
                     <span className="mt-1 block text-xs tabular-nums text-stone-500">
                       {product.variants.length ? 'From ' : ''}
                       {money(product.price)}
                     </span>
                   </span>
-                  <Plus className="size-4 text-stone-400" />
+                  <Plus className="size-7 shrink-0 rounded-full bg-ink/[0.05] p-1.5 text-stone-500 group-enabled:group-hover:bg-brand-500 group-enabled:group-hover:text-ink transition-[background-color,color,transform] duration-300 ease-[var(--ease-soft)] group-enabled:group-hover:shadow-[0_8px_16px_-8px_rgb(255_105_44/0.9)]" />
                 </button>
               ))}
             </div>
@@ -679,9 +697,13 @@ function AddItem({
           <fieldset>
             <legend className="field-label">Extras</legend>
             {product.modifiers.map((m) => (
-              <label className="my-2 flex items-center justify-between text-sm" key={m.id}>
-                <span className="flex gap-2">
+              <label
+                className="my-1 flex cursor-pointer items-center justify-between gap-3 rounded-xl border border-transparent px-3 py-2.5 text-sm transition-colors hover:bg-white has-checked:border-brand-500/30 has-checked:bg-brand-500/[0.07]"
+                key={m.id}
+              >
+                <span className="flex items-center gap-2.5">
                   <input
+                    className="size-4 shrink-0"
                     type="checkbox"
                     checked={extras.includes(m.id)}
                     onChange={(e) =>
@@ -692,7 +714,7 @@ function AddItem({
                   />
                   {m.name}
                 </span>
-                <span className="text-stone-500 font-medium">+ {money(m.price)}</span>
+                <span className="font-medium tabular-nums text-stone-500">+ {money(m.price)}</span>
               </label>
             ))}
           </fieldset>

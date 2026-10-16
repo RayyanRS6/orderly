@@ -1,7 +1,5 @@
 import {
-  Component,
   type ButtonHTMLAttributes,
-  type ErrorInfo,
   useContext,
   useState,
   useEffect,
@@ -73,7 +71,13 @@ export function keepOpenForToasts(event: { target: EventTarget | null; preventDe
   if ((event.target as Element | null)?.closest?.('[data-toaster]')) event.preventDefault();
 }
 /** Bottom-right notifications for saves and errors. */
-export function Toaster({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id: number) => void }) {
+export function Toaster({
+  toasts,
+  onDismiss,
+}: {
+  toasts: Toast[];
+  onDismiss: (id: number) => void;
+}) {
   if (typeof document === 'undefined') return null;
   return createPortal(
     // One lasting live region, so screen readers announce each new notification.
@@ -97,18 +101,18 @@ export function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: (id: 
     <div
       role={toast.tone === 'error' ? 'alert' : undefined}
       className={cn(
-        'pointer-events-auto flex animate-toast-in items-start gap-2.5 rounded-xl border bg-cream px-4 py-3 text-[13px] shadow-[0_12px_32px_-8px_rgba(14,6,4,0.25)]',
+        'glass-pop pointer-events-auto flex items-start gap-2.5 rounded-2xl px-4 py-3 text-[13px]',
         toast.tone === 'error'
-          ? 'border-red-600/20 text-red-800'
+          ? 'toast-fail text-red-800'
           : toast.tone === 'info'
-            ? 'border-ink/10 text-stone-700'
-            : 'border-success-700/20 text-success-800',
+            ? 'toast-ok text-stone-700'
+            : 'toast-ok text-success-800',
       )}
     >
       <Icon
         aria-hidden="true"
         className={cn(
-          'mt-0.5 size-4 shrink-0',
+          'pop-spin mt-0.5 size-4 shrink-0 [--d:250ms]',
           toast.tone === 'error'
             ? 'text-red-600'
             : toast.tone === 'info'
@@ -119,7 +123,7 @@ export function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: (id: 
       <p className="min-w-0 flex-1 font-medium leading-relaxed">{toast.message}</p>
       <button
         type="button"
-        className="opacity-60 transition-opacity hover:opacity-100"
+        className="rounded-full opacity-60 transition-[opacity,scale] duration-200 hover:opacity-100 active:scale-90"
         aria-label="Dismiss notification"
         onClick={() => onDismiss(toast.id)}
       >
@@ -139,12 +143,12 @@ export function Badge({
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-1.5 whitespace-nowrap rounded-md px-[7px] py-0.5 text-[11px] font-semibold border border-transparent',
+        'inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-0.5 text-[11px] font-semibold border',
         {
-          'bg-success-700/10 text-success-700': tone === 'green',
-          'bg-brand-500/12 text-brand-700': tone === 'amber',
-          'bg-ink/5 text-stone-500': tone === 'neutral',
-          'bg-red-600/10 text-red-700': tone === 'red',
+          'border-success-700/15 bg-success-700/10 text-success-700': tone === 'green',
+          'border-brand-500/20 bg-brand-500/12 text-brand-800': tone === 'amber',
+          'border-ink/[0.06] bg-ink/5 text-stone-500': tone === 'neutral',
+          'border-red-600/15 bg-red-600/10 text-red-700': tone === 'red',
         },
       )}
     >
@@ -172,13 +176,13 @@ export function ErrorNotice({ message, onDismiss }: { message?: string; onDismis
   return (
     <div
       role="alert"
-      className="flex items-start gap-2.5 rounded-xl border border-red-600/15 bg-red-50/80 px-4 py-3 text-[13px] text-red-800"
+      className="shake-in flex items-start gap-2.5 rounded-2xl border border-red-600/15 bg-red-50/85 px-4 py-3 text-[13px] text-red-800 shadow-[0_12px_24px_-16px_rgb(220_38_38/0.45)]"
     >
-      <AlertCircle className="mt-0.5 size-4 shrink-0 text-red-600" />
+      <AlertCircle className="pop-in mt-0.5 size-4 shrink-0 text-red-600 [--d:120ms]" />
       <p className="flex-1 font-medium">{message}</p>
       {onDismiss && (
         <button
-          className="text-red-500 hover:text-red-800 transition-colors"
+          className="rounded-full text-red-500 transition-[color,scale] duration-200 hover:text-red-800 active:scale-90"
           aria-label="Dismiss error"
           onClick={onDismiss}
         >
@@ -201,13 +205,13 @@ export function Empty({
 }) {
   return (
     <div className="flex flex-col items-center px-5 py-14 text-center">
-      <div className="mb-4 flex size-12 items-center justify-center rounded-xl bg-ink text-brand-500">
-        <Check className="size-5" />
+      <div className="bob mb-5 flex size-14 -rotate-6 items-center justify-center rounded-2xl bg-ink text-brand-500 shadow-[0_16px_30px_-14px_rgb(14_6_4/0.7)]">
+        <Check className="pop-spin size-6 [--d:200ms]" />
       </div>
-      <h3 className="panel-title">{title}</h3>
-      <p className="mt-2 max-w-sm text-[13px] text-stone-500">{description}</p>
+      <h3 className="panel-title text-[28px]">{title}</h3>
+      <p className="mt-2 max-w-sm text-[13.5px] leading-relaxed text-stone-500">{description}</p>
       {action && (
-        <button className="btn mt-5" onClick={onAction}>
+        <button className="btn btn-ink mt-6" onClick={onAction}>
           {action}
           <ArrowRight className="size-4" />
         </button>
@@ -242,25 +246,31 @@ export function Modal({
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-40 bg-ink/45 backdrop-blur-xs transition-opacity" />
+        <Dialog.Overlay className="dialog-overlay fixed inset-0 z-40" />
         <Dialog.Content
           onInteractOutside={keepOpenForToasts}
           className={cn(
-            'fixed inset-x-4 top-1/2 z-50 mx-auto max-h-[90dvh] -translate-y-1/2 overflow-y-auto rounded-[18px] border border-white/80 bg-cream p-6 sm:p-8 shadow-[0_24px_64px_-12px_rgba(14,6,4,0.25)]',
+            'dialog-content fixed inset-x-4 top-1/2 z-50 mx-auto max-h-[90dvh] -translate-y-1/2 overflow-y-auto rounded-[28px] border border-white/90 bg-cream p-6 sm:p-8 shadow-[inset_0_1px_0_#fff,0_40px_80px_-30px_rgb(14_6_4/0.45),0_12px_28px_-14px_rgb(14_6_4/0.2)]',
             wide ? 'max-w-2xl' : 'max-w-lg',
           )}
         >
           <div className="mb-6 pr-10">
-            <Dialog.Title className="font-serif text-xl sm:text-2xl font-bold tracking-[-0.3px] text-ink">
+            <Dialog.Title className="font-serif text-[28px] font-normal leading-[1.05] tracking-[-0.01em] text-ink sm:text-[32px]">
               {title}
             </Dialog.Title>
             <Dialog.Description
-              className={cn('mt-2 text-[13.5px] text-stone-500', !description && 'sr-only')}
+              className={cn(
+                'mt-2 text-[13.5px] leading-relaxed text-stone-500',
+                !description && 'sr-only',
+              )}
             >
               {description || title}
             </Dialog.Description>
           </div>
-          <Dialog.Close className="icon-btn absolute right-5 top-5" aria-label="Close dialog">
+          <Dialog.Close
+            className="icon-btn absolute right-5 top-5 bg-ink/[0.04]"
+            aria-label="Close dialog"
+          >
             <X className="size-5" />
           </Dialog.Close>
           {workspace?.error && (
@@ -300,9 +310,9 @@ export function ConfirmDialog({
   return (
     <AlertDialog.Root open={open} onOpenChange={onOpenChange}>
       <AlertDialog.Portal>
-        <AlertDialog.Overlay className="fixed inset-0 z-40 bg-ink/45 backdrop-blur-xs transition-opacity" />
-        <AlertDialog.Content className="fixed inset-x-4 top-1/2 z-50 mx-auto max-w-md -translate-y-1/2 rounded-[18px] border border-white/80 bg-cream p-6 sm:p-7 shadow-[0_24px_64px_-12px_rgba(14,6,4,0.25)]">
-          <AlertDialog.Title className="font-serif text-xl font-bold tracking-[-0.3px] text-ink">
+        <AlertDialog.Overlay className="dialog-overlay fixed inset-0 z-40" />
+        <AlertDialog.Content className="dialog-content fixed inset-x-4 top-1/2 z-50 mx-auto max-w-md -translate-y-1/2 rounded-[28px] border border-white/90 bg-cream p-6 sm:p-7 shadow-[inset_0_1px_0_#fff,0_40px_80px_-30px_rgb(14_6_4/0.45),0_12px_28px_-14px_rgb(14_6_4/0.2)]">
+          <AlertDialog.Title className="font-serif text-[28px] font-normal leading-[1.05] tracking-[-0.01em] text-ink">
             {title}
           </AlertDialog.Title>
           <AlertDialog.Description className="mt-3 text-[13.5px] text-stone-500 leading-relaxed">
@@ -316,7 +326,7 @@ export function ConfirmDialog({
           <div className="mt-6 flex justify-end gap-2.5">
             <AlertDialog.Cancel className="btn">Go back</AlertDialog.Cancel>
             <ActionButton
-              className="border-red-700 bg-red-700 text-white hover:bg-red-800"
+              className="border-red-700 bg-red-700 text-white shadow-[inset_0_1px_0_rgb(255_255_255/0.2),0_12px_24px_-12px_rgb(185_28_28/0.8)] hover:border-red-800 hover:bg-red-800 hover:text-white"
               loading={busy}
               loadingLabel={busyLabel}
               onClick={onConfirm}
@@ -359,7 +369,7 @@ export function PageHeading({
     <div className="mb-6 sm:mb-[26px] flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
       <div>
         <h1 className="page-title">{title}</h1>
-        <p className="mt-1 text-[13.5px] text-stone-500 max-w-xl leading-relaxed">{description}</p>
+        <p className="mt-2 text-[14px] text-stone-500 max-w-xl leading-relaxed">{description}</p>
       </div>
       {children && <div className="flex flex-wrap items-center gap-2.5 shrink-0">{children}</div>}
     </div>
@@ -570,19 +580,19 @@ export function CustomSelect({
         }}
         onKeyDown={handleKeyDown}
         className={cn(
-          'flex items-center justify-between gap-2 transition-all select-none cursor-pointer focus:outline-none',
+          'flex items-center justify-between gap-2 transition-[background-color,border-color,color,box-shadow,scale] duration-200 select-none cursor-pointer focus:outline-none active:scale-[0.98]',
           variant === 'pill'
             ? cn(
-                'h-[38px] rounded-[9px] border text-[13px] font-semibold pl-3.5 pr-2.5',
+                'h-[40px] rounded-full border text-[13px] font-semibold pl-4 pr-3',
                 theme === 'dark'
                   ? 'border-white/10 bg-white/[0.05] text-cream hover:bg-white/10 hover:text-white focus-visible:ring-2 focus-visible:ring-brand-500/50'
-                  : 'border-white/80 bg-white/65 text-stone-700 hover:bg-white hover:text-ink focus-visible:ring-3 focus-visible:ring-brand-500/12',
+                  : 'border-white/90 bg-white/75 text-stone-700 shadow-[inset_0_1px_0_#fff,0_6px_14px_-10px_rgb(14_6_4/0.35)] hover:bg-white hover:text-ink focus-visible:ring-4 focus-visible:ring-brand-500/15',
               )
             : cn(
-                'min-h-[38px] w-full rounded-[9px] border text-[13px] px-3.5 py-2 text-left',
+                'min-h-[40px] w-full rounded-xl border text-[13px] px-3.5 py-2 text-left',
                 theme === 'dark'
-                  ? 'border-white/10 bg-white/[0.05] text-cream hover:bg-white/[0.08] focus-visible:border-white/20 focus-visible:ring-3 focus-visible:ring-brand-500/20'
-                  : 'border-ink/8 bg-white/70 text-ink hover:border-ink/14 focus-visible:border-ink/20 focus-visible:bg-white focus-visible:ring-3 focus-visible:ring-brand-500/12',
+                  ? 'border-white/10 bg-white/[0.05] text-cream hover:bg-white/[0.08] focus-visible:border-brand-500/50 focus-visible:ring-4 focus-visible:ring-brand-500/20'
+                  : 'border-ink/10 bg-white/80 text-ink shadow-[inset_0_1px_2px_rgb(14_6_4/0.03)] hover:border-ink/18 focus-visible:border-brand-500/60 focus-visible:bg-white focus-visible:ring-4 focus-visible:ring-brand-500/15',
               ),
           disabled && 'opacity-60 cursor-not-allowed pointer-events-none',
           className,
@@ -611,13 +621,13 @@ export function CustomSelect({
           role="listbox"
           tabIndex={-1}
           className={cn(
-            'absolute z-50 max-h-60 overflow-y-auto rounded-xl border p-1.5 shadow-xl backdrop-blur-md transition-all animate-in fade-in zoom-in-95 duration-100',
-            placement === 'top' ? 'bottom-full mb-1.5 origin-bottom' : 'top-full mt-1.5 origin-top',
+            'menu-pop absolute z-50 max-h-60 overflow-y-auto rounded-2xl border p-1.5',
+            placement === 'top' ? 'bottom-full mb-2 origin-bottom' : 'top-full mt-2 origin-top',
             align === 'right' ? 'right-0' : 'left-0',
             variant === 'pill' ? 'min-w-[12rem]' : 'w-full min-w-[10rem]',
             theme === 'dark'
-              ? 'bg-ink-soft/95 border-white/10 text-cream shadow-black/60 custom-scrollbar-dark'
-              : 'bg-white/95 border-ink/8 text-stone-800 shadow-ink/10 custom-scrollbar',
+              ? 'bg-ink-soft/95 border-white/10 text-cream shadow-[0_24px_48px_-20px_rgb(0_0_0/0.8)] custom-scrollbar-dark'
+              : 'glass-pop text-stone-800 custom-scrollbar',
             menuClassName,
           )}
         >
@@ -646,11 +656,11 @@ export function CustomSelect({
                     if (!option.disabled) setHighlightedIndex(index);
                   }}
                   className={cn(
-                    'flex w-full items-center justify-between gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium transition-colors text-left cursor-pointer',
+                    'flex w-full items-center justify-between gap-2.5 rounded-xl px-2.5 py-2 text-[13px] font-medium transition-colors duration-100 text-left cursor-pointer',
                     isSelected
                       ? theme === 'dark'
                         ? 'bg-white/[0.08] text-white font-semibold'
-                        : 'bg-brand-500/10 text-ink font-semibold'
+                        : 'bg-brand-500/12 text-ink font-semibold'
                       : isHighlighted
                         ? theme === 'dark'
                           ? 'bg-white/[0.08] text-white'
@@ -662,7 +672,9 @@ export function CustomSelect({
                   )}
                 >
                   <span className="truncate">{option.label}</span>
-                  {isSelected && <Check className={cn('size-4 shrink-0', 'text-brand-500')} />}
+                  {isSelected && (
+                    <Check className={cn('pop-in size-4 shrink-0', 'text-brand-600')} />
+                  )}
                 </button>
               );
             })
@@ -675,57 +687,4 @@ export function CustomSelect({
 
 export const Select = CustomSelect;
 
-export class ErrorBoundary extends Component<
-  { children: ReactNode },
-  { hasError: boolean; error: Error | null }
-> {
-  state = { hasError: false, error: null as Error | null };
-
-  static getDerivedStateFromError(error: Error) {
-    return { hasError: true, error };
-  }
-
-  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-    console.error('Uncaught error in UI:', error, errorInfo);
-  }
-
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div className="grid min-h-dvh place-items-center bg-canvas p-6 text-stone-800">
-          <div className="card w-full max-w-md p-7 sm:p-9">
-            <h1 className="page-title">Something went wrong</h1>
-            <p className="mt-2 text-sm text-stone-500 leading-relaxed">
-              {this.state.error?.message ||
-                'An unexpected error occurred while rendering the workspace.'}
-            </p>
-            <div className="mt-6 flex flex-col gap-2">
-              <button
-                className="btn btn-primary w-full"
-                onClick={() => {
-                  this.setState({ hasError: false, error: null });
-                  window.location.reload();
-                }}
-              >
-                Reload page
-              </button>
-              <button
-                type="button"
-                className="btn btn-quiet w-full text-xs text-stone-500 hover:text-stone-700"
-                onClick={() => {
-                  try {
-                    localStorage.removeItem('orderly.company');
-                  } catch {}
-                  window.location.href = '/';
-                }}
-              >
-                Reset workspace and return home
-              </button>
-            </div>
-          </div>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
+export { ErrorBoundary } from './ErrorBoundary';

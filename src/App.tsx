@@ -361,12 +361,12 @@ export default function App() {
     );
   if (!data || (route.slug && route.slug !== data.company.slug))
     return (
-      <div className="grid min-h-dvh place-items-center bg-canvas p-6">
-        <div className="w-full max-w-md">
+      <div className="grid min-h-dvh place-items-center canvas-glow p-6">
+        <div className="w-full max-w-md enter-rise">
           <Brand dark={false} />
           <div className="mt-8 space-y-4">
-            <div className="h-8 w-2/3 rounded-lg bg-ink/[0.06]" />
-            <div className="h-32 rounded-[18px] border border-white/80 bg-white/65" />
+            <div className="skeleton h-8 w-2/3 rounded-full" />
+            <div className="skeleton h-32 rounded-[22px] border border-white/90 bg-white/65 shadow-[0_30px_60px_-40px_rgb(14_6_4/0.3)]" />
             <p className="text-sm text-stone-500">Opening your workspace…</p>
             <ErrorNotice message={error} />
             {error && (
@@ -398,7 +398,7 @@ export default function App() {
   };
 
   const sidebar = (
-    <div className="flex h-full flex-col overflow-hidden bg-ink px-4 pb-6 pt-7 text-cream/65 border-r border-white/[0.06]">
+    <div className="flex h-full flex-col overflow-hidden bg-ink glow-dark px-4 pb-6 pt-7 text-cream/65 border-r border-white/[0.06]">
       <div className="shrink-0">
         <div className="px-2 shrink-0">
           <Brand />
@@ -413,7 +413,7 @@ export default function App() {
               value={navSearch}
               onChange={(e) => setNavSearch(e.target.value)}
               placeholder="Search..."
-              className="h-9 w-full rounded-[9px] border border-white/[0.08] bg-white/[0.05] pl-9 pr-7 text-[13px] text-cream placeholder:text-cream/35 transition-all focus:border-white/20 focus:bg-white/[0.08] focus:outline-none"
+              className="h-9 w-full rounded-full border border-white/[0.08] bg-white/[0.05] pl-9 pr-7 text-[13px] text-cream placeholder:text-cream/35 transition-[background-color,border-color,box-shadow] duration-200 focus:border-brand-500/50 focus:bg-white/[0.08] focus:shadow-[0_0_0_4px_rgb(255_105_44/0.15)] focus:outline-none"
             />
             {navSearch && (
               <button
@@ -428,7 +428,7 @@ export default function App() {
           </div>
           <button
             type="button"
-            className="flex size-9 shrink-0 items-center justify-center rounded-[9px] border border-white/[0.08] bg-white/[0.05] text-cream/50 hover:bg-white/10 hover:text-white transition-all"
+            className="flex size-9 shrink-0 items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.05] text-cream/50 transition-[background-color,color,translate,scale] duration-200 hover:bg-white/10 hover:text-white active:scale-90"
             title="Getting started"
             aria-label="Getting started"
             onClick={() => {
@@ -440,39 +440,34 @@ export default function App() {
           </button>
         </div>
 
-        <div className="my-5 rounded-xl border border-white/[0.06] bg-white/[0.03] p-3 shrink-0">
-          <p className="text-[11px] font-semibold tracking-[1px] text-cream/35 uppercase">
+        <div className="my-5 rounded-2xl glass-dark p-3 shrink-0">
+          <p className="text-[10.5px] font-semibold tracking-[0.16em] text-cream/60 uppercase">
             YOUR WORKSPACE
           </p>
-          <p className="mt-1 truncate text-[13px] font-semibold text-cream">{data.company.name}</p>
+          <p className="mt-1 truncate font-serif text-[19px] leading-tight text-cream">
+            {data.company.name}
+          </p>
         </div>
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar-dark pr-1 -mr-1">
-        <nav aria-label="Main navigation" className="space-y-[3px]">
+        <nav aria-label="Main navigation" className="stagger space-y-[3px]">
           {filteredNav.map((item) => (
             <button
               key={item.id}
               aria-current={page === item.id ? 'page' : undefined}
-              className={cn(
-                'flex min-h-10 w-full items-center gap-3 rounded-[9px] px-3 text-left text-[13.5px] font-medium transition-all duration-150',
-                page === item.id
-                  ? 'bg-white/[0.08] text-white font-semibold'
-                  : 'text-cream/65 hover:bg-white/5 hover:text-white',
-              )}
+              className="side-link"
               onClick={() => handleNavClick(item.id)}
             >
-              <item.icon
-                className={cn('size-[17px] shrink-0', page === item.id && 'text-brand-500')}
-              />
+              <item.icon className="size-[17px] shrink-0" />
               <span className="truncate">{item.label}</span>
               {item.id === 'orders' && pending > 0 && (
-                <span className="ml-auto rounded-md bg-brand-500/20 px-[7px] py-0.5 text-[11px] font-semibold tabular-nums text-brand-500">
+                <span className="pop-in ml-auto rounded-full bg-brand-500 px-2 py-0.5 text-[11px] font-bold tabular-nums text-ink shadow-[0_6px_14px_-6px_rgb(255_105_44/0.9)]">
                   {pending}
                 </span>
               )}
               {item.id === 'playground' && (
-                <span className="ml-auto size-2 rounded-full bg-brand-500" />
+                <span className="live-dot ml-auto size-2 rounded-full bg-current text-brand-500" />
               )}
             </button>
           ))}
@@ -480,7 +475,7 @@ export default function App() {
 
         {filteredManage.length > 0 && (
           <div className="mt-7">
-            <p className="mb-2 px-3 text-[11px] font-semibold tracking-[1px] text-cream/35 uppercase">
+            <p className="mb-2 px-3 text-[10.5px] font-semibold tracking-[0.16em] text-cream/60 uppercase">
               MANAGE
             </p>
             <nav aria-label="Workspace management" className="space-y-[3px]">
@@ -488,17 +483,10 @@ export default function App() {
                 <button
                   key={item.id}
                   aria-current={page === item.id ? 'page' : undefined}
-                  className={cn(
-                    'flex min-h-10 w-full items-center gap-3 rounded-[9px] px-3 text-left text-[13.5px] font-medium transition-all duration-150',
-                    page === item.id
-                      ? 'bg-white/[0.08] text-white font-semibold'
-                      : 'text-cream/65 hover:bg-white/5 hover:text-white',
-                  )}
+                  className="side-link"
                   onClick={() => handleNavClick(item.id)}
                 >
-                  <item.icon
-                    className={cn('size-[17px] shrink-0', page === item.id && 'text-brand-500')}
-                  />
+                  <item.icon className="size-[17px] shrink-0" />
                   <span className="truncate">{item.label}</span>
                 </button>
               ))}
@@ -511,7 +499,7 @@ export default function App() {
             <p>No matching pages</p>
             <button
               type="button"
-              className="mt-2 font-semibold text-brand-500 underline"
+              className="mt-2 font-semibold text-brand-500 underline decoration-2 underline-offset-4 transition-colors hover:text-brand-400"
               onClick={() => setNavSearch('')}
             >
               Clear search
@@ -521,19 +509,19 @@ export default function App() {
       </div>
 
       <div className="mt-auto pt-4 shrink-0">
-        <div className="rounded-xl border border-white/[0.06] bg-white/[0.03] p-3">
-          <div className="mb-1.5 flex items-center gap-2 text-[13px] font-semibold text-cream">
-            <MessageCircle className="size-4 text-brand-500 shrink-0" />
+        <div className="group rounded-2xl glass-dark p-3">
+          <div className="mb-1.5 flex items-center gap-2 font-serif text-[17px] leading-tight text-cream">
+            <MessageCircle className="size-4 text-brand-500 shrink-0 transition-transform duration-500 ease-[var(--ease-spring)] group-hover:-rotate-12 group-hover:scale-110" />
             Made for the conversation.
           </div>
-          <p className="text-[11px] leading-relaxed text-cream/40">
+          <p className="text-[11px] leading-relaxed text-cream/60">
             Your menu. Your customers.
             <br />
             One less thing on your plate.
           </p>
         </div>
         <button
-          className="mt-3 flex min-h-9 w-full items-center gap-2.5 rounded-[9px] px-3 text-xs font-medium text-cream/65 hover:bg-white/5 hover:text-white transition-all"
+          className="mt-3 flex min-h-9 w-full items-center gap-2.5 rounded-full px-3 text-xs font-medium text-cream/65 transition-colors hover:bg-white/[0.06] hover:text-white"
           onClick={() => {
             setHelp(true);
             setMobile(false);
@@ -545,7 +533,7 @@ export default function App() {
         </button>
         {client && (
           <button
-            className="mt-2.5 flex min-h-9.5 w-full items-center justify-center gap-2 rounded-[9px] border border-white/[0.06] bg-white/[0.03] px-4 py-2 text-xs font-semibold text-cream/65 hover:bg-white/[0.06] hover:text-red-400 transition-all"
+            className="mt-2.5 flex min-h-9.5 w-full items-center justify-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.04] px-4 py-2 text-xs font-semibold text-cream/65 transition-[background-color,color,translate,scale] duration-200 hover:bg-white/[0.08] hover:text-red-300 active:scale-[0.97]"
             onClick={() => void client.auth.signOut()}
           >
             <LogOut className="size-3.5" />
@@ -573,23 +561,23 @@ export default function App() {
         auth: client ?? undefined,
       }}
     >
-      <div className="min-h-dvh bg-canvas">
+      <div className="min-h-dvh canvas-glow">
         <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 lg:block">{sidebar}</aside>
         <Dialog.Root open={mobile} onOpenChange={setMobile}>
           <Dialog.Portal>
             <Dialog.Overlay
-              className="fixed inset-0 bg-ink/60 backdrop-blur-xs transition-opacity"
+              className="dialog-overlay fixed inset-0 z-40"
               onClick={() => setMobile(false)}
             />
             <Dialog.Content
               onInteractOutside={keepOpenForToasts}
               aria-describedby={undefined}
-              className="fixed inset-y-0 left-0 z-50 w-72 max-w-[85vw] bg-ink shadow-2xl flex flex-col"
+              className="drawer-content fixed inset-y-0 left-0 z-50 flex w-72 max-w-[85vw] flex-col rounded-r-[28px] bg-ink shadow-[24px_0_60px_-24px_rgb(0_0_0/0.6)] overflow-hidden"
             >
               <Dialog.Title className="sr-only">Workspace navigation</Dialog.Title>
               <div className="absolute right-3 top-4 z-10">
                 <button
-                  className="flex size-8 items-center justify-center rounded-lg text-cream/50 hover:text-white hover:bg-white/10 transition-colors"
+                  className="flex size-8 items-center justify-center rounded-full text-cream/50 transition-[background-color,color,translate,scale] duration-200 hover:bg-white/10 hover:text-white active:scale-90"
                   aria-label="Close navigation"
                   onClick={() => setMobile(false)}
                 >
@@ -601,7 +589,7 @@ export default function App() {
           </Dialog.Portal>
         </Dialog.Root>
         <div className="lg:pl-64">
-          <header className="sticky top-0 z-20 flex min-h-[72px] items-center justify-between gap-3 border-b border-ink/5 bg-canvas/75 px-4 backdrop-blur-[14px] sm:px-8 lg:px-10">
+          <header className="glass-bar sticky top-0 z-20 flex min-h-[72px] items-center justify-between gap-3 border-b border-ink/[0.06] px-4 sm:px-8 lg:px-10">
             <div className="flex min-w-0 items-center gap-2.5 sm:gap-3">
               <button
                 className="icon-btn-glass lg:hidden"
@@ -610,11 +598,11 @@ export default function App() {
               >
                 <MenuIcon className="size-5" />
               </button>
-              <span className="hidden text-xs font-semibold tracking-wider text-stone-400 uppercase sm:block">
+              <span className="hidden text-[11px] font-semibold tracking-[0.14em] text-stone-500 uppercase sm:block">
                 Workspace
               </span>
               <span className="hidden text-stone-300 sm:block">/</span>
-              <span className="truncate text-sm font-semibold text-ink">
+              <span className="truncate font-serif text-[20px] leading-tight text-ink">
                 {[...navigation, ...manage].find((n) => n.id === page)?.label}
               </span>
             </div>
@@ -622,7 +610,7 @@ export default function App() {
               <StaffAlerts />
               <button
                 type="button"
-                className="hidden md:inline-flex h-[38px] items-center gap-1.5 rounded-[9px] border border-white/80 bg-white/65 px-3.5 text-[13px] font-semibold text-stone-700 hover:bg-white hover:text-ink transition-all"
+                className="btn hidden md:inline-flex"
                 onClick={() => setHelp(true)}
               >
                 <Sparkles className="size-3.5 text-brand-500" />
@@ -647,7 +635,7 @@ export default function App() {
               </div>
               <div className="h-5 w-px bg-ink/10 hidden sm:block" />
               <div className="flex items-center gap-2">
-                <div className="hidden sm:flex size-[34px] shrink-0 items-center justify-center rounded-lg bg-ink-soft text-[13px] font-semibold text-brand-500">
+                <div className="hidden sm:flex size-[34px] shrink-0 -rotate-6 items-center justify-center rounded-xl bg-ink font-serif text-[16px] text-brand-500 shadow-[0_8px_16px_-8px_rgb(14_6_4/0.7)] transition-transform duration-500 ease-[var(--ease-spring)] hover:rotate-0 hover:scale-105">
                   {initials(data.company.name)}
                 </div>
                 <div className="hidden text-xs xl:block">
@@ -669,17 +657,23 @@ export default function App() {
             </div>
           </header>
           {data.mode === 'demo' && (
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.06] bg-ink px-4 py-2 text-xs text-cream/60 sm:px-8 lg:px-10">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.06] bg-ink glow-dark px-4 py-2 text-xs text-cream/60 sm:px-8 lg:px-10">
               <span>
                 <span className="font-semibold text-cream">Sample workspace</span>
                 <span className="mx-2">·</span>Changes saved on this local server. No real messages
                 are sent.
               </span>
               <button
-                className="font-semibold text-brand-500 hover:text-brand-400 transition-colors"
+                className="group rounded-full px-2 py-0.5 font-semibold text-brand-500 transition-colors hover:bg-brand-500/10 hover:text-brand-400"
                 onClick={() => navigate('playground')}
               >
-                Try an order <span aria-hidden>↗</span>
+                Try an order{' '}
+                <span
+                  aria-hidden
+                  className="inline-block transition-transform duration-300 ease-[var(--ease-spring)] group-hover:translate-x-0.5 group-hover:-translate-y-0.5"
+                >
+                  ↗
+                </span>
               </button>
             </div>
           )}
@@ -687,7 +681,7 @@ export default function App() {
             <div className="mb-4 empty:hidden">
               <ErrorNotice message={error} onDismiss={() => setError('')} />
             </div>
-            <div key={data.company.id}>
+            <div key={data.company.id} className="page-host">
               {page === 'overview' && <Overview />}
               {page === 'orders' && <Orders />}
               {page === 'menu' && <Catalog />}
@@ -706,9 +700,15 @@ export default function App() {
             <footer className="mt-10 flex flex-wrap justify-between gap-2 border-t border-ink/[0.06] pt-5 text-xs text-stone-400">
               <span>Orderly · Conversations to orders</span>
               <nav className="flex flex-wrap gap-3">
-                <a href="/privacy">Privacy</a>
-                <a href="/terms">Terms</a>
-                <a href="/contact">Support</a>
+                <a className="transition-colors hover:text-ink" href="/privacy">
+                  Privacy
+                </a>
+                <a className="transition-colors hover:text-ink" href="/terms">
+                  Terms
+                </a>
+                <a className="transition-colors hover:text-ink" href="/contact">
+                  Support
+                </a>
               </nav>
               <span>
                 {data.company?.currency || 'PKR'} · {data.company?.timezone || 'Asia/Karachi'}
@@ -723,7 +723,7 @@ export default function App() {
         title="Your first order, in a few steps"
         description="Get familiar with your workspace before connecting a real WhatsApp number."
       >
-        <ol className="space-y-5 text-sm text-stone-600">
+        <ol className="stagger space-y-5 text-sm text-stone-600">
           {[
             ['Make the menu yours', 'Add your items, prices, options, and delivery areas.'],
             [
@@ -744,7 +744,7 @@ export default function App() {
             ],
           ].map(([title, copy], index) => (
             <li key={title} className="flex gap-3">
-              <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-brand-500/12 text-xs font-semibold text-brand-600">
+              <span className="flex size-8 shrink-0 -rotate-6 items-center justify-center rounded-xl bg-ink font-serif text-[17px] text-cream shadow-[0_8px_16px_-8px_rgb(14_6_4/0.6)]">
                 {index + 1}
               </span>
               <div>
@@ -774,15 +774,15 @@ function Brand({ dark = true }: { dark?: boolean }) {
   return (
     <div
       className={cn(
-        'flex items-center gap-3 font-serif text-[21px] font-bold tracking-[-0.3px]',
+        'group flex items-center gap-3 font-serif text-[28px] font-normal leading-none tracking-[-0.01em]',
         dark ? 'text-cream' : 'text-ink',
       )}
     >
-      <span className="relative flex size-10 items-center justify-center rounded-[11px] bg-[linear-gradient(to_bottom,var(--color-canvas)_50%,var(--color-brand-500)_50%)] text-ink">
+      <span className="relative flex size-10 -rotate-6 items-center justify-center rounded-xl bg-[linear-gradient(to_bottom,var(--color-canvas)_50%,var(--color-brand-500)_50%)] text-ink shadow-[0_10px_20px_-10px_rgb(255_105_44/0.7)] transition-transform duration-500 ease-[var(--ease-spring)] group-hover:rotate-3 group-hover:scale-105">
         <MessageCircle className="size-5" strokeWidth={2.5} />
-        <span className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-brand-500 ring-2 ring-canvas" />
+        <span className="live-dot absolute right-1.5 top-1.5 size-1.5 rounded-full bg-current text-brand-500 ring-2 ring-canvas" />
       </span>
-      orderly<span className="self-end pb-0.5 text-brand-500 font-extrabold">.</span>
+      orderly<span className="text-brand-500">.</span>
     </div>
   );
 }
@@ -792,11 +792,11 @@ function FirstBusiness({ onCreated }: { onCreated: (id: string) => void }) {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   return (
-    <div className="grid min-h-dvh place-items-center bg-canvas px-4 py-8">
+    <div className="grid min-h-dvh place-items-center canvas-glow px-4 py-8">
       <div className="w-full max-w-md">
         <Brand dark={false} />
         <form
-          className="card mt-8 space-y-5 p-7 sm:p-9"
+          className="card enter-rise mt-8 space-y-5 p-7 sm:p-9 [--d:120ms]"
           onSubmit={async (e) => {
             e.preventDefault();
             setBusy(true);
@@ -812,7 +812,7 @@ function FirstBusiness({ onCreated }: { onCreated: (id: string) => void }) {
           }}
         >
           <h1 className="page-title">Add your first business.</h1>
-          <p className="text-[13.5px] text-stone-500 leading-relaxed">
+          <p className="text-[14px] text-stone-500 leading-relaxed">
             Your administrator account is ready. Create an empty workspace to begin.
           </p>
           <Field label="Business name">
@@ -846,10 +846,10 @@ function Login({ client }: { client: SupabaseClient }) {
   const [busy, setBusy] = useState<'' | 'signin' | 'reset'>('');
   const [notice, setNotice] = useState('');
   return (
-    <div className="grid min-h-dvh place-items-center bg-canvas px-4 py-8">
+    <div className="grid min-h-dvh place-items-center canvas-glow px-4 py-8">
       <div className="w-full max-w-md">
         <Brand dark={false} />
-        <div className="card mt-8 p-7 sm:p-9">
+        <div className="card enter-rise mt-8 p-7 sm:p-9 [--d:120ms]">
           <h1 className="page-title">Welcome back.</h1>
           <p className="mb-7 mt-2 text-[13.5px] text-stone-500 leading-relaxed">
             Sign in to your restaurant workspace.
@@ -963,9 +963,9 @@ function AccountChallenge({
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   return (
-    <main className="grid min-h-dvh place-items-center p-5">
+    <main className="grid min-h-dvh place-items-center canvas-glow p-5">
       <form
-        className="card w-full max-w-md space-y-5 p-6"
+        className="card enter-rise w-full max-w-md space-y-5 p-6 sm:p-8"
         onSubmit={async (e) => {
           e.preventDefault();
           setBusy(true);

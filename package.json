@@ -25,6 +25,8 @@
     "@ai-sdk/anthropic": "^4.0.50",
     "@ai-sdk/google": "^4.0.65",
     "@ai-sdk/openai": "^4.0.63",
+    "@fontsource-variable/inter-tight": "^5.3.0",
+    "@fontsource/instrument-serif": "^5.3.0",
     "@hono/node-server": "^2.1.1",
     "@radix-ui/react-alert-dialog": "^1.1.23",
     "@radix-ui/react-dialog": "^1.1.23",

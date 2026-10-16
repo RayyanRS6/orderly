@@ -190,9 +190,9 @@ export function WhatsAppSignup() {
     );
   }
   return (
-    <section className="card mb-6 p-6 sm:p-7">
+    <section className="card group mb-6 p-6 sm:p-7">
       <div className="flex items-center gap-3">
-        <div className="flex size-9 items-center justify-center rounded-[10px] bg-ink text-brand-500">
+        <div className="flex size-9 shrink-0 -rotate-6 items-center justify-center rounded-xl bg-ink text-brand-500 shadow-[0_10px_20px_-10px_rgb(14_6_4/0.7)] transition-transform duration-300 ease-[var(--ease-spring)] group-hover:rotate-0 group-hover:scale-105">
           <Link2 className="size-5" />
         </div>
         <h2 className="panel-title">Connect with Facebook</h2>
@@ -202,26 +202,26 @@ export function WhatsAppSignup() {
         Signup v4 configuration in your Meta app.
       </p>
       {config?.enabled ? (
-        <div className="mt-5 space-y-4">
-          <label className="flex items-start gap-2.5 text-sm cursor-pointer">
+        <div className="step-in mt-5 space-y-4">
+          <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-ink/[0.06] bg-paper p-4 text-sm transition-colors has-[:checked]:border-brand-500/25 has-[:checked]:bg-brand-50">
             <input
-              className="mt-1 accent-brand-500"
+              className="toggle mt-px"
               type="checkbox"
               checked={coexistence}
               disabled={working}
               onChange={(e) => setCoexistence(e.target.checked)}
             />
             <span>
-              <span className="font-semibold text-stone-800">
+              <span className="font-semibold text-ink">
                 Keep using the WhatsApp Business mobile app
               </span>
-              <span className="mt-0.5 block text-xs text-stone-400">
+              <span className="mt-0.5 block text-xs leading-relaxed text-stone-500">
                 Requests Meta’s coexistence flow for eligible existing Business App numbers.
               </span>
             </span>
           </label>
           {!coexistence && (
-            <div className="max-w-sm">
+            <div className="step-in max-w-sm">
               <Field
                 label="Six-digit registration PIN (optional)"
                 hint="For a new Cloud API number. Store this PIN securely; the app will not keep a copy."
@@ -254,7 +254,7 @@ export function WhatsAppSignup() {
             onClick={launch}
           >
             Continue with Facebook
-            <ArrowRight className="size-4" />
+            <ArrowRight className="nudge-loop size-4" />
           </ActionButton>
           {working && (
             <button
@@ -270,7 +270,7 @@ export function WhatsAppSignup() {
           )}
         </div>
       ) : (
-        <p className="mt-4 rounded-xl border border-white bg-white/60 p-4 text-xs leading-relaxed text-stone-500">
+        <p className="mt-4 rounded-2xl border border-dashed border-ink/15 bg-cream/60 p-4 text-xs leading-relaxed text-stone-500">
           Available after the live backend is configured with your Meta app and Embedded Signup
           configuration. You can also connect a test number with its access token below.
         </p>
@@ -278,7 +278,10 @@ export function WhatsAppSignup() {
       <div className="mt-4">
         <ErrorNotice message={error} />
         {notice && (
-          <p role="status" className="text-[13px] text-success-700">
+          <p
+            role="status"
+            className="step-in rounded-xl border border-ink/[0.06] bg-paper px-3.5 py-2.5 text-[13px] font-medium text-ink"
+          >
             {notice}
           </p>
         )}

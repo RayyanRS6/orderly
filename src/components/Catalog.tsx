@@ -84,20 +84,20 @@ export function Catalog() {
           )
         )}
       </PageHeading>
-      <div className="card mb-6 flex flex-wrap items-center justify-between gap-3 rounded-[14px] px-5 py-3.5">
-        <div className="flex items-center gap-2.5 text-xs text-stone-500">
-          <span className="size-2 rounded-full bg-brand-500" />
-          <span className="font-semibold text-ink">
+      <div className="card mb-6 flex flex-wrap items-center justify-between gap-3 rounded-[22px] py-2.5 pr-2.5 pl-5 lg:rounded-full">
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-stone-500">
+          <span className="live-dot size-2 shrink-0 rounded-full bg-current text-success-500" />
+          <span className="font-semibold text-ink tabular-nums">
             {catalogProducts.filter((p) => p.available).length} available
           </span>
-          <span>of {catalogProducts.length} menu items</span>
+          <span className="tabular-nums">of {catalogProducts.length} menu items</span>
           <span className="mx-1 text-stone-300">|</span>
           <span className="font-medium">
             Source: {data.company.catalogSource === 'app' ? 'Orderly menu' : 'Google Sheets'}
           </span>
         </div>
         <button
-          className="inline-flex items-center gap-1 text-[12.5px] font-semibold text-brand-500 hover:text-brand-600 transition-colors"
+          className="inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-[12.5px] font-semibold text-brand-700 transition-colors hover:bg-brand-500/10 hover:text-brand-800"
           onClick={() => navigate('settings')}
         >
           Manage source
@@ -105,7 +105,7 @@ export function Catalog() {
         </button>
       </div>
       {data.company.catalogSyncedAt && (
-        <p className="mb-4 text-xs text-stone-400 font-medium">
+        <p className="mb-4 pl-1 font-mono text-[11px] tracking-[0.02em] text-stone-500">
           Last catalog sync: {shortDate(data.company.catalogSyncedAt)}
         </p>
       )}
@@ -119,7 +119,7 @@ export function Catalog() {
               onClick={() => setCategory(value)}
             >
               {value}
-              <span className="ml-1.5 opacity-80 tabular-nums">
+              <span className="ml-1.5 rounded-full bg-white/90 px-1.5 py-px text-[10.5px] font-semibold text-stone-600 tabular-nums">
                 {value === 'All items'
                   ? data.products.length
                   : data.products.filter((p) => p.category === value).length}
@@ -139,32 +139,34 @@ export function Catalog() {
         </div>
       </div>
       {products.length ? (
-        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        <div className="stagger grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
           {products.map((product) => (
-            <article key={product.id} className="card overflow-hidden">
+            <article key={product.id} className="card group overflow-hidden">
               <div className="flex items-start gap-4 p-5 sm:p-6">
                 <div
                   className={cn(
-                    'flex size-16 shrink-0 items-center justify-center rounded-xl bg-ink/5 text-3xl',
-                    !product.available && 'grayscale',
+                    'flex size-16 shrink-0 -rotate-3 items-center justify-center rounded-2xl bg-paper text-[34px] shadow-[inset_0_1px_0_#fff,0_0_0_1px_rgb(14_6_4/0.05),0_10px_20px_-14px_rgb(14_6_4/0.45)] transition-transform duration-500 ease-[var(--ease-spring)] group-hover:rotate-6 group-hover:scale-110',
+                    !product.available && 'opacity-60 grayscale',
                   )}
                   aria-hidden
                 >
                   {product.emoji || '🍽️'}
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="text-xs text-stone-400">{product.category}</p>
-                  <h2 className="mt-1 text-[14.5px] font-semibold text-ink">{product.name}</h2>
-                  <p className="mt-2 text-sm font-semibold tabular-nums text-brand-600">
+                  <p className="eyebrow">{product.category}</p>
+                  <h2 className="mt-1.5 font-serif text-[23px] leading-[1.05] font-normal tracking-[-0.005em] text-ink">
+                    {product.name}
+                  </h2>
+                  <p className="mt-2.5 inline-flex items-baseline rounded-full bg-brand-500/10 px-2.5 py-0.5 text-[13px] font-semibold text-brand-800 tabular-nums">
                     {money(product.price)}
                     {product.variants.length > 0 && (
-                      <span className="ml-1 text-xs font-normal text-stone-400">base</span>
+                      <span className="ml-1 text-[11px] font-medium text-stone-500">base</span>
                     )}
                   </p>
                 </div>
                 {editable && (
                   <button
-                    className="icon-btn -mr-2 -mt-2 size-8"
+                    className="icon-btn -mt-2 -mr-2 size-8 hover:[&>svg]:animate-[wiggle_0.6s_ease-in-out]"
                     aria-label={`Edit ${product.name}`}
                     onClick={() => setEditing(product)}
                   >
@@ -177,7 +179,7 @@ export function Catalog() {
                   {product.description || 'No description added yet.'}
                 </p>
                 {((product.variants?.length || 0) > 0 || (product.modifiers?.length || 0) > 0) && (
-                  <p className="mt-3 text-xs text-stone-400">
+                  <p className="mt-3 inline-flex rounded-full bg-ink/[0.05] px-2.5 py-0.5 text-[11px] font-medium text-stone-600">
                     {[
                       product.variants?.length ? `${product.variants.length} variants` : '',
                       product.modifiers?.length ? `${product.modifiers.length} extras` : '',
@@ -187,15 +189,15 @@ export function Catalog() {
                   </p>
                 )}
               </div>
-              <div className="flex items-center justify-between border-t border-ink/[0.05] bg-white/40 px-5 py-3">
+              <div className="flex items-center justify-between gap-2 border-t border-dashed border-ink/10 bg-paper/60 py-2.5 pr-3 pl-5">
                 <Badge tone={product.available ? 'green' : 'neutral'}>
                   <span className="size-1.5 rounded-full bg-current" />
                   {product.available ? 'Available' : 'Sold out'}
                 </Badge>
                 {editable && (
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-1">
                     <button
-                      className="inline-flex items-center gap-1.5 text-xs font-medium text-stone-500 hover:text-brand-600"
+                      className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold text-stone-600 transition-colors hover:bg-brand-500/10 hover:text-brand-800"
                       aria-busy={pending === `available-${product.id}` || undefined}
                       onClick={() =>
                         void run(`available-${product.id}`, () =>
@@ -216,7 +218,7 @@ export function Catalog() {
                       {product.available ? 'Mark sold out' : 'Make available'}
                     </button>
                     <button
-                      className="text-stone-400 hover:text-red-700"
+                      className="inline-flex size-7 items-center justify-center rounded-full text-stone-400 transition-colors hover:bg-red-600/10 hover:text-red-700"
                       aria-label={`Delete ${product.name}`}
                       onClick={() => {
                         setRemoving(product);
@@ -437,7 +439,7 @@ function ProductEditor({ product, onDone }: { product?: Product; onDone: () => v
           onChange={(e) => setAliases(e.target.value)}
         />
         {sharedAliases.length > 0 && (
-          <p className="mt-2 text-xs text-amber-700">
+          <p className="step-in mt-2 rounded-xl bg-sun/20 px-3 py-2 text-xs leading-relaxed text-amber-800">
             Shared with another item: {sharedAliases.join(', ')}. The bot will ask the customer to
             choose instead of guessing.
           </p>
@@ -455,9 +457,9 @@ function ProductEditor({ product, onDone }: { product?: Product; onDone: () => v
         value={modifiers}
         onChange={setModifiers}
       />
-      <label className="flex items-center gap-2 text-sm text-stone-600">
+      <label className="flex w-fit cursor-pointer items-center gap-2.5 text-sm font-medium text-stone-600">
         <input
-          className="size-4 accent-brand-500"
+          className="toggle"
           type="checkbox"
           checked={available}
           onChange={(e) => setAvailable(e.target.checked)}
@@ -495,15 +497,15 @@ function OptionEditor({
   onChange: (options: ProductOption[]) => void;
 }) {
   return (
-    <div className="rounded-xl border border-white bg-white/50 p-4 sm:p-5">
+    <div className="rounded-2xl border border-ink/[0.05] bg-paper p-4 sm:p-5">
       <div className="flex items-center justify-between gap-3">
         <div>
-          <p className="text-xs font-semibold text-ink">{title}</p>
-          <p className="mt-1 text-xs text-stone-500">{hint}</p>
+          <p className="eyebrow text-stone-700">{title}</p>
+          <p className="mt-1.5 text-xs leading-relaxed text-stone-500">{hint}</p>
         </div>
         <button
           type="button"
-          className="icon-btn size-8"
+          className="icon-btn size-8 bg-ink text-cream shadow-[0_8px_16px_-8px_rgb(14_6_4/0.6)] hover:bg-ink-soft hover:text-white"
           aria-label={`Add ${title.toLowerCase()}`}
           onClick={() => onChange([...value, { id: crypto.randomUUID(), name: '', price: 0 }])}
         >
@@ -511,7 +513,7 @@ function OptionEditor({
         </button>
       </div>
       {value.map((option, index) => (
-        <div key={option.id} className="mt-3 flex gap-2">
+        <div key={option.id} className="step-in mt-3 flex gap-2">
           <input
             className="input flex-1"
             aria-label={`${title} ${index + 1} name`}
@@ -543,7 +545,7 @@ function OptionEditor({
           />
           <button
             type="button"
-            className="icon-btn"
+            className="icon-btn hover:bg-red-600/10 hover:text-red-700"
             aria-label={`Remove ${option.name || title}`}
             onClick={() => onChange(value.filter((v) => v.id !== option.id))}
           >
@@ -578,12 +580,12 @@ function CsvImport({ onDone }: { onDone: () => void }) {
         }).catch(() => undefined);
       }}
     >
-      <label className="block rounded-xl border border-dashed border-ink/15 bg-white/50 p-6 text-center">
-        <Upload className="mx-auto mb-3 size-6 text-stone-400" />
-        <span className="block text-sm font-medium">Choose a CSV file</span>
+      <label className="group block cursor-pointer rounded-2xl border-2 border-dashed border-ink/15 bg-paper p-6 text-center transition-colors hover:border-brand-500/45 hover:bg-brand-50/70">
+        <Upload className="mx-auto mb-3 size-6 text-brand-600 transition-transform duration-300 ease-[var(--ease-spring)] group-hover:-translate-y-1" />
+        <span className="block text-sm font-semibold text-ink">Choose a CSV file</span>
         <input
           aria-label="CSV menu file"
-          className="mt-3 max-w-full text-xs text-stone-500 file:mr-3 file:rounded-[9px] file:border-0 file:bg-ink/5 file:px-3 file:py-2 file:font-semibold file:text-stone-700"
+          className="mt-3 max-w-full text-xs text-stone-500 file:mr-3 file:cursor-pointer file:rounded-full file:border-0 file:bg-ink file:px-4 file:py-2 file:font-semibold file:text-cream"
           type="file"
           accept=".csv,text/csv"
           onChange={async (e) => {
@@ -612,7 +614,7 @@ function CsvImport({ onDone }: { onDone: () => void }) {
       </Field>
       <button
         type="button"
-        className="text-xs font-semibold text-brand-500 hover:text-brand-600 hover:underline"
+        className="text-xs font-semibold text-brand-700 underline-offset-4 transition-colors hover:text-brand-800 hover:underline"
         onClick={() => setCsv(sample)}
       >
         Use example CSV
@@ -620,7 +622,7 @@ function CsvImport({ onDone }: { onDone: () => void }) {
       <a
         href="/examples/menu.csv"
         download
-        className="ml-4 inline-flex items-center gap-1 text-xs font-semibold text-brand-500 hover:text-brand-600 hover:underline"
+        className="ml-4 inline-flex items-center gap-1 text-xs font-semibold text-brand-700 underline-offset-4 transition-colors hover:text-brand-800 hover:underline"
       >
         <Download className="size-3" />
         Download template

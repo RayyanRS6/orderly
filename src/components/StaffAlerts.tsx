@@ -109,24 +109,25 @@ export function StaffAlerts() {
             error ? 'Staff alerts unavailable' : `Staff alerts: ${attention?.total ?? 0} unresolved`
           }
         >
-          <Bell className="size-4" />
+          <Bell className={attention?.total ? 'pulse-squish size-4' : 'size-4'} />
           {!!attention?.total && (
-            <span className="absolute -right-1 -top-1 rounded-full bg-brand-500 px-1 text-[10px] font-bold text-white">
+            <span className="pop-in absolute -right-1.5 -top-1.5 grid h-[18px] min-w-[18px] place-items-center rounded-full bg-brand-500 px-1 text-[10px] font-bold leading-none text-ink tabular-nums shadow-[0_6px_12px_-6px_rgb(255_105_44/0.9)] ring-2 ring-canvas">
               {attention.total > 99 ? '99+' : attention.total}
             </span>
           )}
           {error && (
-            <span className="absolute -right-1 -top-1 rounded-full bg-red-700 px-1 text-xs text-white">
+            <span className="pop-in absolute -right-1.5 -top-1.5 grid size-[18px] place-items-center rounded-full bg-red-700 text-[11px] font-bold leading-none text-white ring-2 ring-canvas">
               !
             </span>
           )}
         </button>
       </Dialog.Trigger>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-40 bg-ink/45 backdrop-blur-xs" />
+        <Dialog.Overlay className="dialog-overlay fixed inset-0 z-40" />
         <Dialog.Content
           onInteractOutside={keepOpenForToasts}
-          className="fixed inset-x-3 top-[10dvh] z-50 mx-auto max-h-[80dvh] max-w-xl overflow-y-auto rounded-2xl border border-white bg-cream p-5 shadow-xl sm:p-6">
+          className="dialog-content fixed inset-x-3 top-[10dvh] z-50 mx-auto max-h-[80dvh] max-w-xl overflow-y-auto rounded-[22px] border border-white bg-cream bg-[radial-gradient(420px_circle_at_100%_0%,rgb(255_105_44/0.1),transparent_70%)] bg-no-repeat p-5 shadow-[0_40px_80px_-30px_rgb(14_6_4/0.5),0_10px_24px_-14px_rgb(14_6_4/0.15)] sm:p-6"
+        >
           <div className="mb-4 flex items-center justify-between gap-2">
             <Dialog.Title className="panel-title">Staff alerts</Dialog.Title>
             <Dialog.Close className="icon-btn-glass" aria-label="Close staff alerts">
@@ -137,8 +138,8 @@ export function StaffAlerts() {
             Unresolved orders, conversations and processing failures for this business.
           </Dialog.Description>
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <p className="flex min-h-9 items-center gap-2 text-sm font-semibold text-left">
-              <Bell className="size-4 shrink-0" />
+            <p className="flex min-h-9 items-center gap-2.5 text-left text-sm font-semibold text-ink">
+              <Bell className="box-content size-4 shrink-0 -rotate-6 rounded-lg bg-brand-500 p-1.5 text-ink shadow-[0_8px_16px_-8px_rgb(255_105_44/0.9)]" />
               {error
                 ? 'Alerts could not refresh'
                 : attention
@@ -148,7 +149,7 @@ export function StaffAlerts() {
                   : 'Checking staff alerts…'}
             </p>
             <button
-              className="min-h-9 text-xs font-semibold text-brand-600"
+              className="min-h-9 rounded-full px-3.5 text-xs font-semibold text-brand-700 transition-colors hover:bg-brand-500/10 hover:text-brand-800"
               onClick={() => void toggle()}
             >
               {enabled ? 'Turn off browser alerts' : 'Enable browser alerts'}
@@ -167,12 +168,15 @@ export function StaffAlerts() {
                 push service. Configure email escalation below for alerts when the app is closed.
               </p>
               {error && (
-                <p role="alert" className="text-red-700">
+                <p
+                  role="alert"
+                  className="rounded-xl bg-red-50 px-3.5 py-2.5 font-medium text-red-700"
+                >
                   {error} Retrying automatically.
                 </p>
               )}
               {attention && (
-                <div className="flex flex-wrap gap-2">
+                <div className="stagger flex flex-wrap gap-2">
                   <button
                     className="btn"
                     onClick={() => {
@@ -202,7 +206,7 @@ export function StaffAlerts() {
                   </button>
                   {!!attention.budgets && (
                     <button
-                      className="btn text-amber-800"
+                      className="btn border-sun/70 bg-sun/20 text-ink hover:border-sun hover:bg-sun/35"
                       onClick={() => {
                         setExpanded(false);
                         navigate('bot');
@@ -213,11 +217,11 @@ export function StaffAlerts() {
                   )}
                 </div>
               )}
-              <ul className="divide-y divide-ink/5">
+              <ul className="stagger space-y-2">
                 {attention?.items.map((a) => (
                   <li key={a.id}>
                     <button
-                      className="flex min-h-11 w-full flex-wrap items-center justify-between gap-2 py-2 text-left"
+                      className="lift flex min-h-11 w-full flex-wrap items-center justify-between gap-2 rounded-2xl border border-ink/[0.06] bg-white px-3.5 py-2.5 text-left"
                       onClick={() => {
                         setExpanded(false);
                         navigate(
@@ -232,7 +236,7 @@ export function StaffAlerts() {
                         );
                       }}
                     >
-                      <span>
+                      <span className="font-medium text-ink">
                         {a.kind === 'order'
                           ? 'Order awaiting confirmation'
                           : a.kind === 'handoff'
@@ -241,11 +245,11 @@ export function StaffAlerts() {
                               ? 'AI budget at 80% or more'
                               : 'Delivery or processing job failed'}
                       </span>
-                      <time className="text-xs text-stone-500">
+                      <time className="font-mono text-[11px] text-stone-500">
                         {new Date(a.createdAt).toLocaleString()}
                         {a.kind === 'handoff' &&
                           Date.now() - Date.parse(a.createdAt) > 10 * 60000 && (
-                            <span className="ml-2 font-semibold text-red-700">
+                            <span className="pop-in ml-2 inline-flex rounded-full bg-red-50 px-2 py-0.5 font-sans text-[11px] font-semibold text-red-700">
                               Waiting over 10 minutes
                             </span>
                           )}

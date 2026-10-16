@@ -76,15 +76,18 @@ export function Activity() {
           Failed sends and Sheet updates stay visible until retried. Fix the connection or provider
           quota before retrying. A Meta “sent” receipt is different from “delivered” or “read”.
         </p>
-        <div className="mt-4 space-y-3">
+        <div className="stagger mt-4 space-y-2.5">
           {jobs.map((j) => (
-            <div key={j.id} className="rounded-xl border border-white bg-white/50 p-4 text-[13px]">
+            <div
+              key={j.id}
+              className="rounded-2xl border border-white bg-white/60 p-4 text-[13px] shadow-[0_12px_26px_-22px_rgb(14_6_4/0.45)]"
+            >
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <strong>{label(j.kind)}</strong>
+                <strong className="font-semibold text-ink">{label(j.kind)}</strong>
                 <Status value={j.status} />
               </div>
               <p className="mt-2 break-words text-red-700">{j.error}</p>
-              <p className="mt-2 text-xs text-stone-500">
+              <p className="mt-2 font-mono text-[11px] tracking-[0.02em] text-stone-500">
                 Attempt {j.attempts} · Next attempt {shortDate(j.nextRunAt)}
               </p>
             </div>
@@ -98,15 +101,17 @@ export function Activity() {
           These are recorded actions and outcomes. Model IDs, bot versions, token estimates and
           staff changes appear when available. Showing the latest {data.traces.length} events.
         </p>
-        <ol className="mt-5 divide-y divide-ink/[0.05]">
+        <ol className="stagger mt-5 divide-y divide-ink/[0.05]">
           {data.traces.map((t) => (
             <li key={t.id} className="py-4 text-sm">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <strong className="break-all">{label(t.action)}</strong>
-                <time className="text-xs text-stone-500">{shortDate(t.createdAt)}</time>
+                <strong className="break-all font-semibold text-ink">{label(t.action)}</strong>
+                <time className="rounded-full bg-ink/[0.05] px-2.5 py-0.5 font-mono text-[11px] text-stone-600">
+                  {shortDate(t.createdAt)}
+                </time>
               </div>
               <p className="mt-2 whitespace-pre-wrap break-words text-stone-600">{t.detail}</p>
-              <p className="mt-2 break-all text-xs text-stone-500">
+              <p className="mt-2 break-all font-mono text-[11px] tracking-[0.02em] text-stone-500">
                 {t.model && `Model: ${t.model} · `}
                 {t.botVersion !== undefined && `Bot v${t.botVersion} · `}
                 {t.durationMs !== undefined && `${t.durationMs} ms · `}
@@ -114,7 +119,7 @@ export function Activity() {
               </p>
               {t.conversationId && (
                 <button
-                  className="mt-2 text-xs font-semibold text-brand-500 hover:text-brand-600"
+                  className="mt-2.5 rounded-full bg-brand-500/10 px-3 py-1 text-xs font-semibold text-brand-800 transition-colors hover:bg-brand-500 hover:text-ink hover:shadow-[0_8px_16px_-8px_rgb(255_105_44/0.9)]"
                   onClick={() => navigate('inbox', t.conversationId)}
                 >
                   Open conversation
@@ -124,7 +129,9 @@ export function Activity() {
           ))}
         </ol>
         {!data.traces.length && (
-          <p className="mt-4 text-sm text-stone-500">No events recorded yet.</p>
+          <p className="mt-4 rounded-2xl border border-dashed border-ink/10 bg-paper/70 px-4 py-6 text-center text-sm text-stone-500">
+            No events recorded yet.
+          </p>
         )}
       </section>
     </>
@@ -186,6 +193,7 @@ export function SecuritySettings() {
             </p>
             {!enrolled && !factor && (
               <ActionButton
+                className="btn-primary"
                 loading={pending === 'mfa-enroll'}
                 loadingLabel="Preparing…"
                 onClick={() =>
@@ -207,15 +215,15 @@ export function SecuritySettings() {
               </ActionButton>
             )}
             {factor && (
-              <div className="space-y-3">
+              <div className="space-y-3 rounded-2xl border border-white bg-white/60 p-4 shadow-[0_14px_30px_-24px_rgb(14_6_4/0.45)]">
                 <img
-                  className="size-48 max-w-full"
+                  className="pop-in size-48 max-w-full rounded-2xl bg-white p-2 shadow-[0_0_0_1px_rgb(14_6_4/0.06),0_18px_36px_-24px_rgb(14_6_4/0.5)]"
                   src={factor.qr}
                   alt="Authenticator enrollment QR code"
                 />
                 <Field label="Six-digit authenticator code">
                   <input
-                    className="input max-w-xs"
+                    className="input max-w-xs font-mono tracking-[0.3em]"
                     inputMode="numeric"
                     autoComplete="one-time-code"
                     value={code}
@@ -224,6 +232,7 @@ export function SecuritySettings() {
                   />
                 </Field>
                 <ActionButton
+                  className="btn-primary"
                   loading={pending === 'mfa-verify'}
                   loadingLabel="Verifying…"
                   onClick={() =>
@@ -334,19 +343,19 @@ export function SecuritySettings() {
                 type="submit"
                 disabled={data.mode === 'demo'}
                 title={data.mode === 'demo' ? 'Invitations need the hosted workspace.' : undefined}
-                className="self-end"
+                className="btn-primary self-end"
                 loading={pending === 'invite'}
                 loadingLabel="Sending…"
               >
                 Send invitation
               </ActionButton>
             </form>
-            <details>
-              <summary className="cursor-pointer text-sm font-medium">
+            <details className="group">
+              <summary className="-ml-3 w-fit cursor-pointer rounded-full px-3 py-1.5 text-sm font-semibold text-stone-700 transition-colors select-none group-open:bg-ink/5 hover:bg-ink/5 hover:text-ink">
                 Add an existing account
               </summary>
               <form
-                className="mt-3 flex flex-wrap items-end gap-3"
+                className="step-in mt-3 flex flex-wrap items-end gap-3"
                 onSubmit={(e) => {
                   e.preventDefault();
                   void run(
@@ -378,13 +387,15 @@ export function SecuritySettings() {
                 </ActionButton>
               </form>
             </details>
-            <ul className="divide-y divide-ink/[0.05]">
+            <ul className="stagger divide-y divide-ink/[0.05]">
               {members.map((m) => (
                 <li
                   key={m.userId}
                   className="flex flex-wrap items-center justify-between gap-3 py-3"
                 >
-                  <code className="break-all text-xs">{m.userId}</code>
+                  <code className="rounded-lg bg-ink/[0.04] px-2 py-1 font-mono text-xs break-all text-stone-700">
+                    {m.userId}
+                  </code>
                   <div className="flex flex-wrap items-center gap-2">
                     {pending === `role-${m.userId}` && (
                       <span className="flex items-center gap-1.5 text-xs text-stone-500">
@@ -410,6 +421,7 @@ export function SecuritySettings() {
                       ]}
                     />
                     <ActionButton
+                      className="btn-quiet hover:bg-red-50 hover:text-red-700"
                       loading={pending === `remove-${m.userId}`}
                       loadingLabel="Removing…"
                       onClick={() =>
@@ -451,6 +463,7 @@ export function SecuritySettings() {
               />
             </Field>
             <ActionButton
+              className="btn-ink"
               disabled={!phone}
               title={!phone ? 'Enter the customer’s phone number first.' : undefined}
               loading={pending === 'export'}
@@ -472,10 +485,10 @@ export function SecuritySettings() {
             >
               Export customer data
             </ActionButton>
-            <label className="flex items-start gap-3 text-sm leading-6">
+            <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-white bg-white/50 p-3.5 text-sm leading-6 transition-colors hover:bg-white/80 has-checked:border-brand-500/35 has-checked:bg-brand-500/[0.07]">
               <input
                 type="checkbox"
-                className="mt-1 size-4 shrink-0 accent-brand-500"
+                className="mt-1 size-4 shrink-0 accent-brand-500 transition-transform active:scale-90"
                 checked={ack}
                 onChange={(e) => setAck(e.target.checked)}
               />
@@ -489,7 +502,7 @@ export function SecuritySettings() {
               after deletion can create a new conversation.
             </p>
             <button
-              className="btn text-red-700"
+              className="btn border-red-700/20 text-red-700 hover:border-red-700/35 hover:bg-red-50 hover:text-red-800"
               disabled={!phone || !ack || data.company.botEnabled}
               title={
                 !phone
@@ -519,7 +532,7 @@ export function SecuritySettings() {
               configured retention cleanup. No automatic deletion is enabled by default. Orderly’s
               operator and privacy contact is{' '}
               <a
-                className="font-semibold text-brand-500 underline break-all"
+                className="font-semibold break-all text-brand-700 underline decoration-brand-500/40 underline-offset-2 transition-colors hover:text-brand-800 hover:decoration-brand-500"
                 href="mailto:waytogalaxy999@gmail.com"
               >
                 waytogalaxy999@gmail.com
@@ -527,11 +540,17 @@ export function SecuritySettings() {
               .
             </p>
             <p className="mt-3 text-sm">
-              <a className="underline" href="/privacy">
+              <a
+                className="font-medium text-stone-700 underline decoration-ink/25 underline-offset-2 transition-colors hover:text-ink hover:decoration-brand-500"
+                href="/privacy"
+              >
                 Privacy policy
               </a>{' '}
               ·{' '}
-              <a className="underline" href="/data-deletion">
+              <a
+                className="font-medium text-stone-700 underline decoration-ink/25 underline-offset-2 transition-colors hover:text-ink hover:decoration-brand-500"
+                href="/data-deletion"
+              >
                 Deletion instructions
               </a>
             </p>

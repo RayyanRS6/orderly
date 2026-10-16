@@ -100,20 +100,30 @@ export function Overview() {
               Review setup
             </button>
           </div>
-          <ul className="mt-3 grid gap-2 text-[13px] text-stone-700 sm:grid-cols-2">
+          <ul className="stagger mt-4 grid gap-2 text-[13px] text-stone-700 sm:grid-cols-2">
             {data.readiness.map((c) => (
-              <li key={c.id}>
-                <span className={c.ready ? 'text-success-700' : 'text-brand-500'}>
+              <li
+                key={c.id}
+                className="flex items-center gap-2.5 rounded-2xl bg-white/60 px-3 py-2 ring-1 ring-ink/[0.04]"
+              >
+                <span
+                  className={cn(
+                    'inline-flex size-5 shrink-0 items-center justify-center rounded-full text-[11px] leading-none font-bold',
+                    c.ready
+                      ? 'pop-in bg-success-700 text-white [--d:260ms]'
+                      : 'bg-sun/35 text-stone-700',
+                  )}
+                >
                   {c.ready ? '✓' : '○'}
                 </span>{' '}
                 {c.label}
               </li>
             ))}
           </ul>
-          <p className="mt-3 text-xs text-stone-500">
+          <p className="mt-4 text-xs text-stone-500">
             {data.summary?.needsStaff ?? 0} conversations need staff.{' '}
             <button
-              className="font-semibold text-brand-500 hover:text-brand-600"
+              className="font-semibold text-brand-700 underline-offset-4 transition-colors hover:text-brand-800 hover:underline"
               onClick={() => navigate('inbox')}
             >
               Open inbox
@@ -121,54 +131,58 @@ export function Overview() {
           </p>
         </section>
       )}
-      <section className="card mb-8 grid grid-cols-1 overflow-hidden md:grid-cols-5">
-        <div className="p-6 sm:p-8 md:col-span-3">
-          <div className="mb-3 flex items-center gap-2 text-[11px] font-semibold tracking-[0.6px] text-brand-500 uppercase">
-            <span className="size-2 rounded-full bg-brand-500" />
+      <section className="glow-dark mb-8 grid grid-cols-1 overflow-hidden rounded-[26px] border border-white/[0.06] bg-ink text-cream shadow-[0_40px_80px_-44px_rgb(14_6_4/0.75),0_24px_60px_-40px_rgb(255_105_44/0.35)] md:grid-cols-5">
+        <div className="p-6 sm:p-9 md:col-span-3">
+          <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.05] py-1.5 pr-3.5 pl-3 text-[11px] font-semibold tracking-[0.14em] text-cream/80 uppercase">
+            <span
+              className={cn(
+                'size-2 shrink-0 rounded-full',
+                data.company.botEnabled ? 'live-dot bg-current text-success-500' : 'bg-sun',
+              )}
+            />
             {data.company.botEnabled ? 'AUTOMATION ENABLED' : 'AUTOMATION PAUSED'}
           </div>
-          <h2 className="max-w-lg font-serif text-2xl sm:text-3xl font-bold leading-tight tracking-[-0.4px] text-ink">
+          <h2 className="max-w-lg font-serif text-[34px] leading-[1.02] font-normal tracking-[-0.01em] text-brand-400 first-line:text-cream sm:text-[46px]">
             Good conversations.
             <br />
             Great orders.
           </h2>
-          <p className="mt-3 max-w-md text-[13.5px] leading-relaxed text-stone-500">
+          <p className="mt-4 max-w-md text-[14px] leading-relaxed text-cream/65">
             Let your bot take care of the menu and the details, while you take care of the food.
           </p>
-          <button
-            className="mt-6 inline-flex items-center gap-2 text-[13px] font-semibold text-brand-500 hover:text-brand-600 transition-colors group"
-            onClick={() => navigate('playground')}
-          >
+          <button className="btn btn-primary mt-7" onClick={() => navigate('playground')}>
             See your bot in action
-            <ArrowRight className="size-4 group-hover:translate-x-1 transition-transform" />
+            <ArrowRight className="size-4" />
           </button>
         </div>
-        <div className="flex items-center justify-center p-6 pt-0 md:col-span-2 md:py-8 md:pr-8">
-          <div className="w-full max-w-sm rounded-[14px] border border-white bg-white/70 p-4 sm:p-5 shadow-[0_8px_24px_-12px_rgba(14,6,4,0.12)]">
-            <div className="flex items-center gap-3 border-b border-ink/[0.06] pb-3.5">
-              <div className="flex size-9 items-center justify-center rounded-[10px] bg-ink text-brand-500">
+        <div className="flex items-center justify-center p-6 pt-0 md:col-span-2 md:py-9 md:pr-9">
+          <div className="glass-dark enter-rise w-full max-w-sm rounded-[20px] p-4 [--d:120ms] sm:p-5 md:rotate-1">
+            <div className="flex items-center gap-3 border-b border-white/10 pb-3.5">
+              <div className="flex size-9 -rotate-6 items-center justify-center rounded-xl bg-brand-500 text-ink shadow-[0_10px_18px_-8px_rgb(255_105_44/0.8)]">
                 <MessageCircle className="size-5" />
               </div>
               <div className="min-w-0 flex-1">
-                <p className="truncate text-[14.5px] font-semibold text-ink">{data.company.name}</p>
-                <p className="mt-0.5 text-xs text-stone-500">Customer conversation preview</p>
+                <p className="truncate text-[14.5px] font-semibold text-cream">
+                  {data.company.name}
+                </p>
+                <p className="mt-0.5 text-xs text-cream/55">Customer conversation preview</p>
               </div>
             </div>
-            <div className="mt-3.5 ml-auto w-fit max-w-[85%] rounded-xl rounded-tr-sm bg-ink px-3.5 py-2 text-xs font-medium text-cream">
+            <div className="bubble-brand bubble-in-right mt-4 ml-auto w-fit max-w-[85%] px-3.5 py-2 text-xs font-medium [--d:500ms]">
               Hi! Can I see your menu?
             </div>
-            <div className="mt-2.5 w-fit max-w-[85%] rounded-xl rounded-tl-sm bg-brand-500/10 border border-brand-500/15 px-3.5 py-2 text-xs font-medium text-stone-800">
+            <div className="bubble-them bubble-in-left mt-2.5 w-fit max-w-[85%] px-3.5 py-2 text-xs font-medium [--d:1000ms]">
               Of course. Something delicious awaits. 🍽️
             </div>
-            <div className="mt-3.5 flex items-center justify-between text-[11px] text-stone-400 border-t border-ink/[0.06] pt-3">
+            <div className="mt-4 flex items-center justify-between gap-3 border-t border-white/10 pt-3 text-[11px] text-cream/55">
               <span>Available in English, Urdu & Roman Urdu</span>
-              <CheckCheck className="size-4 text-brand-500" />
+              <CheckCheck className="pop-spin size-4 shrink-0 text-brand-400 [--d:1400ms]" />
             </div>
           </div>
         </div>
       </section>
       <section
-        className="mb-8 grid gap-4 sm:grid-cols-2 xl:grid-cols-4"
+        className="stagger mb-8 grid gap-4 [--d:200ms] sm:grid-cols-2 xl:grid-cols-4 [&>:nth-child(2)]:[--d:240ms] [&>:nth-child(3)]:[--d:280ms] [&>:nth-child(4)]:[--d:320ms]"
         aria-label="Workspace metrics"
       >
         {[
@@ -197,17 +211,25 @@ export function Overview() {
             icon: Clock3,
           },
         ].map((metric) => (
-          <div key={metric.label} className="card p-5">
-            <div className="flex items-center justify-between">
-              <p className="text-[12.5px] font-medium text-stone-500">{metric.label}</p>
-              <div className="flex size-9 items-center justify-center rounded-[9px] bg-ink/5 text-stone-500">
+          <div key={metric.label} className="card group p-5">
+            <div className="flex items-start justify-between gap-3">
+              <p className="pt-1 text-[12.5px] font-semibold text-stone-500">{metric.label}</p>
+              <div
+                className={cn(
+                  'flex size-9 shrink-0 -rotate-6 items-center justify-center rounded-xl shadow-[inset_0_1px_0_rgb(255_255_255/0.3),0_8px_14px_-8px_rgb(14_6_4/0.5)] transition-transform duration-500 ease-[var(--ease-spring)] group-hover:rotate-6 group-hover:scale-110',
+                  metric.icon === ShoppingBag && 'bg-ink text-brand-400',
+                  metric.icon === Wallet && 'bg-brand-500 text-ink',
+                  metric.icon === MessageCircle && 'bg-success-700 text-cream',
+                  metric.icon === Clock3 && 'bg-sun text-ink',
+                )}
+              >
                 <metric.icon className="size-4" />
               </div>
             </div>
-            <p className="mt-2.5 text-[26px] font-bold tracking-[-0.5px] tabular-nums text-ink">
+            <p className="pop-up mt-4 origin-bottom-left font-serif text-[40px] leading-none font-normal tracking-[-0.01em] text-ink tabular-nums xl:text-[34px] 2xl:text-[40px]">
               {metric.value}
             </p>
-            <p className="mt-2 text-xs text-stone-400">{metric.sub}</p>
+            <p className="mt-2.5 text-xs text-stone-400">{metric.sub}</p>
           </div>
         ))}
       </section>
@@ -239,26 +261,26 @@ export function Overview() {
               </button>
             </div>
           </div>
-          <div className="mb-5 flex flex-wrap items-center gap-4 text-xs font-bold border-b border-ink/[0.06] pb-4">
-            <div className="flex items-baseline gap-1.5">
-              <span className="text-2xl font-bold tracking-[-0.5px] text-ink tabular-nums">
+          <div className="mb-5 flex flex-wrap items-center gap-x-6 gap-y-3 border-b border-ink/[0.06] pb-4 text-xs font-bold">
+            <div className="flex items-baseline gap-2">
+              <span className="pop-up inline-block origin-bottom-left font-serif text-[34px] leading-none font-normal tracking-[-0.01em] text-ink tabular-nums [--d:180ms]">
                 {daysData.reduce((sum, day) => sum + day.count, 0)}
               </span>
-              <span className="text-[11px] font-semibold text-stone-400 uppercase tracking-[0.6px]">
+              <span className="text-[10.5px] font-semibold tracking-[0.12em] text-stone-400 uppercase">
                 Total
               </span>
             </div>
-            <div className="flex items-center gap-1.5 rounded-md bg-brand-500/12 px-2 py-0.5 text-brand-700">
+            <div className="pop-in flex items-center gap-1.5 rounded-full bg-brand-500 px-3 py-1 text-ink shadow-[0_10px_20px_-10px_rgb(255_105_44/0.9)] [--d:260ms]">
               <span className="text-sm font-bold tabular-nums">
                 {Math.max(...daysData.map((d) => d.count), 0)}
               </span>
-              <span className="text-[11px] font-semibold text-brand-600">Peak / day</span>
+              <span className="text-[11px] font-semibold text-ink/80">Peak / day</span>
             </div>
-            <div className="flex items-baseline gap-1.5">
-              <span className="text-2xl font-bold tracking-[-0.5px] text-ink tabular-nums">
+            <div className="flex items-baseline gap-2">
+              <span className="pop-up inline-block origin-bottom-left font-serif text-[34px] leading-none font-normal tracking-[-0.01em] text-ink tabular-nums [--d:320ms]">
                 {(daysData.reduce((sum, day) => sum + day.count, 0) / days).toFixed(1)}
               </span>
-              <span className="text-[11px] font-semibold text-stone-400 uppercase tracking-[0.6px]">
+              <span className="text-[10.5px] font-semibold tracking-[0.12em] text-stone-400 uppercase">
                 Avg / day
               </span>
             </div>
@@ -268,9 +290,9 @@ export function Overview() {
               aria-hidden
               className="pointer-events-none absolute inset-x-0 top-0 flex h-40 flex-col justify-between"
             >
-              <div className="border-t border-ink/[0.05]" />
-              <div className="border-t border-ink/[0.05]" />
-              <div className="border-t border-ink/[0.05]" />
+              <div className="border-t border-dashed border-ink/[0.09]" />
+              <div className="border-t border-dashed border-ink/[0.09]" />
+              <div className="border-t border-dashed border-ink/[0.09]" />
             </div>
             <div
               className="relative flex h-48 items-end justify-between gap-2 pt-3"
@@ -284,16 +306,28 @@ export function Overview() {
                   <div className="flex flex-1 items-end justify-center">
                     <div
                       title={`${day.count} orders`}
-                      style={{
-                        height: day.count ? `${Math.max(8, (day.count / maxCount) * 92)}%` : '4px',
-                      }}
+                      style={
+                        {
+                          height: day.count
+                            ? `${Math.max(8, (day.count / maxCount) * 92)}%`
+                            : '4px',
+                          '--d': `${Math.min(i, 24) * 22}ms`,
+                        } as React.CSSProperties
+                      }
                       className={cn(
-                        'w-full max-w-10 rounded-t-md transition-all',
-                        i === days - 1 ? 'bg-brand-500' : 'bg-brand-500/20 hover:bg-brand-500/40',
+                        'bar-rise w-full max-w-10 rounded-t-[8px] rounded-b-[3px] transition-colors duration-300',
+                        i === days - 1
+                          ? 'bg-brand-500 shadow-[0_10px_20px_-8px_rgb(255_105_44/0.75)]'
+                          : 'bg-ink/[0.13] hover:bg-ink/70',
                       )}
                     />
                   </div>
-                  <span className="mt-3 h-4 text-center text-[11px] tabular-nums text-stone-400">
+                  <span
+                    className={cn(
+                      'mt-3 h-4 text-center font-mono text-[10px] tracking-[0.06em] text-stone-400 uppercase tabular-nums',
+                      i === days - 1 && 'font-bold text-brand-700',
+                    )}
+                  >
                     {days === 7
                       ? day.date.toLocaleDateString('en', { weekday: 'short' })
                       : i % 5 === 0
@@ -309,7 +343,7 @@ export function Overview() {
           <div>
             <div className="flex items-center justify-between">
               <h2 className="panel-title">Your setup</h2>
-              <span className="rounded-md bg-brand-500/12 px-[7px] py-0.5 text-[11px] font-semibold text-brand-700 tabular-nums">
+              <span className="pop-in inline-block rounded-full bg-ink px-2.5 py-0.5 text-[11px] font-semibold text-cream tabular-nums shadow-[0_8px_16px_-8px_rgb(14_6_4/0.7)] [--d:220ms]">
                 {Number(data.products.length > 0) +
                   Number(whatsapp?.status === 'connected') +
                   Number(
@@ -319,9 +353,9 @@ export function Overview() {
               </span>
             </div>
             <div className="mt-3">
-              <div className="h-[5px] w-full rounded bg-ink/8 overflow-hidden">
+              <div className="h-2 w-full overflow-hidden rounded-full bg-ink/[0.07]">
                 <div
-                  className="h-full rounded bg-ink transition-all duration-500"
+                  className="h-full rounded-full bg-brand-500 transition-[width] duration-700 ease-[var(--ease-soft)]"
                   style={{
                     width: `${
                       ((Number(data.products.length > 0) +
@@ -338,7 +372,7 @@ export function Overview() {
                 />
               </div>
             </div>
-            <div className="mt-5 space-y-3">
+            <div className="stagger mt-5 space-y-2.5">
               {[
                 {
                   title: 'Add your menu',
@@ -364,21 +398,21 @@ export function Overview() {
               ].map((step) => (
                 <button
                   key={step.title}
-                  className="flex w-full items-center gap-3 rounded-[10px] border border-white/60 bg-white/40 p-3 text-left hover:bg-white/75 transition-all"
+                  className="lift group flex w-full items-center gap-3 rounded-2xl border border-white/80 bg-white/55 p-3 text-left transition-[transform,box-shadow,background-color] duration-300 ease-[var(--ease-soft)] hover:bg-white"
                   onClick={() => navigate(step.page)}
                 >
                   <span
                     className={cn(
                       'flex size-8 shrink-0 items-center justify-center rounded-full border',
                       step.done
-                        ? 'border-transparent bg-brand-500/12 text-brand-600'
-                        : 'border-ink/10 bg-transparent text-stone-400',
+                        ? 'border-transparent bg-ink text-cream shadow-[0_8px_16px_-8px_rgb(14_6_4/0.7)]'
+                        : 'border-dashed border-ink/25 bg-transparent text-stone-400',
                     )}
                   >
                     {step.done ? (
-                      <Check className="size-4" />
+                      <Check className="pop-spin size-4 [--d:360ms]" />
                     ) : (
-                      <span className="size-1.5 rounded-full bg-stone-300" />
+                      <span className="size-1.5 rounded-full bg-brand-500" />
                     )}
                   </span>
                   <span className="flex-1 min-w-0">
@@ -389,7 +423,7 @@ export function Overview() {
                       {step.sub}
                     </span>
                   </span>
-                  <ChevronRight className="size-4 text-stone-300" />
+                  <ChevronRight className="size-4 text-stone-300 group-hover:text-ink" />
                 </button>
               ))}
             </div>
@@ -397,13 +431,13 @@ export function Overview() {
         </section>
       </div>
       <section className="card overflow-hidden">
-        <div className="flex items-center justify-between px-6 pt-6 pb-2">
+        <div className="flex items-center justify-between gap-3 px-6 pt-6 pb-3">
           <div className="flex items-center gap-2.5">
             <h2 className="panel-title">Recent orders</h2>
             <Badge tone="neutral">{orders.length}</Badge>
           </div>
           <button
-            className="inline-flex items-center gap-1.5 text-[12.5px] font-semibold text-brand-500 hover:text-brand-600 transition-colors"
+            className="-mr-3 inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[12.5px] font-semibold text-brand-700 transition-colors hover:bg-brand-500/10 hover:text-brand-800"
             onClick={() => navigate('orders')}
           >
             View all orders
@@ -420,21 +454,21 @@ export function Overview() {
       </section>
       {activity.length > 0 && (
         <section className="mt-8">
-          <div className="mb-4 flex items-center gap-2">
+          <div className="mb-4 flex flex-wrap items-baseline gap-x-3 gap-y-1">
             <h2 className="panel-title">Behind the conversation</h2>
-            <span className="text-xs text-stone-400">Recent bot activity</span>
+            <span className="eyebrow">Recent bot activity</span>
           </div>
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="stagger grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             {activity.map((trace) => (
               <div key={trace.id} className="card p-4 sm:p-5">
-                <div className="flex items-center gap-2 text-[13px] font-semibold text-ink">
-                  <span className="size-2 rounded-full bg-brand-500" />
+                <div className="flex items-center gap-2.5 text-[13px] font-semibold text-ink">
+                  <span className="size-2 shrink-0 rotate-45 rounded-[2px] bg-brand-500" />
                   {label(trace.action)}
                 </div>
                 <p className="mt-2 line-clamp-2 text-[11.5px] leading-relaxed text-stone-500">
                   {trace.detail}
                 </p>
-                <p className="mt-3 text-[11.5px] font-medium tabular-nums text-stone-400">
+                <p className="mt-3 font-mono text-[11px] tracking-[0.02em] text-stone-400 tabular-nums">
                   {shortDate(trace.createdAt)}
                 </p>
               </div>
@@ -596,7 +630,7 @@ export function Orders() {
               >
                 {label(value)}
                 {value === 'pending' && (
-                  <span className="ml-1.5 rounded-md bg-brand-500/15 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-brand-700">
+                  <span className="pop-in ml-1.5 inline-flex min-w-5 justify-center rounded-full bg-brand-500 px-1.5 py-0.5 text-[10px] leading-none font-bold text-ink tabular-nums shadow-[0_4px_10px_-4px_rgb(255_105_44/0.8)] [--d:300ms]">
                     {data.summary?.pending ?? orders.filter((o) => o.status === 'pending').length}
                   </span>
                 )}
@@ -618,8 +652,9 @@ export function Orders() {
           </div>
         </div>
         <ErrorNotice message={error} />
-        <label className="m-4 flex items-center gap-2 text-[13px] text-stone-600">
+        <label className="m-4 flex w-fit cursor-pointer items-center gap-2.5 text-[13px] font-medium text-stone-600">
           <input
+            className="toggle"
             type="checkbox"
             checked={sandbox}
             onChange={(e) => {
@@ -634,7 +669,7 @@ export function Orders() {
           <button className="btn" disabled={page === 1} onClick={() => setPage(page - 1)}>
             Previous
           </button>
-          <span>
+          <span className="tabular-nums">
             {result.total} orders · Page {page} of {Math.max(1, Math.ceil(result.total / 50))}
           </span>
           <button
@@ -667,15 +702,17 @@ function OrderTable({ orders, onSelect }: { orders: Order[]; onSelect: (order: O
     );
   return (
     <>
-      <div className="divide-y divide-ink/[0.05] md:hidden">
+      <div className="stagger divide-y divide-ink/[0.05] md:hidden">
         {orders.map((o) => (
           <button
             key={o.id}
-            className="block w-full p-4 text-left hover:bg-white/50"
+            className="block w-full p-4 text-left transition-colors hover:bg-white/60 hover:shadow-[inset_3px_0_0_var(--color-brand-500)] active:bg-white/80"
             onClick={() => onSelect(o)}
           >
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <strong className="text-[13px] font-semibold text-ink">{o.reference}</strong>
+              <strong className="font-mono text-[12.5px] font-semibold tracking-[0.02em] text-ink">
+                {o.reference}
+              </strong>
               <Status value={o.status} />
             </div>
             <p className="mt-2 text-sm break-words">
@@ -698,12 +735,12 @@ function OrderTable({ orders, onSelect }: { orders: Order[]; onSelect: (order: O
               ))}
             </tr>
           </thead>
-          <tbody className="divide-y divide-ink/[0.04]">
+          <tbody className="stagger divide-y divide-ink/[0.04] [&>tr]:[animation-name:fade-in]">
             {orders.map((order) => (
-              <tr key={order.id} className="hover:bg-white/50 transition-colors">
-                <td className="table-cell">
+              <tr key={order.id} className="group">
+                <td className="table-cell group-hover:shadow-[inset_3px_0_0_var(--color-brand-500)]">
                   <button
-                    className="text-left text-[13px] font-semibold text-ink underline-offset-4 hover:text-brand-600 hover:underline"
+                    className="text-left font-mono text-[12.5px] font-semibold tracking-[0.02em] text-ink decoration-brand-500 decoration-2 underline-offset-4 transition-colors hover:text-brand-700 hover:underline"
                     onClick={() => onSelect(order)}
                   >
                     {order.reference}
@@ -714,7 +751,7 @@ function OrderTable({ orders, onSelect }: { orders: Order[]; onSelect: (order: O
                 </td>
                 <td className="table-cell">
                   <div className="flex items-center gap-3">
-                    <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-ink-soft text-xs font-semibold text-brand-500">
+                    <div className="flex size-8 shrink-0 items-center justify-center rounded-xl bg-ink text-[11px] font-semibold text-brand-400 shadow-[0_6px_12px_-6px_rgb(14_6_4/0.6)] transition-transform duration-300 ease-[var(--ease-spring)] group-hover:scale-105 group-hover:-rotate-6">
                       {initials(order.customerName || 'Guest')}
                     </div>
                     <div className="min-w-0">
@@ -798,18 +835,18 @@ function OrderDetails({ order, onClose }: { order: Order | null; onClose: () => 
       >
         {order && (
           <>
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-3">
               <Status value={order.status} />
               <Badge>{label(order.fulfillment)}</Badge>
             </div>
-            <div className="my-5 divide-y divide-ink/[0.05] border-y border-ink/[0.06]">
+            <div className="stagger my-5 divide-y divide-dashed divide-ink/[0.12] rounded-2xl bg-white/80 px-4 shadow-[0_0_0_1px_rgb(14_6_4/0.05),0_14px_28px_-20px_rgb(14_6_4/0.35)]">
               {order.items.map((item, index) => (
-                <div key={index} className="flex gap-3 py-4">
-                  <span className="h-fit rounded-md bg-ink/5 px-2 py-0.5 text-xs font-semibold tabular-nums text-stone-700">
+                <div key={index} className="flex gap-3 py-3.5">
+                  <span className="h-fit rounded-full bg-ink px-2 py-0.5 text-[11px] font-semibold text-cream tabular-nums">
                     {item.quantity}×
                   </span>
-                  <div className="flex-1">
-                    <p className="text-sm font-medium">{item.name}</p>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-semibold text-ink">{item.name}</p>
                     {item.variant && <p className="mt-1 text-xs text-stone-500">{item.variant}</p>}
                     {item.modifiers.length > 0 && (
                       <p className="mt-1 text-xs text-stone-500">{item.modifiers.join(', ')}</p>
@@ -818,7 +855,9 @@ function OrderDetails({ order, onClose }: { order: Order | null; onClose: () => 
                       <p className="mt-1 text-xs italic text-stone-500">{item.notes}</p>
                     )}
                   </div>
-                  <span className="text-sm tabular-nums">{money(item.total)}</span>
+                  <span className="text-sm font-semibold whitespace-nowrap text-ink tabular-nums">
+                    {money(item.total)}
+                  </span>
                 </div>
               ))}
             </div>
@@ -831,14 +870,16 @@ function OrderDetails({ order, onClose }: { order: Order | null; onClose: () => 
                 <dt>Delivery</dt>
                 <dd className="tabular-nums">{money(order.deliveryFee)}</dd>
               </div>
-              <div className="flex justify-between border-t border-ink/[0.06] pt-3 font-semibold text-ink">
+              <div className="flex items-baseline justify-between gap-3 border-t border-dashed border-ink/15 pt-3 font-semibold text-ink">
                 <dt>
                   Total · cash {order.fulfillment === 'delivery' ? 'on delivery' : 'at pickup'}
                 </dt>
-                <dd className="tabular-nums">{money(order.total)}</dd>
+                <dd className="font-serif text-[28px] leading-none font-normal whitespace-nowrap tabular-nums">
+                  {money(order.total)}
+                </dd>
               </div>
             </dl>
-            <div className="mt-5 space-y-2 rounded-xl border border-white bg-white/70 p-4 text-xs text-stone-500">
+            <div className="mt-5 space-y-2 rounded-2xl border border-ink/[0.05] bg-paper p-4 text-xs text-stone-500">
               <p>
                 <span className="font-semibold text-stone-700">Customer:</span> {order.customerName}{' '}
                 · {order.customerPhone}
@@ -861,7 +902,7 @@ function OrderDetails({ order, onClose }: { order: Order | null; onClose: () => 
               <div className="mt-6 flex gap-2.5">
                 {order.status === 'pending' && (
                   <button
-                    className="btn"
+                    className="btn hover:border-red-600/30 hover:bg-red-50 hover:text-red-700"
                     onClick={() => {
                       setRejectError('');
                       setReject(true);
@@ -875,9 +916,7 @@ function OrderDetails({ order, onClose }: { order: Order | null; onClose: () => 
                   loading={pending === `status-${order.id}`}
                   loadingLabel={nextStatus === 'accepted' ? 'Accepting…' : 'Updating…'}
                   onClick={() =>
-                    void run(`status-${order.id}`, () => update(nextStatus)).catch(
-                      () => undefined,
-                    )
+                    void run(`status-${order.id}`, () => update(nextStatus)).catch(() => undefined)
                   }
                 >
                   {nextStatus === 'accepted'
@@ -928,8 +967,10 @@ function CallConfirmation({ order }: { order: Order }) {
   );
   const [note, setNote] = useState(order.phoneConfirmation?.note ?? '');
   return (
-    <section className="notice mt-5 p-4 space-y-3">
-      <h3 className="text-sm font-semibold text-cream">Phone confirmation required</h3>
+    <section className="notice mt-5 space-y-3 p-4 sm:p-5">
+      <h3 className="font-serif text-[22px] leading-[1.1] font-normal tracking-[-0.005em] text-cream">
+        Phone confirmation required
+      </h3>
       <p className="text-xs leading-5">
         Call {order.customerPhone}, verify the order and delivery address, then record the outcome.
         Orderly does not make this phone call.
@@ -952,8 +993,9 @@ function CallConfirmation({ order }: { order: Order }) {
         />
       </Field>
       {order.fulfillment === 'delivery' && (
-        <label className="flex gap-2 text-sm">
+        <label className="flex cursor-pointer items-center gap-2.5 text-sm">
           <input
+            className="toggle"
             type="checkbox"
             checked={addressVerified}
             onChange={(e) => setAddressVerified(e.target.checked)}
@@ -975,12 +1017,10 @@ function CallConfirmation({ order }: { order: Order }) {
         onClick={() =>
           // The order dialog shows a failure inline.
           void run('call', () =>
-            mutate(
-              '/orders/' + order.id + '/call',
-              { outcome, addressVerified, note },
-              undefined,
-              { dialog: true, success: 'Call outcome recorded.' },
-            ),
+            mutate('/orders/' + order.id + '/call', { outcome, addressVerified, note }, undefined, {
+              dialog: true,
+              success: 'Call outcome recorded.',
+            }),
           ).catch(() => undefined)
         }
       >

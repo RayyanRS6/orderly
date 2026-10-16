@@ -24,18 +24,14 @@ export function ReplyExplanation({
   const rule = decision.matchedRule;
   return (
     <div className={cn('space-y-3 text-[12.5px] leading-relaxed text-stone-600', className)}>
-      <p className="font-semibold text-stone-800">{explanationHeadline(explanation)}</p>
-      <dl className="space-y-2.5">
+      <p className="font-semibold text-ink">{explanationHeadline(explanation)}</p>
+      <dl className="stagger space-y-3">
         <div>
-          <dt className="text-[11px] font-semibold uppercase tracking-[0.5px] text-stone-400">
-            Settings used
-          </dt>
+          <dt className="eyebrow mb-1">Settings used</dt>
           <dd>{describeConfig(explanation)}</dd>
         </div>
         <div>
-          <dt className="text-[11px] font-semibold uppercase tracking-[0.5px] text-stone-400">
-            AI model
-          </dt>
+          <dt className="eyebrow mb-1">AI model</dt>
           <dd>
             {ai.called ? (
               <>
@@ -44,7 +40,7 @@ export function ReplyExplanation({
                     {ai.proposed.map((action, index) => (
                       <span
                         key={index}
-                        className="rounded-md bg-ink/5 px-1.5 py-0.5 text-[11px] font-semibold text-stone-600"
+                        className="pop-in rounded-full bg-brand-500/12 px-2.5 py-0.5 text-[11px] font-semibold text-brand-800"
                       >
                         {label(action.type)}
                         {action.quantity && action.quantity > 1 ? ` ×${action.quantity}` : ''}
@@ -70,7 +66,7 @@ export function ReplyExplanation({
                   </span>
                 )}
                 {ai.usage && (
-                  <span className="mt-1 block text-stone-500">
+                  <span className="mt-1.5 block font-mono text-[11px] text-stone-500">
                     {ai.usage.inputTokens.toLocaleString('en-US')} in /{' '}
                     {ai.usage.outputTokens.toLocaleString('en-US')} out tokens · about $
                     {ai.usage.costUsd.toFixed(4)} · {(ai.usage.durationMs / 1000).toFixed(1)}s
@@ -87,9 +83,7 @@ export function ReplyExplanation({
         </div>
         {rule && (
           <div>
-            <dt className="text-[11px] font-semibold uppercase tracking-[0.5px] text-stone-400">
-              Your rule
-            </dt>
+            <dt className="eyebrow mb-1">Your rule</dt>
             <dd>
               “{rule.when}” → {label(rule.action)} (
               {rule.responseMode === 'exact' ? 'exact words' : 'AI adapts wording'})
@@ -98,11 +92,9 @@ export function ReplyExplanation({
         )}
         {!!decision.parts.length && (
           <div>
-            <dt className="text-[11px] font-semibold uppercase tracking-[0.5px] text-stone-400">
-              Reply written by
-            </dt>
+            <dt className="eyebrow mb-1">Reply written by</dt>
             <dd>
-              <ul className="list-disc space-y-0.5 pl-4">
+              <ul className="list-disc space-y-0.5 pl-4 marker:text-brand-500">
                 {decision.parts.map((part) => (
                   <li key={part}>{PART_LABELS[part]}</li>
                 ))}
@@ -112,19 +104,15 @@ export function ReplyExplanation({
         )}
         {ai.called && decision.modelText !== 'used' && (
           <div>
-            <dt className="text-[11px] font-semibold uppercase tracking-[0.5px] text-stone-400">
-              AI wording
-            </dt>
+            <dt className="eyebrow mb-1">AI wording</dt>
             <dd>{MODEL_TEXT_LABELS[decision.modelText]}</dd>
           </div>
         )}
         {!!decision.corrections.length && (
           <div>
-            <dt className="text-[11px] font-semibold uppercase tracking-[0.5px] text-stone-400">
-              Corrected by the order engine
-            </dt>
+            <dt className="eyebrow mb-1">Corrected by the order engine</dt>
             <dd>
-              <ul className="list-disc space-y-0.5 pl-4">
+              <ul className="list-disc space-y-0.5 pl-4 marker:text-brand-500">
                 {decision.corrections.map((correction) => (
                   <li key={correction}>{describeCorrection(correction)}</li>
                 ))}
@@ -134,14 +122,12 @@ export function ReplyExplanation({
         )}
         {!!explanation.steps.length && (
           <div>
-            <dt className="text-[11px] font-semibold uppercase tracking-[0.5px] text-stone-400">
-              Steps
-            </dt>
-            <dd className="flex flex-wrap gap-1.5">
+            <dt className="eyebrow mb-1">Steps</dt>
+            <dd className="stagger flex flex-wrap gap-1.5">
               {explanation.steps.map((step, index) => (
                 <span
                   key={`${step}-${index}`}
-                  className="rounded-md border border-ink/[0.08] bg-white/70 px-1.5 py-0.5 text-[11px] text-stone-600"
+                  className="rounded-full border border-ink/[0.08] bg-white px-2.5 py-0.5 text-[11px] font-medium text-stone-600 shadow-[0_4px_10px_-8px_rgb(14_6_4/0.4)]"
                 >
                   {describeStep(step)}
                 </span>
@@ -158,18 +144,23 @@ export function ReplyExplanation({
 export function WhyToggle({ explanation }: { explanation: TurnExplanation }) {
   const [open, setOpen] = useState(false);
   return (
-    <div className="mt-2 border-t border-ink/[0.06] pt-2">
+    <div className="mt-2.5 border-t border-dashed border-ink/10 pt-2">
       <button
         type="button"
         aria-expanded={open}
-        className="inline-flex items-center gap-1 text-[11px] font-semibold text-brand-600 hover:text-brand-700"
+        className="-ml-2 inline-flex items-center gap-1 rounded-full px-2 py-1 text-[11px] font-semibold text-brand-700 transition-colors hover:bg-brand-500/10 hover:text-brand-800 aria-expanded:bg-brand-500/10 aria-expanded:text-brand-800"
         onClick={() => setOpen(!open)}
       >
         <Lightbulb className="size-3.5" />
         Why this reply?
-        <ChevronDown className={cn('size-3 transition-transform', open && 'rotate-180')} />
+        <ChevronDown
+          className={cn(
+            'size-3 transition-transform duration-300 ease-[var(--ease-spring)]',
+            open && 'rotate-180',
+          )}
+        />
       </button>
-      {open && <ReplyExplanation explanation={explanation} className="mt-2" />}
+      {open && <ReplyExplanation explanation={explanation} className="step-in mt-2" />}
     </div>
   );
 }

@@ -154,16 +154,11 @@ export function BotSettings() {
   const saveDraft = () =>
     act('draft', async () => {
       const sent = draft;
-      const saved = await mutate<Settings>(
-        '/bot/draft',
-        { config: sent, revision },
-        'PUT',
-        {
-          success: published
-            ? `Draft saved. Customers keep seeing version ${published.version} until you publish.`
-            : 'Draft saved. Publish it when you want customers to get it.',
-        },
-      );
+      const saved = await mutate<Settings>('/bot/draft', { config: sent, revision }, 'PUT', {
+        success: published
+          ? `Draft saved. Customers keep seeing version ${published.version} until you publish.`
+          : 'Draft saved. Publish it when you want customers to get it.',
+      });
       adopt(saved, sent);
     });
   // One click: the settings on screen are saved and published together.
@@ -272,12 +267,19 @@ export function BotSettings() {
             {data.company.botEnabled ? 'Automation enabled' : 'Automation paused'}
           </Badge>
         </div>
-        <ul className="mt-4 grid gap-2 text-sm sm:grid-cols-2">
+        <ul className="stagger mt-4 grid gap-2 text-sm sm:grid-cols-2">
           {data.readiness?.map((c) => (
-            <li key={c.id} className="flex items-start gap-2">
+            <li
+              key={c.id}
+              className="flex items-start gap-2.5 rounded-xl bg-paper px-3 py-2 text-[13px] leading-5 text-stone-700"
+            >
               <span
                 aria-label={c.ready ? 'Complete' : 'Required'}
-                className={c.ready ? 'text-success-700' : 'text-brand-500'}
+                className={
+                  c.ready
+                    ? 'pop-in inline-grid size-5 shrink-0 place-items-center rounded-full bg-success-700 text-[11px] font-bold leading-none text-white shadow-[0_6px_12px_-6px_rgb(23_124_74/0.8)]'
+                    : 'inline-grid size-5 shrink-0 place-items-center rounded-full bg-brand-500/15 text-[11px] font-bold leading-none text-brand-800'
+                }
               >
                 {c.ready ? '✓' : '○'}
               </span>
@@ -292,7 +294,7 @@ export function BotSettings() {
         </p>
         {owner && (
           <ActionButton
-            className="mt-4"
+            className={cn('mt-4', !data.company.botEnabled && 'btn-primary')}
             loading={pending === 'automation'}
             loadingLabel={data.company.botEnabled ? 'Pausing…' : 'Enabling…'}
             onClick={() =>
@@ -314,7 +316,7 @@ export function BotSettings() {
           </ActionButton>
         )}
       </section>
-      <fieldset disabled={!owner} className="min-w-0 space-y-6 disabled:opacity-70">
+      <fieldset disabled={!owner} className="stagger min-w-0 space-y-6 disabled:opacity-70">
         <section className="card p-5 sm:p-6 space-y-5" aria-labelledby="ai-model-title">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 id="ai-model-title" className="panel-title">
@@ -399,7 +401,7 @@ export function BotSettings() {
                   />
                 </Field>
                 <a
-                  className="mt-1.5 inline-flex items-center gap-1 text-xs font-semibold text-brand-500 hover:text-brand-600"
+                  className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-brand-700 underline-offset-4 transition-colors hover:text-brand-800 hover:underline"
                   href={KEY_HINTS[ai.provider].url}
                   target="_blank"
                   rel="noreferrer"
@@ -425,7 +427,7 @@ export function BotSettings() {
             </Field>
           </div>
           {usesAi && (
-            <label className="flex items-start gap-3 text-sm leading-6">
+            <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-ink/[0.06] bg-paper px-4 py-3 text-sm leading-6 transition-colors has-[:checked]:border-brand-500/25 has-[:checked]:bg-brand-50">
               <input
                 type="checkbox"
                 className="mt-1 size-4 shrink-0 accent-brand-500"
@@ -511,7 +513,7 @@ export function BotSettings() {
               )}
             {savedKey && (
               <button
-                className="btn btn-quiet text-red-700"
+                className="btn btn-quiet text-red-700 hover:bg-red-50 hover:text-red-800"
                 onClick={() => {
                   setRemoveError('');
                   setRemoving(true);
@@ -522,7 +524,7 @@ export function BotSettings() {
             )}
           </div>
           {usesAi && !canConnect && pending !== 'connect' && (
-            <p className="text-xs text-brand-700">
+            <p className="text-xs font-semibold text-brand-700">
               {!approved ? 'Tick the agreement to continue.' : 'Paste the API key to continue.'}
             </p>
           )}
@@ -536,9 +538,9 @@ export function BotSettings() {
           {usesAi && (
             <details
               open={!picked?.priced || !!ai.pricing}
-              className="rounded-xl border border-white bg-white/50 p-4"
+              className="rounded-2xl border border-ink/[0.06] bg-paper p-4"
             >
-              <summary className="cursor-pointer text-sm font-semibold">
+              <summary className="cursor-pointer text-sm font-semibold text-ink marker:text-brand-500">
                 Advanced: prices and model list
               </summary>
               <p className="my-3 text-xs leading-5 text-stone-500">
@@ -577,7 +579,7 @@ export function BotSettings() {
                   {loading ? 'Loading…' : 'Refresh model list'}
                 </button>
                 <a
-                  className="text-xs font-semibold text-brand-500 underline"
+                  className="text-xs font-semibold text-brand-700 underline decoration-brand-500/40 underline-offset-4 transition-colors hover:text-brand-800 hover:decoration-brand-500"
                   href={KEY_HINTS[ai.provider].pricing}
                   target="_blank"
                   rel="noreferrer"
@@ -656,7 +658,10 @@ export function BotSettings() {
               value={draft.instructions}
               onChange={(e) => update({ instructions: e.target.value })}
             />
-            <p className="mt-1 text-right text-xs text-stone-500" aria-live="polite">
+            <p
+              className="mt-1.5 text-right font-mono text-[11px] tabular-nums text-stone-500"
+              aria-live="polite"
+            >
               {draft.instructions.length.toLocaleString()} / {MAX_BOT_INSTRUCTIONS.toLocaleString()}{' '}
               characters
             </p>
@@ -680,7 +685,7 @@ export function BotSettings() {
           <div className="space-y-4">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <h3 className="field-label">Behavior rules</h3>
+                <h3 className="eyebrow mb-1.5">Behavior rules</h3>
                 <p className="text-sm text-stone-500">
                   Rules run from top to bottom. The first matching rule controls what the bot does.
                 </p>
@@ -709,19 +714,24 @@ export function BotSettings() {
               </button>
             </div>
             {draft.behaviorRules.length === 0 && (
-              <p className="rounded-xl border border-dashed border-ink/10 p-4 text-sm text-stone-500">
+              <p className="step-in rounded-2xl border border-dashed border-ink/15 bg-cream/60 p-4 text-sm text-stone-500">
                 No special rules yet. Goal and Additional instructions still guide the bot.
               </p>
             )}
             {draft.behaviorRules.map((rule, i) => (
               <div
                 key={rule.id}
-                className="space-y-4 rounded-xl border border-white bg-white/50 p-4"
+                className={cn(
+                  'step-in space-y-4 rounded-2xl border p-4 transition-colors',
+                  rule.enabled
+                    ? 'border-ink/[0.06] bg-paper'
+                    : 'border-dashed border-ink/15 bg-cream/40',
+                )}
               >
                 <div className="flex items-center gap-2">
                   <input
                     type="checkbox"
-                    className="size-4 accent-brand-500"
+                    className="toggle"
                     checked={rule.enabled}
                     aria-label={`Enable rule ${i + 1}`}
                     onChange={(event) =>
@@ -732,9 +742,16 @@ export function BotSettings() {
                       })
                     }
                   />
-                  <strong className="min-w-0 flex-1 text-sm">Rule {i + 1}</strong>
+                  <strong
+                    className={cn(
+                      'ml-1 min-w-0 flex-1 truncate font-serif text-[22px] font-normal leading-tight tracking-[-0.01em] transition-colors max-sm:text-[18px]',
+                      rule.enabled ? 'text-ink' : 'text-stone-500',
+                    )}
+                  >
+                    Rule {i + 1}
+                  </strong>
                   <button
-                    className="icon-btn"
+                    className="icon-btn group"
                     disabled={i === 0}
                     aria-label={`Move rule ${i + 1} up`}
                     onClick={() => {
@@ -746,10 +763,10 @@ export function BotSettings() {
                       update({ behaviorRules });
                     }}
                   >
-                    <ArrowUp className="size-4" />
+                    <ArrowUp className="size-4 transition-transform duration-300 ease-[var(--ease-spring)] group-hover:-translate-y-0.5" />
                   </button>
                   <button
-                    className="icon-btn"
+                    className="icon-btn group"
                     disabled={i === draft.behaviorRules.length - 1}
                     aria-label={`Move rule ${i + 1} down`}
                     onClick={() => {
@@ -761,10 +778,10 @@ export function BotSettings() {
                       update({ behaviorRules });
                     }}
                   >
-                    <ArrowDown className="size-4" />
+                    <ArrowDown className="size-4 transition-transform duration-300 ease-[var(--ease-spring)] group-hover:translate-y-0.5" />
                   </button>
                   <button
-                    className="icon-btn"
+                    className="icon-btn hover:bg-red-50 hover:text-red-700"
                     aria-label={`Remove rule ${i + 1}`}
                     onClick={() =>
                       update({
@@ -850,9 +867,9 @@ export function BotSettings() {
               </div>
             ))}
           </div>
-          <label className="flex items-start gap-3 text-sm">
+          <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-ink/[0.06] bg-paper p-4 text-sm leading-[21px] transition-colors has-[:checked]:border-brand-500/25 has-[:checked]:bg-brand-50">
             <input
-              className="size-4 shrink-0 accent-brand-500"
+              className="toggle"
               type="checkbox"
               checked={draft.requirePhoneConfirmation}
               onChange={(e) => update({ requirePhoneConfirmation: e.target.checked })}
@@ -888,7 +905,10 @@ export function BotSettings() {
             prices come from your catalog.
           </p>
           {draft.knowledge.map((k, i) => (
-            <div key={i} className="space-y-3 rounded-xl border border-white bg-white/50 p-4">
+            <div
+              key={i}
+              className="step-in space-y-3 rounded-2xl border border-ink/[0.06] bg-paper p-4"
+            >
               <div className="flex items-end gap-2">
                 <div className="min-w-0 flex-1">
                   <Field label={`Question ${i + 1}`}>
@@ -907,7 +927,7 @@ export function BotSettings() {
                   </Field>
                 </div>
                 <button
-                  className="icon-btn"
+                  className="icon-btn hover:bg-red-50 hover:text-red-700"
                   aria-label={`Remove answer ${i + 1}`}
                   onClick={() => update({ knowledge: draft.knowledge.filter((_, j) => j !== i) })}
                 >
@@ -932,18 +952,18 @@ export function BotSettings() {
           ))}
         </section>
         <section
-          className="card flex flex-wrap items-center justify-between gap-4 p-5 sm:p-6"
+          className="notice flex flex-wrap items-center justify-between gap-4 rounded-[22px] p-5 sm:p-6"
           aria-label="Publish"
         >
           <div className="min-w-0 text-sm" aria-live="polite">
-            <p className="font-semibold text-ink">
+            <p className="font-semibold text-cream">
               {live
                 ? `Customers see these settings (version ${published?.version}).`
                 : published
                   ? `Customers see version ${published.version}. The settings above are not live yet.`
                   : 'Nothing is published yet. Customers get the default settings.'}
             </p>
-            <p className="mt-1 text-stone-500">
+            <p className="mt-1 text-cream/70">
               {live && !changed
                 ? 'Change something above to publish a new version.'
                 : 'Publish saves and makes these settings live in one step. You can test a saved draft first in Test your bot.'}
@@ -956,7 +976,7 @@ export function BotSettings() {
               disabled={!changed}
               onClick={saveDraft}
             >
-              {changed ? <Save className="size-4" /> : <Check className="size-4" />}
+              {changed ? <Save className="size-4" /> : <Check className="pop-spin size-4" />}
               {changed ? 'Save draft' : 'Draft saved'}
             </ActionButton>
             <ActionButton
@@ -968,7 +988,7 @@ export function BotSettings() {
             >
               {live && !changed ? (
                 <>
-                  <Check className="size-4" />
+                  <Check className="pop-spin size-4" />
                   Published
                 </>
               ) : changed ? (
@@ -982,11 +1002,16 @@ export function BotSettings() {
         {!!data.company.bot?.history.length && (
           <section className="card p-5 sm:p-6">
             <h2 className="panel-title">Published history</h2>
-            <div className="mt-4 space-y-3">
+            <div className="stagger mt-4 space-y-1">
               {[...data.company.bot.history].reverse().map((v) => (
                 <div
                   key={v.version}
-                  className="flex flex-wrap items-center justify-between gap-3 text-sm"
+                  className={cn(
+                    '-mx-3 flex min-h-12 flex-wrap items-center justify-between gap-3 rounded-xl px-3 py-1.5 text-sm transition-colors',
+                    v.version === data.company.bot?.published?.version
+                      ? 'bg-brand-50 font-semibold text-ink'
+                      : 'text-stone-700 hover:bg-white/70',
+                  )}
                 >
                   <span>
                     Version {v.version} · {shortDate(v.publishedAt)}

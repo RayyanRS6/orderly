@@ -1,5 +1,5 @@
 import { build } from 'esbuild';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -17,10 +17,32 @@ await build({
 });
 const { renderPublic } = await import(pathToFileURL(resolve('.local/public-render.mjs')).href);
 const shell = await readFile('dist/index.html', 'utf8');
+// The workspace is a separately loaded chunk (src/main.tsx), so public pages skip it.
+// App pages fetch it, the chunks it imports and the sign-in client alongside the entry
+// script rather than after it runs.
+const manifest = JSON.parse(await readFile('dist/.vite/manifest.json', 'utf8'));
+const preload = new Set();
+const visit = (key, depth = 0) => {
+  const chunk = manifest[key];
+  if (!chunk || chunk.isEntry || preload.has(chunk.file)) return;
+  preload.add(chunk.file);
+  for (const dep of chunk.imports ?? []) visit(dep, depth);
+  if (depth === 0) for (const dep of chunk.dynamicImports ?? []) visit(dep, depth + 1);
+};
+visit('src/App.tsx');
+if (!preload.size) throw new Error('The workspace chunk (src/App.tsx) is missing from the build.');
+const preloadTags = [...preload]
+  .map((file) => `<link rel="modulepreload" crossorigin href="/${file}" />`)
+  .join('');
 await writeFile(
   'dist/app.html',
-  shell.replace('</head>', '<meta name="robots" content="noindex,nofollow" /></head>'),
+  shell.replace(
+    '</head>',
+    `<meta name="robots" content="noindex,nofollow" />${preloadTags}</head>`,
+  ),
 );
+// The manifest is a build detail, not something to publish.
+await rm('dist/.vite', { recursive: true, force: true });
 const pages = {
   '/': 'Conversations to orders',
   '/contact': 'Contact',
@@ -36,7 +58,7 @@ for (const [path, title] of Object.entries(pages)) {
   if (start < 0 || end < start) throw new Error('Public page shell markers are missing.');
   const html = (
     shell.slice(0, start) +
-    `<div id="root">${renderPublic(path)}</div>` +
+    `<div id="root" data-prerendered="${path}">${renderPublic(path)}</div>` +
     shell.slice(end)
   )
     .replace(/<noscript>[\s\S]*?<\/noscript>/, '')

@@ -295,7 +295,7 @@ export function AgentFlow() {
             )}
           </div>
           <div
-            className="mt-4 h-1.5 overflow-hidden rounded-full bg-ink/[0.06]"
+            className="mt-4 h-2 overflow-hidden rounded-full bg-ink/[0.06] shadow-[inset_0_1px_2px_rgb(14_6_4/0.08)]"
             role="progressbar"
             aria-label="Setup progress"
             aria-valuemin={0}
@@ -303,34 +303,38 @@ export function AgentFlow() {
             aria-valuenow={done}
           >
             <div
-              className="h-full rounded-full bg-brand-500 transition-[width]"
+              className="h-full rounded-full bg-linear-to-r from-brand-400 to-brand-500 shadow-[inset_0_1px_0_rgb(255_255_255/0.35)] transition-[width] duration-700 ease-[var(--ease-soft)]"
               style={{ width: `${required.length ? (done / required.length) * 100 : 0}%` }}
             />
           </div>
           <details className="group mt-4" open={!!next}>
-            <summary className="cursor-pointer text-xs font-semibold text-stone-500 hover:text-ink">
+            <summary className="-ml-2 w-fit cursor-pointer rounded-full px-2 py-1 text-xs font-semibold text-stone-500 transition-colors select-none hover:bg-ink/5 hover:text-ink">
               Show all steps
             </summary>
-            <ol className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+            <ol className="stagger mt-3 grid gap-2.5 sm:grid-cols-2 xl:grid-cols-3">
               {flow.setup.map((step, index) => (
                 <li key={step.id}>
                   <button
                     type="button"
                     onClick={() => go(step.page)}
                     className={cn(
-                      'flex h-full w-full items-start gap-3 rounded-xl border p-3 text-left transition-colors',
+                      'lift flex h-full w-full items-start gap-3 rounded-2xl border p-3 text-left transition-[background-color,border-color,box-shadow,transform] duration-300 ease-[var(--ease-soft)]',
                       step.id === next?.id
-                        ? 'border-brand-500/60 bg-brand-500/[0.06]'
-                        : 'border-white bg-white/50 hover:bg-white',
+                        ? 'border-brand-500/60 bg-brand-50 shadow-[0_14px_28px_-18px_rgb(255_105_44/0.9)]'
+                        : 'border-white bg-white/60 hover:bg-white',
                     )}
                   >
                     <span
                       className={cn(
                         'mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full text-[11px] font-bold',
-                        step.done ? 'bg-success-700 text-white' : 'bg-ink/[0.06] text-stone-600',
+                        step.done
+                          ? 'bg-success-700 text-white shadow-[0_6px_12px_-6px_rgb(23_124_74/0.9)]'
+                          : step.id === next?.id
+                            ? 'bg-ink text-cream shadow-[0_6px_12px_-6px_rgb(14_6_4/0.7)]'
+                            : 'bg-ink/[0.06] text-stone-600',
                       )}
                     >
-                      {step.done ? <Check className="size-3.5" /> : index + 1}
+                      {step.done ? <Check className="pop-spin size-3.5" /> : index + 1}
                       <span className="sr-only">{step.done ? ' (done)' : ' (not done)'}</span>
                     </span>
                     <span className="min-w-0">
@@ -366,16 +370,19 @@ export function AgentFlow() {
           </div>
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-[11px] text-stone-500">
             {(['ready', 'attention', 'off', 'fixed'] as FlowStatus[]).map((status) => (
-              <span key={status} className="inline-flex items-center gap-1.5">
+              <span
+                key={status}
+                className="inline-flex items-center gap-1.5 rounded-full bg-white/70 py-1 pr-2.5 pl-2 shadow-[0_0_0_1px_rgb(14_6_4/0.05)]"
+              >
                 <span className={cn('size-2 rounded-full', STATUS_STYLE[status].dot)} />
                 {STATUS_STYLE[status].label}
               </span>
             ))}
             {flow && (
-              <span className="hidden items-center gap-1 rounded-[9px] border border-ink/[0.08] bg-white/80 p-1 md:inline-flex">
+              <span className="hidden items-center gap-0.5 rounded-full border border-ink/[0.08] bg-white/85 p-1 shadow-[inset_0_1px_0_#fff,0_6px_14px_-10px_rgb(14_6_4/0.35)] md:inline-flex">
                 <button
                   type="button"
-                  className="flex size-7 items-center justify-center rounded-md text-stone-600 hover:bg-ink/5"
+                  className="flex size-7 items-center justify-center rounded-full text-stone-600 transition-[background-color,color,scale] duration-200 hover:bg-ink/5 hover:text-ink active:scale-90"
                   aria-label="Zoom out"
                   onClick={() => changeZoom(zoom - 0.1)}
                 >
@@ -383,7 +390,10 @@ export function AgentFlow() {
                 </button>
                 <button
                   type="button"
-                  className="flex h-7 items-center gap-1 rounded-md px-2 text-[11px] font-semibold text-stone-600 hover:bg-ink/5"
+                  className={cn(
+                    'flex h-7 items-center gap-1 rounded-full px-2.5 text-[11px] font-semibold tabular-nums text-stone-600 transition-colors duration-200 hover:bg-ink/5 hover:text-ink',
+                    autoFit && 'bg-ink text-cream hover:bg-ink-soft hover:text-cream',
+                  )}
                   aria-label="Fit to width"
                   onClick={() => setAutoFit(true)}
                 >
@@ -392,7 +402,7 @@ export function AgentFlow() {
                 </button>
                 <button
                   type="button"
-                  className="flex size-7 items-center justify-center rounded-md text-stone-600 hover:bg-ink/5"
+                  className="flex size-7 items-center justify-center rounded-full text-stone-600 transition-[background-color,color,scale] duration-200 hover:bg-ink/5 hover:text-ink active:scale-90"
                   aria-label="Zoom in"
                   onClick={() => changeZoom(zoom + 0.1)}
                 >
@@ -403,14 +413,14 @@ export function AgentFlow() {
           </div>
         </div>
         {replay?.message.explanation && (
-          <div className="flex items-start justify-between gap-3 border-b border-brand-500/20 bg-brand-500/[0.06] px-5 py-3 text-[13px] sm:px-6">
+          <div className="flex items-center justify-between gap-3 border-b border-brand-500/20 bg-brand-500/[0.07] px-5 py-3 text-[13px] sm:px-6">
             <p className="min-w-0 text-stone-700">
               <span className="font-semibold text-ink">Showing one reply’s path · </span>
               {explanationHeadline(replay.message.explanation)}
             </p>
             <button
               type="button"
-              className="inline-flex shrink-0 items-center gap-1 text-xs font-semibold text-stone-600 hover:text-ink"
+              className="inline-flex shrink-0 items-center gap-1 rounded-full bg-white/90 px-3 py-1.5 text-xs font-semibold text-stone-700 shadow-[0_0_0_1px_rgb(14_6_4/0.06),0_6px_14px_-10px_rgb(14_6_4/0.4)] transition-colors hover:bg-ink hover:text-cream"
               onClick={() => setReplay(null)}
             >
               <X className="size-3.5" />
@@ -454,7 +464,7 @@ export function AgentFlow() {
                 </div>
               </div>
             </div>
-            <ol className="space-y-2 p-4 md:hidden" aria-label="Bot flow steps">
+            <ol className="stagger space-y-2 p-4 md:hidden" aria-label="Bot flow steps">
               {MOBILE_ORDER.map((id) => {
                 const node = nodes.get(id);
                 if (!node) return null;
@@ -467,13 +477,14 @@ export function AgentFlow() {
                       aria-pressed={selected === id}
                       onClick={() => setSelected(id)}
                       className={cn(
-                        'flex w-full items-center gap-3 rounded-xl border-2 bg-white/80 p-3 text-left',
+                        'flex w-full items-center gap-3 rounded-2xl border-2 bg-white/80 p-3 text-left shadow-[0_10px_22px_-18px_rgb(14_6_4/0.45)] transition-[opacity,background-color,box-shadow,scale] duration-300 active:scale-[0.98]',
                         STATUS_STYLE[node.status].ring,
-                        selected === id && 'ring-2 ring-ink/70',
+                        selected === id &&
+                          'bg-white ring-2 ring-ink/80 ring-offset-2 ring-offset-white',
                         !onPath(id) && 'opacity-40',
                       )}
                     >
-                      <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-ink text-brand-500">
+                      <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-ink text-brand-500 shadow-[0_8px_16px_-10px_rgb(14_6_4/0.7)]">
                         <Icon className="size-4" />
                       </span>
                       <span className="min-w-0 flex-1">
@@ -494,6 +505,9 @@ export function AgentFlow() {
                           className={cn(
                             'size-2 shrink-0 rounded-full',
                             STATUS_STYLE[node.status].dot,
+                            BOX[id].shape === 'trigger' &&
+                              node.status === 'ready' &&
+                              'live-dot text-success-700',
                           )}
                         />
                         <span className="truncate">{node.statusLabel}</span>
@@ -532,11 +546,11 @@ export function AgentFlow() {
               onTest={() => navigate('playground')}
             />
             {replay?.message.explanation && (
-              <section className="card p-5 sm:p-6" aria-labelledby="why-title">
+              <section className="step-in card p-5 sm:p-6" aria-labelledby="why-title">
                 <h2 id="why-title" className="panel-title">
                   Why this reply
                 </h2>
-                <p className="mt-2 rounded-xl border border-white bg-white/60 p-3 text-[13px] leading-relaxed text-stone-700 whitespace-pre-wrap break-words">
+                <p className="bubble-them bubble-in-left mt-3 px-4 py-3 text-[13px] leading-relaxed whitespace-pre-wrap break-words text-stone-700">
                   {replay.message.text}
                 </p>
                 <ReplyExplanation explanation={replay.message.explanation} className="mt-4" />
@@ -664,11 +678,11 @@ function CanvasNode({
   const position = { left: box.x, top: box.y, width: box.w, height: box.h };
   const badge =
     node.status === 'attention' ? (
-      <span className="absolute -right-2 -top-2 flex size-5 items-center justify-center rounded-full bg-brand-500 text-white shadow">
+      <span className="pop-in absolute -top-2 -right-2 flex size-5 items-center justify-center rounded-full bg-brand-500 text-ink shadow-[0_6px_12px_-4px_rgb(255_105_44/0.9)] ring-2 ring-white">
         <CircleAlert className="size-3.5" />
       </span>
     ) : node.status === 'fixed' ? (
-      <span className="absolute -right-2 -top-2 flex size-5 items-center justify-center rounded-full bg-ink/80 text-cream shadow">
+      <span className="absolute -top-2 -right-2 flex size-5 items-center justify-center rounded-full bg-ink text-cream shadow-[0_6px_12px_-6px_rgb(14_6_4/0.8)] ring-2 ring-white">
         <Lock className="size-3" />
       </span>
     ) : null;
@@ -687,11 +701,14 @@ function CanvasNode({
         aria-pressed={selected}
         aria-label={label}
         onClick={onSelect}
-        className={cn(common, 'flex flex-col items-center text-center')}
+        className={cn(common, 'group flex flex-col items-center text-center')}
         style={{ ...position, height: box.h + 64 }}
       >
         <span
-          className={cn('relative flex size-[72px] items-center justify-center rounded-full', ring)}
+          className={cn(
+            'relative flex size-[72px] items-center justify-center rounded-full transition-transform duration-300 ease-[var(--ease-spring)] group-hover:scale-105',
+            ring,
+          )}
         >
           <Icon className="size-7 text-stone-700" />
           {badge}
@@ -710,11 +727,14 @@ function CanvasNode({
         aria-pressed={selected}
         aria-label={label}
         onClick={onSelect}
-        className={cn(common, 'flex flex-col items-center')}
+        className={cn(common, 'group flex flex-col items-center')}
         style={{ ...position, height: box.h + 40 }}
       >
         <span
-          className={cn('relative flex size-[104px] items-center justify-center rounded-2xl', ring)}
+          className={cn(
+            'relative flex size-[104px] items-center justify-center rounded-3xl transition-transform duration-300 ease-[var(--ease-spring)] group-hover:scale-105',
+            ring,
+          )}
         >
           <Icon className="size-9 text-success-700" />
           {badge}
@@ -731,19 +751,20 @@ function CanvasNode({
       onClick={onSelect}
       className={cn(
         common,
-        'flex items-center gap-2.5 px-3 text-left',
+        'flex items-center gap-2.5 px-3 text-left transition-[opacity,translate] duration-300 ease-[var(--ease-soft)] hover:-translate-y-0.5',
         ring,
         box.shape === 'trigger' ? 'rounded-l-[44px] rounded-r-2xl pl-4' : 'rounded-2xl',
+        box.shape === 'agent' && 'rounded-[26px] shadow-[0_22px_44px_-26px_rgb(14_6_4/0.55)]',
       )}
       style={position}
     >
       {box.shape === 'trigger' && (
-        <Zap className="absolute -left-5 top-1/2 size-4 -translate-y-1/2 fill-brand-500 text-brand-500" />
+        <Zap className="absolute top-1/2 -left-5 size-4 -translate-y-1/2 fill-brand-500 text-brand-500" />
       )}
       <span
         className={cn(
-          'flex shrink-0 items-center justify-center rounded-xl bg-ink text-brand-500',
-          box.shape === 'agent' ? 'size-12' : 'size-9',
+          'flex shrink-0 items-center justify-center rounded-xl bg-ink text-brand-500 shadow-[0_8px_16px_-10px_rgb(14_6_4/0.7)]',
+          box.shape === 'agent' ? 'size-12 -rotate-6 rounded-2xl' : 'size-9',
         )}
       >
         <Icon className={box.shape === 'agent' ? 'size-6' : 'size-[18px]'} />
@@ -752,7 +773,9 @@ function CanvasNode({
         <span
           className={cn(
             'line-clamp-2 font-semibold leading-tight text-ink',
-            box.shape === 'agent' ? 'text-[17px]' : 'text-[13.5px]',
+            box.shape === 'agent'
+              ? 'font-serif text-[24px] leading-[1.05] font-normal tracking-[-0.01em]'
+              : 'text-[13.5px]',
           )}
         >
           {node.title}
@@ -764,7 +787,13 @@ function CanvasNode({
             style.text,
           )}
         >
-          <span className={cn('size-1.5 rounded-full', style.dot)} />
+          <span
+            className={cn(
+              'size-1.5 rounded-full',
+              style.dot,
+              box.shape === 'trigger' && node.status === 'ready' && 'live-dot text-success-700',
+            )}
+          />
           {node.statusLabel}
         </span>
       </span>
@@ -777,16 +806,14 @@ function List({ title, items, icon: Icon }: { title: string; items: string[]; ic
   if (!items.length) return null;
   return (
     <div>
-      <h3 className="text-[11px] font-semibold uppercase tracking-[0.6px] text-stone-400">
-        {title}
-      </h3>
-      <ul className="mt-2 space-y-1.5 text-[13px] leading-relaxed text-stone-600">
+      <h3 className="eyebrow">{title}</h3>
+      <ul className="stagger mt-2 space-y-1.5 text-[13px] leading-relaxed text-stone-600">
         {items.map((item) => (
           <li key={item} className="flex gap-2">
             {Icon ? (
               <Icon className="mt-[3px] size-3.5 shrink-0 text-stone-400" />
             ) : (
-              <span className="mt-[7px] size-1.5 shrink-0 rounded-full bg-stone-300" />
+              <span className="mt-[7px] size-1.5 shrink-0 rounded-full bg-brand-400" />
             )}
             <span>{item}</span>
           </li>
@@ -890,7 +917,7 @@ function Inspector({
     <section className="card p-5 sm:p-6" aria-labelledby="inspector-title" aria-live="polite">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex min-w-0 items-center gap-3">
-          <span className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-ink text-brand-500">
+          <span className="flex size-11 shrink-0 -rotate-6 items-center justify-center rounded-xl bg-ink text-brand-500 shadow-[0_10px_20px_-10px_rgb(14_6_4/0.75)]">
             <Icon className="size-5" />
           </span>
           <div className="min-w-0">
@@ -912,7 +939,7 @@ function Inspector({
             {node.statusLabel}
           </Badge>
           {node.page && (
-            <button className="btn" onClick={onOpen}>
+            <button className="btn btn-ink" onClick={onOpen}>
               Open {node.pageLabel}
               <ArrowRight className="size-4" />
             </button>
@@ -920,19 +947,19 @@ function Inspector({
         </div>
       </div>
       {node.todo && (
-        <p className="mt-4 flex gap-2 rounded-xl border border-brand-500/25 bg-brand-500/[0.07] p-3 text-[13px] text-brand-800">
+        <p className="mt-4 flex gap-2.5 rounded-2xl border border-brand-500/25 bg-brand-500/[0.07] p-3.5 text-[13px] text-brand-800">
           <CircleAlert className="mt-0.5 size-4 shrink-0 text-brand-600" />
           {node.todo}
         </p>
       )}
       {!node.editable && (
-        <p className="mt-4 flex gap-2 rounded-xl border border-ink/[0.08] bg-ink/[0.03] p-3 text-[13px] text-stone-600">
+        <p className="mt-4 flex gap-2.5 rounded-2xl border border-ink/[0.08] bg-ink/[0.03] p-3.5 text-[13px] text-stone-600">
           <Lock className="mt-0.5 size-4 shrink-0 text-stone-400" />
           Built into Orderly. You can’t change this part, but it explains how replies are produced.
         </p>
       )}
       {notes.length > 0 && (
-        <div className="mt-4 rounded-xl border border-brand-500/20 bg-white/70 p-3">
+        <div className="mt-4 rounded-2xl border border-brand-500/20 bg-white/80 p-3.5 shadow-[0_12px_24px_-18px_rgb(255_105_44/0.7)]">
           <List title="In this reply" items={notes} />
         </div>
       )}
@@ -943,10 +970,8 @@ function Inspector({
       </div>
       {node.facts.length > 0 && (
         <div className="mt-5">
-          <h3 className="text-[11px] font-semibold uppercase tracking-[0.6px] text-stone-400">
-            Current settings
-          </h3>
-          <dl className="mt-2 divide-y divide-ink/[0.05] rounded-xl border border-white bg-white/50">
+          <h3 className="eyebrow">Current settings</h3>
+          <dl className="mt-2 divide-y divide-ink/[0.05] rounded-2xl border border-white bg-white/60 shadow-[0_10px_24px_-20px_rgb(14_6_4/0.4)]">
             {node.facts.map((fact) => (
               <div
                 key={fact.label}
@@ -1000,7 +1025,7 @@ function RecentReplies({
         Pick a recent bot reply to light up the path it took and see the reason.
       </p>
       {items.length ? (
-        <ul className="mt-4 space-y-2">
+        <ul className="stagger mt-4 space-y-2">
           {items.map((item) => (
             <li key={item.message.id}>
               <button
@@ -1008,26 +1033,26 @@ function RecentReplies({
                 aria-pressed={selected === item.message.id}
                 onClick={() => onSelect(item)}
                 className={cn(
-                  'w-full rounded-xl border p-3 text-left transition-colors',
+                  'group lift w-full rounded-2xl border p-3 text-left transition-[background-color,border-color,box-shadow,transform] duration-300 ease-[var(--ease-soft)]',
                   selected === item.message.id
-                    ? 'border-brand-500/60 bg-brand-500/[0.06]'
-                    : 'border-white bg-white/50 hover:bg-white',
+                    ? 'border-ink bg-ink shadow-[0_8px_18px_-8px_rgb(14_6_4/0.7)]'
+                    : 'border-white bg-white/60 hover:bg-white',
                 )}
               >
-                <span className="flex items-center justify-between gap-2 text-[11px] text-stone-500">
-                  <span className="truncate font-semibold text-stone-700">
+                <span className="flex items-center justify-between gap-2 text-[11px] text-stone-500 group-aria-pressed:text-cream/60">
+                  <span className="truncate font-semibold text-stone-700 group-aria-pressed:text-cream">
                     {item.customerName || 'Customer'}
                   </span>
-                  <span className="shrink-0">
+                  <span className="shrink-0 font-mono text-[10.5px]">
                     {item.channel === 'demo' ? 'Test chat' : 'WhatsApp'} ·{' '}
                     {shortDate(item.message.createdAt)}
                   </span>
                 </span>
-                <span className="mt-1 line-clamp-2 text-[12.5px] text-stone-700">
+                <span className="mt-1 line-clamp-2 text-[12.5px] text-stone-700 group-aria-pressed:text-cream/90">
                   {item.message.text}
                 </span>
                 {item.message.explanation && (
-                  <span className="mt-1.5 line-clamp-2 text-[11.5px] text-stone-500">
+                  <span className="mt-1.5 line-clamp-2 text-[11.5px] text-stone-500 group-aria-pressed:text-brand-300">
                     {explanationHeadline(item.message.explanation)}
                   </span>
                 )}
@@ -1036,7 +1061,7 @@ function RecentReplies({
           ))}
         </ul>
       ) : (
-        <div className="mt-4 rounded-xl border border-dashed border-ink/10 p-4 text-[13px] text-stone-500">
+        <div className="mt-4 rounded-2xl border border-dashed border-ink/15 bg-paper/70 p-4 text-[13px] text-stone-500">
           No explained replies yet. New bot replies record why they were sent.
           <button className="btn mt-3 w-full" onClick={onTest}>
             Send a test message
@@ -1060,13 +1085,15 @@ function PlatformChecks({ checks }: { checks: NonNullable<Flow['platform']> }) {
       <p className="mt-1 text-xs leading-relaxed text-stone-500">
         Set by the platform administrator on the server. Only whether each one is set is shown.
       </p>
-      <ul className="mt-4 space-y-2.5">
+      <ul className="stagger mt-4 space-y-2.5">
         {checks.map((check) => (
           <li key={check.id} className="flex gap-2.5 text-[13px]">
             <span
               className={cn(
-                'mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full',
-                check.ok ? 'bg-success-700/10 text-success-700' : 'bg-ink/[0.06] text-stone-400',
+                'pop-in mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full',
+                check.ok
+                  ? 'bg-success-700 text-white shadow-[0_6px_12px_-6px_rgb(23_124_74/0.9)]'
+                  : 'bg-ink/[0.06] text-stone-400',
               )}
             >
               {check.ok ? <Check className="size-3" /> : <X className="size-3" />}

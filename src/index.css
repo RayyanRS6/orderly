@@ -1,16 +1,25 @@
 @import 'tailwindcss';
 
+/* ── Tokens ────────────────────────────────────────────────────────────────
+   Warm cream canvas, near-black ink, one orange. Display type is Instrument
+   Serif (one weight, condensed), UI type is Inter Tight. */
 @theme {
   --font-sans:
-    'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
-    sans-serif;
-  --font-serif: 'Playfair Display', Georgia, 'Times New Roman', serif;
+    'Inter Tight Variable', 'Inter Tight', ui-sans-serif, system-ui, -apple-system,
+    BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-serif:
+    'Instrument Serif', 'Instrument Serif Fallback', 'Instrument Serif Fallback Android', ui-serif,
+    Georgia, serif;
+  --font-mono: ui-monospace, SFMono-Regular, 'Cascadia Mono', Menlo, Consolas, monospace;
 
   /* Studio surfaces */
   --color-canvas: #efebe8;
   --color-ink: #0e0604;
   --color-ink-soft: #251613;
+  --color-ink-2: #1b100d;
   --color-cream: #faf7f5;
+  --color-paper: #f7f4f1;
+  --color-sun: #f5b71f;
 
   /* Warm studio neutrals. Replaces Tailwind's stone scale app-wide so every
      text, border and muted surface picks up the same brown-grey undertone. */
@@ -49,44 +58,72 @@
   --color-success-800: #11613a;
   --color-success-900: #0c4a2c;
 
-  /* Notifications slide up into the bottom-right corner. */
-  --animate-toast-in: toast-in 180ms ease-out;
-  @keyframes toast-in {
-    from {
-      opacity: 0;
-      transform: translateY(8px);
-    }
+  --ease-soft: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --ease-spring: cubic-bezier(0.34, 1.45, 0.64, 1);
+
+  /* Notifications spring up into the bottom-right corner (keyframes below). */
+  --animate-toast-in: toast-in 0.5s var(--ease-spring) backwards;
+}
+
+/* Top level, so they are emitted even when no `animate-*` utility uses them. */
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 14px, 0) scale(0.94);
   }
+}
+
+/* Width-matched fallbacks, so headings break on the same words before and after
+   Instrument Serif loads. Instrument Serif is condensed: Times needs 82% to match,
+   Android's wider Noto Serif about 72%. */
+@font-face {
+  font-family: 'Instrument Serif Fallback';
+  src: local('Times New Roman'), local('Times');
+  size-adjust: 82%;
+}
+@font-face {
+  font-family: 'Instrument Serif Fallback Android';
+  src: local('Noto Serif'), local('NotoSerif-Regular'), local('Droid Serif');
+  size-adjust: 72%;
 }
 
 @layer base {
   :root {
     color-scheme: light;
     font-family: var(--font-sans);
+    font-feature-settings: 'ss01', 'cv11';
     color: var(--color-stone-800);
     background: var(--color-canvas);
     font-synthesis: none;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    text-size-adjust: 100%;
 
     --glass-bg: rgba(255, 255, 255, 0.65);
-    --glass-bg-hover: rgba(255, 255, 255, 0.82);
-    --glass-border: rgba(255, 255, 255, 0.8);
+    --glass-bg-hover: rgba(255, 255, 255, 0.8);
+    --glass-border: rgba(255, 255, 255, 0.9);
     --glass-shadow:
-      0 8px 32px -8px rgba(14, 6, 4, 0.05), 0 1px 3px rgba(14, 6, 4, 0.02),
-      inset 0 1px 1px rgba(255, 255, 255, 0.95);
-    --accent-muted: rgba(255, 105, 44, 0.12);
+      inset 0 1px 0 rgba(255, 255, 255, 1), 0 30px 60px -40px rgba(14, 6, 4, 0.32),
+      0 10px 24px -14px rgba(14, 6, 4, 0.1);
+    --accent-muted: rgba(255, 105, 44, 0.16);
   }
   * {
     box-sizing: border-box;
   }
-  html {
+  /* `clip`, not `hidden`: hidden turns body into its own scroll container, which
+     stops the sticky workspace header from sticking. Older browsers keep `hidden`. */
+  html,
+  body {
     overflow-x: hidden;
+    overflow-x: clip;
+  }
+  /* Keep focused and scrolled-to elements clear of the 72px sticky header. */
+  html {
+    scroll-padding-top: 88px;
   }
   body {
     margin: 0;
     min-width: 0;
-    overflow-x: hidden;
     background: var(--color-canvas);
   }
 
@@ -99,53 +136,27 @@
   }
 
   ::-webkit-scrollbar,
-  *::-webkit-scrollbar,
-  div::-webkit-scrollbar,
-  section::-webkit-scrollbar,
-  textarea::-webkit-scrollbar {
+  *::-webkit-scrollbar {
     width: 6px;
     height: 6px;
   }
-
   ::-webkit-scrollbar-track,
-  *::-webkit-scrollbar-track,
-  div::-webkit-scrollbar-track,
-  section::-webkit-scrollbar-track,
-  textarea::-webkit-scrollbar-track {
+  *::-webkit-scrollbar-track {
     background: transparent;
   }
-
   ::-webkit-scrollbar-thumb,
-  *::-webkit-scrollbar-thumb,
-  div::-webkit-scrollbar-thumb,
-  section::-webkit-scrollbar-thumb,
-  textarea::-webkit-scrollbar-thumb {
+  *::-webkit-scrollbar-thumb {
     background-color: rgba(108, 98, 93, 0.3);
     border-radius: 9999px;
-    transition: background-color 0.2s ease-in-out;
   }
-
   ::-webkit-scrollbar-thumb:hover,
-  *::-webkit-scrollbar-thumb:hover,
-  div::-webkit-scrollbar-thumb:hover,
-  section::-webkit-scrollbar-thumb:hover,
-  textarea::-webkit-scrollbar-thumb:hover {
+  *::-webkit-scrollbar-thumb:hover {
     background-color: rgba(108, 98, 93, 0.55);
   }
-
-  ::-webkit-scrollbar-thumb:active,
-  *::-webkit-scrollbar-thumb:active,
-  div::-webkit-scrollbar-thumb:active,
-  section::-webkit-scrollbar-thumb:active,
-  textarea::-webkit-scrollbar-thumb:active {
-    background-color: rgba(63, 53, 49, 0.8);
-  }
-
   ::-webkit-scrollbar-corner,
   *::-webkit-scrollbar-corner {
     background: transparent;
   }
-
   ::-webkit-scrollbar-button,
   *::-webkit-scrollbar-button {
     display: none;
@@ -157,20 +168,6 @@
   .custom-scrollbar {
     scrollbar-width: thin;
     scrollbar-color: rgba(108, 98, 93, 0.35) transparent;
-  }
-  .custom-scrollbar::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
-  }
-  .custom-scrollbar::-webkit-scrollbar-track {
-    background: transparent;
-  }
-  .custom-scrollbar::-webkit-scrollbar-thumb {
-    background-color: rgba(108, 98, 93, 0.3);
-    border-radius: 9999px;
-  }
-  .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-    background-color: rgba(108, 98, 93, 0.55);
   }
 
   /* Dark scrollbars for dark surfaces (e.g. sidebar) */
@@ -185,7 +182,6 @@
     scrollbar-width: thin;
     scrollbar-color: rgba(255, 255, 255, 0.15) transparent;
   }
-
   .custom-scrollbar-dark::-webkit-scrollbar-thumb,
   aside::-webkit-scrollbar-thumb,
   aside *::-webkit-scrollbar-thumb,
@@ -196,20 +192,12 @@
     background-color: rgba(255, 255, 255, 0.15);
   }
 
-  .custom-scrollbar-dark::-webkit-scrollbar-thumb:hover,
-  aside::-webkit-scrollbar-thumb:hover,
-  aside *::-webkit-scrollbar-thumb:hover,
-  .bg-ink::-webkit-scrollbar-thumb:hover,
-  .bg-ink *::-webkit-scrollbar-thumb:hover,
-  [data-theme='dark']::-webkit-scrollbar-thumb:hover,
-  [data-theme='dark'] *::-webkit-scrollbar-thumb:hover {
-    background-color: rgba(255, 255, 255, 0.3);
-  }
   button,
   input,
   select,
   textarea {
     font: inherit;
+    font-feature-settings: inherit;
   }
   button,
   a {
@@ -226,13 +214,13 @@
   a:focus-visible,
   summary:focus-visible {
     outline: 2px solid var(--color-brand-500);
-    outline-offset: 2px;
+    outline-offset: 3px;
   }
   input:focus,
   select:focus,
   textarea:focus {
     outline: none;
-    border-color: rgba(14, 6, 4, 0.2);
+    border-color: rgba(255, 105, 44, 0.55);
     box-shadow: 0 0 0 3px var(--accent-muted);
   }
   input[type='checkbox'],
@@ -249,41 +237,62 @@
   }
   ::selection {
     background: var(--color-brand-500);
-    color: #fff;
+    color: var(--color-ink);
   }
 }
 
 @layer components {
+  /* ── Buttons ──
+     Pills that lift on hover and squash on press. Primary is the "candy" button:
+     a top highlight, a bottom lip and an orange glow under it. */
   .btn {
     display: inline-flex;
-    min-height: 38px;
+    min-height: 40px;
     align-items: center;
     justify-content: center;
     gap: 7px;
-    border-radius: 9px;
-    border: 1px solid rgba(14, 6, 4, 0.08);
-    background: rgba(255, 255, 255, 0.7);
-    padding: 8px 16px;
+    border-radius: 9999px;
+    border: 1px solid rgba(14, 6, 4, 0.1);
+    background: rgba(255, 255, 255, 0.78);
+    padding: 8px 18px;
     font-size: 13px;
     font-weight: 600;
     line-height: 1.25;
+    letter-spacing: -0.005em;
     color: var(--color-stone-800);
     box-shadow:
-      0 1px 2px rgba(14, 6, 4, 0.03),
-      inset 0 1px 0 rgba(255, 255, 255, 0.9);
+      inset 0 1px 0 rgba(255, 255, 255, 0.95),
+      0 1px 2px rgba(14, 6, 4, 0.04);
     transition:
-      background-color 0.15s ease,
-      border-color 0.15s ease,
-      color 0.15s ease,
-      transform 0.15s ease;
+      transform 0.3s var(--ease-soft),
+      box-shadow 0.3s var(--ease-soft),
+      background-color 0.2s ease,
+      border-color 0.2s ease,
+      color 0.2s ease;
   }
   .btn:hover {
     background: #fff;
-    border-color: rgba(14, 6, 4, 0.14);
+    border-color: rgba(14, 6, 4, 0.16);
     color: var(--color-ink);
+    box-shadow:
+      inset 0 1px 0 #fff,
+      0 10px 20px -12px rgba(14, 6, 4, 0.35);
+  }
+  /* Lifts only follow a real pointer, so a tapped button on a phone doesn't stay raised. */
+  @media (hover: hover) and (pointer: fine) {
+    .btn:hover {
+      transform: translateY(-1px);
+    }
+    .btn-primary:hover {
+      transform: translateY(-2px);
+    }
+    .icon-btn-glass:hover {
+      transform: translateY(-1px);
+    }
   }
   .btn:active {
-    transform: scale(0.98);
+    transform: translateY(0) scale(0.97);
+    transition-duration: 0.12s;
   }
   .btn:disabled {
     opacity: 0.5;
@@ -292,17 +301,27 @@
   /* A button whose own action is running keeps its colour and shows a spinner. */
   .btn[aria-busy='true'] {
     cursor: progress;
+    transform: none;
   }
   .btn-primary {
     border-color: transparent;
     background: var(--color-brand-500);
     color: var(--color-ink);
-    box-shadow: none;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.35),
+      inset 0 -2px 0 rgba(0, 0, 0, 0.1),
+      0 12px 24px -12px rgba(255, 105, 44, 0.85),
+      0 2px 4px rgba(14, 6, 4, 0.08);
   }
   .btn-primary:hover {
     border-color: transparent;
-    background: var(--color-brand-600);
+    background: #ff7a42;
     color: var(--color-ink);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.4),
+      inset 0 -2px 0 rgba(0, 0, 0, 0.1),
+      0 18px 30px -14px rgba(255, 105, 44, 0.95),
+      0 2px 4px rgba(14, 6, 4, 0.08);
   }
   .btn-quiet {
     border-color: transparent;
@@ -314,6 +333,24 @@
     border-color: transparent;
     background: rgba(14, 6, 4, 0.05);
     color: var(--color-ink);
+    box-shadow: none;
+  }
+  /* Ink pill for strong secondary actions on light surfaces. */
+  .btn-ink {
+    border-color: transparent;
+    background: var(--color-ink);
+    color: var(--color-cream);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.14),
+      0 10px 22px -12px rgba(14, 6, 4, 0.7);
+  }
+  .btn-ink:hover {
+    border-color: transparent;
+    background: var(--color-ink-soft);
+    color: #fff;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.14),
+      0 14px 26px -12px rgba(14, 6, 4, 0.8);
   }
 
   .icon-btn {
@@ -323,20 +360,21 @@
     flex-shrink: 0;
     align-items: center;
     justify-content: center;
-    border-radius: 9px;
+    border-radius: 9999px;
     border: 1px solid transparent;
     color: var(--color-stone-500);
     transition:
-      background-color 0.15s ease,
-      color 0.15s ease,
-      transform 0.15s ease;
+      background-color 0.2s ease,
+      color 0.2s ease,
+      transform 0.3s var(--ease-spring);
   }
   .icon-btn:hover {
-    background: rgba(255, 255, 255, 0.8);
+    background: rgba(255, 255, 255, 0.85);
     color: var(--color-ink);
   }
   .icon-btn:active {
-    transform: scale(0.95);
+    transform: scale(0.9);
+    transition-duration: 0.1s;
   }
   .icon-btn:disabled {
     opacity: 0.4;
@@ -349,44 +387,54 @@
     flex-shrink: 0;
     align-items: center;
     justify-content: center;
-    border-radius: 9px;
+    border-radius: 9999px;
     border: 1px solid var(--glass-border);
-    background: var(--glass-bg);
-    color: var(--color-stone-500);
+    background: rgba(255, 255, 255, 0.7);
+    color: var(--color-stone-600);
+    box-shadow:
+      inset 0 1px 0 #fff,
+      0 6px 14px -10px rgba(14, 6, 4, 0.35);
     transition:
-      background-color 0.15s ease,
-      color 0.15s ease;
+      background-color 0.2s ease,
+      color 0.2s ease,
+      transform 0.3s var(--ease-spring);
   }
   .icon-btn-glass:hover {
     background: #fff;
     color: var(--color-ink);
   }
+  .icon-btn-glass:active {
+    transform: scale(0.9);
+    transition-duration: 0.1s;
+  }
 
+  /* ── Fields ── */
   .input {
-    min-height: 38px;
+    min-height: 40px;
     width: 100%;
-    border-radius: 9px;
-    border: 1px solid rgba(14, 6, 4, 0.08);
-    background: rgba(255, 255, 255, 0.7);
+    border-radius: 12px;
+    border: 1px solid rgba(14, 6, 4, 0.1);
+    background: rgba(255, 255, 255, 0.8);
     padding: 8px 14px;
     font-size: 13px;
     line-height: 1.4;
     color: var(--color-ink);
+    box-shadow: inset 0 1px 2px rgba(14, 6, 4, 0.03);
     transition:
       background-color 0.2s ease,
       border-color 0.2s ease,
-      box-shadow 0.2s ease;
+      box-shadow 0.25s var(--ease-soft);
   }
   .input::placeholder {
     color: var(--color-stone-400);
   }
   .input:hover {
-    border-color: rgba(14, 6, 4, 0.14);
+    border-color: rgba(14, 6, 4, 0.18);
   }
   .input:focus {
     background: #fff;
-    border-color: rgba(14, 6, 4, 0.2);
-    box-shadow: 0 0 0 3px var(--accent-muted);
+    border-color: rgba(255, 105, 44, 0.6);
+    box-shadow: 0 0 0 4px var(--accent-muted);
   }
   .input:disabled {
     background: rgba(14, 6, 4, 0.04);
@@ -395,33 +443,109 @@
   .field-label {
     display: block;
     margin-bottom: 6px;
-    font-size: 12px;
+    font-size: 12.5px;
     font-weight: 600;
     color: var(--color-stone-600);
   }
 
-  /* Frosted glass panel. No backdrop-filter: the canvas behind cards is flat, so blur
-     would be invisible, and it would trap open dropdowns under the next card. */
+  /* ── Surfaces ──
+     .card is milky "fake" frosted glass: a white gradient, a white top edge and a
+     soft long shadow. No backdrop-filter, so it costs nothing to scroll and never
+     traps an open dropdown under the next card. */
   .card {
-    border-radius: 18px;
+    border-radius: 22px;
     border: 1px solid var(--glass-border);
-    background: var(--glass-bg);
+    background: linear-gradient(160deg, rgba(255, 255, 255, 0.82), rgba(255, 255, 255, 0.6));
     box-shadow: var(--glass-shadow);
+    transition: background-color 0.2s ease;
+  }
+  /* Interactive cards (a button or link styled as a card) lift toward the pointer. */
+  :is(a, button).card,
+  .lift {
     transition:
-      background-color 0.2s ease,
-      box-shadow 0.2s ease;
+      transform 0.45s var(--ease-soft),
+      box-shadow 0.45s var(--ease-soft),
+      border-color 0.2s ease;
   }
-  .card:hover {
-    background: var(--glass-bg-hover);
+  @media (hover: hover) and (pointer: fine) {
+    :is(a, button).card:hover,
+    .lift:hover {
+      transform: translateY(-3px);
+      box-shadow:
+        inset 0 1px 0 #fff,
+        0 36px 60px -36px rgba(14, 6, 4, 0.4),
+        0 12px 24px -14px rgba(14, 6, 4, 0.12);
+    }
   }
+  :is(a, button).card:active,
+  .lift:active {
+    transform: translateY(0) scale(0.99);
+    transition-duration: 0.12s;
+  }
+
+  /* Real backdrop blur, reserved for small surfaces over moving content (the
+     sticky header, menus, toasts). Lite devices get an opaque fill instead. */
+  .glass-bar {
+    background: rgba(243, 240, 237, 0.74);
+    -webkit-backdrop-filter: blur(16px) saturate(180%);
+    backdrop-filter: blur(16px) saturate(180%);
+  }
+  .glass-pop {
+    border: 1px solid rgba(255, 255, 255, 0.85);
+    background: rgba(255, 255, 255, 0.82);
+    box-shadow:
+      inset 0 1px 0 #fff,
+      0 24px 48px -22px rgba(14, 6, 4, 0.38),
+      0 4px 12px -4px rgba(14, 6, 4, 0.1);
+    -webkit-backdrop-filter: blur(14px) saturate(170%);
+    backdrop-filter: blur(14px) saturate(170%);
+  }
+  /* A menu opened inside the frosted header can only blur the header itself (it is the
+     backdrop root), so it gets an opaque fill there instead. */
+  .glass-bar .glass-pop {
+    background: rgba(252, 250, 248, 0.98);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  .lite .glass-bar {
+    background: rgba(243, 240, 237, 0.97);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  .lite .glass-pop {
+    background: rgba(252, 250, 248, 0.98);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+    .glass-bar {
+      background: rgba(243, 240, 237, 0.97);
+    }
+    .glass-pop {
+      background: rgba(252, 250, 248, 0.98);
+    }
+  }
+  /* Glass on dark surfaces: a tinted gradient and a highlight edge, no blur. */
+  .glass-dark {
+    background: linear-gradient(160deg, rgba(255, 255, 255, 0.085), rgba(255, 255, 255, 0.025) 60%);
+    border: 1px solid rgba(255, 255, 255, 0.09);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.07),
+      0 30px 60px -30px rgba(0, 0, 0, 0.7);
+  }
+
   /* Important callouts use the dark sidebar surface so they stand out from the canvas. */
   .notice {
     color-scheme: dark;
-    border-radius: 12px;
-    border: 1px solid rgba(255, 255, 255, 0.06);
-    background: var(--color-ink);
-    color: rgba(250, 247, 245, 0.72);
-    box-shadow: 0 8px 32px -8px rgba(14, 6, 4, 0.25);
+    border-radius: 18px;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    background:
+      radial-gradient(320px circle at 100% 0%, rgba(255, 105, 44, 0.2), transparent 70%),
+      linear-gradient(180deg, var(--color-ink-soft), var(--color-ink) 70%);
+    color: rgba(250, 247, 245, 0.74);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.06),
+      0 24px 48px -24px rgba(14, 6, 4, 0.55);
   }
   .notice .field-label {
     color: rgba(250, 247, 245, 0.55);
@@ -430,58 +554,88 @@
     border-color: rgba(255, 255, 255, 0.1);
     background: rgba(255, 255, 255, 0.05);
     color: var(--color-cream);
+    box-shadow: none;
   }
   .notice .input:focus {
-    border-color: rgba(255, 255, 255, 0.2);
+    border-color: rgba(255, 105, 44, 0.6);
     background: rgba(255, 255, 255, 0.08);
   }
   .notice .btn {
     border-color: rgba(255, 255, 255, 0.1);
     background: rgba(255, 255, 255, 0.06);
     color: var(--color-cream);
-    box-shadow: none;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
   }
   .notice .btn:hover {
-    border-color: rgba(255, 255, 255, 0.16);
+    border-color: rgba(255, 255, 255, 0.18);
     background: rgba(255, 255, 255, 0.12);
     color: #fff;
   }
+  .notice .btn-primary,
+  .notice .btn-primary:hover {
+    border-color: transparent;
+    background: var(--color-brand-500);
+    color: var(--color-ink);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.35),
+      inset 0 -2px 0 rgba(0, 0, 0, 0.1),
+      0 12px 24px -12px rgba(255, 105, 44, 0.85);
+  }
+  .notice .btn-primary:hover {
+    background: #ff7a42;
+  }
 
-  /* Checkbox drawn as a switch; the native input keeps keyboard and form behavior. */
+  /* Checkbox drawn as a switch; the native input keeps keyboard and form behavior.
+     The knob springs across (it overshoots a hair and settles). */
   .toggle {
     appearance: none;
     -webkit-appearance: none;
     flex-shrink: 0;
-    width: 34px;
-    height: 20px;
+    width: 36px;
+    height: 21px;
     margin: 0;
     border-radius: 9999px;
-    background-color: rgba(14, 6, 4, 0.15);
+    /* Off track at 3:1 against white and paper, so the switch stays findable. */
+    background-color: rgba(14, 6, 4, 0.45);
     background-image: radial-gradient(
       circle,
-      #fff 7px,
-      rgba(14, 6, 4, 0.15) 7.5px,
-      transparent 9px
+      #fff 7.5px,
+      rgba(14, 6, 4, 0.12) 8px,
+      transparent 9.5px
     );
-    background-size: 20px 20px;
+    background-size: 21px 21px;
     background-repeat: no-repeat;
     background-position: 0 50%;
-    box-shadow: none;
+    box-shadow: inset 0 1px 2px rgba(14, 6, 4, 0.12);
     cursor: pointer;
     transition:
-      background-color 0.2s ease,
-      background-position 0.2s ease;
+      background-color 0.25s ease,
+      background-position 0.4s var(--ease-spring);
+  }
+  .toggle:active {
+    background-size: 25px 21px;
   }
   .notice .toggle {
-    background-color: rgba(255, 255, 255, 0.16);
+    background-color: rgba(255, 255, 255, 0.38);
   }
   .toggle:checked,
   .notice .toggle:checked {
-    background-color: var(--color-brand-500);
+    background-color: var(--color-brand-600);
     background-position: 100% 50%;
   }
+  /* Windows contrast themes drop background images and colours, which would erase
+     the switch: show the native checkbox there instead. */
+  @media (forced-colors: active) {
+    .toggle {
+      appearance: auto;
+      -webkit-appearance: auto;
+      width: auto;
+      height: auto;
+      background: none;
+    }
+  }
   .toggle:focus {
-    box-shadow: none;
+    box-shadow: inset 0 1px 2px rgba(14, 6, 4, 0.12);
   }
   .toggle:focus-visible {
     outline: 2px solid var(--color-brand-500);
@@ -492,89 +646,809 @@
     cursor: not-allowed;
   }
 
+  /* ── Type ── */
   .page-title {
     font-family: var(--font-serif);
-    font-size: 26px;
-    font-weight: 700;
-    line-height: 1.2;
-    letter-spacing: -0.4px;
+    font-size: 34px;
+    font-weight: 400;
+    line-height: 1.02;
+    letter-spacing: -0.012em;
     color: var(--color-ink);
   }
   @media (min-width: 768px) {
     .page-title {
-      font-size: 30px;
+      font-size: 42px;
     }
   }
   .panel-title {
     font-family: var(--font-serif);
-    font-size: 19px;
-    font-weight: 700;
-    line-height: 1.3;
+    font-size: 24px;
+    font-weight: 400;
+    line-height: 1.1;
+    letter-spacing: -0.005em;
     color: var(--color-ink);
   }
+  /* Small uppercase kicker with the brand's square ember dot. */
   .eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
     font-size: 11px;
     font-weight: 600;
-    letter-spacing: 0.6px;
+    letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: var(--color-stone-400);
+    color: var(--color-stone-500);
+  }
+  .eyebrow::before {
+    content: '';
+    flex: none;
+    width: 6px;
+    height: 6px;
+    border-radius: 1.5px;
+    background: var(--color-brand-500);
   }
 
+  /* ── Segmented tabs: the selected tab flips to an ink pill. ── */
   .tab-group {
     display: inline-flex;
     max-width: 100%;
     align-items: center;
     gap: 2px;
     overflow-x: auto;
-    border-radius: 8px;
-    background: rgba(14, 6, 4, 0.05);
-    padding: 2px;
+    /* A pill on one line (the radius clamps to half the height); soft corners if it wraps. */
+    border-radius: 22px;
+    background: rgba(14, 6, 4, 0.06);
+    padding: 3px;
     scrollbar-width: none;
   }
   .tab-btn {
     display: inline-flex;
     align-items: center;
     white-space: nowrap;
-    border-radius: 6px;
-    padding: 5px 11px;
+    border-radius: 9999px;
+    padding: 6px 13px;
     font-size: 12px;
     font-weight: 600;
     color: var(--color-stone-500);
     transition:
-      background-color 0.15s ease,
-      color 0.15s ease;
+      background-color 0.2s ease,
+      color 0.2s ease,
+      box-shadow 0.25s var(--ease-soft),
+      transform 0.3s var(--ease-spring);
   }
   .tab-btn:hover {
     color: var(--color-ink);
+    background: rgba(14, 6, 4, 0.05);
   }
-  .tab-btn[aria-pressed='true'] {
-    background: #fff;
-    color: var(--color-ink);
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  .tab-btn:active {
+    transform: scale(0.94);
+    transition-duration: 0.1s;
+  }
+  .tab-btn[aria-pressed='true'],
+  .tab-btn[aria-selected='true'] {
+    background: var(--color-ink);
+    color: var(--color-cream);
+    box-shadow: 0 8px 18px -8px rgba(14, 6, 4, 0.7);
   }
 
+  /* ── Tables ── */
   .table-head {
-    border-bottom: 1px solid rgba(14, 6, 4, 0.06);
+    border-bottom: 1px solid rgba(14, 6, 4, 0.07);
     padding: 14px 20px 12px;
     text-align: left;
     white-space: nowrap;
-    font-size: 11.5px;
+    font-size: 11px;
     font-weight: 600;
-    letter-spacing: 0.6px;
+    letter-spacing: 0.12em;
     text-transform: uppercase;
     color: var(--color-stone-400);
   }
   .table-cell {
-    border-bottom: 1px solid rgba(14, 6, 4, 0.04);
+    border-bottom: 1px solid rgba(14, 6, 4, 0.05);
     padding: 14px 20px;
     font-size: 13px;
     color: var(--color-ink);
+    transition: background-color 0.2s ease;
   }
   tr:last-child > .table-cell {
     border-bottom: 0;
   }
+  tr:hover > .table-cell {
+    background-color: rgba(255, 255, 255, 0.55);
+  }
+
+  /* ── Chat bubbles (one corner flattened toward the sender) ── */
+  .bubble-them {
+    border-radius: 18px 18px 18px 6px;
+    background: #fff;
+    color: var(--color-ink);
+    box-shadow:
+      0 0 0 1px rgba(14, 6, 4, 0.06),
+      0 8px 18px -12px rgba(14, 6, 4, 0.35);
+  }
+  .bubble-us {
+    border-radius: 18px 18px 6px 18px;
+    background: var(--color-ink);
+    color: var(--color-cream);
+    box-shadow: 0 10px 20px -14px rgba(14, 6, 4, 0.7);
+  }
+  .bubble-brand {
+    border-radius: 18px 18px 6px 18px;
+    background: var(--color-brand-500);
+    color: var(--color-ink);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.3),
+      0 10px 20px -12px rgba(255, 105, 44, 0.8);
+  }
+
+  /* ── Sidebar links (dark slab). The current page flips to a cream pill. ── */
+  .side-link {
+    display: flex;
+    min-height: 40px;
+    width: 100%;
+    align-items: center;
+    gap: 12px;
+    border-radius: 12px;
+    padding: 0 12px;
+    text-align: left;
+    font-size: 13.5px;
+    font-weight: 500;
+    color: rgba(250, 247, 245, 0.66);
+    transition:
+      background-color 0.2s ease,
+      color 0.2s ease,
+      box-shadow 0.3s var(--ease-soft);
+  }
+  .side-link:hover {
+    background: rgba(255, 255, 255, 0.06);
+    color: #fff;
+  }
+  .side-link[aria-current='page'] {
+    background: var(--color-cream);
+    color: var(--color-ink);
+    font-weight: 600;
+    box-shadow:
+      inset 0 1px 0 #fff,
+      0 12px 24px -14px rgba(0, 0, 0, 0.9);
+  }
+  .side-link[aria-current='page'] > .lucide:first-child {
+    color: var(--color-brand-600);
+  }
+  @media (hover: hover) and (pointer: fine) {
+    .side-link:hover > .lucide:first-child {
+      transform: scale(1.12) rotate(-6deg);
+    }
+  }
+
+  /* Dialog and drawer backdrops: a warm dim with a light frost (full tier only). */
+  .dialog-overlay {
+    background: rgba(14, 6, 4, 0.42);
+    -webkit-backdrop-filter: blur(3px);
+    backdrop-filter: blur(3px);
+  }
+  .lite .dialog-overlay {
+    background: rgba(14, 6, 4, 0.55);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+
+  /* Loading placeholders breathe instead of sitting still. */
+  .skeleton {
+    background: rgba(14, 6, 4, 0.06);
+  }
+
+  /* ── Decorative backgrounds: static gradients only, never filter: blur. ── */
+  .canvas-glow {
+    background-color: var(--color-canvas);
+    background-image:
+      radial-gradient(640px circle at 92% -120px, rgba(255, 105, 44, 0.13), transparent 70%),
+      radial-gradient(520px circle at 62% -220px, rgba(245, 183, 31, 0.12), transparent 70%),
+      radial-gradient(700px circle at 30% -200px, rgba(255, 255, 255, 0.75), transparent 70%);
+    background-repeat: no-repeat;
+  }
+  .glow-dark {
+    background-image:
+      radial-gradient(360px circle at 92% 0px, rgba(255, 105, 44, 0.2), transparent 70%),
+      radial-gradient(300px circle at 0% 100%, rgba(255, 105, 44, 0.07), transparent 70%);
+    background-repeat: no-repeat;
+  }
+  /* Landing hero: warm glows over a grid that fades out around the chat card.
+     The canvas-coloured radial layer does the fading, so no mask is needed. */
+  .hero-backdrop {
+    background-color: var(--color-canvas);
+    /* Every layer fades out before the section's edges, so wide screens show no seams. */
+    background-image:
+      radial-gradient(36% 46% at 72% 46%, rgba(255, 105, 44, 0.16), transparent 70%),
+      radial-gradient(18% 26% at 86% 80%, rgba(245, 183, 31, 0.16), transparent 70%),
+      radial-gradient(30% 24% at 38% 32%, rgba(255, 255, 255, 0.7), transparent 70%),
+      radial-gradient(40% 62% at 70% 46%, transparent 20%, var(--color-canvas) 72%),
+      linear-gradient(to right, rgba(14, 6, 4, 0.05) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(14, 6, 4, 0.05) 1px, transparent 1px);
+    background-size:
+      auto,
+      auto,
+      auto,
+      auto,
+      64px 64px,
+      64px 64px;
+  }
+  /* On tall phone layouts, percentage ellipses stretch into streaks: use circles. */
+  @media (max-width: 1023px) {
+    .hero-backdrop {
+      background-image:
+        radial-gradient(340px circle at 70% 72%, rgba(255, 105, 44, 0.15), transparent 70%),
+        radial-gradient(260px circle at 15% 88%, rgba(245, 183, 31, 0.14), transparent 70%),
+        radial-gradient(420px circle at 60% 66%, transparent 30%, var(--color-canvas) 75%),
+        linear-gradient(to right, rgba(14, 6, 4, 0.05) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(14, 6, 4, 0.05) 1px, transparent 1px);
+      background-size:
+        auto,
+        auto,
+        auto,
+        48px 48px,
+        48px 48px;
+    }
+  }
+  .hero-grid {
+    background-image:
+      linear-gradient(to right, rgba(14, 6, 4, 0.05) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(14, 6, 4, 0.05) 1px, transparent 1px);
+    background-size: 64px 64px;
+    -webkit-mask-image: radial-gradient(ellipse 60% 60% at 75% 40%, #000 15%, transparent 72%);
+    mask-image: radial-gradient(ellipse 60% 60% at 75% 40%, #000 15%, transparent 72%);
+  }
 }
 
+/* ── Motion ────────────────────────────────────────────────────────────────
+   Rules: transform and opacity only; the un-animated style is the finished
+   look (reduced motion and lite devices show it); one-shot animations use
+   `backwards` fill so their GPU layer is released when they end; loops never
+   run on lite devices and most stop after a few beats. Layered, so a Tailwind
+   utility on the same element (position, display, animate-*) always wins. */
+
+@layer components {
+  @keyframes step-in {
+    from {
+      opacity: 0;
+      transform: translate3d(0, 10px, 0);
+    }
+  }
+  @keyframes rise {
+    from {
+      opacity: 0;
+      transform: translate3d(0, 22px, 0) scale(0.985);
+    }
+  }
+  @keyframes pop {
+    from {
+      opacity: 0;
+      transform: translate3d(0, 12px, 0) scale(0.92);
+    }
+  }
+  /* Small marks (checks, dots, counts): in from nothing with an overshoot. */
+  @keyframes pop-in {
+    0% {
+      opacity: 0;
+      transform: scale(0.4);
+    }
+    70% {
+      opacity: 1;
+      transform: scale(1.15);
+    }
+  }
+  @keyframes pop-spin {
+    0% {
+      opacity: 0;
+      transform: scale(0.3) rotate(-90deg);
+    }
+    70% {
+      opacity: 1;
+      transform: scale(1.18) rotate(8deg);
+    }
+  }
+  /* Numbers jump up into place. */
+  @keyframes pop-up {
+    0% {
+      opacity: 0;
+      transform: translateY(14px) scale(0.75);
+    }
+    65% {
+      opacity: 1;
+      transform: translateY(-3px) scale(1.05);
+    }
+  }
+  /* Chat bubbles grow from their tail corner. */
+  @keyframes bubble-in {
+    0% {
+      opacity: 0;
+      transform: translateY(8px) scale(0.9);
+    }
+    60% {
+      opacity: 1;
+    }
+  }
+  /* Dropdown menus and popovers. */
+  @keyframes menu-pop {
+    from {
+      opacity: 0;
+      transform: translateY(-4px) scale(0.96);
+    }
+  }
+  @keyframes menu-pop-up {
+    from {
+      opacity: 0;
+      transform: translateY(4px) scale(0.96);
+    }
+  }
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+  }
+  @keyframes fade-out {
+    to {
+      opacity: 0;
+    }
+  }
+  @keyframes dialog-in {
+    from {
+      opacity: 0;
+      transform: translate3d(0, 14px, 0) scale(0.96);
+    }
+  }
+  @keyframes dialog-out {
+    to {
+      opacity: 0;
+      transform: translate3d(0, 6px, 0) scale(0.98);
+    }
+  }
+  @keyframes drawer-in {
+    from {
+      transform: translate3d(-100%, 0, 0);
+    }
+  }
+  @keyframes drawer-out {
+    to {
+      transform: translate3d(-100%, 0, 0);
+    }
+  }
+  /* A ring that ripples out of a live dot. */
+  @keyframes live-ping {
+    0% {
+      opacity: 0.65;
+      transform: scale(0.6);
+    }
+    100% {
+      opacity: 0;
+      transform: scale(2.6);
+    }
+  }
+  /* Attention squish: rest, then a quick bounce. */
+  @keyframes pulse-squish {
+    0%,
+    70%,
+    100% {
+      transform: none;
+    }
+    80% {
+      transform: scale(1.12);
+    }
+    90% {
+      transform: scale(0.96);
+    }
+  }
+  @keyframes bob {
+    0%,
+    100% {
+      transform: translateY(0);
+    }
+    50% {
+      transform: translateY(-5px);
+    }
+  }
+  @keyframes wiggle {
+    0%,
+    100% {
+      transform: none;
+    }
+    20% {
+      transform: rotate(-12deg);
+    }
+    45% {
+      transform: rotate(9deg);
+    }
+    70% {
+      transform: rotate(-5deg);
+    }
+    85% {
+      transform: rotate(2deg);
+    }
+  }
+  /* A nudge, then a long rest. */
+  @keyframes nudge-x {
+    0%,
+    62%,
+    100% {
+      transform: none;
+    }
+    70% {
+      transform: translateX(4px);
+    }
+    78% {
+      transform: none;
+    }
+    86% {
+      transform: translateX(2px);
+    }
+  }
+  @keyframes twinkle {
+    0%,
+    100% {
+      transform: none;
+    }
+    40% {
+      transform: scale(1.2) rotate(12deg);
+    }
+    70% {
+      transform: scale(0.95) rotate(-4deg);
+    }
+  }
+  @keyframes shake-x {
+    0%,
+    100% {
+      transform: none;
+    }
+    20% {
+      transform: translateX(-4px);
+    }
+    40% {
+      transform: translateX(4px);
+    }
+    60% {
+      transform: translateX(-2px);
+    }
+    80% {
+      transform: translateX(2px);
+    }
+  }
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @keyframes bar-rise {
+    from {
+      transform: scaleY(0);
+    }
+  }
+  @keyframes tab-settle {
+    from {
+      scale: 0.92;
+    }
+  }
+  /* Success notifications give a happy little bump once they land. */
+  @keyframes bump {
+    30% {
+      scale: 1.03;
+    }
+    60% {
+      scale: 0.99;
+    }
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    /* Page entrance: whatever page mounts inside the workspace (and any element
+     marked .step-in) rises in, its sections cascading 45ms apart. */
+    .step-in,
+    .page-host > * > * {
+      animation: step-in 0.5s var(--ease-soft) backwards;
+    }
+    .page-host > * > :nth-child(2) {
+      animation-delay: 45ms;
+    }
+    .page-host > * > :nth-child(3) {
+      animation-delay: 90ms;
+    }
+    .page-host > * > :nth-child(4) {
+      animation-delay: 135ms;
+    }
+    .page-host > * > :nth-child(5) {
+      animation-delay: 180ms;
+    }
+    .page-host > * > :nth-child(n + 6) {
+      animation-delay: 220ms;
+    }
+
+    .enter-rise {
+      animation: rise 0.9s var(--ease-soft) var(--d, 0ms) backwards;
+    }
+    .enter-pop {
+      animation: pop 0.7s var(--ease-spring) var(--d, 0ms) backwards;
+    }
+    .pop-in {
+      animation: pop-in 0.55s var(--ease-spring) var(--d, 0ms) backwards;
+    }
+    .pop-spin {
+      animation: pop-spin 0.65s var(--ease-spring) var(--d, 0ms) backwards;
+    }
+    .pop-up {
+      animation: pop-up 0.8s var(--ease-spring) var(--d, 0ms) backwards;
+    }
+    /* Chart bars grow up from their baseline. */
+    .bar-rise {
+      transform-origin: 50% 100%;
+      animation: bar-rise 0.9s var(--ease-spring) var(--d, 0ms) backwards;
+    }
+
+    /* List children cascade in. Long lists only animate their first rows. */
+    .stagger > * {
+      animation: step-in 0.45s var(--ease-soft) backwards;
+    }
+    .stagger > :nth-child(2) {
+      animation-delay: 40ms;
+    }
+    .stagger > :nth-child(3) {
+      animation-delay: 80ms;
+    }
+    .stagger > :nth-child(4) {
+      animation-delay: 120ms;
+    }
+    .stagger > :nth-child(5) {
+      animation-delay: 160ms;
+    }
+    .stagger > :nth-child(6) {
+      animation-delay: 200ms;
+    }
+    .stagger > :nth-child(7) {
+      animation-delay: 240ms;
+    }
+    .stagger > :nth-child(8) {
+      animation-delay: 280ms;
+    }
+    /* Rows past the eighth finish instantly. Same animation name (not `none`), so a
+       row that moves up into the first eight on a refresh doesn't replay its entrance. */
+    .stagger > :nth-child(n + 9) {
+      animation-duration: 0s;
+      animation-delay: 0s;
+    }
+
+    /* Chat bubbles: incoming grow from the bottom-left, outgoing from the bottom-right. */
+    .bubble-in-left {
+      transform-origin: 0 100%;
+      animation: bubble-in 0.45s var(--ease-spring) var(--d, 0ms) backwards;
+    }
+    .bubble-in-right {
+      transform-origin: 100% 100%;
+      animation: bubble-in 0.45s var(--ease-spring) var(--d, 0ms) backwards;
+    }
+    /* Opening a conversation shouldn't pop its whole history: only the newest few
+     bubbles (put the class on the list's direct children) animate. */
+    :is(.bubble-in-left, .bubble-in-right):not(:nth-last-child(-n + 4)) {
+      /* Same name, zero time (not `none`): a bubble that moves back into the last few never replays. */
+      animation-duration: 0s;
+      animation-delay: 0s;
+    }
+
+    /* The selected tab settles into place; it replays each time the selection moves. */
+    .tab-btn[aria-pressed='true'],
+    .tab-btn[aria-selected='true'] {
+      animation: tab-settle 0.32s var(--ease-soft);
+    }
+    /* Toggles squish a little under the finger. */
+    .toggle:active:not(:disabled) {
+      scale: 0.92;
+    }
+    .toggle {
+      transition:
+        background-color 0.25s ease,
+        background-position 0.4s var(--ease-spring),
+        scale 0.15s ease-out;
+    }
+
+    .menu-pop {
+      animation: menu-pop 0.18s var(--ease-soft) backwards;
+    }
+    .menu-pop.origin-bottom {
+      animation-name: menu-pop-up;
+    }
+
+    /* Radix dialogs: fade and spring in, settle out. Radix keeps the dialog mounted
+     until the closing animation ends. */
+    .dialog-overlay[data-state='open'] {
+      animation: fade-in 0.22s ease-out;
+    }
+    .dialog-overlay[data-state='closed'] {
+      animation: fade-out 0.14s ease-in forwards;
+    }
+    .dialog-content[data-state='open'] {
+      animation: dialog-in 0.42s var(--ease-spring);
+    }
+    /* Short: while a closing dialog is still in the DOM, a failed save is shown in it. */
+    .dialog-content[data-state='closed'] {
+      animation: dialog-out 0.14s ease-in forwards;
+    }
+    .drawer-content[data-state='open'] {
+      animation: drawer-in 0.38s var(--ease-soft);
+    }
+    .drawer-content[data-state='closed'] {
+      animation: drawer-out 0.2s ease-in forwards;
+    }
+
+    /* Error notices shake once when they appear. */
+    .shake-in {
+      animation: shake-x 0.45s ease-in-out 0.05s;
+    }
+    /* Toasts: spring in, then a bump (saved) or a shake (failed). The second
+     animation runs on the separate `scale`/`translate` properties' keyframes or
+     on transform after the entrance has finished. */
+    .toast-ok {
+      animation:
+        toast-in 0.5s var(--ease-spring) backwards,
+        bump 0.34s ease-out 0.45s;
+    }
+    .toast-fail {
+      animation:
+        toast-in 0.5s var(--ease-spring) backwards,
+        shake-x 0.4s ease-in-out 0.45s;
+    }
+  }
+
+  /* Checklists whose ticks pop in one after another (put .pop-spin on each icon). */
+  .check-cascade > :nth-child(1) {
+    --d: 1.3s;
+  }
+  .check-cascade > :nth-child(2) {
+    --d: 1.42s;
+  }
+  .check-cascade > :nth-child(3) {
+    --d: 1.54s;
+  }
+  .check-cascade > :nth-child(4) {
+    --d: 1.66s;
+  }
+  .check-cascade > :nth-child(n + 5) {
+    --d: 1.78s;
+  }
+  /* Siblings that reveal on scroll one after another. */
+  .reveal-cascade > :nth-child(2) {
+    --d: 90ms;
+  }
+  .reveal-cascade > :nth-child(3) {
+    --d: 180ms;
+  }
+  .reveal-cascade > :nth-child(n + 4) {
+    --d: 270ms;
+  }
+
+  /* Reveal on scroll (marketing pages). The hidden state only applies once
+   motion.ts has armed it, so content already on screen never flashes. */
+  .reveal-on .reveal[data-shown] {
+    transition:
+      opacity 0.8s var(--ease-soft),
+      transform 0.8s var(--ease-soft);
+    transition-delay: var(--d, 0ms);
+  }
+  /* Screen only: a printed page shows every section, scrolled to or not. */
+  @media screen {
+    .reveal-on .reveal:not([data-shown]) {
+      opacity: 0;
+      transform: translate3d(0, 22px, 0);
+    }
+  }
+
+  /* Live dots: a dot with a ring that ripples out a few times, then rests. */
+  .live-dot {
+    position: relative;
+    display: inline-block;
+  }
+  .live-dot::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 9999px;
+    background: currentColor;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  /* Loops and pings: never on lite devices or with reduced motion. */
+  @media (prefers-reduced-motion: no-preference) {
+    html:not(.lite) .live-dot::after {
+      animation: live-ping 1.8s ease-out 0.4s 6;
+    }
+    html:not(.lite) .live-dot-forever::after {
+      animation-iteration-count: infinite;
+    }
+    html:not(.lite) .bob {
+      animation: bob 4.5s ease-in-out infinite;
+    }
+    html:not(.lite) .pulse-squish {
+      animation: pulse-squish 3s ease-in-out 0.6s 4;
+    }
+    html:not(.lite) .nudge-loop {
+      animation: nudge-x 3.2s var(--ease-soft) 1s 5;
+    }
+    html:not(.lite) .skeleton {
+      animation: breathe 1.6s ease-in-out infinite;
+    }
+    /* The current page's icon gives a little wiggle each time you arrive. */
+    .side-link[aria-current='page'] > .lucide:first-child {
+      animation: wiggle 0.6s ease-in-out 0.05s;
+    }
+  }
+  @keyframes breathe {
+    0%,
+    100% {
+      opacity: 0.55;
+    }
+    50% {
+      opacity: 1;
+    }
+  }
+
+  /* ── Icon micro-interactions ──
+   Lucide icons carry their name as a class, so hovering a control animates the
+   icon in a way that matches it, with no extra markup. Desktop pointers only. */
+  .lucide {
+    transition: transform 0.35s var(--ease-spring);
+  }
+  @media (hover: hover) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
+    :is(button, a, [role='button'], label):hover > .lucide-arrow-right,
+    :is(button, a, [role='button']):hover > * > .lucide-arrow-right {
+      transform: translateX(3px);
+    }
+    :is(button, a):hover
+      > :is(.lucide-arrow-up-right, .lucide-external-link, .lucide-send, .lucide-send-horizontal) {
+      transform: translate(2px, -2px);
+    }
+    :is(button, a):hover > .lucide-arrow-left {
+      transform: translateX(-3px);
+    }
+    :is(button, a):hover > :is(.lucide-plus, .lucide-x, .lucide-circle-plus) {
+      transform: rotate(90deg);
+    }
+    :is(button, a):hover
+      > :is(.lucide-refresh-cw, .lucide-rotate-cw, .lucide-refresh-ccw, .lucide-rotate-ccw) {
+      transform: rotate(180deg);
+    }
+    :is(button, a):hover > :is(.lucide-log-out, .lucide-chevron-right) {
+      transform: translateX(2px);
+    }
+    :is(button, a):hover > .lucide-download {
+      transform: translateY(2px);
+    }
+    :is(button, a):hover > .lucide-upload {
+      transform: translateY(-2px);
+    }
+    :is(button, a):hover > :is(.lucide-copy, .lucide-check, .lucide-eye, .lucide-search) {
+      transform: scale(1.15);
+    }
+    :is(button, a):hover > :is(.lucide-sparkles, .lucide-wand-sparkles, .lucide-star) {
+      animation: twinkle 0.7s var(--ease-soft);
+    }
+    :is(button, a):hover
+      > :is(
+        .lucide-trash-2,
+        .lucide-trash,
+        .lucide-bell,
+        .lucide-bell-ring,
+        .lucide-pencil,
+        .lucide-pen,
+        .lucide-message-circle,
+        .lucide-phone
+      ) {
+      animation: wiggle 0.6s ease-in-out;
+    }
+    :is(button, a):hover > :is(.lucide-settings, .lucide-settings-2, .lucide-cog) {
+      transform: rotate(60deg);
+    }
+    :is(button, a):hover > :is(.lucide-flask-conical) {
+      animation: wiggle 0.6s ease-in-out;
+    }
+  }
+}
+
+/* ── Small screens and accessibility ── */
 @media (max-width: 767px) {
   .btn,
   .icon-btn,
@@ -598,7 +1472,12 @@
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+  .reveal-on .reveal:not([data-shown]) {
+    opacity: 1;
+    transform: none;
   }
 }

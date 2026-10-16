@@ -86,26 +86,24 @@ const documents: Record<LegalKind, { title: string; intro: string; sections: [st
 export function LegalPage({ kind }: { kind: LegalKind }) {
   const document = documents[kind];
   return (
-    <div className="min-h-dvh bg-canvas px-4 py-10 text-stone-800 sm:py-16">
-      <article className="card mx-auto max-w-3xl p-7 sm:p-12">
+    <div className="min-h-dvh canvas-glow px-4 py-10 text-stone-800 sm:py-16">
+      <article className="card enter-rise mx-auto max-w-3xl p-7 sm:p-12">
         <a
-          className="inline-flex items-center gap-3 font-serif text-[21px] font-bold tracking-[-0.3px] text-ink"
+          className="group inline-flex items-center gap-3 font-serif text-[28px] font-normal leading-none tracking-[-0.01em] text-ink"
           href="/"
         >
-          <span className="relative flex size-10 items-center justify-center rounded-[11px] bg-[linear-gradient(to_bottom,var(--color-canvas)_50%,var(--color-brand-500)_50%)] text-ink">
+          <span className="relative flex size-10 -rotate-6 items-center justify-center rounded-xl bg-[linear-gradient(to_bottom,var(--color-canvas)_50%,var(--color-brand-500)_50%)] text-ink shadow-[0_10px_20px_-10px_rgb(255_105_44/0.7)] transition-transform duration-500 ease-[var(--ease-spring)] group-hover:rotate-3 group-hover:scale-105">
             <MessageCircle className="size-5" strokeWidth={2.5} />
-            <span className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-brand-500 ring-2 ring-canvas" />
+            <span className="live-dot absolute right-1.5 top-1.5 size-1.5 rounded-full bg-current text-brand-500 ring-2 ring-canvas" />
           </span>
-          orderly<span className="self-end pb-0.5 text-brand-500 font-extrabold">.</span>
+          orderly<span className="text-brand-500">.</span>
         </a>
-        <h1 className="mt-10 font-serif text-3xl font-bold tracking-[-0.4px] text-ink sm:text-4xl">
+        <h1 className="mt-10 font-serif text-[40px] font-normal leading-[1.02] tracking-[-0.012em] text-ink sm:text-[52px]">
           {document.title}
         </h1>
         <p className="mt-4 leading-7 text-stone-600">{document.intro}</p>
-        <p className="mt-3 text-xs font-semibold text-stone-400 uppercase tracking-wider">
-          Effective 16 September 2026
-        </p>
-        <div className="mt-10 space-y-8">
+        <p className="eyebrow mt-4">Effective 16 September 2026</p>
+        <div className="stagger mt-10 space-y-8">
           {document.sections.map(([title, copy]) => (
             <section key={title}>
               <h2 className="panel-title">{title}</h2>
@@ -115,19 +113,19 @@ export function LegalPage({ kind }: { kind: LegalKind }) {
         </div>
         <nav className="mt-12 flex flex-wrap gap-2 border-t border-ink/[0.06] pt-6 text-sm">
           <a
-            className="rounded-[9px] border border-ink/8 bg-white/70 px-4 py-1.5 text-xs font-semibold text-stone-700 hover:bg-white hover:text-ink transition-all"
+            className="rounded-full border border-white/90 bg-white/75 px-4 py-2 text-xs font-semibold text-stone-700 shadow-[inset_0_1px_0_#fff,0_6px_14px_-10px_rgb(14_6_4/0.35)] transition-[background-color,color,translate,scale] duration-200 hover:-translate-y-px hover:bg-white hover:text-ink active:scale-95"
             href="/privacy"
           >
             Privacy Policy
           </a>
           <a
-            className="rounded-[9px] border border-ink/8 bg-white/70 px-4 py-1.5 text-xs font-semibold text-stone-700 hover:bg-white hover:text-ink transition-all"
+            className="rounded-full border border-white/90 bg-white/75 px-4 py-2 text-xs font-semibold text-stone-700 shadow-[inset_0_1px_0_#fff,0_6px_14px_-10px_rgb(14_6_4/0.35)] transition-[background-color,color,translate,scale] duration-200 hover:-translate-y-px hover:bg-white hover:text-ink active:scale-95"
             href="/terms"
           >
             Terms of Service
           </a>
           <a
-            className="rounded-[9px] border border-ink/8 bg-white/70 px-4 py-1.5 text-xs font-semibold text-stone-700 hover:bg-white hover:text-ink transition-all"
+            className="rounded-full border border-white/90 bg-white/75 px-4 py-2 text-xs font-semibold text-stone-700 shadow-[inset_0_1px_0_#fff,0_6px_14px_-10px_rgb(14_6_4/0.35)] transition-[background-color,color,translate,scale] duration-200 hover:-translate-y-px hover:bg-white hover:text-ink active:scale-95"
             href="/data-deletion"
           >
             Data Deletion

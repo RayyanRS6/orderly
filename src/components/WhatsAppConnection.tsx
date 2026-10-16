@@ -171,9 +171,9 @@ export function WhatsAppConnection() {
   const state = snapshot?.status ?? connection?.status ?? 'disconnected';
   const phoneValid = method !== 'code' || /^[1-9]\d{5,14}$/.test(phone.replace(/\D/g, ''));
   return (
-    <section className="card mb-6 p-6">
+    <section className="card group mb-6 p-6">
       <div className="flex items-center gap-3">
-        <Smartphone className="size-5 text-brand-500" />
+        <Smartphone className="box-content size-[18px] shrink-0 -rotate-6 rounded-xl bg-ink p-[9px] text-brand-500 shadow-[0_10px_20px_-10px_rgb(14_6_4/0.7)] transition-transform duration-300 ease-[var(--ease-spring)] group-hover:rotate-0" />
         <h2 className="panel-title">WhatsApp connection method</h2>
       </div>
       <p className="mt-3 text-sm text-stone-600">
@@ -204,12 +204,12 @@ export function WhatsAppConnection() {
           Official signup and access-token settings are below.
         </span>
       </div>
-      <div className="mt-5 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">
-        <p className="flex items-center gap-2 font-medium">
-          <ShieldAlert className="size-4" />
+      <div className="mt-5 rounded-2xl border border-sun/50 bg-sun/10 p-4 text-sm text-stone-800">
+        <p className="flex items-center gap-2.5 font-semibold text-ink">
+          <ShieldAlert className="box-content size-4 shrink-0 -rotate-6 rounded-lg bg-sun p-1 text-ink shadow-[0_6px_12px_-6px_rgb(245_183_31/0.9)]" />
           Unofficial linked-device connection
         </p>
-        <p className="mt-2">
+        <p className="mt-2 leading-relaxed">
           Not approved by Meta. WhatsApp can disconnect or restrict the account. No ban-free
           guarantee. Use only a restaurant-owned number with its owner’s permission. No cold
           broadcasts.
@@ -223,9 +223,16 @@ export function WhatsAppConnection() {
       )}
       {enabled && (
         <>
-          <div className="mt-5 flex gap-4">
-            <label>
+          <div className="mt-5 flex flex-wrap gap-2">
+            <label
+              className={
+                method === 'qr'
+                  ? 'inline-flex min-h-10 cursor-pointer items-center gap-2 rounded-full border border-ink bg-ink px-4 text-[13px] font-semibold text-cream shadow-[0_8px_18px_-8px_rgb(14_6_4/0.7)] transition-[background-color,border-color,color,box-shadow,scale] duration-200 active:scale-95'
+                  : 'inline-flex min-h-10 cursor-pointer items-center gap-2 rounded-full border border-ink/10 bg-white/70 px-4 text-[13px] font-semibold text-stone-700 transition-[background-color,border-color,color,box-shadow,scale] duration-200 hover:border-ink/25 hover:bg-white hover:text-ink active:scale-95'
+              }
+            >
               <input
+                className="accent-brand-500"
                 type="radio"
                 name="pairing-method"
                 checked={method === 'qr'}
@@ -233,8 +240,15 @@ export function WhatsAppConnection() {
               />{' '}
               Scan QR
             </label>
-            <label>
+            <label
+              className={
+                method === 'code'
+                  ? 'inline-flex min-h-10 cursor-pointer items-center gap-2 rounded-full border border-ink bg-ink px-4 text-[13px] font-semibold text-cream shadow-[0_8px_18px_-8px_rgb(14_6_4/0.7)] transition-[background-color,border-color,color,box-shadow,scale] duration-200 active:scale-95'
+                  : 'inline-flex min-h-10 cursor-pointer items-center gap-2 rounded-full border border-ink/10 bg-white/70 px-4 text-[13px] font-semibold text-stone-700 transition-[background-color,border-color,color,box-shadow,scale] duration-200 hover:border-ink/25 hover:bg-white hover:text-ink active:scale-95'
+              }
+            >
               <input
+                className="accent-brand-500"
                 type="radio"
                 name="pairing-method"
                 checked={method === 'code'}
@@ -244,7 +258,7 @@ export function WhatsAppConnection() {
             </label>
           </div>
           {method === 'code' && (
-            <div className="mt-4">
+            <div className="step-in mt-4">
               <Field
                 label="WhatsApp number with country code"
                 hint="For example +92 300 1234567. Confirm linking inside the WhatsApp app."
@@ -259,8 +273,9 @@ export function WhatsAppConnection() {
               </Field>
             </div>
           )}
-          <label className="mt-4 flex items-start gap-2 text-sm">
+          <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-2xl border border-ink/[0.06] bg-paper px-4 py-3 text-sm leading-6 transition-colors has-[:checked]:border-brand-500/25 has-[:checked]:bg-brand-50">
             <input
+              className="mt-1 size-4 shrink-0 accent-brand-500"
               type="checkbox"
               checked={accepted}
               onChange={(e) => setAccepted(e.target.checked)}
@@ -298,7 +313,10 @@ export function WhatsAppConnection() {
                   <RefreshCw className="size-4" />
                   Reconnect
                 </ActionButton>
-                <button className="btn" onClick={() => ask('disconnect')}>
+                <button
+                  className="btn text-red-700 hover:border-red-200 hover:bg-red-50 hover:text-red-800"
+                  onClick={() => ask('disconnect')}
+                >
                   Disconnect
                 </button>
               </>
@@ -307,14 +325,20 @@ export function WhatsAppConnection() {
         </>
       )}
       {connection?.provider === 'baileys' && (
-        <div className="mt-5" aria-live="polite">
-          <p className="text-sm">
+        <div className="mt-5 rounded-2xl border border-ink/[0.06] bg-paper p-4" aria-live="polite">
+          <p
+            className={
+              state === 'connected'
+                ? 'text-sm font-semibold text-success-700'
+                : 'text-sm font-semibold text-ink'
+            }
+          >
             Status: {state.replaceAll('_', ' ')}
             {connection.phoneNumber ? ` · ${connection.phoneNumber}` : ''}
           </p>
           {snapshot?.qr && (
             <img
-              className="mt-3 rounded-lg"
+              className="enter-pop mt-3 rounded-2xl bg-white p-2 shadow-[0_0_0_1px_rgb(14_6_4/0.06),0_24px_40px_-24px_rgb(14_6_4/0.45)]"
               src={snapshot.qr}
               width={280}
               height={280}
@@ -323,21 +347,23 @@ export function WhatsAppConnection() {
           )}
           {snapshot?.code && (
             <>
-              <p className="mt-3 font-mono text-3xl tracking-widest">{snapshot.code}</p>
-              <p className="mt-2 text-sm">
+              <p className="enter-pop mt-3 inline-block max-w-full rounded-2xl bg-ink px-4 py-2 font-mono text-[26px] font-semibold tracking-widest break-all text-cream shadow-[0_10px_22px_-12px_rgb(14_6_4/0.7)] sm:text-3xl">
+                {snapshot.code}
+              </p>
+              <p className="mt-3 text-sm leading-relaxed text-stone-600">
                 In WhatsApp, open Linked devices → Link a device → Link with phone number instead,
                 and enter this code.
               </p>
             </>
           )}
           {state === 'connected' && (
-            <p className="mt-2 text-sm">
+            <p className="step-in mt-2 text-sm leading-relaxed text-stone-600">
               After the backend verifies this session, send a real test message before enabling
               Automatic replies. Pairing leaves automation paused.
             </p>
           )}
           {(snapshot?.errorCode || connection.errorCode) && (
-            <p className="mt-2 text-sm text-red-700">
+            <p className="mt-3 rounded-xl bg-red-50 px-3.5 py-2.5 text-sm font-medium text-red-700">
               Connection needs attention: {snapshot?.errorCode || connection.errorCode}. Try
               reconnecting, or start fresh pairing if logged out.
             </p>
@@ -345,7 +371,10 @@ export function WhatsAppConnection() {
         </div>
       )}
       {error && (
-        <p role="alert" className="mt-4 text-sm text-red-700">
+        <p
+          role="alert"
+          className="mt-4 rounded-xl bg-red-50 px-3.5 py-2.5 text-sm font-medium text-red-700"
+        >
           {error}
         </p>
       )}

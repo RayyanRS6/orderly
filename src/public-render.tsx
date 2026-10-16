@@ -1,4 +1,4 @@
-import { renderToStaticMarkup } from 'react-dom/server';
+import { renderToString } from 'react-dom/server';
 import { Landing, Contact, NotFound, Pricing } from './components/Public';
 import { LegalPage } from './components/Legal';
 
@@ -15,5 +15,6 @@ export function renderPublic(path: string) {
     ) : (
       <NotFound />
     );
-  return renderToStaticMarkup(page);
+  // renderToString (not static markup) so the browser can hydrate this HTML in place.
+  return renderToString(page);
 }
