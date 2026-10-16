@@ -215,7 +215,7 @@ describe('menu photos', () => {
   describe('Google Sheets', () => {
     const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
     const pem = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
-    async function read(values: string[][]) {
+    async function read(values: string[][], catalogSheet?: string) {
       vi.mocked(fetch)
         .mockResolvedValueOnce(Response.json({ access_token: 'token' }))
         .mockResolvedValueOnce(Response.json({ values }));
@@ -224,7 +224,11 @@ describe('menu photos', () => {
           kind: 'sheets',
           configured: true,
           status: 'connected',
-          config: { spreadsheetId, clientEmail: 'menu@example.iam.gserviceaccount.com' },
+          config: {
+            spreadsheetId,
+            clientEmail: 'menu@example.iam.gserviceaccount.com',
+            ...(catalogSheet && { catalogSheet }),
+          },
         },
         pem,
       );
@@ -232,17 +236,34 @@ describe('menu photos', () => {
     }
     const head = header.split(',');
     const row = (price: string) => ['a', 'Biryani', '', 'Mains', price, 'true', '', '', '', ''];
+    const requested = () =>
+      decodeURIComponent(
+        new URL(String(vi.mocked(fetch).mock.calls[1]![0])).pathname.split('/values/')[1]!,
+      );
 
-    it('asks for columns up to Z and reads a photo column after J', async () => {
+    it('asks for whole rows and reads a photo column after J', async () => {
       const products = await read([
         [...head, 'Image'],
         [...row('450'), 'https://cdn.example/biryani.jpg'],
       ]);
-      expect(String(vi.mocked(fetch).mock.calls[1]![0])).toContain(encodeURIComponent('!A1:Z502'));
+      // No last column, so a tab narrower than the range can never fail the read.
+      expect(requested()).toBe("'Menu'!1:502");
       expect(products[0]).toMatchObject({
         price: 45000,
         imageUrl: 'https://cdn.example/biryani.jpg',
       });
+    });
+
+    it('reads a 10-column tab as before, quoting the tab name', async () => {
+      const products = await read(
+        [head, row('450'), ['b', 'Karahi', '', 'Mains', '1200', 'true', '', '', '', '']],
+        "Owner's Menu",
+      );
+      expect(requested()).toBe("'Owner''s Menu'!1:502");
+      expect(products.map((p) => [p.name, p.category, p.price, p.imageUrl])).toEqual([
+        ['Biryani', 'Mains', 45000, undefined],
+        ['Karahi', 'Mains', 120000, undefined],
+      ]);
     });
 
     it('parses columns A–J as before when a later column repeats a header', async () => {

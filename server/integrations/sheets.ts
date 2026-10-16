@@ -73,7 +73,8 @@ export class GoogleSheetsAdapter implements CatalogSource, OrderDestination {
   }
   async readCatalog(companyId: string): Promise<Product[]> {
     const token = await this.token();
-    const range = `${this.sheet(this.integration.config.catalogSheet || 'Menu')}!A1:Z502`;
+    // Whole rows: naming a last column could reach past a narrow tab's grid and fail the read.
+    const range = `${this.sheet(this.integration.config.catalogSheet || 'Menu')}!1:502`;
     const data = await this.request(`/values/${encodeURIComponent(range)}`, token);
     const rows: string[][] = data.values ?? [];
     // Columns A–J parse exactly as before; after them only a photo column is read. Any other
