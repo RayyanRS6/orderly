@@ -11,7 +11,13 @@ import { GoogleSheetsAdapter } from '../server/integrations/sheets';
 import { WhatsAppAdapter } from '../server/integrations/whatsapp';
 import { createConversation } from '../src/domain/engine';
 import { seedCompanies, seedProducts } from '../src/shared/seed';
-import type { MenuLinkStatus, MenuSession, PublicMenu, WebCart } from '../src/shared/menu';
+import {
+  normalizeTypedPhone,
+  type MenuLinkStatus,
+  type MenuSession,
+  type PublicMenu,
+  type WebCart,
+} from '../src/shared/menu';
 import type { Company, Conversation, ModelInterpretation, Product } from '../src/shared/types';
 import type { WhatsAppConnection } from '../src/shared/whatsapp';
 
@@ -867,6 +873,46 @@ async function draftFor(
 }
 const pageOrders = async () =>
   (await repo.listOrders(company.id)).filter((o) => o.source === 'menu_page');
+const draftFrom = (ip: string, phone: string) =>
+  createEdgeApp(repo).request(`${base}/public/menu/dastarkhwan/drafts`, {
+    method: 'POST',
+    headers: { Origin: origin, 'Content-Type': 'application/json', 'X-Forwarded-For': ip },
+    body: JSON.stringify({ phone, cart, expectedTotal: 90000 }),
+  });
+/** 40 different dishes, each line about nameLength characters long in the confirmation. */
+async function bigOrder(nameLength: number) {
+  const dishes = Array.from({ length: 40 }, (_, i) => ({
+    ...biryani,
+    id: randomUUID(),
+    name: `Dish ${i} ${'x'.repeat(nameLength)}`,
+  }));
+  for (const dish of dishes) await repo.saveProduct(dish);
+  const items = dishes.map((d) => ({ productId: d.id, quantity: 1, modifierIds: [], notes: '' }));
+  return { dishes, body: { cart: { ...cart, items }, expectedTotal: 40 * biryani.price } };
+}
+const TOO_LARGE = 'This order is too large for one message. Please order in WhatsApp instead.';
+
+describe('typed WhatsApp numbers', () => {
+  it('reads every usual form of a Pakistani mobile, and leaves foreign numbers alone', () => {
+    for (const typed of [
+      '0300 1234567',
+      '+92 300 1234567',
+      '300 1234567',
+      '3001234567',
+      '+92 0300 1234567',
+      '0092 0300 1234567',
+      '0300-1234567',
+      '00923001234567',
+      '923001234567',
+    ])
+      expect(normalizeTypedPhone(typed), typed).toBe('923001234567');
+    expect(normalizeTypedPhone('+44 7700 900123')).toBe('447700900123');
+    expect(normalizeTypedPhone('0044 7700 900123')).toBe('447700900123');
+    expect(normalizeTypedPhone('+1 415 555 0123')).toBe('14155550123');
+    for (const bad of ['', '12345', '0300 123456', '0300 12345678'])
+      expect(normalizeTypedPhone(bad), bad).toBeUndefined();
+  });
+});
 
 describe('order codes for Instagram and QR customers', () => {
   beforeEach(async () => {
@@ -926,8 +972,9 @@ describe('order codes for Instagram and QR customers', () => {
     expect(await fourth.json()).toMatchObject({ code: 'rate' });
     const keys = consume.mock.calls.map(([key]) => key);
     expect(keys.some((k) => k.startsWith('menu:draft:'))).toBe(true);
-    expect(keys.some((k) => k.startsWith('menu:draft-co:'))).toBe(true);
     expect(keys.some((k) => k.startsWith('menu:draft-phone:'))).toBe(true);
+    // No business-wide budget that a few addresses could use up.
+    expect(keys.some((k) => k.startsWith('menu:draft-co:'))).toBe(false);
     for (const key of keys) {
       expect(key).not.toContain('3001234567');
       expect(key).not.toContain('203.0.113.9');
@@ -952,6 +999,39 @@ describe('order codes for Instagram and QR customers', () => {
       status: 409,
       data: { code: 'price_changed', total: 90000 },
     });
+  });
+
+  it('lets no single address use up the restaurant’s codes', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    // Bad requests from many addresses spend no budget shared with real customers.
+    for (let i = 0; i < 70; i++)
+      expect((await draftFrom(`198.51.100.${i}`, '12345')).status).toBe(422);
+    expect((await draftFor()).status).toBe(200);
+    // One address holds at most 15 codes waiting for WhatsApp; others are not held up.
+    for (let i = 0; i < 15; i++)
+      expect(
+        (await draftFrom('203.0.113.9', `0300 00000${String(i).padStart(2, '0')}`)).status,
+      ).toBe(200);
+    const busy = await draftFrom('203.0.113.9', '0300 0000099');
+    expect([busy.status, await busy.json()]).toEqual([
+      429,
+      {
+        error:
+          'Too many orders from this connection are waiting to be confirmed. Please try again later, or order in WhatsApp.',
+        code: 'busy',
+      },
+    ]);
+    expect((await draftFrom('203.0.113.10', '0300 0000099')).status).toBe(200);
+  });
+
+  it('gives no code for an order too large to confirm in one message', async () => {
+    const { body } = await bigOrder(90);
+    const create = vi.spyOn(repo, 'createMenuDraft');
+    expect(await draftFor('0300 1234567', body)).toEqual({
+      status: 422,
+      data: { error: TOO_LARGE, code: 'too_large' },
+    });
+    expect(create).not.toHaveBeenCalled();
   });
 });
 
@@ -1143,6 +1223,53 @@ describe('order code sent from WhatsApp', () => {
     await repo.blockCustomer(company.id, chat.id, 'b', ['pn:923001234567'], 'Spam', 'owner');
     await incoming(message(data.code));
     expect((await chatOf()).messages).toHaveLength(0);
+    expect(await pageOrders()).toHaveLength(0);
+  });
+
+  it('places codes typed with any form of the sender’s own number', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const forms = [
+      '300 1234567',
+      '3001234567',
+      '+92 0300 1234567',
+      '0300-1234567',
+      '00923001234567',
+    ];
+    for (const [i, typed] of forms.entries()) {
+      const { status, data } = await draftFor(typed);
+      expect(status, typed).toBe(200);
+      await incoming(message(data.code));
+      expect(await pageOrders(), typed).toHaveLength(i + 1);
+      // Past the per-number limit of 3 codes a minute.
+      vi.setSystemTime(Date.now() + 61000);
+    }
+    const { data } = await draftFor('+44 7700 900123');
+    await incoming(message(data.code), '447700900123');
+    expect(await pageOrders()).toHaveLength(forms.length + 1);
+  });
+
+  it('keeps only a number’s newest code', async () => {
+    const { data: first } = await draftFor();
+    const { data: second } = await draftFor('+92 300 1234567');
+    await incoming(message(first.code));
+    expect((await lastReply()).text).toBe(
+      'This order code has expired or was already used. Please open the menu link again to place your order.',
+    );
+    await incoming(message(second.code));
+    expect(await pageOrders()).toHaveLength(1);
+  });
+
+  it('asks for an order too large for one message in the chat instead', async () => {
+    const { dishes, body } = await bigOrder(30);
+    const { status, data } = await draftFor('0300 1234567', body);
+    expect(status).toBe(200);
+    // Longer dish names since the code was made: the confirmation no longer fits.
+    for (const dish of dishes)
+      await repo.saveProduct({ ...dish, name: `${dish.name} ${'y'.repeat(70)}` });
+    await incoming(message(data.code));
+    expect((await lastReply()).text).toBe(
+      'This order is too large for one message. Please tell us your order here.',
+    );
     expect(await pageOrders()).toHaveLength(0);
   });
 

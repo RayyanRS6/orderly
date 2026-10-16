@@ -1076,8 +1076,9 @@ export const placeWebOrderArgs = (
   p_jobs: jobs,
   p_claim: claim,
 });
+// ipKey is always sent: null when the visitor's address is unknown (no per-address cap then).
 export const createMenuDraftArgs = (draft: MenuDraftInput, minutes: number, maxOpen: number) => ({
-  p_draft: draft,
+  p_draft: { ...draft, ipKey: draft.ipKey ?? null },
   p_minutes: minutes,
   p_max_open: maxOpen,
 });

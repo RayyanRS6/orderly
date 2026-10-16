@@ -27,7 +27,7 @@ import {
 } from '../src/shared/menu.js';
 import { connectionMatches, customerKeys } from '../src/shared/whatsapp.js';
 import { botConfig, configuredCompany } from '../src/shared/bot.js';
-import { closedText, isOpen, noticeLanguage } from '../src/domain/engine.js';
+import { closedText, createConversation, isOpen, noticeLanguage } from '../src/domain/engine.js';
 import { buildWebOrder, MenuOrderError, quoteWebCart } from '../src/domain/web-order.js';
 import { env } from './config.js';
 import { hmacHex, hmacKey22, PublicError } from './security.js';
@@ -518,7 +518,8 @@ export async function placeLinkOrder(
 // ── Instagram and QR orders: an order code confirmed from the customer's own WhatsApp ────────
 
 const DRAFT_MINUTES = 30;
-const DRAFT_MAX_OPEN = 200;
+// Only a storage backstop: the database also caps open drafts per network address.
+const DRAFT_MAX_OPEN = 2000;
 const codeHash = (companyId: string, code: string) =>
   hmacHex('menu-draft', `${companyId}:code:${code}`);
 const phoneHash = (companyId: string, digits: string) =>
@@ -536,7 +537,9 @@ export interface MenuDraftCreated {
 /**
  * Saves an order started on the page, to be placed when the customer sends its code from their
  * own WhatsApp. Nothing is ordered or sent now. The typed number is never checked against
- * blocked numbers: that would tell any visitor whether a number is blocked.
+ * blocked numbers: that would tell any visitor whether a number is blocked. There is no
+ * business-wide rate limit: a few addresses could use it up and lock every customer out. Each
+ * address is limited instead, by rate here and by open drafts in the database.
  */
 export async function createMenuDraftFor(
   repo: Repository,
@@ -545,7 +548,6 @@ export async function createMenuDraftFor(
   const ip = clientKey(request.headers);
   await limit(repo, ip && `menu:draft:${ip}`, 20);
   const { company } = await menuCompany(repo, request.slug);
-  await limit(repo, `menu:draft-co:${company.id}`, 60);
   const digits = normalizeTypedPhone(request.phone);
   if (!digits)
     throw new MenuError(
@@ -562,7 +564,8 @@ export async function createMenuDraftFor(
       'no_whatsapp',
     );
   if (!company.botEnabled) throw new MenuError(STATE_ERRORS.bot_off[1], 409, 'bot_off');
-  if (!isOpen(company, new Date().toISOString())) throw stateError('closed', company);
+  const now = new Date().toISOString();
+  if (!isOpen(company, now)) throw stateError('closed', company);
   const products = await repo.listProducts(company.id);
   let priced: ReturnType<typeof quoteWebCart>;
   try {
@@ -574,12 +577,27 @@ export async function createMenuDraftFor(
   const { cart, quote } = priced;
   if (quote.total !== request.expectedTotal)
     throw new MenuError(PRICES_CHANGED, 409, 'price_changed', quote.total);
+  // The order's own checks, on a stand-in chat: no code for an order that could never be placed
+  // (a confirmation too long for one WhatsApp message).
+  try {
+    buildWebOrder(
+      company,
+      products,
+      createConversation(company.id, digits, 'whatsapp', now),
+      request.cart,
+      { now, submissionKey: `${company.id}:menu-draft-check` },
+    );
+  } catch (error) {
+    if (!(error instanceof MenuOrderError)) throw error;
+    throw new MenuError(error.message, ORDER_ERRORS[error.code], error.code);
+  }
   const saved: WebCart = {
     items: cart.items,
     fulfillment: cart.fulfillment!,
     customerName: cart.customerName!,
     ...(cart.fulfillment === 'delivery' && { address: cart.address, zone: cart.zone }),
   };
+  let reason: 'busy' | 'busy_source' = 'busy';
   for (let attempt = 0; attempt < 3; attempt++) {
     const code = newCode();
     const result = await repo.createMenuDraft(
@@ -588,6 +606,7 @@ export async function createMenuDraftFor(
         companyId: company.id,
         codeHash: codeHash(company.id, code),
         phoneHash: phoneHash(company.id, digits),
+        ...(ip && { ipKey: ip }),
         cart: saved,
         quotedTotal: quote.total,
       },
@@ -600,10 +619,15 @@ export async function createMenuDraftFor(
         expiresAt: result.expiresAt,
         whatsappUrl: waMeUrl(number, draftMessage(code)),
       };
-    if (result.reason === 'busy') break;
+    if (result.reason !== 'collision') {
+      reason = result.reason;
+      break;
+    }
   }
   throw new MenuError(
-    'The restaurant is getting a lot of orders right now. Please try again in a minute.',
+    reason === 'busy_source'
+      ? 'Too many orders from this connection are waiting to be confirmed. Please try again later, or order in WhatsApp.'
+      : 'The restaurant is getting a lot of orders right now. Please try again in a minute.',
     429,
     'busy',
   );
@@ -740,6 +764,17 @@ export async function redeemMenuDraft(
     // Bot off, staff and blocked chats never get here (handleTurn checks first).
     if (error.code === 'closed')
       return refuse(closedText(company, lang), 'Order code sent while closed.');
+    // Nothing changed, so opening the menu again would not help.
+    if (error.code === 'too_large')
+      return refuse(
+        say(
+          lang,
+          'This order is too large for one message. Please tell us your order here.',
+          'یہ آرڈر ایک پیغام کے لیے بہت بڑا ہے۔ براہ کرم اپنا آرڈر یہیں بتائیں۔',
+          'Yeh order ek message ke liye bohat bara hai. Meherbani karke apna order yahin batayein.',
+        ),
+        'Order code refused: too_large.',
+      );
     return refuse(
       say(
         lang,

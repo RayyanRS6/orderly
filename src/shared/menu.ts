@@ -101,11 +101,13 @@ export interface MenuDraftInput {
   companyId: string;
   codeHash: string;
   phoneHash: string;
+  /** The visitor's network address as a keyed hash (clientKey), never a raw IP. */
+  ipKey?: string;
   cart: WebCart;
   quotedTotal: number;
 }
 export type MenuDraftResult =
-  { ok: true; expiresAt: string } | { ok: false; reason: 'busy' | 'collision' };
+  { ok: true; expiresAt: string } | { ok: false; reason: 'busy' | 'busy_source' | 'collision' };
 
 export const MENU_SLUG_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 export const PHOTO_URL_RE = /^https:\/\/[^\s"'<>]+$/i;
@@ -136,6 +138,9 @@ export function normalizeTypedPhone(value: string): string | undefined {
   let digits = value.replace(/\D/g, '');
   if (digits.startsWith('00')) digits = digits.slice(2);
   if (/^03\d{9}$/.test(digits)) digits = `92${digits.slice(1)}`;
+  // A Pakistani mobile typed without its 0 ('300 1234567'), or with it after +92 ('+92 0300…').
+  else if (/^3\d{9}$/.test(digits)) digits = `92${digits}`;
+  else if (/^920(3\d{9})$/.test(digits)) digits = `92${digits.slice(3)}`;
   return /^[1-9]\d{9,14}$/.test(digits) ? digits : undefined;
 }
 export const waMeUrl = (digits: string, text?: string) =>

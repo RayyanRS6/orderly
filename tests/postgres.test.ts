@@ -2183,22 +2183,20 @@ describe('menu page ordering', () => {
   const count = async (table: string) =>
     scalar(`select count(*)::int value from ${table}`) as Promise<number>;
   const hash = (c: string) => c.repeat(64);
+  const draftInput = (id: string, code = 'a', changes: Record<string, unknown> = {}) =>
+    ({
+      id,
+      companyId: company.id,
+      codeHash: hash(code),
+      phoneHash: hash('b'),
+      cart,
+      quotedTotal: 90000,
+      ...changes,
+    }) as never;
   const draft = (id: string, code = 'a', changes: Record<string, unknown> = {}) =>
     named<MenuDraftResult>(
       'create_menu_draft',
-      createMenuDraftArgs(
-        {
-          id,
-          companyId: company.id,
-          codeHash: hash(code),
-          phoneHash: hash('b'),
-          cart,
-          quotedTotal: 90000,
-          ...changes,
-        } as never,
-        30,
-        200,
-      ),
+      createMenuDraftArgs(draftInput(id, code, changes), 30, 2000),
     );
 
   it('places a link order once, with its use, and answers a repeat with the same order', async () => {
@@ -2305,8 +2303,11 @@ describe('menu page ordering', () => {
     expect(await count('orders')).toBe(0);
   });
 
-  it('uses an order code once and forgets its name, address and phone hash', async () => {
-    expect(await draft('draft-1')).toMatchObject({ ok: true, expiresAt: expect.any(String) });
+  it('uses an order code once and forgets its name, address and hashes', async () => {
+    expect(await draft('draft-1', 'a', { ipKey: 'A'.repeat(22) })).toMatchObject({
+      ok: true,
+      expiresAt: expect.any(String),
+    });
     expect(await draft('draft-2')).toEqual({ ok: false, reason: 'collision' });
     const conversation = await chat();
     const built = buildWebOrder(company, products, conversation, cart, {
@@ -2317,11 +2318,20 @@ describe('menu page ordering', () => {
     const claim: WebOrderClaim = { kind: 'draft', draftId: 'draft-1', keys: ['pn:923001112222'] };
     expect(await place(built, claim)).toMatchObject({ ok: true });
     const row = (
-      await db.query<{ used_at: string; cart: unknown; phone_hash: unknown; order_id: string }>(
-        "select used_at,cart,phone_hash,order_id from menu_drafts where id='draft-1'",
-      )
+      await db.query<{
+        used_at: string;
+        cart: unknown;
+        phone_hash: unknown;
+        ip_key: unknown;
+        order_id: string;
+      }>("select used_at,cart,phone_hash,ip_key,order_id from menu_drafts where id='draft-1'")
     ).rows[0]!;
-    expect(row).toMatchObject({ cart: null, phone_hash: null, order_id: built.order.id });
+    expect(row).toMatchObject({
+      cart: null,
+      phone_hash: null,
+      ip_key: null,
+      order_id: built.order.id,
+    });
     expect(row.used_at).not.toBeNull();
     const second = buildWebOrder(
       company,
@@ -2384,12 +2394,85 @@ describe('menu page ordering', () => {
     await expect(draft('bad', 'g', { phoneHash: 'not-a-hash' })).rejects.toThrow(
       'Invalid menu draft',
     );
+    await expect(draft('bad', 'g', { ipKey: '203.0.113.9' })).rejects.toThrow('Invalid menu draft');
+  });
+
+  it('caps open drafts per network address without holding up other addresses', async () => {
+    const hex = (n: number) => n.toString(16).padStart(64, '0');
+    const ipA = 'A'.repeat(22);
+    const ipB = 'b_-'.repeat(7) + 'B';
+    const from = (n: number, ipKey?: string) =>
+      draft(`d-${n}`, 'a', { codeHash: hex(n), phoneHash: hex(1000 + n), ipKey });
+    for (let n = 0; n < 15; n++) expect(await from(n, ipA)).toMatchObject({ ok: true });
+    expect(await from(15, ipA)).toEqual({ ok: false, reason: 'busy_source' });
+    expect(await from(16, ipB)).toMatchObject({ ok: true });
+    expect(await from(17)).toMatchObject({ ok: true });
+    expect(await scalar("select ip_key value from menu_drafts where id='d-16'")).toBe(ipB);
+    expect(await scalar("select ip_key value from menu_drafts where id='d-17'")).toBeNull();
+    // Used and expired drafts no longer count.
+    await db.query("update menu_drafts set used_at=now() where id='d-0'");
+    await db.query(
+      "update menu_drafts set created_at=now()-interval '40 minutes',expires_at=now()-interval '10 minutes' where id='d-1'",
+    );
+    expect(await from(18, ipA)).toMatchObject({ ok: true });
+    expect(await from(19, ipA)).toMatchObject({ ok: true });
+    expect(await from(20, ipA)).toEqual({ ok: false, reason: 'busy_source' });
+    expect(await count('menu_drafts')).toBe(19);
+  });
+
+  it('keeps one open draft per number: a new one ends and wipes the older one', async () => {
+    expect(await draft('first', '1', { ipKey: 'A'.repeat(22) })).toMatchObject({ ok: true });
+    await db.query(
+      "update menu_drafts set created_at=created_at-interval '1 minute',expires_at=expires_at-interval '1 minute' where id='first'",
+    );
+    expect(await draft('other', '2', { phoneHash: hash('c') })).toMatchObject({ ok: true });
+    expect(await draft('second', '3')).toMatchObject({ ok: true });
+    // A refused draft (here a code collision) leaves the number's open draft alone.
+    expect(await draft('dup', '3')).toEqual({ ok: false, reason: 'collision' });
+    const rows = (
+      await db.query<{ id: string; open: boolean; wiped: boolean }>(
+        `select id, expires_at > now() as open,
+          cart is null and phone_hash is null and ip_key is null as wiped
+         from menu_drafts order by id`,
+      )
+    ).rows;
+    expect(rows).toEqual([
+      { id: 'first', open: false, wiped: true },
+      { id: 'other', open: true, wiped: false },
+      { id: 'second', open: true, wiped: false },
+    ]);
+    const conversation = await chat();
+    const built = web(conversation, 'menu-draft:first');
+    expect(await place(built, { kind: 'draft', draftId: 'first', keys: [] })).toEqual({
+      ok: false,
+      reason: 'expired',
+    });
+    // Two drafts for one number in the same transaction: the first still ends after it began.
+    await db.query(
+      'select public.create_menu_draft($1, 30, 2000) a, public.create_menu_draft($2, 30, 2000) b',
+      [
+        createMenuDraftArgs(draftInput('same-1', '4', { phoneHash: hash('d') }), 30, 2000).p_draft,
+        createMenuDraftArgs(draftInput('same-2', '5', { phoneHash: hash('d') }), 30, 2000).p_draft,
+      ],
+    );
+    expect(
+      (
+        await db.query<{ id: string; ok: boolean; wiped: boolean }>(
+          `select id, expires_at > created_at as ok, cart is null as wiped
+           from menu_drafts where id like 'same-%' order by id`,
+        )
+      ).rows,
+    ).toEqual([
+      { id: 'same-1', ok: true, wiped: true },
+      { id: 'same-2', ok: true, wiped: false },
+    ]);
   });
 
   it('purges expired drafts and old link uses on schedule', async () => {
-    expect(await draft('soon', '1')).toMatchObject({ ok: true });
-    expect(await draft('gone', '2')).toMatchObject({ ok: true });
-    expect(await draft('open', '3')).toMatchObject({ ok: true });
+    const ipKey = 'A'.repeat(22);
+    expect(await draft('soon', '1', { phoneHash: hash('1'), ipKey })).toMatchObject({ ok: true });
+    expect(await draft('gone', '2', { phoneHash: hash('2') })).toMatchObject({ ok: true });
+    expect(await draft('open', '3', { phoneHash: hash('3'), ipKey })).toMatchObject({ ok: true });
     await db.query(
       "update menu_drafts set created_at=now()-interval '40 minutes',expires_at=now()-interval '5 minutes' where id='soon'",
     );
@@ -2404,13 +2487,15 @@ describe('menu page ordering', () => {
     // Two expired drafts wiped, one of them old enough to remove, and one old link use.
     expect(await rpc('purge_menu_ordering', [])).toBe(4);
     const rows = (
-      await db.query<{ id: string; cart: unknown; phone_hash: unknown }>(
-        'select id,cart,phone_hash from menu_drafts order by id',
+      await db.query<{ id: string; cart: unknown; phone_hash: unknown; ip_key: unknown }>(
+        'select id,cart,phone_hash,ip_key from menu_drafts order by id',
       )
     ).rows;
-    expect(rows.map((r) => [r.id, r.cart === null, r.phone_hash === null])).toEqual([
-      ['open', false, false],
-      ['soon', true, true],
+    expect(
+      rows.map((r) => [r.id, r.cart === null, r.phone_hash === null, r.ip_key === null]),
+    ).toEqual([
+      ['open', false, false, false],
+      ['soon', true, true, true],
     ]);
     expect(await count('menu_link_uses')).toBe(0);
     expect(await rpc('purge_menu_ordering', [])).toBe(0);
@@ -2446,15 +2531,19 @@ describe('menu page ordering', () => {
   });
 
   it('is server-only and can be applied again', async () => {
-    expect(await draft('keep', '9')).toMatchObject({ ok: true });
+    expect(await draft('keep', '9', { ipKey: 'A'.repeat(22) })).toMatchObject({ ok: true });
     await db.exec(readFileSync('supabase/migrations/202610190002_menu_ordering.sql', 'utf8'));
     expect(await count('menu_drafts')).toBe(1);
+    expect(await scalar("select ip_key value from menu_drafts where id='keep'")).toBe(
+      'A'.repeat(22),
+    );
     const conversation = await chat();
     const built = web(conversation);
     for (const role of ['anon', 'authenticated']) {
       await db.exec(`set role ${role}`);
       try {
         await expect(draft('x', '8')).rejects.toThrow(DENIED);
+        await expect(draft('y', '7', { ipKey: 'B'.repeat(22) })).rejects.toThrow(DENIED);
         await expect(place(built, linkClaim())).rejects.toThrow(DENIED);
         await expect(rpc('purge_menu_ordering', [])).rejects.toThrow(DENIED);
         for (const table of ['menu_drafts', 'menu_link_uses'])

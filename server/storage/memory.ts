@@ -110,7 +110,7 @@ interface State {
     expiresAt: string;
     usedAt: string;
   }[];
-  menuDrafts?: (MenuDraft & { codeHash: string; createdAt: string })[];
+  menuDrafts?: (MenuDraft & { codeHash: string; createdAt: string; ipKey?: string })[];
   aiLimitHits?: AiLimitHit[];
   blockedCustomers?: BlockedKey[];
   gatewayNonces?: Record<string, number>;
@@ -1732,6 +1732,7 @@ export class MemoryRepository implements Repository {
         draft.conversationId = conversation.id;
         delete draft.cart;
         delete draft.phoneHash;
+        delete draft.ipKey;
       }
       for (const job of jobs) {
         if (job.companyId !== companyId) throw new Error('Cross-company job');
@@ -1752,8 +1753,8 @@ export class MemoryRepository implements Repository {
       (s.blockedCustomers ?? []).some((b) => b.companyId === companyId && keys.includes(b.key)),
     );
   }
-  // Mirrors SQL create_menu_draft.
-  createMenuDraft(draft: MenuDraftInput, minutes = 30, maxOpen = 200) {
+  // Mirrors SQL create_menu_draft, including its 15 open drafts per network address.
+  createMenuDraft(draft: MenuDraftInput, minutes = 30, maxOpen = 2000) {
     return this.mutate((s): MenuDraftResult => {
       if (!Number.isInteger(minutes) || minutes < 5 || minutes > 60 || maxOpen < 1)
         throw new Error('Invalid menu draft limits');
@@ -1762,7 +1763,8 @@ export class MemoryRepository implements Repository {
         !draft.cart ||
         typeof draft.quotedTotal !== 'number' ||
         !/^[0-9a-f]{64}$/.test(draft.codeHash) ||
-        !/^[0-9a-f]{64}$/.test(draft.phoneHash)
+        !/^[0-9a-f]{64}$/.test(draft.phoneHash) ||
+        (draft.ipKey != null && !/^[A-Za-z0-9_-]{22}$/.test(draft.ipKey))
       )
         throw new Error('Invalid menu draft');
       companyExists(s, draft.companyId);
@@ -1771,11 +1773,22 @@ export class MemoryRepository implements Repository {
         (d) => d.companyId === draft.companyId && !d.usedAt && Date.parse(d.expiresAt) > Date.now(),
       );
       if (open.length >= maxOpen) return { ok: false, reason: 'busy' };
+      if (draft.ipKey && open.filter((d) => d.ipKey === draft.ipKey).length >= 15)
+        return { ok: false, reason: 'busy_source' };
       if (rows.some((d) => d.codeHash === draft.codeHash || d.id === draft.id))
         return { ok: false, reason: 'collision' };
-      const createdAt = new Date().toISOString();
-      const expiresAt = new Date(Date.now() + minutes * 60000).toISOString();
-      rows.push({ ...copy(draft), createdAt, expiresAt });
+      const now = Date.now();
+      const createdAt = new Date(now).toISOString();
+      const expiresAt = new Date(now + minutes * 60000).toISOString();
+      const { ipKey, ...fields } = copy(draft);
+      rows.push({ ...fields, ...(ipKey && { ipKey }), createdAt, expiresAt });
+      // The number's older open drafts end now and are wiped as on expiry.
+      for (const old of open.filter((d) => d.phoneHash === draft.phoneHash)) {
+        old.expiresAt = new Date(Math.max(now, Date.parse(old.createdAt) + 1)).toISOString();
+        delete old.cart;
+        delete old.phoneHash;
+        delete old.ipKey;
+      }
       return { ok: true, expiresAt };
     });
   }
@@ -1783,7 +1796,7 @@ export class MemoryRepository implements Repository {
     return this.read((s) => {
       const draft = s.menuDrafts?.find((d) => d.companyId === companyId && d.codeHash === codeHash);
       if (!draft) return undefined;
-      const { codeHash: _code, createdAt: _created, ...rest } = draft;
+      const { codeHash: _code, createdAt: _created, ipKey: _ip, ...rest } = draft;
       return rest as MenuDraft;
     });
   }

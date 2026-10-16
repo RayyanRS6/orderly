@@ -25,14 +25,16 @@ revoke all on public.menu_link_uses from public, anon, authenticated;
 grant all on public.menu_link_uses to service_role;
 
 -- Orders started on the public menu page (Instagram, QR). Nothing is ordered or sent until the
--- customer sends the code from their own WhatsApp. The code and phone are kept only as keyed
--- hashes. Name and address (in cart) are wiped when the draft is used or expires; rows go an
--- hour after they expire (purge_menu_ordering, scheduled in 202610190003).
+-- customer sends the code from their own WhatsApp. The code, phone and the visitor's network
+-- address (ip_key, only to cap one source's open drafts) are kept only as keyed hashes. Name,
+-- address (in cart) and hashes are wiped when the draft is used or expires; rows go an hour
+-- after they expire (purge_menu_ordering, scheduled in 202610190003).
 create table if not exists public.menu_drafts (
   id text primary key,
   company_id text not null references public.companies(id) on delete cascade,
   code_hash text not null unique,
   phone_hash text,
+  ip_key text,
   cart jsonb,
   quoted_total bigint not null,
   created_at timestamptz not null default now(),
@@ -42,21 +44,26 @@ create table if not exists public.menu_drafts (
   conversation_id text,
   constraint menu_drafts_code_hash check (code_hash ~ '^[0-9a-f]{64}$'),
   constraint menu_drafts_phone_hash check (phone_hash is null or phone_hash ~ '^[0-9a-f]{64}$'),
+  constraint menu_drafts_ip_key check (ip_key is null or ip_key ~ '^[A-Za-z0-9_-]{22}$'),
   constraint menu_drafts_total check (quoted_total >= 0),
   constraint menu_drafts_expiry check (expires_at > created_at and expires_at <= created_at + interval '1 hour')
 );
 create index if not exists menu_drafts_open on public.menu_drafts(company_id, expires_at) where used_at is null;
+create index if not exists menu_drafts_open_source on public.menu_drafts(company_id, ip_key) where used_at is null;
 create index if not exists menu_drafts_expiry on public.menu_drafts(expires_at);
 alter table public.menu_drafts enable row level security;
 revoke all on public.menu_drafts from public, anon, authenticated;
 grant all on public.menu_drafts to service_role;
 
 -- Saves a draft that expires p_minutes from now (database clock). A business never holds more
--- than about p_max_open unconfirmed drafts. No company row lock: anonymous requests must never
--- queue behind, or hold up, live chat turns. A code collision is reported so the server retries.
-create or replace function public.create_menu_draft(p_draft jsonb, p_minutes integer default 30, p_max_open integer default 200)
+-- than about p_max_open unconfirmed drafts (a storage backstop), and one network address
+-- (ipKey, when known) no more than 15, so no single source can use up a business's drafts. A
+-- number keeps one open draft: a new one ends its older ones. No company row lock: anonymous
+-- requests must never queue behind, or hold up, live chat turns. A code collision is reported
+-- so the server retries.
+create or replace function public.create_menu_draft(p_draft jsonb, p_minutes integer default 30, p_max_open integer default 2000)
 returns jsonb language plpgsql security definer set search_path = public as $$
-declare expires timestamptz;
+declare expires timestamptz; ip text := p_draft->>'ipKey';
 begin
   if p_minutes is null or p_minutes not between 5 and 60 or p_max_open is null or p_max_open < 1 then
     raise exception 'Invalid menu draft limits';
@@ -64,21 +71,32 @@ begin
   if coalesce(p_draft->>'id', '') = '' or jsonb_typeof(p_draft->'cart') is distinct from 'object'
     or jsonb_typeof(p_draft->'quotedTotal') is distinct from 'number'
     or coalesce(p_draft->>'codeHash', '') !~ '^[0-9a-f]{64}$'
-    or coalesce(p_draft->>'phoneHash', '') !~ '^[0-9a-f]{64}$' then
+    or coalesce(p_draft->>'phoneHash', '') !~ '^[0-9a-f]{64}$'
+    or (ip is not null and ip !~ '^[A-Za-z0-9_-]{22}$') then
     raise exception 'Invalid menu draft';
   end if;
   if not exists(select 1 from companies where id = p_draft->>'companyId') then raise exception 'Unknown company'; end if;
   if (select count(*) from menu_drafts where company_id = p_draft->>'companyId' and used_at is null and expires_at > now()) >= p_max_open then
     return jsonb_build_object('ok', false, 'reason', 'busy');
   end if;
+  if ip is not null and (select count(*) from menu_drafts where company_id = p_draft->>'companyId' and ip_key = ip
+      and used_at is null and expires_at > now()) >= 15 then
+    return jsonb_build_object('ok', false, 'reason', 'busy_source');
+  end if;
   expires := now() + make_interval(mins => p_minutes);
   begin
-    insert into menu_drafts(id, company_id, code_hash, phone_hash, cart, quoted_total, expires_at)
-      values (p_draft->>'id', p_draft->>'companyId', p_draft->>'codeHash', p_draft->>'phoneHash',
+    insert into menu_drafts(id, company_id, code_hash, phone_hash, ip_key, cart, quoted_total, expires_at)
+      values (p_draft->>'id', p_draft->>'companyId', p_draft->>'codeHash', p_draft->>'phoneHash', ip,
         p_draft->'cart', (p_draft->>'quotedTotal')::bigint, expires);
   exception when unique_violation then
     return jsonb_build_object('ok', false, 'reason', 'collision');
   end;
+  -- The number's older open drafts end now (just after they were made, for the expiry check)
+  -- and are wiped as on expiry.
+  update menu_drafts set expires_at = greatest(now(), created_at + interval '1 millisecond'),
+      cart = null, phone_hash = null, ip_key = null
+    where company_id = p_draft->>'companyId' and phone_hash = p_draft->>'phoneHash'
+      and used_at is null and expires_at > now() and id <> p_draft->>'id';
   return jsonb_build_object('ok', true, 'expiresAt', to_char(expires at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'));
 end $$;
 
@@ -161,7 +179,7 @@ begin
       values (p_company_id, p_claim->>'nonce', p_conversation->>'id', p_order->>'id', (p_claim->>'expiresAt')::timestamptz);
   else
     update menu_drafts set used_at = now(), order_id = p_order->>'id', conversation_id = p_conversation->>'id',
-      cart = null, phone_hash = null
+      cart = null, phone_hash = null, ip_key = null
       where id = draft.id;
   end if;
   for j in select value from jsonb_array_elements(coalesce(p_jobs, '[]'::jsonb)) loop
@@ -171,14 +189,15 @@ begin
   return jsonb_build_object('ok', true, 'order', p_order);
 end $$;
 
--- Clears an unused draft's name, address and phone hash as soon as it expires, and removes old
+-- Clears an unused draft's name, address and hashes as soon as it expires, and removes old
 -- rows an hour later. Scheduled every 10 minutes by 202610190003_menu_purge_schedule.sql.
 create or replace function public.purge_menu_ordering() returns integer
 language plpgsql security definer set search_path = public as $$
 declare wiped integer; removed integer; uses integer;
 begin
-  update menu_drafts set cart = null, phone_hash = null
-    where used_at is null and expires_at <= now() and (cart is not null or phone_hash is not null);
+  update menu_drafts set cart = null, phone_hash = null, ip_key = null
+    where used_at is null and expires_at <= now()
+      and (cart is not null or phone_hash is not null or ip_key is not null);
   get diagnostics wiped = row_count;
   delete from menu_drafts where expires_at < now() - interval '1 hour';
   get diagnostics removed = row_count;

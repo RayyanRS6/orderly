@@ -240,6 +240,8 @@ export interface Repository {
   ): Promise<{ orderId: string; conversationId: string } | undefined>;
   // Read-only: never counts a hit or adds identities, unlike findBlockedCustomer.
   hasBlockedKey(companyId: string, keys: string[]): Promise<boolean>;
+  // Refuses past maxOpen open drafts per business ('busy') or 15 per network address
+  // ('busy_source'). A number's older open drafts end when it makes a new one.
   createMenuDraft(
     draft: MenuDraftInput,
     minutes: number,
