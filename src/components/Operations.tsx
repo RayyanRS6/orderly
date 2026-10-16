@@ -158,6 +158,8 @@ function TeamAccess() {
     void loadTeam().catch((e) => setError(e.message));
   }, [data.company.id]);
   const ask = (change: TeamChange) => {
+    // One change at a time: a running one must finish against the person it was asked for.
+    if (pending === 'team-change') return;
     setTeamError('');
     setTeamChange(change);
     setConfirming(true);
@@ -261,7 +263,11 @@ function TeamAccess() {
       </ul>
       <ConfirmDialog
         open={confirming}
-        onOpenChange={setConfirming}
+        onOpenChange={(open) => {
+          // Stays open until a running change finishes, so its result lands on this person.
+          if (!open && pending === 'team-change') return;
+          setConfirming(open);
+        }}
         title={copy?.title ?? ''}
         description={copy?.description ?? ''}
         confirmLabel={copy?.confirmLabel}

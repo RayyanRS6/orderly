@@ -32,9 +32,11 @@ export type TeamChange =
 export const personName = (p: { email?: string; userId: string }) =>
   p.email || `Account ${p.userId.slice(0, 8)}`;
 
+/** Empty when the account itself couldn't be read, so nobody looks inactive by mistake. */
 export function lastSeen(p: Account) {
   if (p.lastSignInAt) return `Last signed in ${shortDate(p.lastSignInAt)}`;
-  return p.invited ? 'Invited, hasn’t signed in yet' : 'Hasn’t signed in yet';
+  if (p.invited) return 'Invited, hasn’t signed in yet';
+  return p.createdAt ? 'Hasn’t signed in yet' : '';
 }
 
 const byEmail = (a: { email?: string; userId: string }, b: { email?: string; userId: string }) =>
@@ -129,7 +131,9 @@ export function describeChange(change: PeopleChange, d: PeopleDirectory): Change
   const businesses = change.person.memberships.map((m) => businessName(d.businesses, m.companyId));
   const orphaned = soleOwnerOf(d, change.person);
   return {
-    title: `Delete ${name}’s account?`,
+    title: change.person.email
+      ? `Delete ${name}’s account?`
+      : `Delete this account (${change.person.userId.slice(0, 8)})?`,
     description: [
       businesses.length
         ? `This deletes their sign-in for good and removes them from: ${businesses.join(', ')}.`

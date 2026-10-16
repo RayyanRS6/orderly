@@ -27,10 +27,15 @@ const visit = (key, depth = 0) => {
   if (!chunk || chunk.isEntry || preload.has(chunk.file)) return;
   preload.add(chunk.file);
   for (const dep of chunk.imports ?? []) visit(dep, depth);
-  if (depth === 0) for (const dep of chunk.dynamicImports ?? []) visit(dep, depth + 1);
+  // Lazy pages (such as the admin-only People page) load when opened, not for everyone.
+  if (depth === 0)
+    for (const dep of chunk.dynamicImports ?? [])
+      if (!dep.startsWith('src/components/')) visit(dep, depth + 1);
 };
 visit('src/App.tsx');
 if (!preload.size) throw new Error('The workspace chunk (src/App.tsx) is missing from the build.');
+if ([...preload].some((file) => /(^|\/)People-[^/]*\.js$/.test(file)))
+  throw new Error('The admin-only People page must not be preloaded for every workspace.');
 const preloadTags = [...preload]
   .map((file) => `<link rel="modulepreload" crossorigin href="/${file}" />`)
   .join('');

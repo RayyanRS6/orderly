@@ -371,11 +371,14 @@ export function managementRoutes(repo: Repository) {
     owner(c.get('role'));
     const members = await repo.listMembers(c.get('company').id);
     // Emails only, never sign-in times: those are account-wide and would show activity in
-    // other businesses.
-    const accounts = await repo.getAccounts(members.map((m) => m.userId)).catch(() => {
-      console.warn('Orderly: team emails unavailable.');
-      return [] as Account[];
-    });
+    // other businesses. The platform admin's email is never shown to owners.
+    const admins = new Set(await repo.listAdminIds());
+    const accounts = await repo
+      .getAccounts(members.filter((m) => !admins.has(m.userId)).map((m) => m.userId))
+      .catch(() => {
+        console.warn('Orderly: team emails unavailable.');
+        return [] as Account[];
+      });
     const byId = new Map(accounts.map((a) => [a.userId, a]));
     c.header('Cache-Control', 'no-store');
     return c.json(
@@ -411,6 +414,12 @@ export function managementRoutes(repo: Repository) {
     owner(c.get('role'));
     const userId = z.string().uuid().parse(c.req.param('userId'));
     const { role } = z.object({ role: z.enum(['owner', 'staff']) }).parse(await c.req.json());
+    // Dashboards opened before add-by-email still add people by account ID here.
+    if (await repo.isAdmin(userId))
+      throw new PublicError(
+        'This is the Orderly admin. They can already open every business.',
+        409,
+      );
     await repo.setMember(c.get('company').id, { userId, role }, c.get('userId'));
     await repo.audit(c.get('company').id, c.get('userId'), `team.role_${role}`);
     return c.json({ ok: true });

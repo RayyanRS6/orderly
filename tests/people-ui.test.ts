@@ -145,6 +145,10 @@ describe('people helpers', () => {
     expect(describeChange({ kind: 'delete', person: lonely }, directory).description).toBe(
       'This deletes their sign-in for good. Past activity stays in the records.',
     );
+    const unread = { ...lonely, email: undefined, userId: '1a2b3c4d-0000-4000-8000-000000000000' };
+    expect(describeChange({ kind: 'delete', person: unread }, directory).title).toBe(
+      'Delete this account (1a2b3c4d)?',
+    );
   });
 
   it('builds the request for each confirmed change', () => {
@@ -178,7 +182,11 @@ describe('people helpers', () => {
     expect(personName({ userId: '1a2b3c4d-0000-4000-8000-000000000000' })).toBe('Account 1a2b3c4d');
     expect(personName(ali)).toBe('ali@x.com');
     expect(lastSeen({ userId: id(1), invited: true })).toBe('Invited, hasn’t signed in yet');
-    expect(lastSeen({ userId: id(1) })).toBe('Hasn’t signed in yet');
+    expect(lastSeen({ userId: id(1), createdAt: '2026-10-01T09:00:00.000Z' })).toBe(
+      'Hasn’t signed in yet',
+    );
+    // An account that couldn't be read says nothing, rather than looking unused.
+    expect(lastSeen({ userId: id(1) })).toBe('');
     expect(lastSeen(sara)).toMatch(/^Last signed in /);
   });
 

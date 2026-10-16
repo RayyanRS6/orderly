@@ -299,6 +299,25 @@ describe('owners add people by email', () => {
     expect(await roleOf(A.id, ids.ADMIN)).toBeUndefined();
   });
 
+  it('refuses the Orderly admin on the older add-by-ID route and never shows their email', async () => {
+    const byId = await request(tokens.owner, `/team/${ids.ADMIN}`, {
+      method: 'PUT',
+      body: { role: 'staff' },
+      company: A.id,
+    });
+    expect(byId.status).toBe(409);
+    expect(await roleOf(A.id, ids.ADMIN)).toBeUndefined();
+    // Even an admin membership made before this rule existed shows no email to owners.
+    await repo.setMember(A.id, { userId: ids.ADMIN, role: 'staff' }, ids.OWNER);
+    const team = (await (await request(tokens.owner, '/team', { company: A.id })).json()) as {
+      userId: string;
+      email?: string;
+    }[];
+    expect(team.find((m) => m.userId === ids.ADMIN)?.email).toBeUndefined();
+    expect(team.find((m) => m.userId === ids.STAFF)?.email).toBe('staff@example.com');
+    expect(JSON.stringify(team)).not.toContain('admin@example.com');
+  });
+
   it('invites a new email in the hosted workspace', async () => {
     const res = await invite('new.person@example.com');
     expect(await res.json()).toEqual({ ok: true, outcome: 'invited' });

@@ -46,7 +46,7 @@ export function People() {
   const [change, setChange] = useState<PeopleChange>();
   const [confirming, setConfirming] = useState(false);
   const [changeError, setChangeError] = useState('');
-  const addCard = useRef<HTMLElement>(null);
+  const emailInput = useRef<HTMLInputElement>(null);
   const groups = useMemo(() => directory && groupPeople(directory, search), [directory, search]);
   useEffect(() => {
     if (data.role !== 'admin') return;
@@ -77,6 +77,8 @@ export function People() {
     );
 
   const ask = (next: PeopleChange) => {
+    // One change at a time: a running one must finish against the person it was asked for.
+    if (pending === 'change') return;
     setChangeError('');
     setChange(next);
     setConfirming(true);
@@ -107,7 +109,9 @@ export function People() {
           <Badge tone={memberRole === 'owner' ? 'amber' : 'neutral'}>{label(memberRole)}</Badge>
         )}
         {person.you && <Badge tone="green">You</Badge>}
-        <span className="text-xs text-stone-500">{lastSeen(person)}</span>
+        {!directory?.emailsUnavailable && lastSeen(person) && (
+          <span className="text-xs text-stone-500">{lastSeen(person)}</span>
+        )}
       </div>
     </div>
   );
@@ -131,7 +135,7 @@ export function People() {
           </p>
         )}
       </div>
-      <section ref={addCard} className="card mb-6 p-5 sm:p-6 space-y-4">
+      <section className="card mb-6 p-5 sm:p-6 space-y-4">
         <h2 className="panel-title">Add someone to a business</h2>
         <form
           className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4"
@@ -158,6 +162,7 @@ export function People() {
         >
           <Field label="Their email">
             <input
+              ref={emailInput}
               type="email"
               className="input"
               required
@@ -216,7 +221,10 @@ export function People() {
                   <button
                     type="button"
                     className="btn btn-quiet"
-                    onClick={() => go(workspacePath(business.slug, 'security'))}
+                    onClick={() => {
+                      go(workspacePath(business.slug, 'security'));
+                      window.scrollTo(0, 0);
+                    }}
                   >
                     Open
                   </button>
@@ -284,7 +292,8 @@ export function People() {
                           className="btn btn-quiet"
                           onClick={() => {
                             setEmail(person.email ?? '');
-                            addCard.current?.scrollIntoView({ block: 'start' });
+                            // Focus also scrolls the field into view.
+                            emailInput.current?.focus();
                           }}
                         >
                           Add to a business
@@ -320,7 +329,11 @@ export function People() {
       )}
       <ConfirmDialog
         open={confirming}
-        onOpenChange={setConfirming}
+        onOpenChange={(open) => {
+          // Stays open until a running change finishes, so its result lands on this person.
+          if (!open && pending === 'change') return;
+          setConfirming(open);
+        }}
         title={copy?.title ?? ''}
         description={copy?.description ?? ''}
         confirmLabel={copy?.confirmLabel}
