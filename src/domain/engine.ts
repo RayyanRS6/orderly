@@ -531,20 +531,40 @@ function menu(
     if (lines.join('\n').length + line.length > 2800 || lines.length >= 12) break;
     lines.push(line);
   }
-  const linkLine = link
-    ? `\n\n${say(lang, `See the full menu and order here: ${link}`, `پورا مینو دیکھیں اور یہاں آرڈر کریں: ${link}`, `Poora menu dekhein aur yahan order karein: ${link}`)}`
-    : '';
+  const linkLine = link ? `\n\n${menuLinkLine(lang, link)}` : '';
   return `${notFound}${company.name}\n${lines.join('\n')}${lines.length < own.length ? `\n\nShowing ${lines.length} of ${own.length} items. Ask for a category or item name to narrow the menu.` : ''}${guided ? '' : `\n\n${say(lang, 'Tell me the item and quantity, for example “2 chicken biryani”.', 'چیز کا نام اور تعداد بتائیں، جیسے “2 چکن بریانی”۔', 'Item aur quantity batayein, jaise “2 chicken biryani”.')}`}${linkLine}`;
 }
+const menuLinkLine = (lang: Language, link: string) =>
+  say(
+    lang,
+    `See the full menu and order here: ${link}`,
+    `پورا مینو دیکھیں اور یہاں آرڈر کریں: ${link}`,
+    `Poora menu dekhein aur yahan order karein: ${link}`,
+  );
+// The exact link, not a longer address that starts with it, so it is personalised when sent.
+const hasMenuLink = (text: string, link: string) =>
+  text
+    .split(link)
+    .slice(1)
+    .some((after) => !/^[A-Za-z0-9/#?-]/.test(after));
 
-// The menu page link in owner wording (greeting, answers, rules). Without a link, each line
-// holding the placeholder is left out, so no sentence is half-finished.
+// The menu page link in owner or AI wording (greeting, answers, rules). Without a link the
+// placeholder is left out with a separator just before it ("Menu: {menu_link}" becomes
+// "Menu"), and a line left with no words is dropped.
+const MENU_LINK_GAP = /\s*(?:[:：=|>\-–—→➡👉]\u{FE0F}?\s*)*\{menu_link\}/gu;
 export function fillMenuLink(text: string, link?: string): string {
   if (!text.includes('{menu_link}')) return text;
   if (link) return text.replaceAll('{menu_link}', link);
   return text
     .split('\n')
-    .filter((line) => !line.includes('{menu_link}'))
+    .flatMap((line) => {
+      if (!line.includes('{menu_link}')) return [line];
+      const left = line
+        .replace(MENU_LINK_GAP, '')
+        .replace(/\s*(?:\(\s*\)|\[\s*\])/g, '')
+        .trim();
+      return /[\p{L}\p{N}]/u.test(left) ? [left] : [];
+    })
     .join('\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
@@ -571,11 +591,20 @@ function linksIn(text: string): string[] {
     .filter((m) => BARE_ENDING.test(m.split(/[/?#]/)[0] ?? ''));
   return [...[...text.matchAll(EXPLICIT_LINK)].map((m) => m[0]), ...bare];
 }
-/** Web hosts the owner gave (business details, answers, bot settings) plus the app's own. */
+// Allowed hosts are read loosely: everything detection finds, plus any ending in any case, an
+// email's domain, "linktr.ee/x" or "m.me/x". Allowing too much here only ever keeps a reply.
+const ANY_HOST = /\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,24}\b/giu;
+const hostsIn = (text: string) =>
+  [...linksIn(text), ...[...text.matchAll(ANY_HOST)].map((m) => m[0])].map(linkHost);
+/**
+ * Web hosts the owner gave (business details, answers, bot settings) plus the app's own, and
+ * any other text whose hosts the AI may repeat (the customer's messages, the menu).
+ */
 export function linkAllowlist(
   company: Company,
   configuration: BotConfig,
   appHost?: string,
+  more: (string | undefined)[] = [],
 ): Set<string> {
   const sources = [
     company.name,
@@ -586,8 +615,9 @@ export function linkAllowlist(
     configuration.greeting,
     configuration.handoffMessage,
     ...configuration.behaviorRules.map((rule) => rule.response),
+    ...more,
   ];
-  const hosts = new Set(sources.flatMap((text) => linksIn(text ?? '').map(linkHost)));
+  const hosts = new Set(sources.flatMap((text) => hostsIn(text ?? '')));
   if (appHost) hosts.add(appHost.toLowerCase().replace(/^www\./, ''));
   hosts.delete('');
   return hosts;
@@ -934,8 +964,21 @@ export function processTurn(
   const next: Conversation = structuredClone(conversation);
   const configuration = botConfig(company);
   // AI wording that states prices or outcomes, or links to a website the owner never gave.
-  const hosts = linkAllowlist(company, configuration, input.appHost);
+  // Links the customer sent in this chat may be repeated back to them, as may the menu's.
+  const hosts = linkAllowlist(company, configuration, input.appHost, [
+    input.menuLink,
+    input.text,
+    ...conversation.messages.filter((m) => m.role === 'customer').map((m) => m.text),
+    ...products
+      .filter((product) => product.companyId === company.id)
+      .flatMap((product) => [product.name, product.description]),
+  ]);
   const unsafe = (text: string) => unsafeModelText(text) || inventsLink(text, hosts);
+  // The menu page link is filled in (or left out) where each text is chosen, before any
+  // check reads it: a text left empty counts as missing, so the turn never goes silent.
+  if (modelResponse?.text.includes('{menu_link}'))
+    modelResponse = { ...modelResponse, text: fillMenuLink(modelResponse.text, input.menuLink) };
+  const handoffMessage = fillMenuLink(configuration.handoffMessage ?? '', input.menuLink);
   const traces: string[] = [];
   if (next.messages.some((m) => m.id === input.messageId))
     return {
@@ -1024,6 +1067,10 @@ export function processTurn(
       (rule) => rule.enabled && rule.id === modelResponse?.matchedRuleId,
     );
     if (matchedRule) traces.push(`behavior_rule:${matchedRule.id}`);
+    const exactResponse =
+      matchedRule?.responseMode === 'exact'
+        ? fillMenuLink(matchedRule.response ?? '', input.menuLink)
+        : '';
     const transactional = traces.some((trace) =>
       [
         'add_item',
@@ -1067,10 +1114,10 @@ export function processTurn(
       modelWrote || answerByModel ? 'used' : answerUnsafe ? 'unsafe' : 'none';
     if (matchedRule?.action === 'handoff') next.mode = 'human';
     let configuredResponseUsed = false;
-    if (!protectedReply && matchedRule?.responseMode === 'exact' && matchedRule.response) {
+    if (!protectedReply && exactResponse) {
       parts = transactional && reply ? [...parts, 'exact_rule'] : ['exact_rule'];
       if (modelWrote) modelText = 'exact_rule';
-      reply = transactional && reply ? `${reply}\n\n${matchedRule.response}` : matchedRule.response;
+      reply = transactional && reply ? `${reply}\n\n${exactResponse}` : exactResponse;
       configuredResponseUsed = true;
     } else if (
       !protectedReply &&
@@ -1109,6 +1156,12 @@ export function processTurn(
       reply = `${reply}\n\n${incompleteReviewQuestion}`;
       if (!parts.includes('engine')) parts.push('engine');
     }
+    // The menu page link once: the engine's link line goes when the AI's intro or the rule's
+    // wording already shares it.
+    if (input.menuLink) {
+      const once = reply.replace(`\n\n${menuLinkLine(lang, input.menuLink)}`, '');
+      if (once !== reply && hasMenuLink(once, input.menuLink)) reply = once;
+    }
     if (modelResponse && !grounded) traces.push('invalid_model_grounding_ignored');
     if (modelResponse?.text && unsafeModelText(modelResponse.text))
       traces.push('unsafe_model_response_ignored');
@@ -1119,9 +1172,9 @@ export function processTurn(
     if (!reply && traces.includes('answer') && !answerOnlyLabelSlip) {
       next.mode = 'human';
       traces.push('handoff');
-      parts = [configuration.handoffMessage ? 'handoff_message' : 'engine'];
+      parts = [handoffMessage ? 'handoff_message' : 'engine'];
       reply =
-        configuration.handoffMessage ||
+        handoffMessage ||
         say(
           lang,
           'I’m not certain about that, so I’ve asked a staff member to help.',
@@ -1129,7 +1182,7 @@ export function processTurn(
           'Mujhe is baat ka yaqeen nahi, is liye staff se madad mangi hai.',
         );
     }
-    if (!reply && next.mode === 'bot') {
+    const fallback = () => {
       reply =
         missingDetails(company, cart, lang) ??
         say(
@@ -1140,23 +1193,23 @@ export function processTurn(
         );
       traces.push('response_fallback');
       parts = ['fallback'];
-    }
-    if (
-      traces.includes('handoff') &&
-      configuration.handoffMessage &&
-      !(matchedRule?.responseMode === 'exact' && matchedRule.response)
-    ) {
-      reply = configuration.handoffMessage;
+    };
+    if (!reply && next.mode === 'bot') fallback();
+    if (traces.includes('handoff') && handoffMessage && !exactResponse) {
+      reply = handoffMessage;
       parts = ['handoff_message'];
     }
     if (company.bot?.published && reply && !matchedRule && !protectedReply && next.mode === 'bot') {
-      if (/^(hi|hello|salam|سلام|ہیلو)$/iu.test(input.text.trim()) && configuration.greeting) {
-        reply = configuration.greeting;
+      const greeting = fillMenuLink(configuration.greeting ?? '', input.menuLink);
+      if (/^(hi|hello|salam|سلام|ہیلو)$/iu.test(input.text.trim()) && greeting) {
+        reply = greeting;
         parts = ['greeting'];
       }
     }
-    if (modelText === 'used' && !parts.includes('model')) modelText = 'replaced';
+    // Any placeholder left in other wording; a bot reply it empties takes the fallback above.
     if (reply) reply = fillMenuLink(reply, input.menuLink);
+    if (!reply && next.mode === 'bot') fallback();
+    if (modelText === 'used' && !parts.includes('model')) modelText = 'replaced';
     if (reply)
       next.messages.push({
         id: `${input.messageId}:reply`,
@@ -1279,7 +1332,7 @@ export function processTurn(
           'یہ گفتگو اب عملے کے پاس ہے۔ بوٹ روک دیا گیا ہے۔',
           'Yeh conversation ab staff ke paas hai. Bot pause kar diya gaya hai.',
         );
-        if (configuration.handoffMessage) reply = configuration.handoffMessage;
+        if (handoffMessage) reply = handoffMessage;
         break;
       }
       if (action.type === 'clarify_item') {
@@ -1354,18 +1407,21 @@ export function processTurn(
         continue;
       }
       if (action.type === 'answer') {
-        const faq = company.faqs.find(
+        const matched = company.faqs.find(
           (f) =>
             normalize(input.text).includes(normalize(f.question)) ||
             (action.text === f.answer && f.answer.trim()),
         );
-        const proposed = action.text.trim();
+        // An approved answer that was only the menu page link, while the page is off, is none.
+        const approved = matched && fillMenuLink(matched.answer, input.menuLink);
+        const faq = matched && (approved || !matched.answer.trim()) ? matched : undefined;
+        const proposed = fillMenuLink(action.text, input.menuLink).trim();
         const unsafeClaim = unsafe(proposed);
         if (modelResponse && !modelResponse.text.trim() && proposed && !unsafeClaim)
           modelResponse = { ...modelResponse, text: proposed };
         // Structured response metadata is validated in finish before deciding
         // whether a handoff is needed. An empty answer action is not a failure.
-        reply = faq?.answer ?? (modelResponse || unsafeClaim ? '' : proposed);
+        reply = faq ? (approved ?? '') : modelResponse || unsafeClaim ? '' : proposed;
         // Explanation only: an answer the model wrote without a separate response object.
         if (!faq && !modelResponse && actions && !input.action && proposed) {
           if (unsafeClaim) {

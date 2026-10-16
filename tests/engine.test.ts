@@ -672,7 +672,7 @@ describe('menu page link', () => {
     expect(hello(link)).toBe(`Welcome to Dastarkhwan!\n\n${link}\n\nWhat would you like today?`);
     expect(hello()).toBe('Welcome to Dastarkhwan!\n\nWhat would you like today?');
     expect(hello(undefined, 'Hi!\n\n\nWelcome.')).toBe('Hi!\n\n\nWelcome.');
-    expect(fillMenuLink('Order here: {menu_link} now', undefined)).toBe('');
+    expect(fillMenuLink('Order here: {menu_link} now', undefined)).toBe('Order here now');
     expect(fillMenuLink('No placeholder here.  ', link)).toBe('No placeholder here.  ');
     const echoed = processTurn(
       company,
@@ -683,6 +683,260 @@ describe('menu page link', () => {
       { text: '{menu_link}', askFor: 'none' },
     );
     expect(echoed.reply).toBe(link);
+  });
+
+  it('leaves out only the placeholder and a separator before it when the page is off', () => {
+    expect(fillMenuLink('Welcome to Karachi Bites! See our menu: {menu_link}')).toBe(
+      'Welcome to Karachi Bites! See our menu',
+    );
+    expect(fillMenuLink('Menu - {menu_link}\nWhat would you like?')).toBe(
+      'Menu\nWhat would you like?',
+    );
+    expect(fillMenuLink('Menu dekhein 👉 {menu_link}')).toBe('Menu dekhein');
+    expect(fillMenuLink('Order here ({menu_link}).')).toBe('Order here.');
+    expect(fillMenuLink('مینو یہاں دیکھیں: {menu_link}')).toBe('مینو یہاں دیکھیں');
+    expect(fillMenuLink('Hi!\n\n👉 {menu_link}\n\nBye')).toBe('Hi!\n\nBye');
+    expect(fillMenuLink(' {menu_link} ')).toBe('');
+    expect(fillMenuLink('Menu: {menu_link} / {menu_link}', link)).toBe(`Menu: ${link} / ${link}`);
+  });
+
+  describe('never leaves the customer without a reply when the page is off', () => {
+    const configured = (config: Partial<typeof defaultBot>): Company => ({
+      ...company,
+      bot: publishedConfig(config),
+    });
+    const send = (
+      target: Company,
+      text: string,
+      actions: BotAction[] = [{ type: 'answer', text: '' }],
+      modelText?: string,
+      extra: { menuLink?: string; matchedRuleId?: string } = {},
+    ) =>
+      processTurn(
+        target,
+        products,
+        fresh(),
+        {
+          messageId: `off-${++message}`,
+          text,
+          now,
+          menuLink: extra.menuLink,
+          appHost: 'orderly.example',
+        },
+        actions,
+        modelText === undefined
+          ? undefined
+          : { text: modelText, askFor: 'none', matchedRuleId: extra.matchedRuleId },
+      );
+
+    it('keeps the rest of a one-line greeting', () => {
+      const result = send(
+        configured({ greeting: 'Welcome to Karachi Bites! See our menu: {menu_link}' }),
+        'hi',
+        undefined,
+        'Hello!',
+      );
+      expect(result.reply).toBe('Welcome to Karachi Bites! See our menu');
+      expect(result.decision?.parts).toEqual(['greeting']);
+      expect(result.conversation.mode).toBe('bot');
+      const salam = send(
+        configured({ greeting: 'Assalam o Alaikum! Menu yahan dekhein: {menu_link}' }),
+        'salam',
+        undefined,
+        'Walaikum assalam!',
+      );
+      expect(salam.reply).toBe('Assalam o Alaikum! Menu yahan dekhein');
+      expect(salam.conversation.messages.at(-1)?.text).toBe(salam.reply);
+    });
+
+    it('keeps the earlier reply when the greeting was only the link', () => {
+      const result = send(configured({ greeting: '{menu_link}' }), 'hi', undefined, 'Hello!');
+      expect(result.reply).toBe('Hello!');
+      expect(result.decision?.parts).toEqual(['model']);
+      const filled = send(configured({ greeting: '{menu_link}' }), 'hi', undefined, 'Hello!', {
+        menuLink: link,
+      });
+      expect(filled.reply).toBe(link);
+    });
+
+    it('sends the AI’s answer without the placeholder', () => {
+      const result = send(
+        configured({ instructions: 'When asked for the menu, share {menu_link}.' }),
+        'menu link bhej dein',
+        undefined,
+        'Ji zaroor! Yeh raha hamara menu: {menu_link}',
+      );
+      expect(result.reply).toBe('Ji zaroor! Yeh raha hamara menu');
+      expect(result.decision?.modelText).toBe('used');
+      expect(result.conversation.mode).toBe('bot');
+    });
+
+    it('hands an answer that was only the placeholder to staff', () => {
+      const result = send(company, 'menu link?', undefined, '{menu_link}');
+      expect(result.conversation.mode).toBe('human');
+      expect(result.traces).toContain('handoff');
+      expect(result.reply).toBe(
+        'I’m not certain about that, so I’ve asked a staff member to help.',
+      );
+      const local = send(company, 'menu link?', [{ type: 'answer', text: '{menu_link}' }]);
+      expect(local.conversation.mode).toBe('human');
+      expect(local.reply).toBe(result.reply);
+    });
+
+    it('takes the built-in next question when the AI’s wording was only the placeholder', () => {
+      const result = send(
+        company,
+        'pickup',
+        [{ type: 'set_details', fulfillment: 'pickup' }],
+        '{menu_link}',
+      );
+      expect(result.reply).not.toBe('');
+      expect(result.traces).toContain('response_fallback');
+      expect(result.decision?.parts).toEqual(['fallback']);
+      expect(result.conversation.mode).toBe('bot');
+    });
+
+    it('fills the handoff message, or uses the built-in one when nothing is left', () => {
+      const staff = (handoffMessage: string, menuLink?: string) =>
+        send(configured({ handoffMessage }), 'staff', [{ type: 'handoff' }], undefined, {
+          menuLink,
+        });
+      expect(staff('Our team will reply soon. Menu: {menu_link}').reply).toBe(
+        'Our team will reply soon. Menu',
+      );
+      expect(staff('{menu_link}').reply).toBe(
+        'This conversation is now assigned to staff. The bot is paused until they resume it.',
+      );
+      expect(staff('{menu_link}', link).reply).toBe(link);
+      // An answer the AI could not give: the same handoff, with the owner's message filled.
+      const unsure = send(
+        configured({ handoffMessage: 'A person will help.\n{menu_link}' }),
+        'are you halal?',
+        undefined,
+        '',
+      );
+      expect(unsure.conversation.mode).toBe('human');
+      expect(unsure.reply).toBe('A person will help.');
+      expect(unsure.decision?.parts).toEqual(['handoff_message']);
+    });
+
+    it('skips an exact rule response or an approved answer that was only the link', () => {
+      const rule = {
+        id: 'menu-rule',
+        enabled: true,
+        when: 'The customer asks for the menu link.',
+        action: 'reply' as const,
+        response: '{menu_link}',
+        responseMode: 'exact' as const,
+      };
+      const ruled = configured({ behaviorRules: [rule] });
+      const result = send(ruled, 'menu link?', undefined, 'We share the menu here in chat.', {
+        matchedRuleId: rule.id,
+      });
+      expect(result.reply).toBe('We share the menu here in chat.');
+      expect(result.decision?.parts).toEqual(['model']);
+      expect(
+        send(ruled, 'menu link?', undefined, 'Here it is.', {
+          matchedRuleId: rule.id,
+          menuLink: link,
+        }).reply,
+      ).toBe(link);
+
+      const faqs = [{ question: 'menu link', answer: '{menu_link}' }];
+      const asked = send({ ...company, faqs }, 'menu link please', undefined, '');
+      expect(asked.traces).not.toContain('approved_faq');
+      expect(asked.conversation.mode).toBe('human');
+      expect(asked.reply).not.toBe('');
+      const answered = send({ ...company, faqs }, 'menu link please', undefined, '', {
+        menuLink: link,
+      });
+      expect(answered.reply).toBe(link);
+      expect(answered.traces).toContain('approved_faq');
+    });
+
+    it('leaves wording without the placeholder exactly as before', () => {
+      const rule = {
+        id: 'hours-rule',
+        enabled: true,
+        when: 'The customer asks when we open.',
+        action: 'reply' as const,
+        response: 'We open at 12.  ',
+        responseMode: 'exact' as const,
+      };
+      const owner = configured({
+        greeting: 'Hi!\n\n\nWelcome.  ',
+        handoffMessage: 'Staff will reply.\n\n\n',
+        behaviorRules: [rule],
+      });
+      for (const menuLink of [undefined, link]) {
+        expect(send(owner, 'hi', undefined, 'Hello!', { menuLink }).reply).toBe(
+          'Hi!\n\n\nWelcome.  ',
+        );
+        expect(send(owner, 'staff', [{ type: 'handoff' }], undefined, { menuLink }).reply).toBe(
+          'Staff will reply.\n\n\n',
+        );
+        expect(
+          send(owner, 'when?', undefined, 'Soon.', { menuLink, matchedRuleId: rule.id }).reply,
+        ).toBe('We open at 12.  ');
+        expect(
+          send(owner, 'are you open?', undefined, 'Yes, we are open.', { menuLink }).reply,
+        ).toBe('Yes, we are open.');
+      }
+    });
+  });
+
+  describe('shares the menu page link once in a menu reply', () => {
+    const count = (text: string) => text.split(link).length - 1;
+    const browse = (modelText: string) =>
+      processTurn(
+        {
+          ...company,
+          bot: publishedConfig({ instructions: 'When asked for the menu, share {menu_link}.' }),
+        },
+        products,
+        fresh(),
+        {
+          messageId: `menu-once-${++message}`,
+          text: 'mujhe menu dikhayein',
+          now,
+          menuLink: link,
+          appHost: 'orderly.example',
+        },
+        [{ type: 'menu' }],
+        { text: modelText, askFor: 'none' },
+      );
+
+    it('leaves out the engine’s link line when the AI’s intro already shares it', () => {
+      for (const intro of [
+        'Ji zaroor! Poora menu yahan dekhein: {menu_link}',
+        `Ji zaroor! Poora menu yahan dekhein: ${link}`,
+      ]) {
+        const result = browse(intro);
+        expect(result.reply.startsWith(`Ji zaroor! Poora menu yahan dekhein: ${link}\n\n`)).toBe(
+          true,
+        );
+        expect(count(result.reply)).toBe(1);
+        expect(result.reply).not.toContain('Poora menu dekhein aur yahan order karein');
+        expect(result.reply).toContain(biryani.name);
+        expect(result.decision?.parts).toEqual(['model', 'engine']);
+      }
+    });
+
+    it('keeps the engine’s link line when the AI’s intro has no link or is dropped', () => {
+      const plain = browse('Ji zaroor! Yeh raha hamara menu.');
+      expect(count(plain.reply)).toBe(1);
+      expect(plain.reply.endsWith(`Poora menu dekhein aur yahan order karein: ${link}`)).toBe(true);
+      const longer = browse(`Deals: ${link}/deals`);
+      expect(longer.reply.endsWith(`Poora menu dekhein aur yahan order karein: ${link}`)).toBe(
+        true,
+      );
+      const dropped = browse(`Biryani is Rs. 450 only! Menu: ${link}`);
+      expect(dropped.decision?.modelText).toBe('unsafe');
+      expect(count(dropped.reply)).toBe(1);
+      expect(dropped.reply.endsWith(`Poora menu dekhein aur yahan order karein: ${link}`)).toBe(
+        true,
+      );
+    });
   });
 });
 
@@ -770,5 +1024,127 @@ describe('web links in AI wording', () => {
       'Orderly.Example',
     );
     expect([...hosts].sort()).toEqual(['laziza.pk', 'mall.com.pk', 'orderly.example', 'tiny.ly']);
+  });
+
+  it('keeps the owner’s own site in any ending or case, however the AI writes it', () => {
+    const withFaq = (answer: string): Company => ({
+      ...company,
+      faqs: [...company.faqs, { question: 'website', answer }],
+    });
+    for (const [answer, text] of [
+      ['Yes: karachibites.co', 'Yes! Visit https://karachibites.co'],
+      ['Yes: karachibites.co', 'Yes! Visit www.karachibites.co/deals'],
+      ['Visit KARACHIBITES.PK', 'You can visit karachibites.pk for our deals.'],
+      ['Visit KarachiBites.PK', 'See https://karachibites.pk for photos.'],
+      ['linktr.ee/karachibites', 'All our links: https://linktr.ee/karachibites'],
+      ['m.me/karachibites', 'Message us at https://m.me/karachibites'],
+      ['Find us: https://maps.app.goo.gl/Lz1', 'We are here: https://maps.app.goo.gl/Lz1'],
+    ]) {
+      const result = ask(text!, withFaq(answer!));
+      expect(result.reply, text).toBe(text);
+      expect(result.decision?.modelText, text).toBe('used');
+      expect(result.conversation.mode, text).toBe('bot');
+    }
+    const named = ask('Visit https://laziza.pk anytime.', { ...company, name: 'Laziza.PK' });
+    expect(named.reply).toBe('Visit https://laziza.pk anytime.');
+    expect([
+      ...linkAllowlist(withFaq('KARACHIBITES.PK, linktr.ee/x, m.me/y, ali@Lazeez.CO'), defaultBot),
+    ]).toEqual(expect.arrayContaining(['karachibites.pk', 'linktr.ee', 'm.me', 'lazeez.co']));
+    // Detection is unchanged: a site the owner never gave is still dropped.
+    expect(
+      ask('Order at https://karachibites.co', withFaq('Visit KARACHIBITES.PK')).reply,
+    ).not.toBe('Order at https://karachibites.co');
+  });
+
+  describe('links the customer sent or the menu mentions', () => {
+    const reply = (
+      text: string,
+      modelText: string,
+      earlier: string[] = [],
+      catalog: Product[] = products,
+    ) => {
+      const c = fresh();
+      c.messages = earlier.map((t, index) => ({
+        id: `earlier-${index}`,
+        role: 'customer' as const,
+        text: t,
+        createdAt: now,
+      }));
+      return processTurn(
+        company,
+        catalog,
+        c,
+        { messageId: `customer-link-${++message}`, text, now, appHost: 'orderly.example' },
+        [{ type: 'answer', text: '' }],
+        { text: modelText, askFor: 'none' },
+      );
+    };
+
+    it('lets the AI repeat a link or email the customer sent in this chat', () => {
+      const pin = reply(
+        'Is this in your delivery area? https://maps.app.goo.gl/Ab12Cd',
+        'Yes, https://maps.app.goo.gl/Ab12Cd is in Gulshan, which we deliver to.',
+      );
+      expect(pin.reply).toBe(
+        'Yes, https://maps.app.goo.gl/Ab12Cd is in Gulshan, which we deliver to.',
+      );
+      expect(pin.decision?.modelText).toBe('used');
+      expect(pin.conversation.mode).toBe('bot');
+      expect(pin.traces).not.toContain('invented_link_ignored');
+      const email = reply(
+        'can you send the receipt there?',
+        'I can’t email ali.khan@gmail.com from here, but staff can help with a receipt.',
+        ['My email is ali.khan@gmail.com'],
+      );
+      expect(email.reply).toBe(
+        'I can’t email ali.khan@gmail.com from here, but staff can help with a receipt.',
+      );
+      expect(email.conversation.mode).toBe('bot');
+    });
+
+    it('still drops a link the customer never sent', () => {
+      const result = reply(
+        'Is this in your delivery area? https://maps.app.goo.gl/Ab12Cd',
+        'Yes! Also see https://evil.example/deals',
+        ['my email is ali.khan@gmail.com'],
+      );
+      expect(result.traces).toContain('invented_link_ignored');
+      expect(result.conversation.mode).toBe('human');
+    });
+
+    it('lets the AI repeat a site named in the menu', () => {
+      const catalog = products.map((product, index) =>
+        index === 0 ? { ...product, description: 'Also on Foodpanda.PK' } : product,
+      );
+      const result = reply(
+        'where else can I order?',
+        'You can also order on https://foodpanda.pk.',
+        [],
+        catalog,
+      );
+      expect(result.reply).toBe('You can also order on https://foodpanda.pk.');
+      expect(result.decision?.modelText).toBe('used');
+      // Another business's menu does not count.
+      const other = seedProducts.find((product) => product.companyId !== company.id)!;
+      const foreign = reply(
+        'where else can I order?',
+        'You can also order on https://foodpanda.pk.',
+        [],
+        [...products, { ...other, description: 'Also on foodpanda.pk' }],
+      );
+      expect(foreign.traces).toContain('invented_link_ignored');
+    });
+  });
+
+  it.each([
+    'Your biryani will be ready.in 20 minutes',
+    'We have many dishes, e.g. biryani and karahi.',
+    'The family pack is 3.5 kg of rice.',
+    'جی ہاں، بریانی دستیاب ہے۔ شکریہ.',
+  ])('keeps ordinary AI wording that only looks like a link: %s', (text) => {
+    const result = ask(text);
+    expect(result.reply).toBe(text);
+    expect(result.decision?.modelText).toBe('used');
+    expect(result.traces).not.toContain('invented_link_ignored');
   });
 });
