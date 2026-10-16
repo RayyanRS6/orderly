@@ -307,6 +307,7 @@ export function ConfirmDialog({
   busyLabel = 'Working…',
   error,
   confirmLabel = 'Remove item',
+  tone = 'danger',
 }: {
   open: boolean;
   onOpenChange: (value: boolean) => void;
@@ -319,6 +320,8 @@ export function ConfirmDialog({
   /** Shown inside the dialog: notifications behind an open dialog are hidden from screen readers. */
   error?: string;
   confirmLabel?: string;
+  /** 'primary' for a change that is not a removal, such as a new role. */
+  tone?: 'danger' | 'primary';
 }) {
   return (
     <AlertDialog.Root open={open} onOpenChange={onOpenChange}>
@@ -339,7 +342,11 @@ export function ConfirmDialog({
           <div className="mt-6 flex justify-end gap-2.5">
             <AlertDialog.Cancel className="btn">Go back</AlertDialog.Cancel>
             <ActionButton
-              className="border-red-700 bg-red-700 text-white shadow-[inset_0_1px_0_rgb(255_255_255/0.2),0_12px_24px_-12px_rgb(185_28_28/0.8)] hover:border-red-800 hover:bg-red-800 hover:text-white"
+              className={
+                tone === 'primary'
+                  ? 'btn-primary'
+                  : 'border-red-700 bg-red-700 text-white shadow-[inset_0_1px_0_rgb(255_255_255/0.2),0_12px_24px_-12px_rgb(185_28_28/0.8)] hover:border-red-800 hover:bg-red-800 hover:text-white'
+              }
               loading={busy}
               loadingLabel={busyLabel}
               onClick={onConfirm}

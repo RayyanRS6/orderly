@@ -13,6 +13,7 @@ export const pages = [
   'settings',
   'security',
   'businesses',
+  'people',
 ] as const;
 export function parseRoute(path: string): {
   slug?: string;

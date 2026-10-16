@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { StaffAlerts } from './components/StaffAlerts';
 import * as Dialog from '@radix-ui/react-dialog';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -22,6 +22,7 @@ import {
   ShoppingBag,
   SlidersHorizontal,
   Sparkles,
+  Users,
   Workflow,
   X,
 } from 'lucide-react';
@@ -71,6 +72,17 @@ const manage = [
   { id: 'security', label: 'Security & privacy', icon: Settings2 },
   { id: 'businesses', label: 'Businesses', icon: Building2 },
 ] as const;
+// Only the platform admin sees People, so owners and staff never download its code.
+const People = lazy(() =>
+  import('./components/People').then(
+    (m) => ({ default: m.People }),
+    () => ({ default: PeopleUnavailable }),
+  ),
+);
+function PeopleUnavailable() {
+  return <ErrorNotice message="The People page couldn’t load. Reload the page and try again." />;
+}
+const peopleNav = { id: 'people', label: 'People', icon: Users } as const;
 type Configuration = { mode: 'demo' | 'live'; supabaseUrl?: string; supabaseAnonKey?: string };
 
 function getStoredCompany(): string {
@@ -435,7 +447,8 @@ export default function App() {
   const filteredNav = navigation.filter((item) =>
     item.label.toLowerCase().includes(navSearch.toLowerCase()),
   );
-  const filteredManage = manage.filter((item) =>
+  const manageItems = data.role === 'admin' ? [...manage, peopleNav] : [...manage];
+  const filteredManage = manageItems.filter((item) =>
     item.label.toLowerCase().includes(navSearch.toLowerCase()),
   );
 
@@ -650,7 +663,7 @@ export default function App() {
               </span>
               <span className="hidden text-stone-300 sm:block">/</span>
               <span className="truncate font-serif text-[20px] leading-tight text-ink">
-                {[...navigation, ...manage].find((n) => n.id === page)?.label}
+                {[...navigation, ...manageItems].find((n) => n.id === page)?.label}
               </span>
             </div>
             <div className="flex items-center gap-2 sm:gap-3 shrink-0">
@@ -743,6 +756,11 @@ export default function App() {
               {page === 'flow' && <AgentFlow />}
               {page === 'activity' && <Activity />}
               {page === 'security' && <SecuritySettings />}
+              {page === 'people' && (
+                <Suspense fallback={<p className="text-sm text-stone-500">Loading people…</p>}>
+                  <People />
+                </Suspense>
+              )}
             </div>
             <footer className="mt-10 flex flex-wrap justify-between gap-2 border-t border-ink/[0.06] pt-5 text-xs text-stone-400">
               <span>Orderly · Conversations to orders</span>
