@@ -18,7 +18,7 @@ import type {
   TurnResult,
 } from '../shared/types';
 import { money } from '../shared/types';
-import { effectiveAiLimits } from '../shared/models';
+import { effectiveAiLimits, MODEL_LIMITS } from '../shared/models';
 import { quantityFromText, resolveItemMention, resolvePendingItemChoice } from './menu-resolver';
 import { normalizeText as normalize, quoteCart, type CartQuote } from './pricing';
 export { quoteCart, type CartQuote } from './pricing';
@@ -552,6 +552,9 @@ const hasMenuLink = (text: string, link: string) =>
 // placeholder is left out with a separator just before it ("Menu: {menu_link}" becomes
 // "Menu"), and a line left with no words is dropped.
 const MENU_LINK_GAP = /\s*(?:[:：=|>\-–—→➡👉]\u{FE0F}?\s*)*\{menu_link\}/gu;
+// A placeholder that starts a line takes the separators after it too ("{menu_link} - order").
+const MENU_LINK_LEAD =
+  /^\s*(?:[:：=|>\-–—→➡👉]\u{FE0F}?\s*)*\{menu_link\}\s*(?:[:：=|>\-–—→➡👈]\u{FE0F}?\s*)*/u;
 export function fillMenuLink(text: string, link?: string): string {
   if (!text.includes('{menu_link}')) return text;
   if (link) return text.replaceAll('{menu_link}', link);
@@ -560,6 +563,7 @@ export function fillMenuLink(text: string, link?: string): string {
     .flatMap((line) => {
       if (!line.includes('{menu_link}')) return [line];
       const left = line
+        .replace(MENU_LINK_LEAD, '')
         .replace(MENU_LINK_GAP, '')
         .replace(/\s*(?:\(\s*\)|\[\s*\])/g, '')
         .trim();
@@ -622,11 +626,21 @@ export function linkAllowlist(
   hosts.delete('');
   return hosts;
 }
-/** Whether the text links to a website the owner never gave (matched by host). */
-export function inventsLink(text: string, hosts: Set<string>): boolean {
+/**
+ * Whether the text links to a website the owner never gave (matched by host). `hosts` may be
+ * built lazily, since most texts have no link at all; `alsoAllowed` admits other hosts.
+ */
+export function inventsLink(
+  text: string,
+  hosts: Set<string> | (() => Set<string>),
+  alsoAllowed?: (host: string) => boolean,
+): boolean {
   return linksIn(text).some((link) => {
     const host = linkHost(link);
-    return !host || ![...hosts].some((allowed) => host === allowed || host.endsWith(`.${allowed}`));
+    if (!host) return true;
+    if (alsoAllowed?.(host)) return false;
+    const allowed = typeof hosts === 'function' ? hosts() : hosts;
+    return ![...allowed].some((known) => host === known || host.endsWith(`.${known}`));
   });
 }
 
@@ -964,16 +978,32 @@ export function processTurn(
   const next: Conversation = structuredClone(conversation);
   const configuration = botConfig(company);
   // AI wording that states prices or outcomes, or links to a website the owner never gave.
-  // Links the customer sent in this chat may be repeated back to them, as may the menu's.
-  const hosts = linkAllowlist(company, configuration, input.appHost, [
-    input.menuLink,
+  // The owner's hosts are only collected when the AI wrote a link, which is rare. A link the
+  // customer sent may be repeated back to them: it is found by plain text search over the
+  // history the AI sees, so a long or crafted message never costs more than reading it.
+  let ownerHosts: Set<string> | undefined;
+  const hosts = () =>
+    (ownerHosts ??= linkAllowlist(company, configuration, input.appHost, [
+      input.menuLink,
+      ...products
+        .filter((product) => product.companyId === company.id)
+        .flatMap((product) => [product.name, product.description]),
+    ]));
+  const customerText = [
     input.text,
-    ...conversation.messages.filter((m) => m.role === 'customer').map((m) => m.text),
-    ...products
-      .filter((product) => product.companyId === company.id)
-      .flatMap((product) => [product.name, product.description]),
-  ]);
-  const unsafe = (text: string) => unsafeModelText(text) || inventsLink(text, hosts);
+    ...conversation.messages
+      .slice(-MODEL_LIMITS.historyMessages)
+      .filter((m) => m.role === 'customer')
+      .map((m) => m.text.slice(0, MODEL_LIMITS.historyMessageChars)),
+  ]
+    .join('\n')
+    .toLowerCase();
+  const fromCustomer = (host: string) => customerText.includes(host);
+  const invents = (text: string) => inventsLink(text, hosts, fromCustomer);
+  // The menu page's own address is not an outcome claim, whatever words its slug holds.
+  const claims = (text: string) =>
+    unsafeModelText(input.menuLink ? text.replaceAll(input.menuLink, '') : text);
+  const unsafe = (text: string) => claims(text) || invents(text);
   // The menu page link is filled in (or left out) where each text is chosen, before any
   // check reads it: a text left empty counts as missing, so the turn never goes silent.
   if (modelResponse?.text.includes('{menu_link}'))
@@ -1163,9 +1193,9 @@ export function processTurn(
       if (once !== reply && hasMenuLink(once, input.menuLink)) reply = once;
     }
     if (modelResponse && !grounded) traces.push('invalid_model_grounding_ignored');
-    if (modelResponse?.text && unsafeModelText(modelResponse.text))
+    if (modelResponse?.text && claims(modelResponse.text))
       traces.push('unsafe_model_response_ignored');
-    else if (modelResponse?.text && inventsLink(modelResponse.text, hosts))
+    else if (modelResponse?.text && invents(modelResponse.text))
       traces.push('invented_link_ignored');
     if (modelResponse?.askFor && !validAskFor && !parts.includes('model'))
       traces.push('invalid_model_prompt_ignored');
@@ -1426,7 +1456,7 @@ export function processTurn(
         if (!faq && !modelResponse && actions && !input.action && proposed) {
           if (unsafeClaim) {
             answerUnsafe = true;
-            if (!unsafeModelText(proposed)) answerUnsafeTrace = 'invented_link_ignored';
+            if (!claims(proposed)) answerUnsafeTrace = 'invented_link_ignored';
           } else modelAnswer = proposed;
         }
         traces.push(faq ? 'approved_faq' : 'grounded_model_answer');

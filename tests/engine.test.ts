@@ -698,6 +698,59 @@ describe('menu page link', () => {
     expect(fillMenuLink('Hi!\n\n👉 {menu_link}\n\nBye')).toBe('Hi!\n\nBye');
     expect(fillMenuLink(' {menu_link} ')).toBe('');
     expect(fillMenuLink('Menu: {menu_link} / {menu_link}', link)).toBe(`Menu: ${link} / ${link}`);
+    // A placeholder that starts a line takes the separators after it too.
+    expect(fillMenuLink('{menu_link} - order now!')).toBe('order now!');
+    expect(fillMenuLink('{menu_link} — full menu here')).toBe('full menu here');
+    expect(fillMenuLink('👉 {menu_link} 👈 tap to order')).toBe('tap to order');
+    expect(fillMenuLink('Hi!\n{menu_link} → menu\n- Biryani - Rs. 450')).toBe(
+      'Hi!\nmenu\n- Biryani - Rs. 450',
+    );
+  });
+
+  it('never reads words in the menu page address as an order claim', () => {
+    const delivered = 'https://orderly.example/m/home-delivered-meals';
+    const answer = processTurn(
+      company,
+      products,
+      fresh(),
+      { messageId: `slug-${++message}`, text: 'menu link?', now, menuLink: delivered },
+      [{ type: 'answer', text: '' }],
+      { text: 'Ji zaroor! Menu yahan: {menu_link}', askFor: 'none' },
+    );
+    expect(answer.reply).toBe(`Ji zaroor! Menu yahan: ${delivered}`);
+    expect(answer.conversation.mode).toBe('bot');
+    expect(answer.traces).not.toContain('unsafe_model_response_ignored');
+    // A real claim next to the link is still caught.
+    const claim = processTurn(
+      company,
+      products,
+      fresh(),
+      { messageId: `slug-${++message}`, text: 'menu link?', now, menuLink: delivered },
+      [{ type: 'answer', text: '' }],
+      { text: 'Your order was delivered! Menu: {menu_link}', askFor: 'none' },
+    );
+    expect(claim.traces).toContain('unsafe_model_response_ignored');
+  });
+
+  it('checks links in a long, crafted chat history quickly', () => {
+    const crafted = Array.from({ length: 100 }, (_, i) => ({
+      id: `c${i}`,
+      role: 'customer' as const,
+      text: `${'a-'.repeat(1000)}${'a.'.repeat(1000)}`,
+      createdAt: now,
+    }));
+    const chat = { ...fresh(), messages: crafted };
+    const started = performance.now();
+    const result = processTurn(
+      company,
+      products,
+      chat,
+      { messageId: `long-${++message}`, text: 'a-'.repeat(2000), now, menuLink: link },
+      [{ type: 'answer', text: '' }],
+      { text: 'Sure! Visit https://evil.example.com/x', askFor: 'none' },
+    );
+    expect(performance.now() - started).toBeLessThan(250);
+    expect(result.traces).toContain('invented_link_ignored');
   });
 
   describe('never leaves the customer without a reply when the page is off', () => {

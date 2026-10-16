@@ -135,11 +135,13 @@ export const maskPhone = (digits: string) => `+${digits.slice(0, 2)} ••• $
 
 /** Digits of a number a customer typed, or undefined. 03xx numbers are Pakistani (+92). */
 export function normalizeTypedPhone(value: string): string | undefined {
+  // Typed with + or 00, the number already starts with its country code.
+  const international = /^\s*(?:\+|00)/.test(value);
   let digits = value.replace(/\D/g, '');
   if (digits.startsWith('00')) digits = digits.slice(2);
   if (/^03\d{9}$/.test(digits)) digits = `92${digits.slice(1)}`;
   // A Pakistani mobile typed without its 0 ('300 1234567'), or with it after +92 ('+92 0300…').
-  else if (/^3\d{9}$/.test(digits)) digits = `92${digits}`;
+  else if (!international && /^3\d{9}$/.test(digits)) digits = `92${digits}`;
   else if (/^920(3\d{9})$/.test(digits)) digits = `92${digits.slice(3)}`;
   return /^[1-9]\d{9,14}$/.test(digits) ? digits : undefined;
 }

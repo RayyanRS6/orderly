@@ -243,7 +243,10 @@ describe('order code kept across a reload', () => {
     expect(html).toContain('Almost done!');
     expect(html).toContain('OM-ABCD-EFGH');
     expect(html).toContain(`href="${saved.whatsappUrl.replaceAll('&', '&amp;')}"`);
-    expect(html).toContain('Change order');
+    expect(html).toContain('Not sent yet? Change order');
+    // Someone who already sent the code is not told to send it again.
+    expect(html).toContain('Already sent it? Your order is placed.');
+    expect(html).toContain('Start a new order');
     expect(html).not.toContain('Opening the menu…');
     expect(loadCart(slug)).toEqual(cart);
   });

@@ -537,9 +537,10 @@ export interface MenuDraftCreated {
 /**
  * Saves an order started on the page, to be placed when the customer sends its code from their
  * own WhatsApp. Nothing is ordered or sent now. The typed number is never checked against
- * blocked numbers: that would tell any visitor whether a number is blocked. There is no
- * business-wide rate limit: a few addresses could use it up and lock every customer out. Each
- * address is limited instead, by rate here and by open drafts in the database.
+ * blocked numbers: that would tell any visitor whether a number is blocked. Each network
+ * address is limited, by rate here and by open drafts in the database. A business-wide rate
+ * limit applies only when the address is unknown, since a few addresses could otherwise use it
+ * up and lock every customer out.
  */
 export async function createMenuDraftFor(
   repo: Repository,
@@ -578,19 +579,29 @@ export async function createMenuDraftFor(
   if (quote.total !== request.expectedTotal)
     throw new MenuError(PRICES_CHANGED, 409, 'price_changed', quote.total);
   // The order's own checks, on a stand-in chat: no code for an order that could never be placed
-  // (a confirmation too long for one WhatsApp message).
+  // (a confirmation too long for one WhatsApp message). A bot that answers in the customer's
+  // language is checked in each, since the chat's language is only known when the code arrives.
+  const languages: (Language | undefined)[] =
+    botConfig(company).language === 'auto' ? ['en', 'ur', 'roman-ur'] : [undefined];
   try {
-    buildWebOrder(
-      company,
-      products,
-      createConversation(company.id, digits, 'whatsapp', now),
-      request.cart,
-      { now, submissionKey: `${company.id}:menu-draft-check` },
-    );
+    for (const language of languages)
+      buildWebOrder(
+        company,
+        products,
+        {
+          ...createConversation(company.id, digits, 'whatsapp', now),
+          ...(language && { language }),
+        },
+        request.cart,
+        { now, submissionKey: `${company.id}:menu-draft-check` },
+      );
   } catch (error) {
     if (!(error instanceof MenuOrderError)) throw error;
     throw new MenuError(error.message, ORDER_ERRORS[error.code], error.code);
   }
+  // Without a network address the per-address limits cannot apply, so a business-wide one does.
+  // Only requests that would make a valid code count toward it.
+  if (!ip) await limit(repo, `menu:draft-co:${company.id}`, 60);
   const saved: WebCart = {
     items: cart.items,
     fulfillment: cart.fulfillment!,

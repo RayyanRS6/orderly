@@ -813,7 +813,7 @@ export function BotSettings() {
           </Field>
           <Field
             label="Greeting (optional)"
-            hint="Put {menu_link} on its own line to share your menu page. If the page is off, that line is left out."
+            hint="Write {menu_link} where your menu page link should go. If the page is off, it is left out."
           >
             <textarea
               className="input"

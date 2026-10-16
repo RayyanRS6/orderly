@@ -495,6 +495,9 @@ export function MenuPage({ slug }: { slug: string }) {
           <p className="mt-3 text-[13px] leading-relaxed text-stone-500">
             Your order is placed only after you send the message. The code works for 30 minutes.
           </p>
+          <p className="mt-2 text-[13px] leading-relaxed text-stone-500">
+            Already sent it? Your order is placed. Check WhatsApp for the confirmation.
+          </p>
           <button
             type="button"
             className="btn btn-quiet mt-3 w-full"
@@ -505,7 +508,18 @@ export function MenuPage({ slug }: { slug: string }) {
             }}
           >
             <ArrowLeft className="size-4" />
-            Change order
+            Not sent yet? Change order
+          </button>
+          <button
+            type="button"
+            className="btn btn-quiet mt-1 w-full"
+            onClick={() => {
+              saveDraft(slug);
+              setDrafted(undefined);
+              setCart([]);
+            }}
+          >
+            Start a new order
           </button>
         </section>
       </Shell>
@@ -585,7 +599,14 @@ export function MenuPage({ slug }: { slug: string }) {
   const reloadMenu = () =>
     api<PublicMenu>(`/public/menu/${slug}`, undefined, undefined, undefined, {
       cache: 'no-store',
-    }).then(setMenu, () => undefined);
+    }).then(
+      (value) => {
+        setMenu(value);
+        // The restaurant may have switched to pickup or delivery only since the page loaded.
+        if (value.restaurant.fulfillment !== 'both') setFulfillment(value.restaurant.fulfillment);
+      },
+      () => undefined,
+    );
   const linkEnded = (message = LINK_ENDED) => {
     linkToken.current = undefined;
     saveToken(slug);

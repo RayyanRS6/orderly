@@ -20,6 +20,8 @@ import {
 } from '../src/shared/menu';
 import type { Company, Conversation, ModelInterpretation, Product } from '../src/shared/types';
 import type { WhatsAppConnection } from '../src/shared/whatsapp';
+import { buildWebOrder } from '../src/domain/web-order';
+import { defaultBot } from '../src/shared/bot';
 
 const { generate } = vi.hoisted(() => ({ generate: vi.fn() }));
 vi.mock('ai', async (importOriginal) => ({
@@ -27,6 +29,12 @@ vi.mock('ai', async (importOriginal) => ({
   generateText: generate,
   Output: { object: vi.fn() },
 }));
+
+// The real order builder, watched so a test can see which languages a code is checked in.
+vi.mock('../src/domain/web-order', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../src/domain/web-order')>();
+  return { ...actual, buildWebOrder: vi.fn(actual.buildWebOrder) };
+});
 
 // The bearer token is the signed-in user's id, so tests can act as owner or staff.
 vi.mock('@supabase/supabase-js', () => ({
@@ -909,6 +917,9 @@ describe('typed WhatsApp numbers', () => {
     expect(normalizeTypedPhone('+44 7700 900123')).toBe('447700900123');
     expect(normalizeTypedPhone('0044 7700 900123')).toBe('447700900123');
     expect(normalizeTypedPhone('+1 415 555 0123')).toBe('14155550123');
+    // Typed with + or 00, a 10-digit number starting with 3 keeps its own country code.
+    expect(normalizeTypedPhone('+354 611 2345')).toBe('3546112345');
+    expect(normalizeTypedPhone('00372 512 3456')).toBe('3725123456');
     for (const bad of ['', '12345', '0300 123456', '0300 12345678'])
       expect(normalizeTypedPhone(bad), bad).toBeUndefined();
   });
@@ -1032,6 +1043,40 @@ describe('order codes for Instagram and QR customers', () => {
       data: { error: TOO_LARGE, code: 'too_large' },
     });
     expect(create).not.toHaveBeenCalled();
+  });
+
+  it('checks the size in every language the order might be confirmed in', async () => {
+    const built = vi.mocked(buildWebOrder);
+    built.mockClear();
+    expect((await draftFor()).status).toBe(200);
+    // The bot answers in the customer's language, unknown until the code arrives.
+    expect(built.mock.calls.map(([, , chat]) => chat.language)).toEqual(['en', 'ur', 'roman-ur']);
+    built.mockClear();
+    await repo.saveCompany({
+      ...company,
+      bot: {
+        draft: { ...defaultBot, language: 'en' },
+        revision: 1,
+        history: [],
+        published: {
+          version: 1,
+          config: { ...defaultBot, language: 'en' },
+          publishedAt: new Date().toISOString(),
+          publishedBy: OWNER,
+        },
+      },
+    });
+    expect((await draftFor('0300 7654321')).status).toBe(200);
+    expect(built).toHaveBeenCalledTimes(1);
+  });
+
+  it('limits a business’s codes when the visitor’s address is unknown', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    for (let i = 0; i < 60; i++)
+      expect((await draftFor(`0300 00001${String(i).padStart(2, '0')}`)).status).toBe(200);
+    expect(await draftFor('0300 0000299')).toMatchObject({ status: 429, data: { code: 'rate' } });
+    // A visitor whose address is known is not held up by it.
+    expect((await draftFrom('203.0.113.20', '0300 0000399')).status).toBe(200);
   });
 });
 
