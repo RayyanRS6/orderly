@@ -1448,6 +1448,346 @@
   }
 }
 
+/* ── Workspace loader ──
+   A tiny order plays out while the workspace opens: the customer asks, the
+   restaurant replies, the bot types, the order is confirmed and the logo hops,
+   then it starts again. The same markup is in index.html (before any script runs)
+   and App.tsx (while data loads). It is small, transform/opacity only and short-
+   lived, so it also runs on lite devices; with reduced motion it shows the
+   finished conversation. */
+@layer components {
+  .loader {
+    --cycle: 4.2s;
+    display: flex;
+    width: 100%;
+    max-width: 21rem;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+  }
+  .loader-brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-family: var(--font-serif);
+    font-size: 32px;
+    line-height: 1;
+    letter-spacing: -0.01em;
+    color: var(--color-ink);
+  }
+  .loader-brand b {
+    font-weight: 400;
+    color: var(--color-brand-500);
+  }
+  .loader-tile {
+    position: relative;
+    display: grid;
+    width: 44px;
+    height: 44px;
+    place-items: center;
+    border-radius: 14px;
+    background: linear-gradient(to bottom, var(--color-cream) 50%, var(--color-brand-500) 50%);
+    color: var(--color-ink);
+    rotate: -6deg;
+    box-shadow:
+      0 0 0 1px rgba(14, 6, 4, 0.05),
+      0 12px 22px -10px rgba(255, 105, 44, 0.75);
+  }
+  .loader-tile svg {
+    width: 22px;
+    height: 22px;
+  }
+  .loader-tile::after {
+    content: '';
+    position: absolute;
+    right: 6px;
+    top: 6px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--color-brand-500);
+    box-shadow: 0 0 0 2px var(--color-cream);
+  }
+  .loader-chat {
+    display: grid;
+    width: 100%;
+    gap: 9px;
+    margin-top: 28px;
+    padding: 18px;
+    border-radius: 28px;
+    border: 1px solid rgba(255, 255, 255, 0.9);
+    background: linear-gradient(160deg, rgba(255, 255, 255, 0.85), rgba(255, 255, 255, 0.6));
+    box-shadow:
+      inset 0 1px 0 #fff,
+      0 30px 60px -36px rgba(14, 6, 4, 0.35),
+      0 10px 24px -14px rgba(14, 6, 4, 0.1);
+  }
+  .loader-msg {
+    display: flex;
+    width: 64%;
+    flex-direction: column;
+    gap: 6px;
+    padding: 12px 14px;
+  }
+  .loader-msg i,
+  .loader-done i {
+    display: block;
+    height: 7px;
+    border-radius: 9999px;
+    background: currentColor;
+    opacity: 0.2;
+  }
+  .loader-msg i + i {
+    width: 68%;
+  }
+  .loader-them {
+    justify-self: start;
+    border-radius: 18px 18px 18px 6px;
+    background: #fff;
+    color: var(--color-ink);
+    box-shadow:
+      0 0 0 1px rgba(14, 6, 4, 0.05),
+      0 8px 18px -12px rgba(14, 6, 4, 0.35);
+    transform-origin: 0 100%;
+  }
+  .loader-us {
+    justify-self: end;
+    width: 46%;
+    border-radius: 18px 18px 6px 18px;
+    background: var(--color-brand-500);
+    color: var(--color-ink);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.3),
+      0 10px 20px -12px rgba(255, 105, 44, 0.85);
+    transform-origin: 100% 100%;
+  }
+  .loader-us i {
+    opacity: 0.28;
+  }
+  /* The bot's typing bubble and the confirmation take turns in one spot. */
+  .loader-last {
+    display: grid;
+    justify-items: start;
+  }
+  .loader-last > * {
+    grid-area: 1 / 1;
+  }
+  .loader-typing {
+    display: flex;
+    gap: 5px;
+    padding: 13px 15px;
+    border-radius: 18px 18px 18px 6px;
+    background: #fff;
+    box-shadow:
+      0 0 0 1px rgba(14, 6, 4, 0.05),
+      0 8px 18px -12px rgba(14, 6, 4, 0.35);
+    opacity: 0;
+    transform-origin: 0 100%;
+  }
+  .loader-typing i {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--color-stone-400);
+  }
+  .loader-done {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 5px 14px 5px 5px;
+    border-radius: 9999px;
+    background: rgba(23, 124, 74, 0.1);
+    color: var(--color-success-700);
+    transform-origin: 0 50%;
+  }
+  .loader-done svg {
+    width: 24px;
+    height: 24px;
+    padding: 5px;
+    border-radius: 50%;
+    background: var(--color-success-700);
+    color: #fff;
+  }
+  .loader-done i {
+    width: 72px;
+    opacity: 0.3;
+  }
+  .loader-text {
+    margin-top: 22px;
+    font-size: 14px;
+    color: var(--color-stone-500);
+  }
+  .loader-bar {
+    width: 132px;
+    height: 4px;
+    margin-top: 12px;
+    overflow: hidden;
+    border-radius: 9999px;
+    background: rgba(14, 6, 4, 0.08);
+  }
+  .loader-bar i {
+    display: block;
+    width: 40%;
+    height: 100%;
+    border-radius: inherit;
+    background: var(--color-brand-500);
+  }
+  /* A failed load stops the show: the bot is still "typing", nothing is confirmed. */
+  .loader[data-state='error'] .loader-typing {
+    opacity: 1;
+  }
+  .loader[data-state='error'] :is(.loader-done, .loader-bar) {
+    visibility: hidden;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .loader-tile {
+      animation: loader-hop var(--cycle) var(--ease-soft) infinite;
+    }
+    .loader-them {
+      animation: loader-them var(--cycle) infinite;
+    }
+    .loader-us {
+      animation: loader-us var(--cycle) infinite;
+    }
+    .loader-typing {
+      animation: loader-typing var(--cycle) ease-out infinite;
+    }
+    .loader-typing i {
+      animation: loader-dot 0.9s ease-in-out infinite;
+    }
+    .loader-typing i:nth-child(2) {
+      animation-delay: 0.15s;
+    }
+    .loader-typing i:nth-child(3) {
+      animation-delay: 0.3s;
+    }
+    .loader-done {
+      animation: loader-done var(--cycle) infinite;
+    }
+    .loader-bar i {
+      animation: loader-slide 1.3s ease-in-out infinite;
+    }
+    .loader[data-state='error'] *,
+    .loader[data-state='error'] *::after {
+      animation: none;
+    }
+  }
+}
+@keyframes loader-them {
+  0% {
+    opacity: 0;
+    transform: translateY(10px) scale(0.85);
+    animation-timing-function: var(--ease-spring);
+  }
+  9%,
+  88% {
+    opacity: 1;
+    transform: none;
+    animation-timing-function: ease-in;
+  }
+  96%,
+  100% {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+@keyframes loader-us {
+  0%,
+  17% {
+    opacity: 0;
+    transform: translateY(10px) scale(0.85);
+    animation-timing-function: var(--ease-spring);
+  }
+  26%,
+  88% {
+    opacity: 1;
+    transform: none;
+    animation-timing-function: ease-in;
+  }
+  96%,
+  100% {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+@keyframes loader-typing {
+  0%,
+  32% {
+    opacity: 0;
+    transform: scale(0.7);
+  }
+  38%,
+  56% {
+    opacity: 1;
+    transform: none;
+  }
+  61%,
+  100% {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+}
+@keyframes loader-dot {
+  0%,
+  60%,
+  100% {
+    transform: none;
+    opacity: 0.45;
+  }
+  30% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+@keyframes loader-done {
+  0%,
+  60% {
+    opacity: 0;
+    transform: scale(0.4);
+    animation-timing-function: var(--ease-spring);
+  }
+  70%,
+  88% {
+    opacity: 1;
+    transform: none;
+    animation-timing-function: ease-in;
+  }
+  96%,
+  100% {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+}
+/* The logo hops when the order lands. */
+@keyframes loader-hop {
+  0%,
+  62%,
+  100% {
+    transform: none;
+  }
+  67% {
+    transform: translateY(-8px) rotate(-6deg);
+  }
+  73% {
+    transform: translateY(0) rotate(7deg);
+  }
+  79% {
+    transform: rotate(-3deg);
+  }
+  85% {
+    transform: none;
+  }
+}
+@keyframes loader-slide {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(250%);
+  }
+}
+
 /* ── Small screens and accessibility ── */
 @media (max-width: 767px) {
   .btn,

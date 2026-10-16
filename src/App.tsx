@@ -7,6 +7,7 @@ import {
   BookOpen,
   Building2,
   Cable,
+  Check,
   ChevronDown,
   CircleHelp,
   FlaskConical,
@@ -361,25 +362,54 @@ export default function App() {
     );
   if (!data || (route.slug && route.slug !== data.company.slug))
     return (
+      // Same loader as the index.html shell, so the hand-over from HTML to React is seamless.
       <div className="grid min-h-dvh place-items-center canvas-glow p-6">
-        <div className="w-full max-w-md enter-rise">
-          <Brand dark={false} />
-          <div className="mt-8 space-y-4">
-            <div className="skeleton h-8 w-2/3 rounded-full" />
-            <div className="skeleton h-32 rounded-[22px] border border-white/90 bg-white/65 shadow-[0_30px_60px_-40px_rgb(14_6_4/0.3)]" />
-            <p className="text-sm text-stone-500">Opening your workspace…</p>
-            <ErrorNotice message={error} />
-            {error && (
-              <a className="btn" href="/app">
+        <div className="loader" data-state={error ? 'error' : 'loading'}>
+          <div className="loader-brand">
+            <span className="loader-tile">
+              <MessageCircle strokeWidth={2.5} aria-hidden="true" />
+            </span>
+            <span>
+              orderly<b>.</b>
+            </span>
+          </div>
+          <div className="loader-chat" aria-hidden="true">
+            <span className="loader-msg loader-them">
+              <i />
+              <i />
+            </span>
+            <span className="loader-msg loader-us">
+              <i />
+            </span>
+            <span className="loader-last">
+              <span className="loader-typing">
+                <i />
+                <i />
+                <i />
+              </span>
+              <span className="loader-done">
+                <Check strokeWidth={3} />
+                <i />
+              </span>
+            </span>
+          </div>
+          <p className="loader-text" role="status">
+            Opening your workspace…
+          </p>
+          <span className="loader-bar" aria-hidden="true">
+            <i />
+          </span>
+          {error && (
+            <div className="mt-6 w-full space-y-3 text-left">
+              <ErrorNotice message={error} />
+              <a className="btn w-full" href="/app">
                 Open my workspace
               </a>
-            )}
-            {error && (
-              <button className="btn" onClick={() => window.location.reload()}>
+              <button className="btn w-full" onClick={() => window.location.reload()}>
                 Try again
               </button>
-            )}
-          </div>
+            </div>
+          )}
         </div>
       </div>
     );

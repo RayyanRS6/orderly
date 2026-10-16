@@ -17,33 +17,64 @@
   </head>
   <body>
     <div id="root">
+      <!-- Same loader as App.tsx (styles: .loader in src/index.css). -->
       <div
+        class="canvas-glow"
         style="
           min-height: 100dvh;
           display: grid;
           place-items: center;
+          padding: 24px;
           background-color: #efebe8;
-          font-family: 'Inter Tight Variable', 'Inter Tight', system-ui, sans-serif;
           color: #0e0604;
         "
       >
-        <div style="text-align: center">
-          <div
-            style="
-              font-family: 'Instrument Serif', Georgia, serif;
-              font-size: 2rem;
-              font-weight: 400;
-              letter-spacing: -0.01em;
-              display: inline-flex;
-              align-items: center;
-              gap: 0.5rem;
-            "
-          >
-            orderly<span style="color: #ff692c">.</span>
+        <div class="loader" data-state="loading">
+          <div class="loader-brand">
+            <span class="loader-tile"
+              ><svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="24"
+                height="24"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path
+                  d="M2.992 16.342a2 2 0 0 1 .094 1.167l-1.065 3.29a1 1 0 0 0 1.236 1.168l3.413-.998a2 2 0 0 1 1.099.092 10 10 0 1 0-4.777-4.719"
+                /></svg
+            ></span>
+            <span>orderly<b>.</b></span>
           </div>
-          <p style="margin-top: 0.75rem; font-size: 0.875rem; color: #6c625d">
-            Opening your workspace…
-          </p>
+          <div class="loader-chat" aria-hidden="true">
+            <span class="loader-msg loader-them"><i></i><i></i></span>
+            <span class="loader-msg loader-us"><i></i></span>
+            <span class="loader-last">
+              <span class="loader-typing"><i></i><i></i><i></i></span>
+              <span class="loader-done"
+                ><svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width="24"
+                  height="24"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="3"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M20 6 9 17l-5-5" /></svg
+                ><i></i
+              ></span>
+            </span>
+          </div>
+          <p class="loader-text" role="status">Opening your workspace…</p>
+          <span class="loader-bar" aria-hidden="true"><i></i></span>
         </div>
       </div>
     </div>
