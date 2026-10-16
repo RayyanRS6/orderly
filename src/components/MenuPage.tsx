@@ -37,7 +37,7 @@ import { cn } from '../lib/utils';
 // The public menu page (/m/<slug>). Its own small chunk: no dialog library, no workspace,
 // no looping motion, and photos load only when scrolled to. Old phones and WhatsApp's
 // in-app browser open it. A personal link (#t=…, sent by the bot) orders in one tap into the
-// customer's own chat; otherwise the page is view-only.
+// customer's own chat; otherwise the customer confirms the order from WhatsApp with a code.
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 function hoursText({ start, end, days }: PublicMenu['restaurant']['openingHours']) {
@@ -57,6 +57,11 @@ interface Placed {
   total: number;
   alreadyPlaced: boolean;
   whatsappUrl?: string;
+}
+interface Drafted {
+  code: string;
+  expiresAt: string;
+  whatsappUrl: string;
 }
 
 function Shell({ children }: { children: ReactNode }) {
@@ -317,6 +322,8 @@ export function MenuPage({ slug }: { slug: string }) {
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
   const [placed, setPlaced] = useState<Placed>();
+  const [phone, setPhone] = useState('');
+  const [drafted, setDrafted] = useState<Drafted>();
   const placing = useRef(false);
 
   useEffect(() => {
@@ -358,18 +365,23 @@ export function MenuPage({ slug }: { slug: string }) {
     api<MenuSession>(`/public/menu/${slug}/session`, undefined, { token: value }).then(
       (result) => {
         if (!live) return;
-        setSession(result);
-        if (result.name) setName((current) => current || result.name!);
         if (ENDED_STATES.includes(result.state)) {
+          // An old link: the page carries on as if it was opened without one.
           saveToken(slug);
+          setToken(undefined);
           setLinkNote(
             result.state === 'used' && result.reference
               ? `You already ordered with this link (${result.reference}). Send “menu” in WhatsApp to get a fresh one.`
               : LINK_ENDED,
           );
+          return;
         }
+        setSession(result);
+        if (result.name) setName((current) => current || result.name!);
       },
-      () => undefined,
+      () => {
+        if (live) setToken(undefined);
+      },
     );
     return () => {
       live = false;
@@ -419,9 +431,17 @@ export function MenuPage({ slug }: { slug: string }) {
     (ordering.whatsappNumber
       ? waMeUrl(ordering.whatsappNumber, 'Hi! I’d like to order.')
       : undefined);
-  // A personal link orders in one tap; without one the page shows the menu only.
+  // A personal link orders in one tap into its chat. Without one (Instagram, a QR code, or an
+  // old link) the customer types their number and confirms from WhatsApp with a code. A link
+  // into a chat staff are handling, or a blocked one, only shows the menu.
   const linkReady = session?.state === 'ready' && !!token;
-  const canOrder = linkReady && !placed;
+  const viewOnlyLink = !!token && session?.state !== 'ready';
+  const mode: 'link' | 'public' | undefined = linkReady
+    ? 'link'
+    : !token && ordering.publicOrdering
+      ? 'public'
+      : undefined;
+  const canOrder = !!mode && !placed && !drafted && !viewOnlyLink;
   const items = menu.categories.flatMap((category) => category.items);
   const priced = previewQuote(menu, {
     items: cart,
@@ -468,6 +488,8 @@ export function MenuPage({ slug }: { slug: string }) {
     if (fulfillment === 'delivery' && !zone) return setError('Please choose your delivery area.');
     if (fulfillment === 'delivery' && address.trim().length < 5)
       return setError('Please add your full delivery address.');
+    if (mode === 'public' && phone.replace(/\D/g, '').length < 10)
+      return setError('Please enter your WhatsApp number, for example 0300 1234567.');
     if (!priced.quote) return setError(priced.error ?? 'Please check your order.');
     const web: WebCart = {
       items: cart,
@@ -478,22 +500,42 @@ export function MenuPage({ slug }: { slug: string }) {
     placing.current = true;
     setBusy(true);
     try {
-      const result = await api<Placed>(`/public/menu/${slug}/orders`, undefined, {
-        token,
-        cart: web,
-        expectedTotal: priced.quote.total,
-      });
-      setPlaced(result);
+      if (mode === 'public') {
+        setDrafted(
+          await api<Drafted>(`/public/menu/${slug}/drafts`, undefined, {
+            phone: phone.trim(),
+            cart: web,
+            expectedTotal: priced.quote.total,
+          }),
+        );
+      } else {
+        setPlaced(
+          await api<Placed>(`/public/menu/${slug}/orders`, undefined, {
+            token,
+            cart: web,
+            expectedTotal: priced.quote.total,
+          }),
+        );
+        saveToken(slug);
+      }
       setCart([]);
       setNotice('');
-      saveToken(slug);
     } catch (e) {
       const code = e instanceof ApiError ? e.code : undefined;
       if (code === 'price_changed') {
         await reloadMenu();
         setNotice(e instanceof Error ? e.message : '');
       } else if (code && ENDED_STATES.includes(code)) linkEnded();
-      else if (code === 'staff' || code === 'blocked' || code === 'bot_off' || code === 'closed') {
+      else if (mode === 'public' && ['no_whatsapp', 'bot_off', 'closed'].includes(code ?? '')) {
+        // Ordering just stopped: the refreshed menu says why.
+        await reloadMenu();
+        setCheckout(false);
+      } else if (
+        code === 'staff' ||
+        code === 'blocked' ||
+        code === 'bot_off' ||
+        code === 'closed'
+      ) {
         setSession((current) => current && { ...current, state: code });
         setCheckout(false);
       } else
@@ -507,6 +549,32 @@ export function MenuPage({ slug }: { slug: string }) {
       setBusy(false);
     }
   }
+
+  if (drafted)
+    return (
+      <Shell>
+        <section className="card p-6 text-center" role="status">
+          <MessageCircle className="mx-auto size-10 text-brand-600" />
+          <h1 className="panel-title mt-3">
+            Almost done! Send your order code from WhatsApp to place it.
+          </h1>
+          <a
+            className="btn btn-primary mt-5 min-h-12 w-full text-[15px]"
+            href={drafted.whatsappUrl}
+            rel="noopener noreferrer"
+          >
+            <MessageCircle className="size-5" />
+            Confirm on WhatsApp
+          </a>
+          <p className="mt-5 font-mono text-[26px] font-semibold tracking-[0.12em] text-ink">
+            {drafted.code}
+          </p>
+          <p className="mt-3 text-[13px] leading-relaxed text-stone-500">
+            Your order is placed only after you send the message. The code works for 30 minutes.
+          </p>
+        </section>
+      </Shell>
+    );
 
   if (placed)
     return (
@@ -637,13 +705,31 @@ export function MenuPage({ slug }: { slug: string }) {
               </Field>
             </>
           )}
-          <Field label="Your WhatsApp number" hint="We’ll send the order details to this chat.">
-            <input
-              className="input bg-paper"
-              readOnly
-              value={session?.phoneMasked ?? 'This WhatsApp chat'}
-            />
-          </Field>
+          {mode === 'link' ? (
+            <Field label="Your WhatsApp number" hint="We’ll send the order details to this chat.">
+              <input
+                className="input bg-paper"
+                readOnly
+                value={session?.phoneMasked ?? 'This WhatsApp chat'}
+              />
+            </Field>
+          ) : (
+            <Field
+              label="Your WhatsApp number"
+              hint="Include your country code if you’re outside Pakistan."
+            >
+              <input
+                className="input"
+                type="tel"
+                inputMode="tel"
+                autoComplete="tel"
+                maxLength={40}
+                placeholder="0300 1234567"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+              />
+            </Field>
+          )}
         </section>
         <section className="card mb-4 space-y-1.5 p-4 text-[13.5px]">
           {itemsOnly.quote && (
@@ -706,8 +792,9 @@ export function MenuPage({ slug }: { slug: string }) {
       {linkNote && <Banner>{linkNote}</Banner>}
       {canOrder && (
         <p className="mb-5 rounded-2xl bg-white/70 px-4 py-3 text-[13px] text-stone-600">
-          Add dishes, then place your order. We’ll send the details to your WhatsApp chat
-          {session?.phoneMasked ? ` (${session.phoneMasked})` : ''}.
+          {mode === 'link'
+            ? `Add dishes, then place your order. We’ll send the details to your WhatsApp chat${session?.phoneMasked ? ` (${session.phoneMasked})` : ''}.`
+            : 'Add dishes, then place your order and confirm it from your WhatsApp.'}
         </p>
       )}
       {session?.state === 'staff' ? (

@@ -1,10 +1,22 @@
-import { randomUUID } from 'node:crypto';
+import { randomInt, randomUUID } from 'node:crypto';
 import type { Repository } from './repository.js';
-import type { Company, Conversation, Job, Product } from '../src/shared/types.js';
+import type {
+  Company,
+  Conversation,
+  Job,
+  Language,
+  Product,
+  TurnInput,
+  TurnResult,
+} from '../src/shared/types.js';
 import {
+  draftMessage,
+  formatMenuCode,
   isPhotoUrl,
   maskPhone,
+  MENU_CODE_ALPHABET,
   MENU_SLUG_RE,
+  normalizeTypedPhone,
   sortMenuCategories,
   waMeUrl,
   type MenuLinkStatus,
@@ -15,10 +27,11 @@ import {
 } from '../src/shared/menu.js';
 import { connectionMatches, customerKeys } from '../src/shared/whatsapp.js';
 import { botConfig, configuredCompany } from '../src/shared/bot.js';
-import { isOpen } from '../src/domain/engine.js';
-import { buildWebOrder, MenuOrderError } from '../src/domain/web-order.js';
+import { closedText, isOpen, noticeLanguage } from '../src/domain/engine.js';
+import { buildWebOrder, MenuOrderError, quoteWebCart } from '../src/domain/web-order.js';
 import { env } from './config.js';
-import { PublicError } from './security.js';
+import { hmacHex, hmacKey22, PublicError } from './security.js';
+import { describeTurn } from './explanations.js';
 import { integrationAdapter, refreshCatalog } from './service.js';
 import { signMenuToken, verifyMenuToken, type MenuTokenClaims } from './menu-token.js';
 import { clientKey } from './client-key.js';
@@ -500,4 +513,315 @@ export async function placeLinkOrder(
   } finally {
     await repo.releaseConversationLock(companyId, conversationId, lockId);
   }
+}
+
+// ── Instagram and QR orders: an order code confirmed from the customer's own WhatsApp ────────
+
+const DRAFT_MINUTES = 30;
+const DRAFT_MAX_OPEN = 200;
+const codeHash = (companyId: string, code: string) =>
+  hmacHex('menu-draft', `${companyId}:code:${code}`);
+const phoneHash = (companyId: string, digits: string) =>
+  hmacHex('menu-draft', `${companyId}:phone:${digits}`);
+const newCode = () =>
+  Array.from({ length: 8 }, () => MENU_CODE_ALPHABET[randomInt(MENU_CODE_ALPHABET.length)]).join(
+    '',
+  );
+
+export interface MenuDraftCreated {
+  code: string;
+  expiresAt: string;
+  whatsappUrl: string;
+}
+/**
+ * Saves an order started on the page, to be placed when the customer sends its code from their
+ * own WhatsApp. Nothing is ordered or sent now. The typed number is never checked against
+ * blocked numbers: that would tell any visitor whether a number is blocked.
+ */
+export async function createMenuDraftFor(
+  repo: Repository,
+  request: { slug: string; phone: string; cart: WebCart; expectedTotal: number; headers: Headers },
+): Promise<MenuDraftCreated> {
+  const ip = clientKey(request.headers);
+  await limit(repo, ip && `menu:draft:${ip}`, 20);
+  const { company } = await menuCompany(repo, request.slug);
+  await limit(repo, `menu:draft-co:${company.id}`, 60);
+  const digits = normalizeTypedPhone(request.phone);
+  if (!digits)
+    throw new MenuError(
+      'Please enter your WhatsApp number, for example 0300 1234567.',
+      422,
+      'invalid',
+    );
+  await limit(repo, `menu:draft-phone:${hmacKey22('menu-draft', `phone:${digits}`)}`, 3);
+  const number = await whatsappNumberFor(repo, company.id).catch(() => undefined);
+  if (!number)
+    throw new MenuError(
+      'Ordering from this page isn’t available right now. You can still browse the menu.',
+      409,
+      'no_whatsapp',
+    );
+  if (!company.botEnabled) throw new MenuError(STATE_ERRORS.bot_off[1], 409, 'bot_off');
+  if (!isOpen(company, new Date().toISOString())) throw stateError('closed', company);
+  const products = await repo.listProducts(company.id);
+  let priced: ReturnType<typeof quoteWebCart>;
+  try {
+    priced = quoteWebCart(company, products, request.cart);
+  } catch (error) {
+    if (!(error instanceof MenuOrderError)) throw error;
+    throw new MenuError(error.message, ORDER_ERRORS[error.code], error.code);
+  }
+  const { cart, quote } = priced;
+  if (quote.total !== request.expectedTotal)
+    throw new MenuError(PRICES_CHANGED, 409, 'price_changed', quote.total);
+  const saved: WebCart = {
+    items: cart.items,
+    fulfillment: cart.fulfillment!,
+    customerName: cart.customerName!,
+    ...(cart.fulfillment === 'delivery' && { address: cart.address, zone: cart.zone }),
+  };
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const code = newCode();
+    const result = await repo.createMenuDraft(
+      {
+        id: randomUUID(),
+        companyId: company.id,
+        codeHash: codeHash(company.id, code),
+        phoneHash: phoneHash(company.id, digits),
+        cart: saved,
+        quotedTotal: quote.total,
+      },
+      DRAFT_MINUTES,
+      DRAFT_MAX_OPEN,
+    );
+    if (result.ok)
+      return {
+        code: formatMenuCode(code),
+        expiresAt: result.expiresAt,
+        whatsappUrl: waMeUrl(number, draftMessage(code)),
+      };
+    if (result.reason === 'busy') break;
+  }
+  throw new MenuError(
+    'The restaurant is getting a lot of orders right now. Please try again in a minute.',
+    429,
+    'busy',
+  );
+}
+
+const say = (lang: Language, en: string, ur: string, roman: string) =>
+  lang === 'ur' ? ur : lang === 'roman-ur' ? roman : en;
+const CODE_ENDED = (lang: Language) =>
+  say(
+    lang,
+    'This order code has expired or was already used. Please open the menu link again to place your order.',
+    'یہ آرڈر کوڈ ختم ہو چکا ہے یا پہلے استعمال ہو چکا ہے۔ آرڈر دینے کے لیے مینو لنک دوبارہ کھولیں۔',
+    'Yeh order code expire ho chuka hai ya pehle use ho chuka hai. Order dene ke liye menu link dobara kholein.',
+  );
+/** A reply to a code message that places no order. The chat stays with the bot. */
+async function saveCodeReply(
+  repo: Repository,
+  company: Company,
+  conversation: Conversation,
+  input: TurnInput,
+  reply: string,
+  reason: string,
+): Promise<TurnResult> {
+  const c = structuredClone(conversation);
+  c.version++;
+  c.updatedAt = input.now;
+  c.lastInboundAt = new Date(
+    Math.max(Date.parse(c.lastInboundAt), Date.parse(input.now)),
+  ).toISOString();
+  const explanation = describeTurn({
+    company,
+    conversation,
+    input,
+    steps: ['menu_code_refused'],
+    decision: { parts: ['engine'], modelText: 'none', corrections: [] },
+    outcome: 'reply',
+    skipped: 'menu_page',
+  });
+  const replyId = `${input.messageId}:reply`;
+  c.messages.push(
+    {
+      id: input.messageId,
+      role: 'customer',
+      text: input.text.slice(0, 4000),
+      createdAt: input.now,
+    },
+    { id: replyId, role: 'assistant', text: reply, createdAt: input.now, explanation },
+  );
+  const jobs = [
+    makeJob(company.id, 'whatsapp_send', {
+      ...jobAddress(c),
+      conversationId: c.id,
+      messageId: replyId,
+      text: reply,
+      cartRevision: c.cart.revision,
+      source: 'bot',
+    }),
+  ];
+  if (!(await repo.commitTurn(company.id, c, conversation.version, undefined, jobs)))
+    throw new PublicError(
+      'The conversation changed while processing. Please retry your message.',
+      409,
+    );
+  await repo.addTrace({
+    id: randomUUID(),
+    companyId: company.id,
+    conversationId: c.id,
+    action: 'menu_code_refused',
+    detail: reason,
+    createdAt: input.now,
+  });
+  for (const job of jobs) await dispatchJob(repo, job);
+  return { conversation: c, reply, traces: ['menu_code_refused'], explanation };
+}
+
+/**
+ * Places the order behind a code the customer sent from their own WhatsApp (handleTurn calls
+ * this under the conversation lock, before any AI). Only the number that made the order can use
+ * its code; a WhatsApp privacy ID cannot be compared, so the code alone is enough there.
+ */
+export async function redeemMenuDraft(
+  repo: Repository,
+  company: Company,
+  products: Product[],
+  conversation: Conversation,
+  input: TurnInput,
+  code: string,
+): Promise<TurnResult> {
+  const lang = noticeLanguage(company, conversation, input.text);
+  const refuse = (reply: string, reason: string) =>
+    saveCodeReply(repo, company, conversation, input, reply, reason);
+  const draft = await repo.findMenuDraft(company.id, codeHash(company.id, code));
+  if (!draft || Date.parse(draft.expiresAt) <= Date.parse(input.now))
+    return refuse(CODE_ENDED(lang), 'Order code not found or expired.');
+  if (draft.usedAt) {
+    const placed =
+      draft.conversationId === conversation.id && draft.orderId
+        ? await repo.getOrder(company.id, draft.orderId)
+        : undefined;
+    return placed
+      ? refuse(
+          say(
+            lang,
+            `Your order ${placed.reference} is already with the restaurant.`,
+            `آپ کا آرڈر ${placed.reference} پہلے ہی ریسٹورنٹ کے پاس ہے۔`,
+            `Aap ka order ${placed.reference} pehle hi restaurant ke paas hai.`,
+          ),
+          'Order code already used by this chat.',
+        )
+      : refuse(CODE_ENDED(lang), 'Order code already used.');
+  }
+  const sender = conversation.customerPhone.replace(/\D/g, '');
+  if (sender && draft.phoneHash && phoneHash(company.id, sender) !== draft.phoneHash)
+    return refuse(
+      say(
+        lang,
+        'This order code was made for a different number. Please open the menu link on this phone.',
+        'یہ آرڈر کوڈ کسی اور نمبر کے لیے بنا تھا۔ براہ کرم اسی فون پر مینو لنک کھولیں۔',
+        'Yeh order code kisi aur number ke liye bana tha. Meherbani karke isi phone par menu link kholein.',
+      ),
+      'Order code made for a different number.',
+    );
+  if (!draft.cart) return refuse(CODE_ENDED(lang), 'Order code has no saved order.');
+  let built: ReturnType<typeof buildWebOrder>;
+  try {
+    built = buildWebOrder(company, products, conversation, draft.cart, {
+      now: input.now,
+      submissionKey: `${company.id}:${conversation.id}:menu-draft:${draft.id}`,
+      expectedTotal: draft.quotedTotal,
+      customerMessage: { id: input.messageId, text: input.text },
+    });
+  } catch (error) {
+    if (!(error instanceof MenuOrderError)) throw error;
+    // Bot off, staff and blocked chats never get here (handleTurn checks first).
+    if (error.code === 'closed')
+      return refuse(closedText(company, lang), 'Order code sent while closed.');
+    return refuse(
+      say(
+        lang,
+        'Prices or items changed since you made this order. Please open the menu link again.',
+        'آرڈر بنانے کے بعد قیمتیں یا اشیاء بدل گئی ہیں۔ براہ کرم مینو لنک دوبارہ کھولیں۔',
+        'Order banane ke baad prices ya items badal gaye hain. Meherbani karke menu link dobara kholein.',
+      ),
+      `Order code refused: ${error.code}.`,
+    );
+  }
+  const { order, reply, replyId } = built;
+  const sheets = (await repo.getIntegrations(company.id)).some(
+    (i) => i.kind === 'sheets' && i.configured,
+  );
+  if (sheets) order.syncStatus = 'pending';
+  const jobs = [
+    ...(sheets ? [makeJob(company.id, 'sheet_sync', { orderId: order.id })] : []),
+    makeJob(company.id, 'whatsapp_send', {
+      ...jobAddress(conversation),
+      conversationId: conversation.id,
+      messageId: replyId,
+      text: reply,
+      cartRevision: built.conversation.cart.revision,
+      source: 'notice',
+    }),
+  ];
+  const outcome = await repo
+    .placeWebOrder(company.id, built.conversation, conversation.version, order, jobs, {
+      kind: 'draft',
+      draftId: draft.id,
+      keys: customerKeys({
+        phone: conversation.customerPhone,
+        peer: conversation.whatsappAddress?.peer,
+      }),
+    })
+    .catch((error: unknown) => {
+      if (catalogChanged(error)) return undefined;
+      throw error;
+    });
+  if (!outcome)
+    return refuse(
+      say(
+        lang,
+        'Prices or items changed since you made this order. Please open the menu link again.',
+        'آرڈر بنانے کے بعد قیمتیں یا اشیاء بدل گئی ہیں۔ براہ کرم مینو لنک دوبارہ کھولیں۔',
+        'Order banane ke baad prices ya items badal gaye hain. Meherbani karke menu link dobara kholein.',
+      ),
+      'Order code refused: the menu changed.',
+    );
+  if (!outcome.ok) {
+    if (outcome.reason === 'duplicate')
+      return {
+        conversation,
+        order: outcome.order,
+        reply: '',
+        traces: ['duplicate_message_ignored'],
+      };
+    if (outcome.reason === 'used' || outcome.reason === 'expired')
+      return refuse(CODE_ENDED(lang), `Order code ${outcome.reason}.`);
+    // A block saves nothing at all, like any message from a blocked number.
+    if (outcome.reason === 'blocked') return { conversation, reply: '', traces: ['blocked'] };
+    // The chat changed, the bot was switched off or staff took over: the job retries, and then
+    // the message is handled the usual way (saved for staff when the bot is off).
+    throw new PublicError(
+      'The conversation changed while processing. Please retry your message.',
+      409,
+    );
+  }
+  await repo.addTrace({
+    id: randomUUID(),
+    companyId: company.id,
+    conversationId: conversation.id,
+    action: 'menu_code_order',
+    detail: `Order ${order.reference} placed from a menu page order code.`,
+    createdAt: input.now,
+  });
+  for (const job of jobs) await dispatchJob(repo, job);
+  return {
+    conversation: built.conversation,
+    order,
+    reply,
+    traces: ['menu_page_order'],
+    explanation: built.conversation.messages.at(-1)?.explanation,
+  };
 }

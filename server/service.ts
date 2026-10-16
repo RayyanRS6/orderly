@@ -38,7 +38,8 @@ import { sendStaffAlert } from './integrations/alerts.js';
 import { LinkedWhatsAppAdapter } from './integrations/linked-whatsapp';
 import { assertCurrentAddress, jobAddress, requireMeta } from './whatsapp/connections';
 import { customerKeys, sameAddress } from '../src/shared/whatsapp';
-import { appHost, menuPublicUrl, personalMenuText } from './menu.js';
+import { appHost, menuPublicUrl, personalMenuText, redeemMenuDraft } from './menu.js';
+import { menuCodeIn } from '../src/shared/menu.js';
 
 // Paid Supabase workers have a 400s maximum lifetime. Include an 80s margin;
 // bounded upstream requests and database requests cannot survive this lease.
@@ -157,6 +158,10 @@ export async function handleTurn(
           409,
         );
     }
+    // An order code from the menu page (Instagram/QR) is placed without any AI, but only for a
+    // business that has a menu link.
+    const menuCode = !sandbox && !input.action ? menuCodeIn(input.text) : undefined;
+    const codeUsable = !!menuCode && !!(await repo.getMenuLink(company.id).catch(() => undefined));
     if (conversation.messages.some((m) => m.id === input.messageId))
       return {
         conversation,
@@ -190,7 +195,8 @@ export async function handleTurn(
       limitPaused(conversation) &&
       (resetOrRaised ||
         (input.action && input.action.type !== 'handoff') ||
-        cancelsSubmittedOrder(conversation, input.text))
+        cancelsSubmittedOrder(conversation, input.text) ||
+        codeUsable)
     ) {
       const resumed: Conversation = {
         ...conversation,
@@ -252,6 +258,8 @@ export async function handleTurn(
       }
     }
     const products = await repo.listProducts(company.id);
+    if (codeUsable && company.botEnabled && conversation.mode === 'bot')
+      return await redeemMenuDraft(repo, company, products, conversation, input, menuCode!);
     // The public menu page, when it is on: menu replies share it and fill {menu_link}.
     const menuUrl = await menuPublicUrl(repo, company.id).catch(() => undefined);
     let actions: BotAction[] | undefined;

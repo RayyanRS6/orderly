@@ -2,7 +2,7 @@ import { Hono, type Context } from 'hono';
 import { z } from 'zod';
 import type { Repository } from './repository.js';
 import { MENU_SLUG_RE } from '../src/shared/menu.js';
-import { MenuError, menuSession, placeLinkOrder, publicMenu } from './menu.js';
+import { createMenuDraftFor, MenuError, menuSession, placeLinkOrder, publicMenu } from './menu.js';
 import { PublicError } from './security.js';
 import { webCartSchema } from './validation.js';
 
@@ -14,6 +14,13 @@ const token = z.string().min(1).max(200);
 const sessionSchema = z.object({ token }).strict();
 const orderSchema = z
   .object({ token, cart: webCartSchema, expectedTotal: z.number().int().min(0) })
+  .strict();
+const draftSchema = z
+  .object({
+    phone: z.string().max(40),
+    cart: webCartSchema,
+    expectedTotal: z.number().int().min(0),
+  })
   .strict();
 // A friendly sentence for a form problem, never the raw field list.
 function invalid(c: Context, error: z.ZodError) {
@@ -69,6 +76,20 @@ export function publicMenuRoutes(repo: Repository) {
       const body = sessionSchema.safeParse(await c.req.json().catch(() => undefined));
       if (!body.success) return c.json({ state: 'invalid' }, 200);
       return c.json(await menuSession(repo, slug, body.data.token, c.req.raw.headers));
+    } catch (error) {
+      return failure(c, error);
+    }
+  });
+  // Instagram/QR: the order waits for its code to arrive from the customer's own WhatsApp.
+  app.post('/menu/:slug/drafts', async (c) => {
+    const slug = c.req.param('slug');
+    if (!validSlug(slug)) return c.json(NOT_FOUND, 404);
+    try {
+      const body = draftSchema.safeParse(await c.req.json().catch(() => undefined));
+      if (!body.success) return invalid(c, body.error);
+      return c.json(
+        await createMenuDraftFor(repo, { slug, ...body.data, headers: c.req.raw.headers }),
+      );
     } catch (error) {
       return failure(c, error);
     }

@@ -92,6 +92,7 @@ const STEP_LABELS: Record<string, string> = {
   staff_attention: 'Notified staff',
   human_mode_message_saved: 'Saved for staff',
   menu_page_order: 'Saved an order from the menu page',
+  menu_code_refused: 'Could not use the menu page order code',
 };
 
 const CORRECTION_LABELS: Record<string, string> = {

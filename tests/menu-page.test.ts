@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { createEdgeApp } from '../server/edge';
 import { MemoryRepository } from '../server/repository';
@@ -849,5 +849,326 @@ describe('one-tap order from a personal link', () => {
     );
     expect(cancel.reply).toBe(`Order ${placed!.reference} has been cancelled.`);
     expect((await repo.getOrder(company.id, placed!.id))!.status).toBe('cancelled');
+  });
+});
+
+// ── Instagram and QR orders ─────────────────────────────────────────────────────────────────
+
+const CODE = /^OM-[A-HJ-NP-Z2-9]{4}-[A-HJ-NP-Z2-9]{4}$/;
+async function draftFor(
+  phone = '0300 1234567',
+  body: Record<string, unknown> = {},
+  slug = 'dastarkhwan',
+) {
+  const res = await call(`/public/menu/${slug}/drafts`, {
+    body: { phone, cart, expectedTotal: 90000, ...body },
+  });
+  return { status: res.status, data: await res.json() };
+}
+const pageOrders = async () =>
+  (await repo.listOrders(company.id)).filter((o) => o.source === 'menu_page');
+
+describe('order codes for Instagram and QR customers', () => {
+  beforeEach(async () => {
+    await turnOn();
+    await meta();
+  });
+
+  it('gives a code and a WhatsApp link, and saves nothing else', async () => {
+    const before = JSON.stringify([
+      await repo.listConversations(company.id),
+      await repo.listOrders(company.id),
+      await repo.listCompanyJobs(company.id),
+    ]);
+    const { status, data } = await draftFor();
+    expect(status).toBe(200);
+    expect(data.code).toMatch(CODE);
+    expect(Date.parse(data.expiresAt) - Date.now()).toBeGreaterThan(29 * 60000);
+    expect(data.whatsappUrl).toBe(
+      `https://wa.me/923001112233?text=${encodeURIComponent(
+        `Hi! Please place my menu order. Code: ${data.code}`,
+      )}`,
+    );
+    expect(
+      JSON.stringify([
+        await repo.listConversations(company.id),
+        await repo.listOrders(company.id),
+        await repo.listCompanyJobs(company.id),
+      ]),
+    ).toBe(before);
+  });
+
+  it('never checks the typed number against blocked numbers', async () => {
+    const chat = await customer('923001234567');
+    await repo.blockCustomer(company.id, chat.id, 'b', ['pn:923001234567'], 'Spam', 'owner');
+    const hit = vi.spyOn(repo, 'findBlockedCustomer');
+    const lookup = vi.spyOn(repo, 'hasBlockedKey');
+    expect((await draftFor()).status).toBe(200);
+    expect(hit).not.toHaveBeenCalled();
+    expect(lookup).not.toHaveBeenCalled();
+  });
+
+  it('limits codes per number and keeps no number or address in rate-limit keys', async () => {
+    const consume = vi.spyOn(repo, 'consumeRateLimit');
+    const send = () =>
+      createEdgeApp(repo).request(`${base}/public/menu/dastarkhwan/drafts`, {
+        method: 'POST',
+        headers: {
+          Origin: origin,
+          'Content-Type': 'application/json',
+          'X-Forwarded-For': '203.0.113.9',
+        },
+        body: JSON.stringify({ phone: '+92 300 1234567', cart, expectedTotal: 90000 }),
+      });
+    for (let i = 0; i < 3; i++) expect((await send()).status).toBe(200);
+    const fourth = await send();
+    expect(fourth.status).toBe(429);
+    expect(await fourth.json()).toMatchObject({ code: 'rate' });
+    const keys = consume.mock.calls.map(([key]) => key);
+    expect(keys.some((k) => k.startsWith('menu:draft:'))).toBe(true);
+    expect(keys.some((k) => k.startsWith('menu:draft-co:'))).toBe(true);
+    expect(keys.some((k) => k.startsWith('menu:draft-phone:'))).toBe(true);
+    for (const key of keys) {
+      expect(key).not.toContain('3001234567');
+      expect(key).not.toContain('203.0.113.9');
+    }
+    // Another number is not held up.
+    expect((await draftFor('0300 7654321')).status).toBe(200);
+  });
+
+  it('refuses without a known WhatsApp number, a bad number or a changed price', async () => {
+    await repo.disconnectIntegration(company.id, 'whatsapp');
+    await repo.saveCompany(company);
+    expect((await draftFor()).data).toMatchObject({ code: 'no_whatsapp' });
+    await meta();
+    expect(await draftFor('12345')).toEqual({
+      status: 422,
+      data: {
+        error: 'Please enter your WhatsApp number, for example 0300 1234567.',
+        code: 'invalid',
+      },
+    });
+    expect(await draftFor('0300 1234567', { expectedTotal: 1 })).toMatchObject({
+      status: 409,
+      data: { code: 'price_changed', total: 90000 },
+    });
+  });
+});
+
+describe('order code sent from WhatsApp', () => {
+  let reserve: MockInstance;
+  beforeEach(async () => {
+    await turnOn();
+    await meta();
+    vi.stubEnv('MODEL_PRICING_JSON', '');
+    await repo.saveCompany({
+      ...company,
+      ai: { provider: 'anthropic', model: 'claude-haiku-5-5', monthlyBudgetUsd: 10 },
+      privacy: { aiDataApproved: true, retentionDays: 0 },
+    });
+    await repo.saveIntegration(
+      company.id,
+      { kind: 'anthropic', configured: true, status: 'connected', config: {} },
+      encryptSecret('fictional-anthropic-key'),
+    );
+    generate.mockReset();
+    generate.mockResolvedValue({
+      output: {
+        actions: [{ type: 'answer', text: '' }],
+        response: { text: 'Hello!', askFor: 'none' },
+      },
+      usage: { inputTokens: 100, outputTokens: 10 },
+    });
+    reserve = vi.spyOn(repo, 'reserveAiCall');
+  });
+  async function incoming(
+    text: string,
+    phone = '923001234567',
+    extra: Record<string, unknown> = {},
+  ) {
+    const job = makeJob(company.id, 'incoming', {
+      phone,
+      messageId: `wamid.${randomUUID()}`,
+      text,
+      ...extra,
+    });
+    await repo.insertJob(job);
+    await processJob(repo, job.id);
+    expect((await repo.getJob(job.id))?.status).toBe('done');
+    return job;
+  }
+  const chatOf = async (phone = '923001234567') =>
+    (await repo.findConversation(company.id, phone, 'whatsapp'))!;
+  const lastReply = async (phone?: string) => (await chatOf(phone)).messages.at(-1)!;
+  const message = (code: string) => `Hi! Please place my menu order. Code: ${code}`;
+
+  it('places the order in the sender’s chat without any AI, once', async () => {
+    const { data } = await draftFor();
+    await incoming(message(data.code));
+    const [placed] = await pageOrders();
+    expect(placed).toMatchObject({ status: 'pending', sandbox: false, source: 'menu_page' });
+    const chat = await chatOf();
+    expect(chat.id).toBe(placed!.conversationId);
+    expect(chat.messages.map((m) => m.role)).toEqual(['customer', 'assistant']);
+    expect(chat.messages[1]!.text).toContain(`Order ${placed!.reference} received`);
+    expect(chat.messages[1]!.explanation).toMatchObject({
+      ai: { called: false, skipped: 'menu_page' },
+      outcome: 'order',
+    });
+    expect(generate).not.toHaveBeenCalled();
+    expect(reserve).not.toHaveBeenCalled();
+    const sends = (await repo.listCompanyJobs(company.id)).filter(
+      (j) => j.kind === 'whatsapp_send',
+    );
+    expect(sends.map((j) => j.payload.source)).toEqual(['notice']);
+
+    await incoming(`  om-${data.code.slice(3).toLowerCase()} please`);
+    expect((await lastReply()).text).toBe(
+      `Your order ${placed!.reference} is already with the restaurant.`,
+    );
+    expect(await pageOrders()).toHaveLength(1);
+    expect(generate).not.toHaveBeenCalled();
+  });
+
+  it('answers an unknown, expired or other business’s code without ordering', async () => {
+    const expired =
+      'This order code has expired or was already used. Please open the menu link again to place your order.';
+    await incoming(message('OM-AAAA-AAAA'));
+    expect((await lastReply()).text).toBe(expired);
+    await repo.saveCompany({ ...other, slug: 'bun-and-co' });
+    await repo.setMenuLink(other.id, true, 'bun-and-co');
+    await repo.saveIntegration(
+      other.id,
+      {
+        kind: 'whatsapp',
+        configured: true,
+        status: 'connected',
+        config: { phoneNumberId: '456', displayPhoneNumber: '923004445555' },
+      },
+      encryptSecret('other-token'),
+    );
+    const theirs = await call('/public/menu/bun-and-co/drafts', {
+      body: {
+        phone: '0300 1234567',
+        cart: {
+          ...cart,
+          items: [
+            {
+              productId: seedProducts.find((p) => p.companyId === other.id && !p.variants.length)!
+                .id,
+              quantity: 1,
+              modifierIds: [],
+              notes: '',
+            },
+          ],
+        },
+        expectedTotal: seedProducts.find((p) => p.companyId === other.id && !p.variants.length)!
+          .price,
+      },
+    });
+    expect(theirs.status).toBe(200);
+    await incoming(message((await theirs.json()).code));
+    expect((await lastReply()).text).toBe(expired);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    const { data } = await draftFor();
+    vi.setSystemTime(Date.now() + 31 * 60000);
+    await incoming(message(data.code));
+    expect((await lastReply()).text).toBe(expired);
+    expect(await pageOrders()).toHaveLength(0);
+    expect(generate).not.toHaveBeenCalled();
+  });
+
+  it('refuses a code made for another number, but accepts a privacy ID chat', async () => {
+    const { data } = await draftFor('0300 7654321');
+    await incoming(message(data.code));
+    expect((await lastReply()).text).toBe(
+      'This order code was made for a different number. Please open the menu link on this phone.',
+    );
+    expect(await pageOrders()).toHaveLength(0);
+    const connection = await linkedPhone();
+    const address = {
+      connectionId: connection.id,
+      generation: 1,
+      provider: 'baileys' as const,
+      peer: '100000001@lid',
+    };
+    const privacy = await draftFor('0300 7654321');
+    await incoming(message(privacy.data.code), '', {
+      whatsappAddress: address,
+      streamKey: `${connection.id}:1:${address.peer}`,
+    });
+    const [placed] = await pageOrders();
+    const chat = (await repo.findWhatsAppConversation(company.id, address))!;
+    expect(placed!.conversationId).toBe(chat.id);
+  });
+
+  it('resumes a chat paused by an AI limit to place the order', async () => {
+    const at = new Date().toISOString();
+    await customer('923001234567', {
+      mode: 'human',
+      limitPause: {
+        reason: 'customer',
+        at,
+        until: new Date(Date.now() + 3600000).toISOString(),
+        limit: 1000,
+      },
+    });
+    const { data } = await draftFor();
+    await incoming(message(data.code));
+    expect(await pageOrders()).toHaveLength(1);
+    expect((await chatOf()).mode).toBe('bot');
+    expect(generate).not.toHaveBeenCalled();
+  });
+
+  it('leaves the code unused for staff chats and while the bot is off', async () => {
+    const { data } = await draftFor();
+    await customer('923001234567', { mode: 'human' });
+    await incoming(message(data.code));
+    expect((await lastReply()).role).toBe('customer');
+    expect(await pageOrders()).toHaveLength(0);
+    const { data: second } = await draftFor('0300 7654321');
+    await repo.saveCompany({ ...(await repo.getCompany(company.id))!, botEnabled: false });
+    await incoming(message(second.code), '923007654321');
+    expect((await lastReply('923007654321')).role).toBe('customer');
+    expect(await pageOrders()).toHaveLength(0);
+    // The code still works once the chat is back with the bot.
+    await repo.saveCompany({ ...(await repo.getCompany(company.id))!, botEnabled: true });
+    await incoming(message(second.code), '923007654321');
+    expect(await pageOrders()).toHaveLength(1);
+  });
+
+  it('drops a blocked sender’s code before saving anything', async () => {
+    const { data } = await draftFor();
+    const chat = await customer('923001234567');
+    await repo.blockCustomer(company.id, chat.id, 'b', ['pn:923001234567'], 'Spam', 'owner');
+    await incoming(message(data.code));
+    expect((await chatOf()).messages).toHaveLength(0);
+    expect(await pageOrders()).toHaveLength(0);
+  });
+
+  it('says when prices changed since the code was made', async () => {
+    const { data } = await draftFor();
+    await repo.saveProduct({ ...biryani, price: 46000 });
+    await incoming(message(data.code));
+    expect((await lastReply()).text).toBe(
+      'Prices or items changed since you made this order. Please open the menu link again.',
+    );
+    expect(await pageOrders()).toHaveLength(0);
+  });
+
+  it('ignores look-alike words, and codes for a business without a menu page', async () => {
+    const find = vi.spyOn(repo, 'findMenuDraft');
+    for (const text of ['omelettes2', 'OMGGGGGGGG', 'om abcd efgh', 'OM-ABCD-EFGI'])
+      await incoming(text);
+    expect(find).not.toHaveBeenCalled();
+    expect(generate).toHaveBeenCalledTimes(4);
+    const job = makeJob(other.id, 'incoming', {
+      phone: '923001234567',
+      messageId: 'wamid.other',
+      text: message('OM-ABCD-EFGH'),
+    });
+    await repo.insertJob(job);
+    await processJob(repo, job.id);
+    expect(find).not.toHaveBeenCalled();
   });
 });
