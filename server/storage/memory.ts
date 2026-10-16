@@ -17,6 +17,7 @@ import type {
   BotSettings,
   TeamMember,
   Message,
+  Account,
 } from '../../src/shared/types';
 import {
   seedCompanies,
@@ -27,7 +28,8 @@ import {
 } from '../../src/shared/seed';
 import type { Repository } from '../repository';
 import { transitionOrder } from '../../src/domain/engine';
-import { PublicError } from '../security';
+import { LAST_OWNER_MESSAGE, PublicError } from '../security';
+import { PLATFORM_AUDIT_ID } from '../config';
 import { orderMatches, pageOf, summaryOf } from '../queries';
 import { effectiveAiLimits } from '../../src/shared/models';
 import {
@@ -87,6 +89,10 @@ const repliesThisHour = (state: State, companyId: string, now: number) => {
   );
 };
 interface State {
+  /** Stands in for Supabase Auth users. */
+  accounts?: Account[];
+  /** Audit entries filed under PLATFORM_AUDIT_ID, which is not a business. */
+  platformAudit?: { actorId: string; action: string; createdAt: string }[];
   aiLimitHits?: AiLimitHit[];
   blockedCustomers?: BlockedKey[];
   gatewayNonces?: Record<string, number>;
@@ -526,6 +532,10 @@ export class MemoryRepository implements Repository {
       });
   }
   async audit(companyId: string, actorId: string, action: string) {
+    if (companyId === PLATFORM_AUDIT_ID)
+      return this.mutate((s) => {
+        (s.platformAudit ??= []).push({ actorId, action, createdAt: new Date().toISOString() });
+      });
     await this.addTrace({
       id: randomUUID(),
       companyId,
@@ -680,13 +690,16 @@ export class MemoryRepository implements Repository {
       const old = s.memberships.find(
         (m) => m.companyId === companyId && m.userId === member.userId,
       );
+      const owners = s.memberships.filter(
+        (m) => m.companyId === companyId && m.role === 'owner',
+      ).length;
+      // Mirrors SQL manage_member: nobody gives themselves a non-owner role, and the last
+      // owner stays an owner.
       if (
-        old?.role === 'owner' &&
         member.role !== 'owner' &&
-        (old.userId === actorId ||
-          s.memberships.filter((m) => m.companyId === companyId && m.role === 'owner').length <= 1)
+        (member.userId === actorId || (old?.role === 'owner' && owners <= 1))
       )
-        throw new PublicError('Keep another owner and do not demote yourself.', 409);
+        throw new PublicError(LAST_OWNER_MESSAGE, 409);
       if (old) old.role = member.role;
       else s.memberships.push({ companyId, userId: member.userId, role: member.role });
     });
@@ -699,8 +712,69 @@ export class MemoryRepository implements Repository {
         (old?.role === 'owner' &&
           s.memberships.filter((m) => m.companyId === companyId && m.role === 'owner').length <= 1)
       )
-        throw new PublicError('Keep another owner and do not remove yourself.', 409);
+        throw new PublicError(LAST_OWNER_MESSAGE, 409);
       s.memberships = s.memberships.filter((m) => m.companyId !== companyId || m.userId !== userId);
+    });
+  }
+  listAccounts() {
+    return this.read((s) =>
+      [...(s.accounts ?? [])].sort(
+        (a, b) => (a.email ?? '').localeCompare(b.email ?? '') || a.userId.localeCompare(b.userId),
+      ),
+    );
+  }
+  getAccounts(userIds: string[]) {
+    return this.read((s) => (s.accounts ?? []).filter((a) => userIds.includes(a.userId)));
+  }
+  findAccountByEmail(email: string) {
+    const wanted = email.trim().toLowerCase();
+    return this.read((s) => s.accounts?.find((a) => a.email?.toLowerCase() === wanted));
+  }
+  // Like Supabase, the account exists from the moment it is invited.
+  inviteAccount(email: string) {
+    return this.mutate((s) => {
+      const account: Account = {
+        userId: randomUUID(),
+        email: email.trim().toLowerCase(),
+        createdAt: new Date().toISOString(),
+        invited: true,
+      };
+      (s.accounts ??= []).push(account);
+      return account.userId;
+    });
+  }
+  // Mirrors the auth.users cascade: memberships and the admin row go with the account.
+  deleteAccount(userId: string) {
+    return this.mutate((s) => {
+      if (!s.accounts?.some((a) => a.userId === userId))
+        throw new PublicError('This account no longer exists.', 404);
+      s.accounts = s.accounts.filter((a) => a.userId !== userId);
+      s.memberships = s.memberships.filter((m) => m.userId !== userId);
+      s.admins = s.admins.filter((id) => id !== userId);
+    });
+  }
+  listAllMemberships() {
+    return this.read((s) =>
+      s.memberships.map((m) => ({
+        companyId: m.companyId,
+        userId: m.userId,
+        role: m.role as 'owner' | 'staff',
+      })),
+    );
+  }
+  listAdminIds() {
+    return this.read((s) => [...s.admins]);
+  }
+  /** Test helper: an Auth account. */
+  addAccount(account: Account) {
+    return this.mutate((s) => {
+      (s.accounts ??= []).push(account);
+    });
+  }
+  /** Test helper: a platform admin. */
+  grantAdmin(userId: string) {
+    return this.mutate((s) => {
+      s.admins.push(userId);
     });
   }
   eraseCustomer(companyId: string, phone: string) {
@@ -1529,6 +1603,40 @@ export class DemoFileRepository extends MemoryRepository {
           'Demo database is invalid. Restore .local/data.json from backup or move it aside.',
         );
       this.state = { ...freshState(false), ...loaded };
+    } else if (seed) {
+      // Sample people for the People page and Team access. Tests that use
+      // new MemoryRepository() start without any.
+      const company = seedCompanies[0].id;
+      const signedIn = '2026-10-15T09:30:00.000Z';
+      const people = {
+        owner: '00000000-0000-4000-8000-000000000101',
+        staff: '00000000-0000-4000-8000-000000000102',
+        invited: '00000000-0000-4000-8000-000000000103',
+      };
+      this.state.accounts = [
+        {
+          userId: people.owner,
+          email: 'owner@example.com',
+          createdAt: '2026-09-01T08:00:00.000Z',
+          lastSignInAt: signedIn,
+        },
+        {
+          userId: people.staff,
+          email: 'staff@example.com',
+          createdAt: '2026-09-02T08:00:00.000Z',
+          lastSignInAt: signedIn,
+        },
+        {
+          userId: people.invited,
+          email: 'new@example.com',
+          createdAt: '2026-10-10T08:00:00.000Z',
+          invited: true,
+        },
+      ];
+      this.state.memberships.push(
+        { companyId: company, userId: people.owner, role: 'owner' },
+        { companyId: company, userId: people.staff, role: 'staff' },
+      );
     }
   }
   protected override async persist(next: State): Promise<void> {

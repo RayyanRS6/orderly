@@ -17,6 +17,8 @@ export function appMode(): 'demo' | 'live' {
     );
   return mode;
 }
+// Audit entries that belong to no business (directory views, deleting an account with none).
+export const PLATFORM_AUDIT_ID = '_platform';
 export function requiredEnv(name: string): string {
   const value = env(name);
   if (!value) throw new Error(`${name} must be configured on the server.`);

@@ -1,4 +1,4 @@
-import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import { createClient, type SupabaseClient, type User } from '@supabase/supabase-js';
 import type {
   Company,
   Conversation,
@@ -19,9 +19,11 @@ import type {
   AiCallReservation,
   AiLimitStatus,
   BlockedCustomer,
+  Account,
+  Membership,
 } from '../../src/shared/types';
 import type { Repository } from '../repository';
-import { PublicError } from '../security';
+import { LAST_OWNER_MESSAGE, PublicError } from '../security';
 import { env } from '../config';
 
 type Result<T> = { data: T | null; error: { message: string } | null };
@@ -88,6 +90,15 @@ const jobRow = (job: Job) => ({
   attempts: job.attempts,
   created_at: job.createdAt,
 });
+const toAccount = (u: User): Account => ({
+  userId: u.id,
+  email: u.email || undefined,
+  createdAt: u.created_at,
+  lastSignInAt: u.last_sign_in_at || undefined,
+  invited: !u.last_sign_in_at && !!u.invited_at,
+});
+const accountsUnavailable = () =>
+  new PublicError('Couldn’t load accounts from Supabase right now. Try again in a minute.', 502);
 
 /** All methods run on the server using the service role; API authorization is required. */
 export class SupabaseRepository implements Repository {
@@ -340,20 +351,133 @@ export class SupabaseRepository implements Repository {
     return rows.map((r) => ({ userId: r.user_id, role: r.role }));
   }
   async setMember(companyId: string, member: TeamMember, actorId: string) {
-    await this.rpc('manage_member', {
-      p_company_id: companyId,
-      p_user_id: member.userId,
-      p_role: member.role,
-      p_actor_id: actorId,
-    });
+    await this.manageMember(companyId, member.userId, member.role, actorId);
   }
   async removeMember(companyId: string, userId: string, actorId: string) {
-    await this.rpc('manage_member', {
+    await this.manageMember(companyId, userId, null, actorId);
+  }
+  // The last-owner rule and an unknown account become friendly errors instead of the
+  // generic "service could not complete" message.
+  private async manageMember(
+    companyId: string,
+    userId: string,
+    role: 'owner' | 'staff' | null,
+    actorId: string,
+  ) {
+    const result = await this.client.rpc('manage_member', {
       p_company_id: companyId,
       p_user_id: userId,
-      p_role: null,
+      p_role: role,
       p_actor_id: actorId,
     });
+    if (result.error?.message?.includes('Keep another owner'))
+      throw new PublicError(LAST_OWNER_MESSAGE, 409);
+    if (result.error?.code === '23503')
+      throw new PublicError(
+        'No Orderly account has this ID. Add people by their email instead.',
+        404,
+      );
+    unwrap(result);
+  }
+  async listAccounts() {
+    const out: Account[] = [];
+    for (let page = 1; page <= 20; page++) {
+      let result: Awaited<ReturnType<SupabaseClient['auth']['admin']['listUsers']>>;
+      try {
+        result = await this.client.auth.admin.listUsers({ page, perPage: 1000 });
+      } catch {
+        throw accountsUnavailable();
+      }
+      if (result.error) throw accountsUnavailable();
+      out.push(...result.data.users.map(toAccount));
+      // auth-js 2.116.0 keeps only the first digit of the next page number
+      // (GoTrueAdminApi.js:448): use it as yes/no only.
+      if (!result.data.users.length || !result.data.nextPage) return out;
+    }
+    throw new PublicError('There are too many accounts to list here.', 413);
+  }
+  async getAccounts(userIds: string[]) {
+    const ids = [...new Set(userIds)];
+    if (!ids.length) return [];
+    if (ids.length > 25) {
+      const wanted = new Set(ids);
+      return (await this.listAccounts()).filter((a) => wanted.has(a.userId));
+    }
+    // If Auth is down, this returns no accounts instead of failing.
+    const accounts = await Promise.all(
+      ids.map((id) =>
+        this.client.auth.admin.getUserById(id).then(
+          (r) => (r.error || !r.data.user ? undefined : toAccount(r.data.user)),
+          () => undefined,
+        ),
+      ),
+    );
+    return accounts.filter((a): a is Account => !!a);
+  }
+  async findAccountByEmail(email: string) {
+    const wanted = email.trim().toLowerCase();
+    return (await this.listAccounts()).find((a) => a.email?.toLowerCase() === wanted);
+  }
+  async inviteAccount(email: string) {
+    let userId: string | undefined;
+    try {
+      const result = await this.client.auth.admin.inviteUserByEmail(email.trim(), {
+        redirectTo: `${env('APP_URL')}/login`,
+      });
+      userId = result.error ? undefined : result.data.user?.id;
+    } catch {
+      userId = undefined;
+    }
+    if (!userId)
+      throw new PublicError(
+        'The invitation couldn’t be sent. Check the email address, and the email settings in Supabase.',
+        409,
+      );
+    return userId;
+  }
+  async deleteAccount(userId: string) {
+    let error: unknown;
+    try {
+      // Never soft-delete: the auth.users row must go so memberships and settings cascade.
+      ({ error } = await this.client.auth.admin.deleteUser(userId));
+    } catch (e) {
+      error = e;
+    }
+    if (!error) return;
+    if ((error as { status?: number }).status === 404)
+      throw new PublicError('This account no longer exists.', 404);
+    throw new PublicError(
+      'This account couldn’t be deleted. Try again, or check the Supabase Auth logs.',
+      502,
+    );
+  }
+  async listAllMemberships() {
+    const out: Membership[] = [];
+    for (let start = 0; ; start += 1000) {
+      const rows =
+        unwrap(
+          await this.client
+            .from('company_memberships')
+            .select('company_id,user_id,role')
+            .order('company_id')
+            .order('user_id')
+            .range(start, start + 999),
+        ) ?? [];
+      out.push(
+        ...rows.map((r: { company_id: string; user_id: string; role: 'owner' | 'staff' }) => ({
+          companyId: r.company_id,
+          userId: r.user_id,
+          role: r.role,
+        })),
+      );
+      if (rows.length < 1000) break;
+    }
+    return out;
+  }
+  async listAdminIds() {
+    return (unwrap(await this.client.from('platform_admins').select('user_id')) ?? []).map(
+      (r: { user_id: string }) => r.user_id,
+    );
   }
   eraseCustomer(companyId: string, phone: string) {
     return this.rpc<number>('erase_customer', { p_company_id: companyId, p_phone: phone });

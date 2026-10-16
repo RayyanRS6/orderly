@@ -62,3 +62,5 @@ export class PublicError extends Error {
     super(message, options);
   }
 }
+export const LAST_OWNER_MESSAGE =
+  'Every business needs at least one owner. Add another owner first. You also can’t remove or demote yourself.';

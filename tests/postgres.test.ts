@@ -676,6 +676,53 @@ describe('launch migration safeguards', () => {
   });
 });
 
+describe('people management on the existing schema', () => {
+  const count = (sql: string, args: unknown[]) =>
+    scalar(`select count(*)::int as value from ${sql}`, args);
+  it('removes memberships, admin access and alert settings with a deleted account', async () => {
+    const person = randomUUID();
+    await db.query(
+      "insert into auth.users(id,email,email_confirmed_at) values($1,'gone@example.test',now())",
+      [person],
+    );
+    await db.query("insert into company_memberships values($1,$2,'owner'),($3,$2,'staff')", [
+      company.id,
+      person,
+      other.id,
+    ]);
+    await db.query("insert into company_memberships values($1,$2,'owner')", [company.id, ownerId]);
+    await db.query('insert into platform_admins values($1)', [person]);
+    await rpc('configure_alerts', [company.id, person, true, 10]);
+    expect(await count('alert_subscriptions where user_id=$1', [person])).toBe(1);
+    await db.query('delete from auth.users where id=$1', [person]);
+    expect(await count('company_memberships where user_id=$1', [person])).toBe(0);
+    expect(await count('platform_admins where user_id=$1', [person])).toBe(0);
+    expect(await count('alert_subscriptions where user_id=$1', [person])).toBe(0);
+    expect(await count('companies where true', [])).toBe(seedCompanies.length);
+    expect(await count('company_memberships where user_id=$1', [ownerId])).toBe(1);
+  });
+  it('keeps the last owner even for the platform admin, and rejects unknown accounts', async () => {
+    const admin = randomUUID();
+    const second = randomUUID();
+    await db.query('insert into auth.users(id) values($1),($2)', [admin, second]);
+    await db.query('insert into platform_admins values($1)', [admin]);
+    await db.query("insert into company_memberships values($1,$2,'owner')", [company.id, ownerId]);
+    await expect(rpc('manage_member', [company.id, ownerId, null, admin])).rejects.toThrow(
+      'Keep another owner',
+    );
+    await rpc('manage_member', [company.id, second, 'owner', admin]);
+    expect(
+      await count("company_memberships where company_id=$1 and role='owner'", [company.id]),
+    ).toBe(2);
+    await rpc('manage_member', [company.id, ownerId, null, admin]);
+    expect(await count('company_memberships where user_id=$1', [ownerId])).toBe(0);
+    // No such account: the foreign key fails, which the server shows as a clear 404.
+    await expect(
+      rpc('manage_member', [company.id, randomUUID(), 'staff', admin]),
+    ).rejects.toMatchObject({ code: '23503' });
+  });
+});
+
 describe('real Postgres migrations and transactional invariants', () => {
   it('commits a confirmed order and outbox atomically, rejects a stale replay', async () => {
     const { conversation, order } = pendingOrder();

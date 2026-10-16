@@ -18,6 +18,8 @@ import type {
   AiCallReservation,
   AiLimitStatus,
   BlockedCustomer,
+  Account,
+  Membership,
 } from '../src/shared/types';
 import { DemoFileRepository, MemoryRepository } from './storage/memory';
 import { SupabaseRepository } from './storage/supabase';
@@ -86,6 +88,19 @@ export interface Repository {
   listMembers(companyId: string): Promise<TeamMember[]>;
   setMember(companyId: string, member: TeamMember, actorId: string): Promise<void>;
   removeMember(companyId: string, userId: string, actorId: string): Promise<void>;
+  // Sign-in accounts (Supabase Auth). Server-only. Emails go only to owners (their own team)
+  // and the platform admin.
+  listAccounts(): Promise<Account[]>;
+  // Missing or unreadable accounts are left out.
+  getAccounts(userIds: string[]): Promise<Account[]>;
+  // Trimmed, case-insensitive.
+  findAccountByEmail(email: string): Promise<Account | undefined>;
+  // Sends the Supabase invitation and returns the new user ID.
+  inviteAccount(email: string): Promise<string>;
+  // Hard delete: memberships, the admin row and alert settings cascade.
+  deleteAccount(userId: string): Promise<void>;
+  listAllMemberships(): Promise<Membership[]>;
+  listAdminIds(): Promise<string[]>;
   eraseCustomer(companyId: string, phone: string): Promise<number>;
   consumeRateLimit(key: string, limit: number): Promise<boolean>;
   listCompanies(): Promise<Company[]>;

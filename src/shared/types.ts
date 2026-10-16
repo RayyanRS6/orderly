@@ -362,7 +362,39 @@ export interface TeamMember {
   userId: string;
   role: 'owner' | 'staff';
   email?: string;
+  /** Has an account but has never signed in (invitation not used yet). */
+  waiting?: boolean;
+  /** This row is the person viewing the list. */
+  you?: boolean;
 }
+/** A sign-in account from Supabase Auth. Read on the server only. */
+export interface Account {
+  userId: string;
+  email?: string;
+  createdAt?: string;
+  lastSignInAt?: string;
+  /** Invited, never signed in. */
+  invited?: boolean;
+}
+export interface Membership {
+  companyId: string;
+  userId: string;
+  role: 'owner' | 'staff';
+}
+export interface PeopleAccount extends Account {
+  admin: boolean;
+  you?: boolean;
+  memberships: { companyId: string; role: 'owner' | 'staff' }[];
+}
+export interface PeopleDirectory {
+  businesses: { id: string; name: string; slug: string }[];
+  accounts: PeopleAccount[];
+  /** Supabase Auth could not be read; people show by account ID. */
+  emailsUnavailable?: boolean;
+  /** False until the admin's session is authenticator-verified. */
+  canDeleteAccounts: boolean;
+}
+export type AddMemberOutcome = 'added' | 'added_waiting' | 'invited';
 export interface RetentionStatus {
   days: number;
   eligibleAfter: string | null;
