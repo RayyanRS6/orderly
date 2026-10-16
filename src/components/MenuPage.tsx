@@ -11,8 +11,9 @@ import {
   RefreshCw,
   ShoppingBag,
   Truck,
+  X,
 } from 'lucide-react';
-import { api, ApiError } from '../lib/api';
+import { api } from '../lib/api';
 import { money, type CartItem } from '../shared/types';
 import {
   waMeUrl,
@@ -23,13 +24,20 @@ import {
 } from '../shared/menu';
 import {
   addLine,
+  checkoutProblem,
   count,
   loadCart,
+  loadDraft,
   loadToken,
+  menuLoadFailure,
+  orderFailure,
   previewQuote,
   saveCart,
+  saveDraft,
   saveToken,
   setQuantity,
+  typedPhoneLabel,
+  type DraftCode,
 } from '../lib/menu-cart';
 import { ActionButton, Badge, CustomSelect, ErrorNotice, Field, Spinner } from './ui-basic';
 import { cn } from '../lib/utils';
@@ -57,11 +65,6 @@ interface Placed {
   total: number;
   alreadyPlaced: boolean;
   whatsappUrl?: string;
-}
-interface Drafted {
-  code: string;
-  expiresAt: string;
-  whatsappUrl: string;
 }
 
 function Shell({ children }: { children: ReactNode }) {
@@ -218,7 +221,7 @@ function OptionPicker({
   );
 }
 
-function ItemCard({
+export function ItemCard({
   item,
   ordering,
   inCart,
@@ -274,7 +277,7 @@ function ItemCard({
                   : onAdd({ productId: item.id, quantity: 1, modifierIds: [] })
               }
             >
-              <Plus className="size-4" />
+              {options && picking ? <X className="size-4" /> : <Plus className="size-4" />}
               {options ? (picking ? 'Close' : 'Choose') : 'Add'}
             </button>
           )}
@@ -304,6 +307,63 @@ function Banner({ children }: { children: ReactNode }) {
   );
 }
 
+/** A personal link that couldn't be checked (weak connection, busy minute): kept, with a retry. */
+export function LinkCheckFailed({ retrying, onRetry }: { retrying: boolean; onRetry: () => void }) {
+  return (
+    <Banner>
+      We couldn’t check your order link. Check your connection and try again.
+      <ActionButton
+        className="mt-3 w-full"
+        loading={retrying}
+        loadingLabel="Checking your link…"
+        onClick={onRetry}
+      >
+        <RefreshCw className="size-4" />
+        Try again
+      </ActionButton>
+    </Banner>
+  );
+}
+
+/** Why this page can't take an order right now, when it can't. */
+export function OrderingNotice({
+  menu,
+  session,
+  hasLink,
+  whatsapp,
+}: {
+  menu: PublicMenu;
+  session?: MenuSession;
+  hasLink: boolean;
+  whatsapp?: string;
+}) {
+  const { ordering, restaurant } = menu;
+  return session?.state === 'staff' ? (
+    <Banner>
+      Our team is chatting with you on WhatsApp. Continue there to order.
+      {whatsapp && (
+        <a className="btn btn-ink mt-3 w-full" href={whatsapp} rel="noopener noreferrer">
+          <MessageCircle className="size-4" />
+          Continue in WhatsApp
+        </a>
+      )}
+    </Banner>
+  ) : session?.state === 'blocked' ? (
+    <Banner>Ordering isn’t available for this chat.</Banner>
+  ) : ordering.reason === 'bot_off' || session?.state === 'bot_off' ? (
+    <Banner>Online ordering is paused right now. You can still browse the menu.</Banner>
+  ) : ordering.reason === 'closed' || session?.state === 'closed' ? (
+    <Banner>We’re closed right now. We open at {restaurant.openingHours.start}.</Banner>
+  ) : ordering.reason === 'unavailable' ? (
+    <Banner>Ordering isn’t available right now. You can still browse the menu.</Banner>
+  ) : ordering.reason === 'no_whatsapp' && !hasLink ? (
+    // A personal link still orders into its own chat, so this is only for Instagram/QR visitors.
+    <Banner>
+      Ordering from this page isn’t available right now. You can still browse the menu.
+    </Banner>
+  ) : null;
+}
+
 export function MenuPage({ slug }: { slug: string }) {
   const [menu, setMenu] = useState<PublicMenu>();
   const [failure, setFailure] = useState<{ message: string; missing: boolean }>();
@@ -311,6 +371,10 @@ export function MenuPage({ slug }: { slug: string }) {
   const [token, setToken] = useState<string>();
   const [session, setSession] = useState<MenuSession>();
   const [linkNote, setLinkNote] = useState('');
+  const [linkCheck, setLinkCheck] = useState<'failed' | 'retrying'>();
+  const [linkAttempt, setLinkAttempt] = useState(0);
+  // Read before the cart: an expired code clears the cart that went with it.
+  const [drafted, setDrafted] = useState<DraftCode | undefined>(() => loadDraft(slug));
   const [cart, setCart] = useState<CartItem[]>(() => loadCart(slug));
   const [picking, setPicking] = useState<string>();
   const [checkout, setCheckout] = useState(false);
@@ -323,8 +387,9 @@ export function MenuPage({ slug }: { slug: string }) {
   const [busy, setBusy] = useState(false);
   const [placed, setPlaced] = useState<Placed>();
   const [phone, setPhone] = useState('');
-  const [drafted, setDrafted] = useState<Drafted>();
   const placing = useRef(false);
+  // The personal link's token, also kept here so Try again works where storage is refused.
+  const linkToken = useRef<string>(undefined);
 
   useEffect(() => {
     let live = true;
@@ -336,9 +401,8 @@ export function MenuPage({ slug }: { slug: string }) {
         document.title = `${value.restaurant.name} menu`;
         if (value.restaurant.fulfillment === 'delivery') setFulfillment('delivery');
       },
-      (e: Error) => {
-        if (live)
-          setFailure({ message: e.message, missing: e instanceof ApiError && e.status === 404 });
+      (e: unknown) => {
+        if (live) setFailure(menuLoadFailure(e));
       },
     );
     return () => {
@@ -352,6 +416,7 @@ export function MenuPage({ slug }: { slug: string }) {
     let live = true;
     const fromLink = /(?:^#|&)t=([A-Za-z0-9_-]{20,200})/.exec(window.location.hash)?.[1];
     if (fromLink) {
+      linkToken.current = fromLink;
       saveToken(slug, fromLink);
       try {
         history.replaceState(null, '', window.location.pathname);
@@ -359,14 +424,17 @@ export function MenuPage({ slug }: { slug: string }) {
         // The address bar keeps the link; the page still works.
       }
     }
-    const value = fromLink ?? loadToken(slug);
+    const value = linkToken.current ?? loadToken(slug);
     if (!value) return;
+    linkToken.current = value;
     setToken(value);
     api<MenuSession>(`/public/menu/${slug}/session`, undefined, { token: value }).then(
       (result) => {
         if (!live) return;
+        setLinkCheck(undefined);
         if (ENDED_STATES.includes(result.state)) {
           // An old link: the page carries on as if it was opened without one.
+          linkToken.current = undefined;
           saveToken(slug);
           setToken(undefined);
           setLinkNote(
@@ -380,13 +448,14 @@ export function MenuPage({ slug }: { slug: string }) {
         if (result.name) setName((current) => current || result.name!);
       },
       () => {
-        if (live) setToken(undefined);
+        // A weak connection or a busy minute doesn't end the link: keep it and offer a retry.
+        if (live) setLinkCheck('failed');
       },
     );
     return () => {
       live = false;
     };
-  }, [slug]);
+  }, [slug, linkAttempt]);
 
   useEffect(() => saveCart(slug, cart), [slug, cart]);
 
@@ -395,6 +464,52 @@ export function MenuPage({ slug }: { slug: string }) {
     window.addEventListener('popstate', close);
     return () => window.removeEventListener('popstate', close);
   }, []);
+
+  // Checkout has its own history entry so the phone's Back button closes it. Every way out of
+  // checkout comes through here and drops that entry, so Back never lands on a stale one.
+  const leaveCheckout = () => {
+    setCheckout(false);
+    if ((history.state as { menuCheckout?: boolean } | null)?.menuCheckout) history.back();
+  };
+
+  // Shown straight away after a reload (WhatsApp often reloads this tab), before the menu loads.
+  if (drafted)
+    return (
+      <Shell>
+        <section className="card p-6 text-center" role="status">
+          <MessageCircle className="mx-auto size-10 text-brand-600" />
+          <h1 className="panel-title mt-3">
+            Almost done! Send your order code from WhatsApp to place it.
+          </h1>
+          <a
+            className="btn btn-primary mt-5 min-h-12 w-full text-[15px]"
+            href={drafted.whatsappUrl}
+            rel="noopener noreferrer"
+          >
+            <MessageCircle className="size-5" />
+            Confirm on WhatsApp
+          </a>
+          <p className="mt-5 font-mono text-[26px] font-semibold tracking-[0.12em] text-ink">
+            {drafted.code}
+          </p>
+          <p className="mt-3 text-[13px] leading-relaxed text-stone-500">
+            Your order is placed only after you send the message. The code works for 30 minutes.
+          </p>
+          <button
+            type="button"
+            className="btn btn-quiet mt-3 w-full"
+            onClick={() => {
+              // The cart is still here: back to the menu to change it and get a new code.
+              saveDraft(slug);
+              setDrafted(undefined);
+            }}
+          >
+            <ArrowLeft className="size-4" />
+            Change order
+          </button>
+        </section>
+      </Shell>
+    );
 
   if (!menu)
     return (
@@ -449,6 +564,8 @@ export function MenuPage({ slug }: { slug: string }) {
     zone: fulfillment === 'delivery' ? zone : undefined,
   });
   const itemsOnly = previewQuote(menu, { items: cart, fulfillment: 'pickup' });
+  // Read back so a mistyped number is caught here, not when the code is refused in WhatsApp.
+  const phoneLabel = mode === 'public' ? typedPhoneLabel(phone) : undefined;
   const quantityOf = (id: string) =>
     cart.filter((line) => line.productId === id).reduce((sum, line) => sum + line.quantity, 0);
   const add = (line: Omit<CartItem, 'notes'>) => {
@@ -465,31 +582,24 @@ export function MenuPage({ slug }: { slug: string }) {
     }
     window.scrollTo(0, 0);
   };
-  const closeCheckout = () => {
-    if ((history.state as { menuCheckout?: boolean } | null)?.menuCheckout) history.back();
-    else setCheckout(false);
-  };
   const reloadMenu = () =>
     api<PublicMenu>(`/public/menu/${slug}`, undefined, undefined, undefined, {
       cache: 'no-store',
     }).then(setMenu, () => undefined);
   const linkEnded = (message = LINK_ENDED) => {
+    linkToken.current = undefined;
     saveToken(slug);
     setToken(undefined);
     setSession(undefined);
     setLinkNote(message);
-    setCheckout(false);
+    leaveCheckout();
   };
 
   async function placeOrder() {
     if (placing.current) return;
     setError('');
-    if (name.trim().length < 2) return setError('Please add your name.');
-    if (fulfillment === 'delivery' && !zone) return setError('Please choose your delivery area.');
-    if (fulfillment === 'delivery' && address.trim().length < 5)
-      return setError('Please add your full delivery address.');
-    if (mode === 'public' && phone.replace(/\D/g, '').length < 10)
-      return setError('Please enter your WhatsApp number, for example 0300 1234567.');
+    const problem = checkoutProblem({ mode, name, fulfillment, zone, address, phone });
+    if (problem) return setError(problem);
     if (!priced.quote) return setError(priced.error ?? 'Please check your order.');
     const web: WebCart = {
       items: cart,
@@ -501,13 +611,14 @@ export function MenuPage({ slug }: { slug: string }) {
     setBusy(true);
     try {
       if (mode === 'public') {
-        setDrafted(
-          await api<Drafted>(`/public/menu/${slug}/drafts`, undefined, {
-            phone: phone.trim(),
-            cart: web,
-            expectedTotal: priced.quote.total,
-          }),
-        );
+        // Nothing is ordered until the code is sent, so the cart stays until the code expires.
+        const created = await api<DraftCode>(`/public/menu/${slug}/drafts`, undefined, {
+          phone: phone.trim(),
+          cart: web,
+          expectedTotal: priced.quote.total,
+        });
+        saveDraft(slug, created);
+        setDrafted(created);
       } else {
         setPlaced(
           await api<Placed>(`/public/menu/${slug}/orders`, undefined, {
@@ -517,64 +628,33 @@ export function MenuPage({ slug }: { slug: string }) {
           }),
         );
         saveToken(slug);
+        setCart([]);
       }
-      setCart([]);
       setNotice('');
+      leaveCheckout();
     } catch (e) {
-      const code = e instanceof ApiError ? e.code : undefined;
-      if (code === 'price_changed') {
+      const failure = orderFailure(e, mode);
+      if (failure.kind === 'price_changed') {
         await reloadMenu();
-        setNotice(e instanceof Error ? e.message : '');
-      } else if (code && ENDED_STATES.includes(code)) linkEnded();
-      else if (mode === 'public' && ['no_whatsapp', 'bot_off', 'closed'].includes(code ?? '')) {
+        setNotice(failure.message);
+      } else if (failure.kind === 'link_ended') linkEnded();
+      else if (failure.kind === 'stopped') {
         // Ordering just stopped: the refreshed menu says why.
         await reloadMenu();
-        setCheckout(false);
-      } else if (
-        code === 'staff' ||
-        code === 'blocked' ||
-        code === 'bot_off' ||
-        code === 'closed'
-      ) {
-        setSession((current) => current && { ...current, state: code });
-        setCheckout(false);
-      } else
-        setError(
-          e instanceof ApiError
-            ? e.message
-            : 'We couldn’t reach the restaurant. Check your connection and try again.',
-        );
+        leaveCheckout();
+      } else if (failure.kind === 'chat') {
+        setSession((current) => current && { ...current, state: failure.state });
+        leaveCheckout();
+      } else {
+        // A removed dish then shows 'No longer on the menu', and a sold-out one is marked.
+        if (failure.reloadMenu) await reloadMenu();
+        setError(failure.message);
+      }
     } finally {
       placing.current = false;
       setBusy(false);
     }
   }
-
-  if (drafted)
-    return (
-      <Shell>
-        <section className="card p-6 text-center" role="status">
-          <MessageCircle className="mx-auto size-10 text-brand-600" />
-          <h1 className="panel-title mt-3">
-            Almost done! Send your order code from WhatsApp to place it.
-          </h1>
-          <a
-            className="btn btn-primary mt-5 min-h-12 w-full text-[15px]"
-            href={drafted.whatsappUrl}
-            rel="noopener noreferrer"
-          >
-            <MessageCircle className="size-5" />
-            Confirm on WhatsApp
-          </a>
-          <p className="mt-5 font-mono text-[26px] font-semibold tracking-[0.12em] text-ink">
-            {drafted.code}
-          </p>
-          <p className="mt-3 text-[13px] leading-relaxed text-stone-500">
-            Your order is placed only after you send the message. The code works for 30 minutes.
-          </p>
-        </section>
-      </Shell>
-    );
 
   if (placed)
     return (
@@ -608,7 +688,7 @@ export function MenuPage({ slug }: { slug: string }) {
   if (checkout && canOrder)
     return (
       <Shell>
-        <button type="button" className="btn btn-quiet -ml-3 mb-3" onClick={closeCheckout}>
+        <button type="button" className="btn btn-quiet -ml-3 mb-3" onClick={leaveCheckout}>
           <ArrowLeft className="size-4" />
           Back to menu
         </button>
@@ -628,6 +708,7 @@ export function MenuPage({ slug }: { slug: string }) {
                   <p className="text-[14px] font-semibold text-ink">
                     {item?.name ?? 'No longer on the menu'}
                   </p>
+                  {item && !item.available && <Badge>Sold out</Badge>}
                   {options.length > 0 && (
                     <p className="text-xs text-stone-500">{options.join(' · ')}</p>
                   )}
@@ -716,7 +797,11 @@ export function MenuPage({ slug }: { slug: string }) {
           ) : (
             <Field
               label="Your WhatsApp number"
-              hint="Include your country code if you’re outside Pakistan."
+              hint={
+                phoneLabel
+                  ? `You’ll confirm from WhatsApp on ${phoneLabel}.`
+                  : 'Include your country code if you’re outside Pakistan.'
+              }
             >
               <input
                 className="input"
@@ -790,6 +875,15 @@ export function MenuPage({ slug }: { slug: string }) {
         </div>
       </header>
       {linkNote && <Banner>{linkNote}</Banner>}
+      {linkCheck && token && (
+        <LinkCheckFailed
+          retrying={linkCheck === 'retrying'}
+          onRetry={() => {
+            setLinkCheck('retrying');
+            setLinkAttempt((n) => n + 1);
+          }}
+        />
+      )}
       {canOrder && (
         <p className="mb-5 rounded-2xl bg-white/70 px-4 py-3 text-[13px] text-stone-600">
           {mode === 'link'
@@ -797,25 +891,7 @@ export function MenuPage({ slug }: { slug: string }) {
             : 'Add dishes, then place your order and confirm it from your WhatsApp.'}
         </p>
       )}
-      {session?.state === 'staff' ? (
-        <Banner>
-          Our team is chatting with you on WhatsApp. Continue there to order.
-          {whatsapp && (
-            <a className="btn btn-ink mt-3 w-full" href={whatsapp} rel="noopener noreferrer">
-              <MessageCircle className="size-4" />
-              Continue in WhatsApp
-            </a>
-          )}
-        </Banner>
-      ) : session?.state === 'blocked' ? (
-        <Banner>Ordering isn’t available for this chat.</Banner>
-      ) : ordering.reason === 'bot_off' || session?.state === 'bot_off' ? (
-        <Banner>Online ordering is paused right now. You can still browse the menu.</Banner>
-      ) : ordering.reason === 'closed' || session?.state === 'closed' ? (
-        <Banner>We’re closed right now. We open at {restaurant.openingHours.start}.</Banner>
-      ) : ordering.reason === 'unavailable' ? (
-        <Banner>Ordering isn’t available right now. You can still browse the menu.</Banner>
-      ) : null}
+      <OrderingNotice menu={menu} session={session} hasLink={!!token} whatsapp={whatsapp} />
       {menu.categories.length > 1 && (
         <nav
           aria-label="Menu sections"
