@@ -250,7 +250,8 @@ export function StaffAlerts({
           onInteractOutside={keepOpenForToasts}
           className="dialog-content fixed inset-x-3 top-[10dvh] z-50 mx-auto max-h-[80dvh] max-w-xl overflow-y-auto rounded-[22px] border border-white bg-cream bg-[radial-gradient(420px_circle_at_100%_0%,rgb(255_105_44/0.1),transparent_70%)] bg-no-repeat p-5 shadow-[0_40px_80px_-30px_rgb(14_6_4/0.5),0_10px_24px_-14px_rgb(14_6_4/0.15)] sm:p-6"
         >
-          <div className="mb-4 flex items-center justify-between gap-2">
+          {/* On phones a long list scrolls under this row, so Close stays in reach. */}
+          <div className="mb-4 flex items-center justify-between gap-2 max-sm:sticky max-sm:top-0 max-sm:z-10 max-sm:-mx-5 max-sm:-mt-5 max-sm:mb-2 max-sm:px-5 max-sm:pt-5 max-sm:pb-2 max-sm:[background:inherit]">
             <Dialog.Title className="panel-title">Staff alerts</Dialog.Title>
             <Dialog.Close className="icon-btn-glass" aria-label="Close staff alerts">
               <X className="size-4" />

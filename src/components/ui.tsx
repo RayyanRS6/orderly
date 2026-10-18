@@ -222,6 +222,16 @@ export function Modal({
             wide ? 'max-w-2xl' : 'max-w-lg',
           )}
         >
+          {/* On phones a tall dialog scrolls: this zero-height strip stays at the top, so Close
+              stays in reach. From sm up it is not drawn and Close sits where it always did. */}
+          <div className="sticky top-6 z-10 h-0 sm:contents">
+            <Dialog.Close
+              className="icon-btn absolute right-5 top-5 bg-ink/[0.04] max-sm:-right-1 max-sm:-top-1 max-sm:bg-[#f1edeb]"
+              aria-label="Close dialog"
+            >
+              <X className="size-5" />
+            </Dialog.Close>
+          </div>
           <div className="mb-6 pr-10">
             <Dialog.Title className="break-words font-serif text-[28px] font-normal leading-[1.05] tracking-[-0.01em] text-ink sm:text-[32px]">
               {title}
@@ -232,12 +242,6 @@ export function Modal({
               </Dialog.Description>
             )}
           </div>
-          <Dialog.Close
-            className="icon-btn absolute right-5 top-5 bg-ink/[0.04]"
-            aria-label="Close dialog"
-          >
-            <X className="size-5" />
-          </Dialog.Close>
           {workspace?.error && (
             <div ref={errorRef} className="mb-4">
               <ErrorNotice message={workspace.error} onDismiss={workspace.clearError} />
