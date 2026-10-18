@@ -11,11 +11,11 @@
 
 ![Orderly staff dashboard showing the Orders view of a demo restaurant workspace](docs/images/orders.png)
 
-A WhatsApp ordering platform for restaurants, in use at **Fries & Buns**. Customers order through the restaurant’s WhatsApp number in English, Urdu or Roman Urdu; owners and staff manage menus, orders and conversations from this dashboard. Orderly replaces n8n with its own TypeScript ordering engine.
+A WhatsApp ordering platform for restaurants in Pakistan. Customers order through the restaurant’s WhatsApp number in English, Urdu or Roman Urdu; owners and staff manage menus, orders and conversations from this dashboard. Orderly replaces n8n with its own TypeScript ordering engine.
 
-**Status (October 2026):** live on Cloudflare and Supabase and in use at Fries & Buns, with public pages, workspace URLs, configurable bots and models, and security controls. Earlier records from the launch: the [implementation and launch handover](docs/ORDERLY-IMPLEMENTATION-2026-09-17.md), the [audit](docs/ORDERLY-AUDIT-2026-09-16.md) and the [Pakistan budget](docs/ORDERLY-BUDGET-2026-09-16.md).
+**Status (October 2026): pilot.** Two test restaurants run on the live Cloudflare and Supabase setup, and a friend's restaurant is the first real one to go live, before any other client. Both WhatsApp routes are in use: the official Meta Cloud API and, for restaurants the platform admin enables, the unofficial linked phone. Customers pay the restaurant directly (cash, JazzCash, Easypaisa or bank transfer checked by staff); Orderly never handles payment details. Earlier records from the launch: the [implementation and launch handover](docs/ORDERLY-IMPLEMENTATION-2026-09-17.md), the [audit](docs/ORDERLY-AUDIT-2026-09-16.md) and the [Pakistan budget](docs/ORDERLY-BUDGET-2026-09-16.md).
 
-**Start here:** [Get Orderly running](docs/GET-IT-RUNNING.md) is the current step-by-step checklist (accounts, Claude Haiku 5.5, the Railway WhatsApp gateway, per-client setup and costs). In the dashboard, **Agent flow** shows everything connected to a business's bot, what is missing, and why the bot sent each reply.
+**Start here:** [Get Orderly running](docs/GET-IT-RUNNING.md) is the current step-by-step checklist (accounts, Claude Haiku 5.5, WhatsApp, per-client setup and costs). Before going live also read the [deployment guide](docs/DEPLOYMENT.md) (release order and owner actions), [backups and the restore drill](docs/BACKUP-AND-RESTORE.md), the [incident runbook](docs/INCIDENT-RUNBOOK.md) and the [compliance notes](docs/COMPLIANCE-NOTES-2026-10-18.md). In the dashboard, **Agent flow** shows everything connected to a business's bot, what is missing, and why the bot sent each reply.
 
 ## Run locally
 
@@ -97,12 +97,13 @@ Model independence means stable rules and interchangeable adapters. It does not 
 ## Validation
 
 ```powershell
+npm run typecheck
 npm test
-npm run build
+npm run test:edge-runtime
 npm run format
 ```
 
-Tests cover the engine, Hono API, local persistence, credential encryption, imports, webhook signatures, replay protection, staff permissions and coexistence echoes. The Postgres suite executes the actual migrations in PGlite, including transactions, RLS, grants, catalog changes, budget holds and competing order updates. These are local tests, not a substitute for a real Supabase/PostgREST and Meta staging run.
+The **Deploy Supabase backend** workflow runs the first three on every push to `main` and deploys the backend only when they pass. Tests cover the engine, Hono API, local persistence, credential encryption, imports, webhook signatures, replay protection, staff permissions and coexistence echoes. The Postgres suite executes the actual migrations in PGlite, including transactions, RLS, grants, catalog changes, budget holds and competing order updates. These are local tests, not a substitute for a real Supabase/PostgREST and Meta staging run.
 
 The browser flow has been exercised at mobile and desktop widths: menu → cart → review → confirm → staff acceptance → company switch.
 
@@ -120,7 +121,7 @@ These allowances were checked September 2026: [Supabase pricing](https://supabas
 
 Local development and the selected hosting plans start at **$0**, within their free quotas. Cloudflare serves the static dashboard; Supabase includes 500,000 function invocations. The scheduler checks for due jobs inside Postgres and invokes workers only for work. Vercel Hobby's personal, non-commercial restriction is one reason for changing hosts. [Cloudflare static pricing](https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/), [Supabase pricing](https://supabase.com/pricing), [Vercel Hobby terms](https://vercel.com/docs/plans/hobby).
 
-Supabase Free works for an early test but can pause after inactivity and has no automatic backups. Pro starts at $25/month with the first project, 8 GB disk and daily backups; that is a later upgrade option, not an initial requirement. Multiple restaurants share one project with tenant isolation; a separate paid project per restaurant is not required. [Supabase pricing](https://supabase.com/pricing).
+Supabase Free works for an early test but can pause after inactivity and has no automatic backups, so the pilot stays on Free with a nightly `npm run backup:db` ([backups and restore](docs/BACKUP-AND-RESTORE.md)). Pro starts at $25/month with the first project, 8 GB disk and daily backups; that is a later upgrade option, not an initial requirement. Multiple restaurants share one project with tenant isolation; a separate paid project per restaurant is not required. [Supabase pricing](https://supabase.com/pricing).
 
 Do not assume messaging or AI is free: confirm the selected model's quota, Google project's billing tier and current destination-country Meta rates before live testing or quoting a client. Hosting quotas are separate from API charges. [Gemini pricing](https://ai.google.dev/gemini-api/docs/pricing), [Meta pricing](https://developers.facebook.com/documentation/business-messaging/whatsapp/pricing).
 
@@ -136,6 +137,6 @@ Coexistence currently handles new staff echoes, including edit/delete notices. H
 
 External APIs cannot guarantee exactly-once side effects after an ambiguous network timeout. Orders are deduplicated internally; spreadsheet retries reconcile by order ID. A WhatsApp reply may still be repeated if Meta accepted it but the response was lost. Monitor traces and failed jobs during the pilot. Complete the documented provider onboarding, owned-number end-to-end test, backup/restore drill and representative load testing before expanding beyond a small founder-managed restaurant pilot.
 
-## Current launch status (September 18)
+## Launch records
 
-See the [audit closure](docs/ORDERLY-AUDIT-CLOSURE-2026-09-18.md) for implemented findings and remaining live checks, and the [step-by-step launch guide](docs/ORDERLY-LAUNCH-STEPS-2026-09-18.md) for operator and client setup. The original audit remains a point-in-time record.
+The [compliance notes](docs/COMPLIANCE-NOTES-2026-10-18.md) list the outside rules checked on 18 October 2026 and what is still open. The September [audit closure](docs/ORDERLY-AUDIT-CLOSURE-2026-09-18.md) and [step-by-step launch guide](docs/ORDERLY-LAUNCH-STEPS-2026-09-18.md) remain for operator and client setup; both carry notes on what changed since. The original audit remains a point-in-time record.

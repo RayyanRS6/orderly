@@ -1,39 +1,41 @@
 # Get Orderly running
 
-Updated 15 October 2026. This is the one checklist to follow. Each step says who does it, where and how you know it worked. The **Agent flow** page in the dashboard shows the same steps live, with what is still missing for each business.
+Updated 18 October 2026. This is the one checklist to follow. Each step says who does it, where and how you know it worked. The **Agent flow** page in the dashboard shows the same steps live, with what is still missing for each business.
+
+Pilot: two test restaurants are set up, and a friend's restaurant is the first real one to go live.
 
 ## 1. Where everything runs
 
 ```text
 Customer's WhatsApp
    │
-   ├─ Linked phone → WhatsApp gateway on Railway ("order work")  ← new, not deployed yet
-   └─ or Meta Cloud API (official route; blocked while the Meta account is restricted)
+   ├─ Meta Cloud API (official WhatsApp Business Platform; coexistence keeps the Business app)
+   └─ or linked phone → WhatsApp gateway on Railway ("order work"), unofficial
    ▼
-Orderly API + database + jobs on Supabase (zygsuxgqkeedgcbjhfzx)
-   ├─ AI model: Anthropic Claude Haiku 5.5 (or OpenAI / Gemini)
+Orderly API + database + jobs on Supabase (zygsuxgqkeedgcbjhfzx, Sydney)
+   ├─ AI model: each restaurant's own key (Anthropic Claude Haiku 5.5 recommended, or OpenAI / Gemini)
    ├─ Google Sheet (order copy)
    └─ Staff alerts (optional email through Resend)
    ▲
 Dashboard on Cloudflare (https://orderly.meerurayyan.workers.dev)
 ```
 
-| Piece                                    | Status today                                                                  | You pay                                                  |
-| ---------------------------------------- | ----------------------------------------------------------------------------- | -------------------------------------------------------- |
-| Dashboard (Cloudflare)                   | Live, in use at Fries & Buns                                                  | Free plan                                                |
-| API, database, logins, jobs (Supabase)   | Live, in use at Fries & Buns                                                  | Free plan now; Pro ($25/month) adds daily backups        |
-| WhatsApp gateway (Railway, "order work") | Project created, **empty**. Needs GitHub access, variables and a volume.      | Hobby plan, roughly $5–6/month for one number (estimate) |
-| AI model (Anthropic)                     | Code ready for Claude Haiku 5.5. **Needs an Anthropic API key.**              | Usage only, see section 7                                |
-| Google Sheet                             | Works with the existing service account                                       | Free                                                     |
-| Meta official WhatsApp                   | Code ready. The Meta account restriction was the blocker (`SETUP-STATUS.md`). | Meta conversation fees                                   |
+| Piece                                    | Status today                                                                | You pay                                                   |
+| ---------------------------------------- | --------------------------------------------------------------------------- | --------------------------------------------------------- |
+| Dashboard (Cloudflare)                   | Live for the pilot                                                          | Free plan                                                 |
+| API, database, logins, jobs (Supabase)   | Live for the pilot                                                          | Free plan for the pilot: **no automatic backups**, see §8 |
+| Meta official WhatsApp (Cloud API)       | In use; the supported route                                                 | Meta message fees                                         |
+| WhatsApp gateway (Railway, "order work") | In use for linked-phone restaurants; new pairings only when you enable them | Hobby plan, roughly $5–6/month for one number (estimate)  |
+| AI model                                 | Each restaurant connects and pays for its own key                           | Usage only, see section 7                                 |
+| Google Sheet                             | Works with the existing service account                                     | Free                                                      |
 
-Only the gateway needs Railway. It is the one part that must stay running all the time with saved WhatsApp login data, which Supabase and Cloudflare cannot do. Everything else stays where it already works.
+Only the gateway needs Railway. It is the one part that must stay running all the time with saved WhatsApp login data, which Supabase and Cloudflare cannot do.
 
-## 2. Ship this update
+## 2. Ship an update
 
-What changed: the **Agent flow** page; a **Why this reply?** explanation under every new bot reply (Test your bot and Inbox); Claude Haiku 5.5 as the recommended Anthropic model; Railway support for the gateway.
+Follow the release order in [DEPLOYMENT.md](DEPLOYMENT.md) §7: backup, any SQL marked "before", backend push, dashboard deploy, any SQL marked "after", then the gateway at a quiet hour.
 
-1. **You:** review and approve the commit, then push to `main`. GitHub Actions deploys the backend automatically (`Deploy Supabase backend`). This is the same production backend Fries & Buns uses, so push at a quiet time and confirm the run is green in GitHub → Actions. Existing conversations and settings are unchanged; only new bot replies gain an explanation.
+1. **You:** review and approve the commit, then push to `main` at a quiet time. GitHub Actions (`Deploy Supabase backend`) first runs the type check and every test, and deploys only if they pass. Wait in GitHub → Actions until both `verify` and `deploy` are green; `deploy` also checks the live `/api/health`. Pushes that change only docs, Markdown or `gateway/` do not redeploy the backend.
 2. **You:** deploy the dashboard from this folder, signed in to the Cloudflare account that serves `orderly.meerurayyan.workers.dev` (`npx wrangler whoami` shows which account):
 
    ```powershell
@@ -43,8 +45,6 @@ What changed: the **Agent flow** page; a **Why this reply?** explanation under e
    ```
 
 3. **Check:** sign in at the dashboard, open a business, and click **Agent flow** in the sidebar. You should see the setup checklist and the flow diagram.
-
-No database migration is needed for the Agent flow or the reply explanations. Explanations are saved inside each conversation.
 
 ## 3. Turn on Claude Haiku 5.5
 
@@ -64,15 +64,16 @@ To change model or key later, use the same card: pick or paste the new one and c
 
 ## 4. Connect WhatsApp
 
-**Option A: linked phone through Railway.** This works without Meta approval. It is an unofficial route, so read the risks in `gateway/README.md`.
+**Option A: official Meta Cloud API, with coexistence (the supported route).** Follow [`ORDERLY-LAUNCH-STEPS-2026-09-18.md`](ORDERLY-LAUNCH-STEPS-2026-09-18.md) sections 9–10. If the restaurant already uses the WhatsApp Business app on its number, tick **Keep using the WhatsApp Business mobile app** during signup: Meta's coexistence onboarding keeps the app working alongside Orderly (Meta decides eligibility).
 
-1. **You:** Railway → project **order work** → **Add a service → GitHub Repository** → **Connect GitHub**. Approve access to `RayyanRS6/orderly` only. This is a GitHub permission screen, so you must do it yourself.
-2. Follow [`gateway/RAILWAY.md`](../gateway/RAILWAY.md) exactly. It covers the service settings, generating the two secrets on your computer, the variables, the `/data` volume, the domain and the health check.
-3. **You:** back up the database, apply `supabase/migrations/202609200001_whatsapp_gateway.sql` through your reviewed migration process, then set the three backend secrets from the runbook (`WHATSAPP_GATEWAY_URL`, `WHATSAPP_GATEWAY_SECRET`, `WHATSAPP_GATEWAY_ENABLED=true`).
-4. **With the restaurant owner present:** Orderly → **Integrations → WhatsApp** → pair by QR code or pairing code.
-5. **Check:** Agent flow → **WhatsApp (linked phone)** is green with a heartbeat under 90 seconds. "Server connections" shows the gateway as set.
+**Option B: linked phone through Railway (unofficial).** Use it only when Option A is not possible for that restaurant, and only after you, the platform admin, have enabled linked-phone pairing for that business.
 
-**Option B: Meta Cloud API.** Follow `ORDERLY-LAUNCH-STEPS-2026-09-18.md` sections 9–10 once Meta lifts the account restriction.
+- **The risk, in plain words:** this method is against WhatsApp's terms. WhatsApp can ban the whole number, temporarily or permanently, and the restaurant's own WhatsApp app on that number stops working too. Customer messages are decrypted and processed on Orderly's gateway server on Railway. Tell the owner this before pairing; the dashboard records their consent. A banned number may not be able to move to the official route afterwards.
+
+1. The Railway service is already running. For a new installation, follow [`gateway/RAILWAY.md`](../gateway/RAILWAY.md) exactly: service settings, the two secrets, the variables, the `/data` volume, the domain and the health check. The gateway migration (`202609200001_whatsapp_gateway.sql`) is already applied in production.
+2. **With the restaurant owner present:** Orderly → **Integrations → WhatsApp**, go through the risk notice with them, tick the consent box and pair by QR code or pairing code.
+3. **Check:** Agent flow → **WhatsApp (linked phone)** is green with a heartbeat under 90 seconds. "Server connections" shows the gateway as set.
+4. Plan the move to Option A with coexistence for that restaurant.
 
 ## 5. Per business (repeat for each client)
 
@@ -98,11 +99,15 @@ The Agent flow checklist shows these steps in order. Each one has a button to th
 
 - **Claude Haiku 5.5:** a typical customer message sends about 5,000–15,000 input tokens (rules, menu index, history) and gets about 300–1,000 output tokens back, including brief thinking. That is roughly $0.001–$0.002 per message, or about $1–2 per 1,000 messages. The provider invoice is authoritative. Monthly limits in Bot settings stop spending at the cap.
 - **Railway gateway:** about $5–6/month for one number on Hobby. Each extra number adds roughly $1.5–2.5 (estimate; measure before adding clients).
-- **Supabase:** free to start, $25/month for Pro with backups. **Cloudflare:** free.
+- **Supabase:** Free plan for the pilot ($25/month for Pro later, which adds daily backups). **Cloudflare:** free.
 
-## 8. Not verified yet
+## 8. Backups and incidents
 
-- No real WhatsApp message has been sent through the Railway gateway; it is not deployed.
-- Claude Haiku 5.5 has not been called with a real key from this code, because no Anthropic key was available. The generation test in Bot settings is that check.
-- The gateway database migration has not been applied to production.
-- This update has not been deployed. Section 2 does that once you approve.
+- **Backups:** Supabase Free has no automatic backups. Set up the nightly backup and do the restore drill once: [BACKUP-AND-RESTORE.md](BACKUP-AND-RESTORE.md). Always run `npm run backup:db` before pasting SQL into production.
+- **If something goes wrong** (wrong replies, a leaked key, a lost laptop): [INCIDENT-RUNBOOK.md](INCIDENT-RUNBOOK.md). The fastest stop is the Edge Function secret `ORDERLY_PAUSE_AUTOMATION=on`.
+
+## 9. Not verified yet
+
+- A backup restore has not been rehearsed yet ([BACKUP-AND-RESTORE.md](BACKUP-AND-RESTORE.md) §5).
+- The emergency stop has not been tried on the live project; try it once on the test restaurant.
+- The legal pages still contain `[OWNER TO CONFIRM: …]` placeholders and have not had a lawyer's review ([COMPLIANCE-NOTES-2026-10-18.md](COMPLIANCE-NOTES-2026-10-18.md)).

@@ -2,6 +2,8 @@
 
 Updated September 18, 2026. Operator: **Orderly**. Support/privacy: **waytogalaxy999@gmail.com**.
 
+> **What changed since (18 October 2026).** The website is <https://orderly.meerurayyan.workers.dev>; the old `waytogalaxy999.workers.dev` address is retired. Each business connects its own AI key in **Bot settings → AI model** (there is no Orderly key, no shared or platform-funded cap and no key-mode choice). WhatsApp also has an unofficial linked-phone route ([GET-IT-RUNNING.md](GET-IT-RUNNING.md) §4); the official route below stays the supported one. Backups and the restore drill are in [BACKUP-AND-RESTORE.md](BACKUP-AND-RESTORE.md), incidents in [INCIDENT-RUNBOOK.md](INCIDENT-RUNBOOK.md), and the release order in [DEPLOYMENT.md](DEPLOYMENT.md) §7. The steps below are corrected where they conflicted.
+
 You reported that your Meta account is ready for onboarding. This is not independently verified. You will connect the client later, while they are present. **Laziza remains paused and disconnected.** Software tests do not replace the live checks below.
 
 ## 1. Understand the connections
@@ -16,7 +18,7 @@ Restaurant staff → Orderly dashboard on Cloudflare → confirmation/status upd
 
 Cloudflare hosts the website. Supabase hosts the API, database, authentication and scheduled jobs. You do not need Hostinger or Vercel for this setup. Buying Supabase Pro does not configure client integrations, approve Meta permissions or purchase AI usage.
 
-- Website: <https://orderly.waytogalaxy999.workers.dev>
+- Website: <https://orderly.meerurayyan.workers.dev>
 - Public pages: `/pricing`, `/privacy`, `/terms`, `/contact`, `/data-deletion`.
 - Dashboard: `/app`; each workspace has its own `/app/<business-slug>/<page>` URL. React changes the visible page without downloading the entire site again; direct links and refreshes are supported.
 - API: `https://zygsuxgqkeedgcbjhfzx.supabase.co/functions/v1/orderly`.
@@ -89,12 +91,11 @@ Supabase is the order record of truth. Sheets is a synchronized view: **editing 
 
 ## 7. Connect the client's AI key and choose the model
 
-1. The client creates an API account with their chosen provider, enables billing/credit and sets provider-side usage limits. A consumer ChatGPT subscription is not an API balance.
-2. In **Integrations**, save their OpenAI, Gemini or Anthropic API key and test access.
-3. Open **Bot settings**. Select the provider and **This business's API key**. Refresh the model list and select the exact model ID.
-4. Review the provider's data-processing terms with the client and record the required approval in the app. Set the monthly application allowance. Unknown model prices must be supplied before use.
-5. Save the draft, inspect its instructions and run the selected-model test. Live model tests incur provider usage; the free simulator does not establish real model quality.
-6. Publish the reviewed configuration. Changing credentials/model resets the relevant approval/readiness checks; repeat them before re-enabling the bot.
+1. The client creates an API account with their chosen provider, enables billing/credit and sets provider-side usage limits. A consumer ChatGPT subscription is not an API balance. For Gemini, the key must come from a Google Cloud project with billing on: free (unpaid) Gemini must not receive real customer data. No data-sharing or training opt-in may be on.
+2. Open **Bot settings → AI model**. Select the provider and the exact model ID, and paste the business's API key on the same card.
+3. Review the provider's data-processing terms with the client, tick the agreement, and click **Connect and test**. Set the monthly application allowance. Unknown model prices must be supplied before use.
+4. Save the draft, inspect its instructions and run the selected-model test. Live model tests incur provider usage; the free simulator does not establish real model quality.
+5. Publish the reviewed configuration. Changing credentials/model resets the relevant approval/readiness checks; repeat them before re-enabling the bot.
 
 Model discovery can refresh available choices. It does **not** silently replace a retired model or prove that every listed model supports Orderly. Choose and test a replacement explicitly. Model names in the Codex app are not promises of public API availability. Application prices and token budgets are estimates; the provider invoice is authoritative. At 80% usage the staff bell warns; configured email alerts can escalate it. Each business pays with its own key and has its own monthly allowance; Orderly has no shared key or shared cap.
 
@@ -163,6 +164,8 @@ Use a recipient you control, with the client's agreement and a staff member moni
 5. For offboarding, pause the bot, export required records, disconnect integrations, revoke provider tokens/Sheet sharing and remove staff access. Keep only records required under the agreed policy.
 
 ## 13. Backups and restore rehearsal
+
+The pilot stays on the Supabase Free plan, which has no automatic backups. Use `npm run backup:db`, the nightly task and the drill in [BACKUP-AND-RESTORE.md](BACKUP-AND-RESTORE.md); the steps below are the principles it follows.
 
 1. Check the Supabase project's actual plan and available backup/restore options; purchase upgrades yourself only if suitable. See [Supabase backups](https://supabase.com/docs/guides/platform/backups).
 2. Securely back up the existing credential-encryption key and required deployment configuration separately. Database rows alone cannot decrypt credentials without that key. Do not commit secret backups.
