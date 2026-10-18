@@ -1,5 +1,7 @@
-// One bounded token bucket per gateway; no attacker-controlled IP map or proxy-header trust.
-// This is a pilot overload guard, not a substitute for host/network DDoS protection.
+// A bounded token bucket, charged only for requests with a valid signature; no
+// attacker-controlled IP map or proxy-header trust. Unsigned requests are rejected before any
+// budget is used, bounded by the connection cap, timeouts and the body limit instead. This is
+// a pilot overload guard, not a substitute for host/network DDoS protection.
 export class RequestBudget {
   private tokens: number;
   private last: number;

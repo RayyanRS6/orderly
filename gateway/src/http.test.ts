@@ -72,24 +72,49 @@ test('real HTTP gateway boots without sessions, verifies signatures and blocks r
     });
     assert.equal(missing.status, 409);
     assert.equal((await missing.json()).errorCode, 'STALE_GENERATION');
-    // Keep below the independent 64-connection cap while exhausting the request budget.
-    const overload: Response[] = [];
-    for (let batch = 0; batch < 10; batch++) {
-      const responses = await Promise.all(
-        Array.from({ length: 20 }, async () => {
-          const response = await fetch(`${base}/healthz`, { signal: AbortSignal.timeout(5000) });
-          await response.arrayBuffer();
-          return response;
-        }),
-      );
-      overload.push(...responses);
-    }
-    assert.ok(overload.some((response) => response.status === 429));
-    assert.ok(
-      overload
-        .filter((response) => response.status === 429)
-        .every((response) => response.headers.get('Retry-After') === '1'),
+    // Keep below the independent 64-connection cap while flooding.
+    const flood = async (request: () => Promise<Response>) => {
+      const responses: Response[] = [];
+      for (let batch = 0; batch < 10; batch++)
+        responses.push(
+          ...(await Promise.all(
+            Array.from({ length: 20 }, async () => {
+              const response = await request();
+              await response.arrayBuffer();
+              return response;
+            }),
+          )),
+        );
+      return responses;
+    };
+    const timeout = () => AbortSignal.timeout(5000);
+    // Unsigned traffic (anyone who finds the hostname) is refused without using the budget.
+    const unsigned = await flood(() =>
+      fetch(`${base}/send`, { method: 'POST', body: raw, signal: timeout() }),
     );
+    assert.ok(unsigned.every((response) => response.status === 401));
+    const liveness = await flood(() => fetch(`${base}/healthz`, { signal: timeout() }));
+    assert.ok(liveness.every((response) => response.status === 200));
+    const signed = (path: string, body = raw) =>
+      fetch(`${base}${path}`, {
+        method: 'POST',
+        headers: signedHeaders(secret, 'command', path, body),
+        body,
+        signal: timeout(),
+      });
+    assert.equal((await signed('/health')).status, 200);
+    // Orderly's own polling past its budget is slowed down with Retry-After...
+    const polls = await flood(() => signed('/health'));
+    const busy = polls.filter((response) => response.status === 429);
+    assert.ok(busy.length > 0);
+    assert.ok(busy.every((response) => response.headers.get('Retry-After') === '1'));
+    // ...but never takes the budget sends and pairing commands use.
+    const command = await signed('/session');
+    assert.equal(command.status, 400);
+    assert.equal((await command.json()).errorCode, 'INVALID_INPUT');
+    // Liveness and unsigned rejection are unaffected by a busy signed budget.
+    assert.equal((await fetch(`${base}/healthz`)).status, 200);
+    assert.equal((await fetch(`${base}/status`, { method: 'POST', body: raw })).status, 401);
   } finally {
     await new Promise<void>((resolve) => {
       child.once('exit', () => resolve());
