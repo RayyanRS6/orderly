@@ -55,7 +55,8 @@ const notice = {
   en: 'We can’t confirm allergens or ingredients in this chat. A staff member will reply here to help you. You can also call us on +92 300 000 0001.',
   'roman-ur':
     'Hum is chat mein allergy ya ingredients confirm nahi kar sakte. Staff ka koi member yahin aap ko jawab dega. Aap hamein +92 300 000 0001 par call bhi kar sakte hain.',
-  ur: 'ہم اس چیٹ میں الرجی یا اجزا کی تصدیق نہیں کر سکتے۔ عملے کا ایک رکن یہیں آپ کو جواب دے گا۔ آپ ہمیں +92 300 000 0001 پر کال بھی کر سکتے ہیں۔',
+  // The number in a left-to-right isolate, so its groups keep their order in the Urdu line.
+  ur: 'ہم اس چیٹ میں الرجی یا اجزا کی تصدیق نہیں کر سکتے۔ عملے کا ایک رکن یہیں آپ کو جواب دے گا۔ آپ ہمیں \u2066+92 300 000 0001\u2069 پر کال بھی کر سکتے ہیں۔',
 };
 
 describe('F09: allergy questions never get AI wording', () => {

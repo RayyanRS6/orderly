@@ -26,6 +26,7 @@ import {
   resolveItemMention,
   resolvePendingItemChoice,
 } from './menu-resolver';
+import { leftToRight } from './disclosure';
 import { normalizeText as normalize, quoteCart, type CartQuote } from './pricing';
 export { quoteCart, type CartQuote } from './pricing';
 
@@ -1343,7 +1344,7 @@ const allergyNotice = (company: Company, lang: Language) =>
   say(
     lang,
     `We can’t confirm allergens or ingredients in this chat. A staff member will reply here to help you.${company.phone ? ` You can also call us on ${company.phone}.` : ''}`,
-    `ہم اس چیٹ میں الرجی یا اجزا کی تصدیق نہیں کر سکتے۔ عملے کا ایک رکن یہیں آپ کو جواب دے گا۔${company.phone ? ` آپ ہمیں ${company.phone} پر کال بھی کر سکتے ہیں۔` : ''}`,
+    `ہم اس چیٹ میں الرجی یا اجزا کی تصدیق نہیں کر سکتے۔ عملے کا ایک رکن یہیں آپ کو جواب دے گا۔${company.phone ? ` آپ ہمیں ${leftToRight(company.phone)} پر کال بھی کر سکتے ہیں۔` : ''}`,
     `Hum is chat mein allergy ya ingredients confirm nahi kar sakte. Staff ka koi member yahin aap ko jawab dega.${company.phone ? ` Aap hamein ${company.phone} par call bhi kar sakte hain.` : ''}`,
   );
 
