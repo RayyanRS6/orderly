@@ -670,10 +670,113 @@ function contains(text: string, phrase: string): boolean {
   const p = normalize(phrase).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(`(^|[^\\p{L}\\p{N}])${p}(?=$|[^\\p{L}\\p{N}])`, 'u').test(normalize(text));
 }
-const unsafeModelText = (text: string) =>
-  /(?:\b(?:rs\.?|pkr)\s*[\d۰-۹٠-٩]|\b(?:total|price|cost)\s*(?:(?:is|of|:|=)\s*)?[\d۰-۹٠-٩]|\b(?:order\s+)?(?:accepted|approved|submitted|placed|confirmed|delivered|dispatched|completed)\b)/iu.test(
-    text,
+// AI wording that states a price or an order outcome: only the engine words those. Outcomes in
+// Roman Urdu, Urdu and English are tied to the order (or payment) as their subject, so "aap ka
+// naam save ho gaya hai" or "ہم کل ۱۲ بجے کھلیں گے" (کل is also tomorrow) pass. Prices need a
+// currency next to the digits ("450/-", "450 rupay", "۴۵۰ روپے", "500 PKR"). After an order is
+// submitted, saying it was received is true, so that one claim is allowed then.
+const OUTCOME_VERBS =
+  'confirm|place|book|submit|accept|approve|receive|deliver|dispatch|rawana|complete';
+const RECEIVED_VERBS = 'receive';
+const outcomeClaim = (verbs: string) =>
+  new RegExp(
+    `\\b(?:order|payment|adaigi)\\b[^.!?\\n]{0,30}?\\b(?:${verbs})\\w*\\s*(?:ho|hu|kar|kr)\\s*(?:gaya|gayi|gya|gyi|gai|gaye|ge|diya|diye|dia|di|liya|liye|lia|li|chuka|chuki|chuke)\\b`,
+    'u',
   );
+const ROMAN_OUTCOME = outcomeClaim(OUTCOME_VERBS.replace(`|${RECEIVED_VERBS}`, ''));
+const ROMAN_RECEIVED = outcomeClaim(RECEIVED_VERBS);
+const URDU_DONE = '(?:ہو|کر)\\s?(?:گیا|گئی|گئے|دیا|دی|دیے|لیا|لی|چکا|چکی|چکے)';
+const URDU_OUTCOME = new RegExp(
+  `(?:آرڈر|ادائیگی)[^۔.!?؟\\n]{0,30}?(?:کنفرم|بک|منظور|روانہ|تصدیق|ڈیلیور|قبول)[^۔.!?؟\\n]{0,10}?${URDU_DONE}`,
+  'u',
+);
+const URDU_RECEIVED = new RegExp(
+  `(?:آرڈر|ادائیگی)[^۔.!?؟\\n]{0,30}?(?:موصول|وصول)[^۔.!?؟\\n]{0,10}?${URDU_DONE}`,
+  'u',
+);
+const ENGLISH_STATUS =
+  /\b(?:order|payment)\b[^.!?\n]{0,30}?\b(?:on (?:its|the) way|being prepared|out for delivery)\b/u;
+const ENGLISH_RECEIVED = /\b(?:order|payment)\b[^.!?\n]{0,30}?\breceived\b/u;
+const RUPEE_PRICE =
+  /\d[\d,]*(?:\.\d+)?\s*(?:\/-|(?:rupees?|rupay|rupaye|rupaiye|rupe|rupiya|rs|pkr)\b|روپے|روپیہ|روپئے|روپیے)|(?:\b(?:rupees?|rupay|rupaye)|روپے)\s*\d|(?:\b(?:qeemat|keemat|kimat)\b|قیمت|ٹوٹل)\s*(?:[:=]\s*)?\d/u;
+function unsafeModelText(text: string, submitted = false): boolean {
+  if (
+    /(?:\b(?:rs\.?|pkr)\s*[\d۰-۹٠-٩]|\b(?:total|price|cost)\s*(?:(?:is|of|:|=)\s*)?[\d۰-۹٠-٩]|\b(?:order\s+)?(?:accepted|approved|submitted|placed|confirmed|delivered|dispatched|completed)\b)/iu.test(
+      text,
+    )
+  )
+    return true;
+  const value = normalize(text);
+  return (
+    RUPEE_PRICE.test(value) ||
+    ROMAN_OUTCOME.test(value) ||
+    URDU_OUTCOME.test(value) ||
+    ENGLISH_STATUS.test(value) ||
+    (!submitted &&
+      (ROMAN_RECEIVED.test(value) || URDU_RECEIVED.test(value) || ENGLISH_RECEIVED.test(value)))
+  );
+}
+
+// Allergens in English, Roman Urdu and Urdu. A dish named after one ("doodh patti", "anda
+// paratha", "peanut shake", "til naan") is not a question, so they count only in a question
+// about what a dish contains or whether it is safe.
+const ALLERGENS =
+  '(?:tree )?nuts?|peanuts?|almonds?|cashews?|pistachios?|walnuts?|gluten|wheat|dairy|lactose|milk|eggs?|shellfish|prawns?|shrimps?|crabs?|lobsters?|fish|sesame|soy|soya|mustard|moong ?phali|mung ?phali|mong ?phali|badam|kaju|pista|akhrot|meva|mewa|anda|anday|ande|andey|doodh|dudh|til|jheenga|jhinga|gandum|machli|machhli';
+const URDU_ALLERGENS =
+  'مونگ پھلی|مونگپھلی|گری|گریاں|میوہ|میوے|بادام|کاجو|پستہ|پستے|اخروٹ|انڈا|انڈے|دودھ|گلوٹین|گندم|تل|جھینگا|جھینگے|مچھلی|سویا';
+const ALLERGY_WORDS = /\bal+erg|\bal+erj|\bintoleran|\bc(?:o)?eliac\b|\banaphyla|الرج|حساسیت/u;
+const ALLERGEN_QUESTION = new RegExp(
+  [
+    `\\b(?:${ALLERGENS})[- ]?free\\b`,
+    `\\bfree (?:of|from) (?:any )?(?:${ALLERGENS})\\b`,
+    `\\bcontain(?:s|ing)?\\b[^.!?]{0,40}\\b(?:${ALLERGENS})\\b`,
+    `\\b(?:is|are) there (?:any |some )?(?:${ALLERGENS})\\b`,
+    `\\bany (?:${ALLERGENS}) (?:in|on)\\b`,
+    `\\b(?:does|do|did|will)\\s+(?!you\\b|u\\b|we\\b)(?:\\S+\\s+){0,3}(?:have|has|use|contain)\\s+(?:any\\s+|some\\s+)?(?:${ALLERGENS})\\b`,
+    `\\b(?:have|has)\\s+(?:any\\s+)?(?:${ALLERGENS}) in (?:it|them|this|that)\\b`,
+    `\\b(?:made|cooked|fried|prepared)\\s+(?:with|in|using)\\s+(?:any\\s+)?(?:\\S+\\s+)?(?:${ALLERGENS})\\b`,
+    `\\b(?:${ALLERGENS})\\b[^.!?]{0,30}\\bsafe\\b|\\bsafe\\b[^.!?]{0,30}\\b(?:${ALLERGENS})\\b`,
+    `\\b(?:${ALLERGENS}) in [^.!]*\\?`,
+    `(?<!menu )\\b(?:mein|me|main|mai|andar) (?:koi |kuch |bhi )?(?:${ALLERGENS}) (?:to |bhi )?(?:nahi |nahin |nai )?(?:hai|hain|he|hy|h|hota|hoti|hote|dala|daala|dali|dalta|dalte|dalti|parta|padta|parti|padti|hoga|hogi|honge)\\b`,
+    `\\b(?:${ALLERGENS}) (?:to )?(?:nahi |nahin )?(?:hai|hain|hota|hoti|dala|daala|dalte) (?:na|kya)\\b`,
+    `(?<!مینو )میں (?:کوئی |کچھ )?(?:${URDU_ALLERGENS}) (?:تو )?(?:نہیں )?(?:ہے|ہیں|ہوتا|ہوتی|ہوتے|ڈالا|ڈالتے|ڈالی|پڑتا|پڑتی|ہوگا|ہوگی)`,
+    `(?:${URDU_ALLERGENS}) (?:تو )?(?:نہیں )?(?:ہے|ہیں) کیا`,
+    `(?:${URDU_ALLERGENS}) سے پاک`,
+  ].join('|'),
+  'u',
+);
+/** Whether the customer asks about allergies, or whether a dish contains or is safe from an allergen. */
+export const asksAboutAllergens = (text: string) => {
+  const value = normalize(text);
+  return ALLERGY_WORDS.test(value) || ALLERGEN_QUESTION.test(value);
+};
+// "No fish today" or "we don't have doodh patti" is about the menu, so "no …" and "don't …"
+// count only for the allergens people ask to avoid.
+const AVOIDED =
+  '(?:tree )?nuts?|peanuts?|almonds?|cashews?|gluten|dairy|lactose|eggs?|shellfish|sesame|soy|soya|allergens?|moong ?phali|mung ?phali|badam|kaju|meva|mewa';
+const SAFETY_ASSURANCE = new RegExp(
+  [
+    `\\b(?:${ALLERGENS}|allerg(?:y|en|ens|ies))[- ]?free\\b`,
+    `\\b(?:allerg(?:y|en)|nut|peanut)[- ]?(?:safe|friendly)\\b`,
+    `\\bsafe (?:for|to) (?:eat|you|your|people|someone|anyone|those|kids|children|everyone|allerg\\w*|nut\\w*|peanut\\w*|gluten|c(?:o)?eliac|dairy|lactose)\\b`,
+    `\\b(?:no|zero|free of|free from|contains no|without any) (?:${AVOIDED})\\b`,
+    `\\b(?:does ?n[o'’]?t|did ?n[o'’]?t|won['’]t|will not|never) (?:contain|have|include|use) (?:any )?(?:${ALLERGENS})\\b`,
+    `\\bdo ?n[o'’]?t (?:contain|include|use) (?:any )?(?:${ALLERGENS})\\b`,
+    `\\b(?:${ALLERGENS}) (?:(?:to|bhi|bilkul|koi) )?(?:nahi|nahin|nai|nhi)\\b`,
+    `\\bsafe (?:hai|hain|he|hy|h|hoga|rahega)\\b|\\bbilkul safe\\b`,
+    `\\ballerg\\w* (?:ka |ki |ke )?(?:koi )?(?:khatra|masla|problem|issue) nahi`,
+  ].join('|'),
+  'u',
+);
+const URDU_ASSURANCE = new RegExp(
+  `(?:${URDU_ALLERGENS}|الرج\\S*) (?:(?:تو|بھی|بالکل|کوئی) )?(?:نہیں|سے پاک)|(?:${URDU_ALLERGENS}|الرج)[^۔.!?؟]*محفوظ`,
+  'u',
+);
+/** Whether AI wording reassures a customer that a dish is safe from an allergen. */
+export const assuresSafety = (text: string) => {
+  const value = normalize(text);
+  return SAFETY_ASSURANCE.test(value) || URDU_ASSURANCE.test(value);
+};
 function requestedOptions(products: Product[], text: string): string[] {
   return [
     ...new Set(
@@ -978,7 +1081,26 @@ const CORRECTION_TRACES = new Set([
   'invalid_model_prompt_ignored',
   'response_fallback',
   'invented_link_ignored',
+  'allergy_assurance_ignored',
+  'allergy_question_guarded',
 ]);
+
+// The owner's approved answer about allergies (an FAQ or knowledge entry), sent word for word.
+// One whose question is about allergies wins over one that only mentions them in its answer.
+function approvedAllergyAnswer(company: Company, menuLink?: string): string | undefined {
+  const about = (text: string) => ALLERGY_WORDS.test(normalize(text));
+  const faq =
+    company.faqs.find((f) => about(f.question) && f.answer.trim()) ??
+    company.faqs.find((f) => about(f.answer));
+  return faq ? fillMenuLink(faq.answer, menuLink).trim() || undefined : undefined;
+}
+const allergyNotice = (company: Company, lang: Language) =>
+  say(
+    lang,
+    `We can’t confirm allergens or ingredients in this chat. A staff member will reply here to help you.${company.phone ? ` You can also call us on ${company.phone}.` : ''}`,
+    `ہم اس چیٹ میں الرجی یا اجزا کی تصدیق نہیں کر سکتے۔ عملے کا ایک رکن یہیں آپ کو جواب دے گا۔${company.phone ? ` آپ ہمیں ${company.phone} پر کال بھی کر سکتے ہیں۔` : ''}`,
+    `Hum is chat mein allergy ya ingredients confirm nahi kar sakte. Staff ka koi member yahin aap ko jawab dega.${company.phone ? ` Aap hamein ${company.phone} par call bhi kar sakte hain.` : ''}`,
+  );
 
 export function processTurn(
   company: Company,
@@ -1026,8 +1148,19 @@ export function processTurn(
   const invents = (text: string) => inventsLink(text, hosts, fromChat);
   // The menu page's own address is not an outcome claim, whatever words its slug holds.
   const claims = (text: string) =>
-    unsafeModelText(input.menuLink ? text.replaceAll(input.menuLink, '') : text);
-  const unsafe = (text: string) => claims(text) || invents(text);
+    unsafeModelText(
+      input.menuLink ? text.replaceAll(input.menuLink, '') : text,
+      conversation.cart.status === 'submitted',
+    );
+  // An allergy reassurance only in the owner's own approved words, quoted exactly.
+  const ownerWording = [
+    ...company.faqs.map((faq) => faq.answer),
+    ...configuration.behaviorRules.map((rule) => rule.response),
+  ].map((text) => normalize(text));
+  const assures = (text: string) =>
+    assuresSafety(text) &&
+    !ownerWording.some((owner) => !!text.trim() && owner.includes(normalize(text)));
+  const unsafe = (text: string) => claims(text) || assures(text) || invents(text);
   // The menu page link is filled in (or left out) where each text is chosen, before any
   // check reads it: a text left empty counts as missing, so the turn never goes silent.
   if (modelResponse?.text.includes('{menu_link}'))
@@ -1070,6 +1203,24 @@ export function processTurn(
     hash: cart.quoteHash,
     status: cart.status,
   };
+  // Allergy questions get the owner's approved words, or a fixed notice and a person; never AI
+  // wording. A follow-up question straight after one about a dish or "it" ("and the karahi?",
+  // "so it's safe?") is guarded too; a menu request or another topic is not.
+  const lastAsked = conversation.messages
+    .slice(-4)
+    .reverse()
+    .find((m) => m.role === 'customer');
+  const allergyQuestion =
+    !input.action &&
+    (asksAboutAllergens(input.text) ||
+      (!!lastAsked &&
+        asksAboutAllergens(lastAsked.text) &&
+        /[?؟]/u.test(input.text) &&
+        !asksForMenu(input.text) &&
+        (/\b(?:safe|it|its|it's|that|this|them|these|those|bhi|yeh|ye|woh|wo)\b|محفوظ|یہ|وہ|بھی/u.test(
+          normalize(input.text),
+        ) ||
+          resolveItemMention(products, company.id, input.text).kind !== 'none')));
   let reply = '',
     order: Order | undefined;
   const cartFacts: string[] = [];
@@ -1172,7 +1323,32 @@ export function processTurn(
       modelWrote || answerByModel ? 'used' : answerUnsafe ? 'unsafe' : 'none';
     if (matchedRule?.action === 'handoff') next.mode = 'human';
     let configuredResponseUsed = false;
-    if (!protectedReply && exactResponse) {
+    if (allergyQuestion) {
+      // The engine's own lines (cart facts, a review, a refusal) stay. Then the owner's approved
+      // allergy answer word for word, or a fixed notice and a person: AI wording, and owner text
+      // written for something else, never vouch for what a dish contains.
+      const approved = approvedAllergyAnswer(company, input.menuLink);
+      const kept = transactional || protectedReply ? reply : '';
+      const answer = approved ?? allergyNotice(company, lang);
+      reply = [
+        kept,
+        kept.includes(answer) ? '' : answer,
+        approved ? incompleteReviewQuestion : undefined,
+      ]
+        .filter(Boolean)
+        .join('\n\n');
+      parts = [...(kept ? ['engine' as const] : []), approved ? 'approved_answer' : 'engine'];
+      if (approved && !traces.includes('approved_faq')) traces.push('approved_faq');
+      if (!approved) {
+        next.mode = 'human';
+        delete next.botPausedAt;
+        delete next.limitPause;
+        if (!traces.includes('handoff')) traces.push('handoff');
+      }
+      traces.push('allergy_question_guarded');
+      if (modelWrote || answerByModel) modelText = 'protected';
+      configuredResponseUsed = true;
+    } else if (!protectedReply && exactResponse) {
       parts = transactional && reply ? [...parts, 'exact_rule'] : ['exact_rule'];
       if (modelWrote) modelText = 'exact_rule';
       reply = transactional && reply ? `${reply}\n\n${exactResponse}` : exactResponse;
@@ -1223,6 +1399,8 @@ export function processTurn(
     if (modelResponse && !grounded) traces.push('invalid_model_grounding_ignored');
     if (modelResponse?.text && claims(modelResponse.text))
       traces.push('unsafe_model_response_ignored');
+    else if (modelResponse?.text && assures(modelResponse.text))
+      traces.push('allergy_assurance_ignored');
     else if (modelResponse?.text && invents(modelResponse.text))
       traces.push('invented_link_ignored');
     if (modelResponse?.askFor && !validAskFor && !parts.includes('model'))
@@ -1253,11 +1431,18 @@ export function processTurn(
       parts = ['fallback'];
     };
     if (!reply && next.mode === 'bot') fallback();
-    if (traces.includes('handoff') && handoffMessage && !exactResponse) {
+    if (traces.includes('handoff') && handoffMessage && !exactResponse && !allergyQuestion) {
       reply = handoffMessage;
       parts = ['handoff_message'];
     }
-    if (company.bot?.published && reply && !matchedRule && !protectedReply && next.mode === 'bot') {
+    if (
+      company.bot?.published &&
+      reply &&
+      !matchedRule &&
+      !protectedReply &&
+      !allergyQuestion &&
+      next.mode === 'bot'
+    ) {
       const greeting = fillMenuLink(configuration.greeting ?? '', input.menuLink);
       if (/^(hi|hello|salam|سلام|ہیلو)$/iu.test(input.text.trim()) && greeting) {
         reply = greeting;
@@ -1276,6 +1461,7 @@ export function processTurn(
       next.mode === 'bot' &&
       !parts.includes('exact_rule') &&
       !parts.includes('approved_answer') &&
+      !allergyQuestion &&
       asksForMenu(input.text) &&
       !hasMenuLink(reply, input.menuLink) &&
       products.some((product) => product.companyId === company.id)
@@ -1518,7 +1704,10 @@ export function processTurn(
         if (!faq && !modelResponse && actions && !input.action && proposed) {
           if (unsafeClaim) {
             answerUnsafe = true;
-            if (!claims(proposed)) answerUnsafeTrace = 'invented_link_ignored';
+            if (!claims(proposed))
+              answerUnsafeTrace = assures(proposed)
+                ? 'allergy_assurance_ignored'
+                : 'invented_link_ignored';
           } else modelAnswer = proposed;
         }
         traces.push(faq ? 'approved_faq' : 'grounded_model_answer');
