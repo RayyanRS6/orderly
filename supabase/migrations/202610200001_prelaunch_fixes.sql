@@ -1,17 +1,19 @@
 -- Pre-launch fixes: staff email alerts reach the person who asked for them, erasing a customer
 -- finds every format of their number and clears their blocked-number label, automatic order
 -- notices no longer hide a customer waiting for staff, a linked phone that stopped working alerts
--- staff, the spam safety net is 1,500 AI replies an hour (100 per customer) with a warning at 80%,
--- a pipeline health check, a daily purge of old operational rows, and a ledger of applied
--- migrations.
+-- staff, a message that failed for good goes into its chat instead of holding back the
+-- customer's later ones, the spam safety net is 1,500 AI replies an hour (100 per customer) with
+-- a warning at 80%, a pipeline health check, a daily purge of old operational rows, and a ledger
+-- of applied migrations.
 -- Apply after 202610190003_menu_purge_schedule.sql and before deploying the backend that calls
 -- orderly_pipeline_health. The backend and dashboard running now keep working: every function
 -- keeps its signature and result shape (staff_attention only adds a 'whatsapp' count and items),
 -- and the only new column has a default.
 -- Safe to rerun while no later file redefines these functions. It replaces, starting from their
 -- latest bodies: alert_recipient (202609180001), erase_customer and run_retention (202609170001),
--- prune_orderly_cron_history (202609110001), and ai_limit_settings, has_overdue_attention and
--- staff_attention (202610180001). After it, 202610180001 refuses to run again.
+-- prune_orderly_cron_history (202609110001), and ai_limit_settings, has_overdue_attention,
+-- staff_attention and fail_exhausted_orderly_jobs (202610180001). After it, 202610180001 refuses
+-- to run again.
 set lock_timeout = '5s';
 
 -- Which migrations were applied, and when. Each migration from this one on records itself last.
@@ -230,6 +232,119 @@ language sql stable security definer set search_path=public as $$
     'items',coalesce((select jsonb_agg(jsonb_strip_nulls(to_jsonb(a))) from (select * from alerts order by "createdAt" desc,id limit 30) a),'[]'::jsonb));
 $$;
 
+-- Latest body from 202610180001_spam_protection.sql. Changed, as the worker does since these
+-- fixes: an incoming message that failed for good goes into its chat (unless it is there already)
+-- and the chat goes to staff, then the job ends as done with payload.failedPermanently, so the
+-- customer's later messages are no longer held back behind it. A message whose chat does not
+-- exist or is blocked keeps its job failed, as before.
+create or replace function public.fail_exhausted_orderly_jobs(p_limit integer default 20) returns integer
+language plpgsql security definer set search_path = '' as $$
+declare target record; failed_conversation_id text; trace_id text; affected integer := 0;
+  conversation_blocked boolean; message_id text; echo boolean; present boolean; released boolean;
+  failed_at timestamptz := now();
+  stamp text := to_char(failed_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"');
+  failure_message text := 'Worker stopped after the retry limit. Review this job before retrying.';
+begin
+  for target in
+    select j.* from public.jobs j
+    where j.attempts >= 5 and (
+      j.status = 'pending' or
+      (j.status = 'processing' and (j.lease_until is null or j.lease_until <= failed_at))
+    )
+    order by j.arrival_sequence
+    limit least(greatest(coalesce(p_limit, 20), 0), 20)
+    for update of j skip locked
+  loop
+    failed_conversation_id := null;
+    conversation_blocked := false;
+    released := false;
+    if target.data->>'kind' = 'incoming' then
+      if target.data->'payload' ? 'whatsappAddress' then
+        select c.id, jsonb_typeof(c.data->'blocked') = 'object' into failed_conversation_id, conversation_blocked
+          from public.conversations c
+          where c.company_id = target.company_id and c.channel = 'whatsapp'
+            and c.data->'whatsappAddress' = target.data->'payload'->'whatsappAddress'
+          for update of c;
+      else
+        select c.id, jsonb_typeof(c.data->'blocked') = 'object' into failed_conversation_id, conversation_blocked
+          from public.conversations c
+          where c.company_id = target.company_id and c.channel = 'whatsapp'
+            and c.customer_phone = target.data->'payload'->>'phone'
+          for update of c;
+      end if;
+      message_id := target.data->'payload'->>'messageId';
+      echo := coalesce(target.data->'payload'->>'echo', '') = 'true';
+      released := failed_conversation_id is not null and not coalesce(conversation_blocked, false)
+        and message_id is not null;
+      present := released and exists (select 1 from public.conversation_messages m
+        where m.company_id = target.company_id and m.conversation_id = failed_conversation_id and m.id = message_id);
+      -- Preserve every other field and advance both representations of version. A customer's
+      -- message also reopens the reply window, as when it is processed.
+      update public.conversations c set version = c.version + 1, updated_at = failed_at,
+        data = (c.data - 'botPausedAt' - 'limitPause') || jsonb_build_object('mode', 'human', 'version', c.version + 1,
+          'updatedAt', stamp)
+          || case when released and not present then jsonb_build_object('messages',
+              coalesce(c.data->'messages', '[]'::jsonb) || jsonb_build_array(jsonb_build_object('id', message_id,
+                'role', case when echo then 'staff' else 'customer' end,
+                'text', left(coalesce(target.data->'payload'->>'text', ''), 4000),
+                'createdAt', coalesce(target.data->'createdAt', to_jsonb(stamp)))))
+            else '{}'::jsonb end
+          || case when released and not present and not echo
+              and coalesce(c.data->>'lastInboundAt', '') < coalesce(target.data->>'createdAt', '')
+            then jsonb_build_object('lastInboundAt', target.data->'createdAt') else '{}'::jsonb end
+        where c.id = failed_conversation_id and c.company_id = target.company_id
+          and (c.data->>'mode' = 'bot' or c.data ? 'botPausedAt' or c.data ? 'limitPause' or (released and not present))
+          and jsonb_typeof(c.data->'blocked') is distinct from 'object';
+    elsif target.data->>'kind' = 'sheet_sync' then
+      -- A newer order revision/job or a successful write owns its own sync state.
+      update public.orders o set data = o.data || '{"syncStatus":"failed"}'::jsonb
+        where o.id = target.data->'payload'->>'orderId' and o.company_id = target.company_id
+          and o.updated_at <= target.created_at and o.data->>'syncStatus' = 'pending'
+          and not exists (
+            select 1 from public.jobs later where later.company_id = target.company_id
+              and later.data->>'kind' = 'sheet_sync'
+              and later.data->'payload'->>'orderId' = o.id
+              and later.arrival_sequence > target.arrival_sequence
+          );
+    elsif target.data->>'kind' = 'whatsapp_send'
+      and target.data->'payload'->>'messageId' is not null
+      and target.data->'payload'->>'externalId' is null then
+      -- Same 'job:' key as the worker's own note; a real receipt outranks it.
+      begin
+        perform public.record_delivery(target.company_id, 'job:' || target.id, 'failed',
+          target.data->'payload'->>'conversationId', target.data->'payload'->>'messageId',
+          'Not sent: sending stopped after repeated failures. Check the WhatsApp connection.');
+      exception when others then
+        -- A deleted conversation must not stop the remaining jobs from being finished.
+        raise warning 'Orderly could not record an unsent reply';
+      end;
+    end if;
+    if released then
+      update public.jobs set status = 'done', lease_until = null,
+        data = (data - 'leaseUntil') || jsonb_build_object('status', 'done',
+          'error', 'Worker stopped after the retry limit. The message is in the chat for staff.',
+          'payload', coalesce(data->'payload', '{}'::jsonb) || '{"failedPermanently":true}'::jsonb)
+        where id = target.id;
+    else
+      update public.jobs set status = 'failed', lease_until = null,
+        data = (data - 'leaseUntil') || jsonb_build_object('status', 'failed', 'error', failure_message)
+        where id = target.id;
+    end if;
+    trace_id := gen_random_uuid()::text;
+    insert into public.traces(id, company_id, conversation_id, created_at, data)
+      values (trace_id, target.company_id, failed_conversation_id, failed_at,
+        jsonb_strip_nulls(jsonb_build_object('id', trace_id, 'companyId', target.company_id,
+          'conversationId', failed_conversation_id, 'action', 'job.failed',
+          'detail', 'Job ' || target.id || case when released
+            then ' stopped after the retry limit. Its message is in the chat for staff.'
+            else ' stopped after the retry limit. Review saved work before retrying.' end,
+          'createdAt', stamp)));
+    affected := affected + 1;
+  end loop;
+  return affected;
+end;
+$$;
+
 -- Whether saved work is being processed, for an outside monitor (through the server only).
 -- 'stalled': a job due more than 3 minutes ago (or whose worker lease ran out 3 minutes ago) that
 -- recovery would still send, not counting messages held behind a customer's failed message (those
@@ -339,7 +454,8 @@ $$;
 do $$ declare f record; begin
   for f in select oid::regprocedure signature from pg_proc where pronamespace='public'::regnamespace
     and proname=any(array['alert_recipient','erase_customer','run_retention','awaits_staff_reply','ai_limit_settings',
-      'ai_hourly_warning','whatsapp_down','has_overdue_attention','staff_attention','orderly_pipeline_health','purge_orderly_operations',
+      'ai_hourly_warning','whatsapp_down','has_overdue_attention','staff_attention',
+      'fail_exhausted_orderly_jobs','orderly_pipeline_health','purge_orderly_operations',
       'prune_orderly_cron_history']) loop
     execute format('revoke all on function %s from public,anon,authenticated',f.signature);
     execute format('grant execute on function %s to service_role',f.signature);
