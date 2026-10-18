@@ -78,7 +78,7 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 
 Keep a copy in the password manager, separate from database backups. It cannot be rotated today: changing it makes every stored credential unreadable (see the [incident runbook](INCIDENT-RUNBOOK.md) §3). Nothing prefixed `VITE_` should contain a secret.
 
-Upload the non-reserved variables through Supabase Secrets or `supabase secrets set --env-file <filtered-ignored-file> --project-ref <project-ref>`. The backend then deploys from GitHub Actions (**Deploy Supabase backend**): on every push to `main` that touches more than docs, Markdown or `gateway/`, the `verify` job runs `npm ci`, `npm run typecheck`, `npm test` and `npm run test:edge-runtime`, and only if all pass does the `deploy` job (environment `production`, `main` only) deploy that same tested bundle and check `/api/health`. A run is good only when both jobs are green. Break-glass, when CI itself is broken during an incident:
+Upload the non-reserved variables through Supabase Secrets or `supabase secrets set --env-file <filtered-ignored-file> --project-ref <project-ref>`. The backend then deploys from GitHub Actions (**Deploy Supabase backend**): on every push to `main` that touches more than docs, Markdown or `gateway/`, the `verify` job runs `npm ci`, `npm run typecheck`, `npm test` and `npm run test:edge-runtime`, and only if all pass does the `deploy` job (environment `production`, `main` only) deploy that same tested bundle and check `/api/health`. A run is good only when both jobs are green. One run per branch runs at a time, and GitHub keeps only the newest waiting one: a newer push to `main` replaces an older waiting run (it holds the same changes and more), while a run started by hand on another branch has its own queue and never replaces a waiting `main` deploy. **Re-running an older run deploys that older commit over newer code**, so to redeploy, re-run only the newest run, or push. `npm test` also checks the wording of these docs, and docs-only pushes skip this workflow: if **Check WhatsApp gateway** turns red after such a push, fix it before the next backend push, or that push will not deploy. Break-glass, when CI itself is broken during an incident:
 
 ```powershell
 npx supabase login
@@ -127,7 +127,7 @@ Anthropic replies reuse the fixed instructions (safety rules, reply format and b
 
 Spam protection sits on top of the monthly allowance. The defaults, editable per restaurant in Bot settings: one person sending 25 messages in a minute pauses only that person for 15 minutes; 100 AI replies in an hour to one person pauses only that person for 1 hour; both resume automatically. Restaurant-wide, 1,500 AI replies an hour is the safety net, with an alert at 80%. Only live WhatsApp chats count, never Test your bot. A paused chat gets one short notice, waits under **Needs staff**, and goes back to the bot by itself, unless staff wrote in the meantime. Reached limits appear in the bell and in opt-in email alerts. Staff can block a number from its chat; its messages are then dropped before they are saved, on both the Meta and linked-phone routes.
 
-What customers are always told: at the start of a chat, that replies come from the restaurant’s automated assistant and that they can type "staff" for a person. Allergy questions get the owner’s approved allergy answer; without one, a fixed safety notice and a staff handoff. Orderly never asks for or handles card, bank or CNIC details: payment is cash, or a JazzCash, Easypaisa or bank transfer that staff check outside Orderly.
+What customers are always told: at the start of a chat, that replies come from the restaurant’s automated assistant and that they can type "staff" for a person. Allergy questions get the owner’s approved allergy answer; without one, a fixed safety notice and a staff handoff. Orderly never asks for card, bank or CNIC details and takes no payments. The order confirmation and the menu page tell customers to pay cash at pickup or on delivery; a restaurant that also takes JazzCash, Easypaisa or bank transfers arranges them with the customer, and its staff check them outside Orderly.
 
 ## 4. WhatsApp
 
@@ -135,6 +135,17 @@ WhatsApp uses internet messages between WhatsApp accounts, not carrier SMS. Both
 
 - **Official WhatsApp Business Platform (Cloud API), the supported route.** With the coexistence option the restaurant keeps using the WhatsApp Business app on the same number. Set up below.
 - **Linked phone (unofficial).** Orderly's gateway on Railway links to the restaurant's WhatsApp as an extra device. This is against WhatsApp's terms: WhatsApp can ban the whole number, temporarily or permanently, including the restaurant's own app, and messages are decrypted on the gateway. New pairings are possible only for businesses the platform admin has enabled; the owner must accept the risk notice, and that consent is recorded. Existing pairings keep working. Setup: [gateway/RAILWAY.md](../gateway/RAILWAY.md). Move linked restaurants to the official route with coexistence when they can.
+
+Only the platform admin enables a business for linked-phone pairing. Where the dashboard offers no switch for it, do it in the SQL editor while nobody is saving that business's settings; the block records the same audit entry as the admin route `PUT /api/admin/businesses/:companyId/linked-device`, and stops without changing anything if the id and slug do not match. To take approval back, use `false` and `admin.linked_device.revoked`.
+
+```sql
+do $$ begin
+  update public.companies set data = data || '{"linkedDeviceAllowed": true}'::jsonb
+    where id = '<company id>' and slug = '<slug>';
+  if not found then raise exception 'No business with this id and slug'; end if;
+  perform public.audit_event('<company id>', '<your auth user id>', 'admin.linked_device.allowed');
+end $$;
+```
 
 On the Cloud API, the company's number identifies the business. Customers see bot and staff API replies in that same chat. The dashboard also keeps an inbox.
 
@@ -223,30 +234,62 @@ drop table if exists public.menu_link_uses, public.menu_drafts, public.menu_link
 
 ## 7. Release order (pre-launch fixes, October 2026)
 
-SQL is applied by hand and the backend deploys on push, so the order matters. Do each step only after the previous one is confirmed:
+SQL is applied by hand, and a push to `main` deploys the backend and can rebuild the gateway, so the order matters. Do the whole release at a quiet hour (outside about 12–3 pm and 7–11 pm in Pakistan), push nothing else to `main` meanwhile, and do each step only after the previous one is confirmed:
 
 1. **Backup:** `npm run backup:db`, then encrypt and copy it off the laptop ([BACKUP-AND-RESTORE.md](BACKUP-AND-RESTORE.md) §3).
-2. **SQL part 1:** paste `supabase/migrations/202610200001_prelaunch_fixes.sql` into the SQL editor and run it. It keeps every function's signature and result shape and adds the rest, so the running backend keeps working.
+2. **SQL part 1:** paste `supabase/migrations/202610200001_prelaunch_fixes.sql` into the SQL editor and run it, at a quiet hour: each statement waits at most 5 seconds for a lock, so on a busy table it can stop with a lock timeout, and it is safe to run again a few minutes later. It keeps every function's signature and result shape and adds the rest, so the running backend keeps working. Check that `select name from public.orderly_schema_migrations;` lists it.
 3. **Secrets:** set `WORKER_LEASE_SECONDS=180` (Free plan) and, if you use a monitor, `HEALTH_CHECK_TOKEN`. Leave `ORDERLY_PAUSE_AUTOMATION` unset.
-4. **Backend:** push to `main` at a quiet time. In GitHub → Actions, wait until **Deploy Supabase backend** shows `verify` and `deploy` both green (the deploy job also checks `/api/health`).
-5. **Dashboard:** `npm run build:cloudflare` with `VITE_API_BASE_URL` set, then `npx wrangler deploy` (§2). Open the dashboard and reload it once. Open dashboards that were not reloaded get a "please reload the page" message on changed forms.
-6. **SQL part 2:** paste `supabase/migrations/202610200002_order_followups.sql` and run it. Its reminders are handled only by the new backend (an older worker would send an unknown job as a WhatsApp message), so never run it earlier.
-7. **Gateway:** only if gateway files changed, let Railway deploy it at a quiet hour (each gateway deploy reconnects WhatsApp briefly), then check that the Agent flow **Last heartbeat** is under about 75 seconds (the gateway reports once a minute; over 3 minutes means Orderly treats WhatsApp as offline).
+4. **Legal text:** replace every `[OWNER TO CONFIRM: …]` in `src/components/Legal.tsx` (the legal name and address of the business that runs Orderly, and the backup period: the 14 days of [BACKUP-AND-RESTORE.md](BACKUP-AND-RESTORE.md) §4) and commit it before the first push. The dashboard in step 7 publishes these pages, every menu page links to them and Meta reviews them, so `Select-String -Path src\components\Legal.tsx -Pattern 'OWNER TO CONFIRM'` must print nothing before you build it.
+5. **Backend, first push:** Railway rebuilds the gateway as soon as a pushed commit changes one of its watch paths ([gateway/RAILWAY.md](../gateway/RAILWAY.md) §2: `gateway/` except Markdown, `src/shared/whatsapp.ts`, `server/whatsapp/signing.ts` and `.dockerignore`), from the pushed commit and while the backend is still being tested. The gateway of this release must not run before its backend is live: its once-a-minute heartbeat needs the backend's 3-minute limit, and its clean-up of a stale linked session needs the backend's answers. So push in two parts. `<last-backend-sha>` is the last commit of the release's backend part (the release notes name it). First list what this push would bring to Railway:
 
-To roll back: frontend first (`npx wrangler rollback`), then revert and push the backend. SQL part 2 must be reverted (or left, if it is additive) before the older backend runs; check the file's own rollback notes.
+   ```powershell
+   git fetch origin
+   git log --oneline origin/main..<last-backend-sha> -- gateway src/shared/whatsapp.ts server/whatsapp/signing.ts .dockerignore ':!gateway/*.md'
+   ```
+
+   Each commit it lists rebuilds the gateway with this push. Go on only if it lists none, or only commits the release notes mark as safe ahead of the backend (such as a library update, or the change that gives the backend its longer heartbeat limit); otherwise pick an earlier `<last-backend-sha>`. Then push it:
+
+   ```powershell
+   git push origin <last-backend-sha>:main
+   ```
+
+   In GitHub → Actions, wait until **Deploy Supabase backend** for that commit shows `verify` and `deploy` both green (the deploy job also checks `/api/health`). That check shows only that a function answers: with `HEALTH_CHECK_TOKEN` set, also check that `/api/health/pipeline` answers 200 (§2); it answers 503 `unavailable` while SQL part 1 is missing.
+
+6. **Gateway, second push:** push the rest, `git push origin <release-sha>:main`, where `<release-sha>` is the release's last commit. Railway rebuilds the gateway, which reconnects WhatsApp briefly. If these commits also change files the backend uses (such as `src/shared/whatsapp.ts`), **Deploy Supabase backend** runs at the same time and the gateway could go live a few minutes before it: turn on Railway's **Wait for CI** before this push (§8, item 6), so Railway waits until every check on the commit is green, then wait for both jobs. Check that the Agent flow **Last heartbeat** is under about 75 seconds (the gateway reports once a minute; over 3 minutes means Orderly treats WhatsApp as offline).
+7. **Dashboard:** build from the commit now on `main` (`git status` is clean and `git rev-parse HEAD` equals `git rev-parse origin/main`): `npm run build:cloudflare` with `VITE_API_BASE_URL` set, then `npx wrangler deploy` (§2). Open the dashboard and reload it once. Open dashboards that were not reloaded get a "please reload the page" message on changed forms.
+8. **SQL part 2:** paste `supabase/migrations/202610200002_order_followups.sql` and run it. Its reminders are handled only by the new backend (an older worker would send an unknown job as a WhatsApp message), so never run it earlier.
+
+To roll back, go in reverse order:
+
+1. **SQL part 2**, if it was applied, while the new backend still runs. Stop the reminder schedule, remove its function and end the reminders already queued; the older worker would turn each one into a failed job and a staff alert:
+
+   ```sql
+   select cron.unschedule(jobid) from cron.job where jobname = 'orderly-order-followups';
+   drop function if exists public.queue_order_followups();
+   update public.jobs set status = 'done', lease_until = null,
+     data = (data - 'leaseUntil') || '{"status":"done","payload":{}}'::jsonb
+     where status = 'pending' and data->>'kind' = 'order_followup';
+   ```
+
+   Its `disconnect_integration` can stay: it only also ends waiting reminders.
+
+2. **Dashboard:** `npx wrangler rollback`.
+3. **Gateway**, if the second push went out: Railway → `gateway` → **Deployments** → the deployment before it → **Redeploy** (WhatsApp reconnects briefly).
+4. **Backend:** revert the release commits on `main` and push, then wait for both jobs. A revert that changes a gateway watch path rebuilds the gateway again, from the reverted code. In an emergency, re-running the last good **Deploy Supabase backend** run from before the release deploys that older code at once; still revert on `main`, or the next push brings the release back.
+5. **SQL part 1** can stay: the older backend keeps working with it. To remove it too, once the older backend is live, run `.local/backups/rollback-prelaunch-2026-10-20.sql` from the operator's laptop in the SQL editor. It puts back every function both parts replaced and removes what they added, part 2 included, and is safe to run again. It is not in Git, so keep a copy with the password manager or the encrypted backups.
 
 ## 8. Owner actions outside the code
 
-These are console settings that no commit can make. Do them before the first real restaurant goes live.
+Most of these are console settings that no commit can make; items 5 and 8 end in a commit of your own. Do them before the first real restaurant goes live.
 
 1. **Retired copies of secrets.** Vercel: open project `orderly`, note the environment variable **names** only, then delete the project, revoke Vercel's GitHub app access to `RayyanRS6/orderly` and any Vercel tokens. Old Cloudflare worker at `orderly.waytogalaxy999.workers.dev`: delete it in that Cloudflare account and remove that origin from Supabase Auth's Site URL and Redirect URLs. If the Vercel project held `SUPABASE_SERVICE_ROLE_KEY`, `CREDENTIAL_ENCRYPTION_KEY` or `CRON_SECRET` and anyone else could open it, rotate as in the [incident runbook](INCIDENT-RUNBOOK.md) §3 (the encryption key cannot be rotated; cut database access instead).
 2. **Stale Gemini server secret.** Delete the old `Orderly server` Gemini secret from Supabase (no code reads it). Before revoking the key in Google AI Studio, check no business pasted the same key as its own.
 3. **GitHub `production` environment.** Settings → Environments → `production`: allow deployments from `main` only, and move `SUPABASE_ACCESS_TOKEN` there as an environment secret (delete the repository-level copy). Environment secrets and branch rules on a private repository need GitHub Pro; on GitHub Free, keep yourself the only person with write access. A required reviewer is optional and adds a click to every deploy.
 4. **Deploy token.** Replace `SUPABASE_ACCESS_TOKEN` with a new token that has an expiry, ideally from a Supabase user that belongs only to the Orderly organisation, and revoke the old one (and the copy in `.local/deploy.env` if it is the same). Turn on 2FA for the Supabase, GitHub, Railway, Cloudflare and Meta accounts.
-5. **Action pinning.** The workflows use version tags (`actions/checkout@v4`, `actions/setup-node@v4`, `actions/upload-artifact@v4`, `actions/download-artifact@v4`). For stronger supply-chain protection, replace each tag with the full commit SHA of that release (copied from the action's GitHub releases page), keep the tag as a comment, and add `.github/dependabot.yml` with the `github-actions` ecosystem so the pins stay current.
-6. **Railway.** Keep `GATEWAY_MAX_SESSIONS=1`. "Wait for CI" is optional: it waits for every check, including the backend workflow.
+5. **Action pinning.** The workflows use version tags (`actions/checkout@v4`, `actions/setup-node@v4`, `actions/upload-artifact@v4`, `actions/download-artifact@v4`). For stronger supply-chain protection, replace each tag with the full commit SHA of that release (copied from the action's GitHub releases page), keep the tag as a comment, and add `.github/dependabot.yml` with the `github-actions` and `npm` ecosystems (root and `/gateway`) so the pins and packages stay current. Until then, run `npm audit --omit=dev --audit-level=high` and `npm audit --omit=dev --audit-level=high --prefix gateway` before each release.
+6. **Railway.** Keep `GATEWAY_MAX_SESSIONS=1`. **Wait for CI** makes Railway deploy the gateway only after every GitHub check on the commit is green, including the backend deploy, so a push can never put a new gateway in front of its backend; but any red check, even a docs wording test, then also holds a gateway fix back. Turn it on at least for a release push that changes both (§7, step 6).
 7. **Backups and escrow.** Set up the nightly backup ([BACKUP-AND-RESTORE.md](BACKUP-AND-RESTORE.md) §4), run the restore drill once (§5), and keep `CREDENTIAL_ENCRYPTION_KEY`, `MENU_LINK_SECRET`, `GATEWAY_ENCRYPTION_KEY`, the gateway shared secret, `META_APP_SECRET`, `META_VERIFY_TOKEN` and the database password in the password manager.
-8. **Legal text.** Fill in every `[OWNER TO CONFIRM: …]` in `src/components/Legal.tsx` (operator's legal name and address, backup period) and have a local lawyer review the policy, terms and [compliance notes](COMPLIANCE-NOTES-2026-10-18.md) before relying on them.
+8. **Legal text.** Fill in every `[OWNER TO CONFIRM: …]` in `src/components/Legal.tsx` (operator's legal name and address, backup period) before the dashboard deploy (§7, step 4), and have a local lawyer review the policy, terms and [compliance notes](COMPLIANCE-NOTES-2026-10-18.md) before relying on them.
 
 ## Activation test before a restaurant pilot
 

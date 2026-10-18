@@ -13,7 +13,7 @@ Updated 18 October 2026. Supabase stays on the **Free plan for the pilot**, and 
 | `data.sql`      | Every row, including `auth.users` (logins), memberships, orders, conversations, the encrypted credentials and the `cron.job` schedule.                |
 | `manifest.json` | Time, tool version, file sizes and SHA-256 checksums. No connection details.                                                                          |
 
-The backup contains customer names, numbers, addresses and chats, plus encrypted Meta, AI and Sheets credentials. Treat the folder like the customers' data itself: encrypt it, copy it off the laptop, and delete old plain copies (section 4).
+The backup contains customer names, numbers, addresses and chats, plus encrypted Meta, AI and Sheets credentials. From Auth it also keeps the sign-in records (`auth.audit_log_entries`, with the IP addresses of owners and staff) and authenticator apps (`auth.mfa_factors`). It leaves out the live sign-in sessions, refresh tokens and one-time codes (`auth.sessions`, `auth.refresh_tokens`, `auth.mfa_amr_claims`, `auth.mfa_challenges`, `auth.one_time_tokens`, `auth.flow_state`), so a leaked backup cannot sign anyone in and everyone signs in again after a restore. Backups made by an older copy of the script still hold them (the [incident runbook](INCIDENT-RUNBOOK.md) §3 says what to do if one leaks). Treat the folder like the customers' data itself: encrypt it, copy it off the laptop, and delete old plain copies (section 4).
 
 It does **not** hold: Supabase Vault secrets (the worker token; Vault is encrypted per project), Edge Function secrets, the Railway gateway volume (it has its own backups, `gateway/RAILWAY.md` §8) or anything in Google Sheets. `CREDENTIAL_ENCRYPTION_KEY` is needed to read the stored credentials after a restore: keep it in the password manager, separately from the backups.
 
@@ -33,12 +33,12 @@ It does **not** hold: Supabase Vault secrets (the worker token; Vault is encrypt
 4. **Make an encryption key pair for backups.** Install age (`winget install FiloSottile.age`), then:
 
    ```powershell
-   age-keygen -o $HOME\Desktop\orderly-backup-key.txt
+   age-keygen -o .local\orderly-backup-key.txt
    ```
 
-   Copy the line starting `# public key: age1…` into `.local\backup-recipient.txt` (only the `age1…` part). Move `orderly-backup-key.txt` into the password manager (as a secure note or attachment) and delete it from the Desktop. Only the public key stays on the laptop, so a stolen laptop cannot open the off-laptop copies.
+   Copy the line starting `# public key: age1…` into `.local\backup-recipient.txt` (only the `age1…` part). Move `orderly-backup-key.txt` into the password manager (as a secure note or attachment) and delete it from `.local`. Only the public key stays on the laptop, so a stolen laptop cannot open the off-laptop copies. Never create the key in the Desktop, Documents or a OneDrive or Google Drive folder: those can sync it next to the encrypted backups.
 
-5. **Pick an off-laptop folder**, for example a OneDrive or Google Drive sync folder, or a USB drive. Below it is `D:\OrderlyBackups`.
+5. **Pick an off-laptop folder**, for example a OneDrive or Google Drive sync folder, or a USB drive. Below it is `D:\OrderlyBackups`. A sync folder keeps a deleted file in its recycle bin for about 30 more days; the privacy policy says so.
 
 ## 3. Take a backup by hand (always before pasting SQL)
 
@@ -49,7 +49,17 @@ npm run backup:db
 Remove-Item Env:SUPABASE_DB_URL
 ```
 
-It prints one line per file and the folder name. It fails with a plain message (and removes the incomplete folder) when the connection string is wrong, pg_dump is missing or too old, or the dump lacks `public.companies` or `auth.users`. Then encrypt and copy it as in section 4, and only then paste the migration. Run any other SQL-editor work as read-only (`begin; set transaction read only; …; rollback;`).
+It prints one line per file and the folder name. It fails with a plain message (and removes the incomplete folder) when the connection string is wrong, pg_dump is missing or too old, or the dump lacks `public.companies` or `auth.users`. Then encrypt it and copy it off the laptop (the same commands the nightly task in section 4 runs; change the folder path), and only then paste the migration:
+
+```powershell
+$latest = Get-ChildItem '.local\backups' -Directory -Filter 'db-*' | Sort-Object Name | Select-Object -Last 1
+$tarball = Join-Path $env:TEMP "$($latest.Name).tar.gz"
+tar -czf $tarball -C $latest.FullName .
+age -R '.local\backup-recipient.txt' -o (Join-Path 'D:\OrderlyBackups' "$($latest.Name).tar.gz.age") $tarball
+Remove-Item $tarball
+```
+
+Run any other SQL-editor work as read-only (`begin; set transaction read only; …; rollback;`).
 
 ## 4. Nightly backup with Windows Task Scheduler
 
@@ -84,7 +94,7 @@ Register-ScheduledTask -TaskName 'Orderly nightly database backup' -Action $acti
 
 `-StartWhenAvailable` runs a missed backup when the laptop is next on. The task runs as you, which DPAPI needs. Check it the next morning: Task Scheduler → **Orderly nightly database backup** → Last Run Result `0x0`, and a new `.age` file in the off-laptop folder. If a backup is older than about 26 hours, find out why that day.
 
-The 14 days of encrypted copies must match the backup period stated in the privacy policy (`src/components/Legal.tsx`, "Orderly's encrypted database backups are kept for … days"). Change both together.
+The privacy policy (`src/components/Legal.tsx`, `BACKUP_DAYS` and "How long we keep it") states what this task does: 14 days of encrypted copies, only the two newest plain copies on the laptop (including any taken by hand), and up to 30 more days in a sync folder's recycle bin. Change both together. Old copies are removed only when this task runs: if it stops running (Last Run Result not `0x0`), delete plain folders older than two days from `.local\backups` and `.age` files older than 14 days by hand until it is fixed.
 
 ## 5. Restore drill (do it once now, then after big schema changes)
 

@@ -2,7 +2,7 @@
 
 These notes record the outside rules that were checked on **18 October 2026** for the pilot, how Orderly meets each one and what is still open. They are an engineer's reading of the sources, **not legal advice**. Items marked **Lawyer** need a Pakistani lawyer before launch decisions rely on them.
 
-Scope, from the owner's decisions of 18 October 2026: restaurants operate in **Punjab and Islamabad**; each restaurant is the **data controller** and Orderly processes data on its behalf; payments are cash or manual JazzCash, Easypaisa and bank transfers checked by staff outside Orderly, so Orderly never handles payment data; both WhatsApp routes (official Cloud API and the linked phone) are in use.
+Scope, from the owner's decisions of 18 October 2026: restaurants operate in **Punjab and Islamabad**; each restaurant is the **data controller** and Orderly processes data on its behalf; payments are cash or manual JazzCash, Easypaisa and bank transfers checked by staff outside Orderly, so Orderly takes no payments and asks for no payment details (the order confirmation and the menu page tell customers to pay cash at pickup or on delivery; a transfer is arranged with the restaurant); both WhatsApp routes (official Cloud API and the linked phone) are in use.
 
 "Orderly today" describes the software with the pre-launch fixes of 18 October 2026 deployed (branch `audit/prelaunch-2026-10-18`: AI notice at the start of each chat, the "staff" keyword, OpenAI `store: false`, the Gemini billing confirmation, admin-enabled linked-phone pairing with recorded consent). Until they are live, those points are not yet true in production.
 
@@ -31,7 +31,7 @@ Certainty: **high** = read in the primary source; **medium** = secondary sources
 - **Rule:** automated experiences need "prompt, clear, and direct escalation paths" to a person; businesses must not ask people to share full payment card numbers, financial account numbers or national ID card numbers.
 - **Source:** <https://whatsappbusiness.com/policy/>, last updated 23 September 2026. Checked 2026-10-18.
 - **Certainty:** high.
-- **Orderly today:** customers are told at the start of a chat that replies are automated and that typing "staff" reaches a person; staff can take over any chat; the Cloud API review message has a "Talk to staff" button. Orderly never asks for or stores card, bank or CNIC numbers; the Terms forbid businesses from asking for them in chat.
+- **Orderly today:** customers are told at the start of a chat that replies are automated and that typing "staff" reaches a person; staff can take over any chat; the Cloud API review message has a "Talk to staff" button. Orderly never asks for card, bank or CNIC numbers, and the Terms forbid businesses from asking for them in chat. A number a customer types anyway is kept with the chat until it is deleted; the privacy policy asks customers not to send them.
 - **Open:** a fixed instruction in the AI prompt never to ask for card, bank or CNIC numbers (owner-written instructions are free text today).
 
 ### 1.4 Meta Commerce Policies
@@ -57,8 +57,8 @@ Certainty: **high** = read in the primary source; **medium** = secondary sources
 - **Rule:** consumer-facing chatbots "must disclose to users that they are interacting with AI rather than a human", "at a minimum at the beginning of each chat session".
 - **Source:** <https://www.anthropic.com/legal/archive/22742366-2ef0-4c7a-a833-6523f10d3944> (effective 15 September 2025); the version effective 12 November 2026 keeps it: <https://www.anthropic.com/legal/aup>. Checked 2026-10-18.
 - **Certainty:** high.
-- **Orderly today:** a fixed, localised notice that the owner cannot remove opens each chat session, and the privacy policy says replies are automated.
-- **Open:** OpenAI's and Google's own disclosure rules were not verified; Orderly shows the notice for every provider anyway.
+- **Orderly today:** a fixed, localised notice that the owner cannot remove opens each chat session, and the privacy policy says replies are written by an automated assistant that uses AI. The notice itself says "<Restaurant>'s automated assistant" (Urdu "خودکار اسسٹنٹ", Roman Urdu "automated assistant") and does not use the word AI.
+- **Open:** consider wording the notice "AI assistant" to match the rule's words (`src/domain/disclosure.ts`). OpenAI's and Google's own disclosure rules were not verified; Orderly shows the notice for every provider anyway.
 
 ### 2.2 Anthropic and OpenAI API data use
 
@@ -127,21 +127,22 @@ Each restaurant is the controller; Orderly is its processor. **Lawyer:** a short
 ### 4.6 Cash on delivery and transfers
 
 - No State Bank rule was found that restricts restaurant cash on delivery. The FBR PKR 200,000 cash cap is an income-tax deductibility rule, and the Finance Act 2025 cash-on-delivery withholding falls on couriers and payment intermediaries, not on Orderly. Source: KPMG brief <https://assets.kpmg.com/content/dam/kpmg/pk/pdf/2025/07/A-Brief-on-Finance-Act-2025.pdf>. Certainty: medium.
-- Orderly never takes payments or payment details; JazzCash, Easypaisa and bank transfers are checked by restaurant staff outside Orderly.
+- Orderly takes no payments and asks for no payment details. The order confirmation and the menu page tell customers to pay cash at pickup or on delivery; a JazzCash, Easypaisa or bank transfer is arranged with the restaurant and checked by its staff outside Orderly.
 
 ## 5. Checked and found in order (18 October 2026)
 
 - Meta webhooks are verified with HMAC-SHA256 over the raw body with a timing-safe compare; unknown numbers still get 200 so Meta does not retry.
 - The 24-hour reply window is enforced; outside it only the utility template is used.
 - Blocked numbers are dropped before anything is saved; staff takeover, bot pause and blocks stop queued automatic replies.
-- Product photos and location pins are never sent to the AI or stored; the AI sees the cart's name and address only as "[collected]", though recent chat messages are sent as written.
-- Staff alert emails (Resend) carry no customer data; stored credentials use AES-256-GCM; no customer data appears in server or gateway logs.
+- Photos, videos, documents and voice notes are never downloaded, stored or sent to the AI, and menu product photos are not sent to it either. A caption and a shared location become chat text: a location is its place name, address and coordinates. That text is stored with the chat and sent to the business's AI provider like any customer message, now and in the recent history of later turns, as the privacy policy says. Only the cart's own name and address fields reach the AI as "[collected]"; an address in a shared location or typed in the chat reaches it as written.
+- Staff alert emails (Resend) carry no customer data; stored credentials use AES-256-GCM. Server and gateway logs are built to carry no customer data (a failure logs codes and at most 300 characters of scrubbed error text); still to be confirmed in the live function and Railway logs after deploy.
 - The Anthropic prompt cache covers only the fixed business instructions, for 5 minutes.
+- A daily purge (`purge_orderly_operations`, 05:41 in Pakistan) deletes activity logs (traces) and delivery receipts never linked to a chat after 90 days, and clears the contents of finished jobs after 14 days. A job that failed for good keeps its contents (for example a reply's text and the customer's number) until staff retry it or the customer's details are erased. The privacy policy says the same.
 
 ## 6. Questions for a local lawyer
 
 1. The WhatsApp terms and the linked phone: the operator's exposure, and wording for written, informed consent from each restaurant.
-2. Meta platform terms: Solution Provider status of the AI providers, Google Sheets and Resend (section 4.1(b)); the incident-reporting duty to Meta.
+2. Meta platform terms: Solution Provider status of the AI providers, Google Sheets and Resend (section 4.1(b)), given that the AI provider receives customers' typed addresses and the place name, address and coordinates of shared locations; the incident-reporting duty to Meta.
 3. The Personal Data Protection Bill: status, and what to prepare before it passes. It is not law today.
 4. PECA: whether Orderly is a service provider; traffic-data retention; the 2025 amendment.
 5. Punjab Revenue Authority and Islamabad (FBR) rules on showing sales tax on order totals and fiscal invoices for WhatsApp and menu-page orders; Finance Act 2025 digital-order rules.

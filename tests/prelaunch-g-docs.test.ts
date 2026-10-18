@@ -42,12 +42,13 @@ describe('setup and deployment docs', () => {
   it('documents the release order, new settings and owner actions', () => {
     const deployment = read('docs/DEPLOYMENT.md');
     const release = deployment.slice(deployment.indexOf('## 7. Release order'));
+    // The gateway goes right after its backend, in a second push, before the dashboard.
     const steps = [
       '202610200001',
-      '**Backend:**',
+      '**Backend, first push:**',
+      '**Gateway, second push:**',
       '**Dashboard:**',
       '202610200002',
-      '**Gateway:**',
     ];
     const at = steps.map((step) => release.indexOf(step));
     expect(at.every((i) => i > 0)).toBe(true);

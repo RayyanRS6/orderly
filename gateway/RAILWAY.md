@@ -53,8 +53,12 @@ Open the `gateway` service → **Settings** and set:
 | Deploy → Replicas                  | **1**                                                                                                                  | Never more than one instance per volume.                                                                                      |
 | Deploy → Resource Limits → Memory  | about **1 GB** (if your plan shows it)                                                                                 | Caps cost; one number needs far less.                                                                                         |
 
-Optional: **Wait for CI** makes Railway wait for GitHub checks before deploying. It waits for
-_every_ check on the commit, so a failing backend workflow also blocks a gateway deploy.
+A push to `main` with a commit that changes a watch path rebuilds the gateway at once, while the
+backend workflow may still be testing the same push. When a release changes both, push the
+backend part first ([DEPLOYMENT.md §7](../docs/DEPLOYMENT.md), steps 5 and 6). **Wait for CI**
+makes Railway wait for GitHub checks before deploying. It waits for _every_ check on the commit,
+so the gateway never goes live before the backend from the same push, but a failing backend
+workflow (or docs test) also blocks a gateway deploy. Turn it on at least for such a release push.
 
 Project-level: **Project Settings → Environments → PR Environments: Off.** A pull-request
 environment would start a second gateway with the same secrets.
@@ -190,9 +194,10 @@ sessions disconnected since. Keep backup retention short.
 ## 10. Pair the restaurant number
 
 Only a business the Orderly admin has enabled for linked-phone pairing can pair (`PUT
-/api/admin/businesses/:companyId/linked-device` with `{"allowed": true}`; a business already on
-a linked phone keeps it). In Orderly → **Integrations**, go through the risk notice with the
-restaurant owner: this unofficial method is against WhatsApp's terms, WhatsApp can ban the
+/api/admin/businesses/:companyId/linked-device` with `{"allowed": true}`, or the audited SQL in
+[DEPLOYMENT.md §4](../docs/DEPLOYMENT.md); a business already on a linked phone keeps it).
+In Orderly → **Integrations**, go through the risk notice with the restaurant owner: this
+unofficial method is against WhatsApp's terms, WhatsApp can ban the
 whole number temporarily or permanently, including the restaurant's own WhatsApp app, and
 messages are decrypted on Orderly's gateway on Railway. The owner ticks the consent box, and
 Orderly records who accepted which version of the notice, and when. Then start QR or
