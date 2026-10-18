@@ -83,6 +83,17 @@ const DATA_EXCLUDED = [
   '_realtime',
   '_supavisor',
 ];
+// Live sign-in sessions, refresh tokens and one-time codes stay out of the data, so a leaked
+// backup cannot sign anyone in. Accounts, sign-in records and authenticator apps are kept;
+// after a restore everyone signs in again.
+export const AUTH_SESSION_TABLES = [
+  'auth.sessions',
+  'auth.refresh_tokens',
+  'auth.mfa_amr_claims',
+  'auth.mfa_challenges',
+  'auth.one_time_tokens',
+  'auth.flow_state',
+];
 const RESERVED_ROLES = [
   'anon',
   'authenticated',
@@ -155,7 +166,7 @@ export const FILTERS = {
   data: [restrict],
 };
 
-const STEPS = [
+export const STEPS = [
   {
     kind: 'roles',
     file: 'roles.sql',
@@ -204,10 +215,15 @@ const STEPS = [
       'storage.migrations',
       '--exclude-table',
       'supabase_functions.migrations',
+      ...AUTH_SESSION_TABLES.flatMap((table) => ['--exclude-table', table]),
       '--schema',
       '*',
     ],
-    cli: ['--data-only', '--use-copy'],
+    cli: [
+      '--data-only',
+      '--use-copy',
+      ...AUTH_SESSION_TABLES.flatMap((table) => ['--exclude', table]),
+    ],
     before: 'SET session_replication_role = replica;\n\n',
     after: 'RESET ALL;\n',
     expect: ['COPY "public"."companies"', 'COPY "auth"."users"'],
