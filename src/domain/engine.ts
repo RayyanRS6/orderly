@@ -819,38 +819,37 @@ function contains(text: string, phrase: string): boolean {
 // Roman Urdu, Urdu and English are tied to the order (or payment) as their subject, so "aap ka
 // naam save ho gaya hai" or "ہم کل ۱۲ بجے کھلیں گے" (کل is also tomorrow) pass. Prices need a
 // currency next to the digits ("450/-", "450 rupay", "۴۵۰ روپے", "500 PKR"). After an order is
-// submitted, saying it was received is true, so that one claim is allowed then.
-const OUTCOME_VERBS =
-  'confirm|place|book|submit|accept|approve|receive|deliver|dispatch|rawana|complete';
-const RECEIVED_VERBS = 'receive';
+// submitted, saying it was placed, submitted or received is true, so those claims are allowed
+// then; confirmed, booked, accepted or delivered never are. A polite request ("کنفرم کر دیں",
+// "تصدیق کر دیجیے", "confirm kar di jiye") is not a claim.
 const outcomeClaim = (verbs: string) =>
   new RegExp(
-    `\\b(?:order|payment|adaigi)\\b[^.!?\\n]{0,30}?\\b(?:${verbs})\\w*\\s*(?:ho|hu|kar|kr)\\s*(?:gaya|gayi|gya|gyi|gai|gaye|ge|diya|diye|dia|di|liya|liye|lia|li|chuka|chuki|chuke)\\b`,
+    `\\b(?:order|payment|adaigi)\\b[^.!?\\n]{0,30}?\\b(?:${verbs})\\w*\\s*(?:ho|hu|kar|kr)\\s*(?:gaya|gayi|gya|gyi|gai|gaye|ge|diya|diye|dia|di|liya|liye|lia|li|chuka|chuki|chuke)\\b(?!\\s*(?:jiye|jiyega|jiyen|jie|jiey|jye|jiay)\\b)`,
     'u',
   );
-const ROMAN_OUTCOME = outcomeClaim(OUTCOME_VERBS.replace(`|${RECEIVED_VERBS}`, ''));
-const ROMAN_RECEIVED = outcomeClaim(RECEIVED_VERBS);
-const URDU_DONE = '(?:ہو|کر)\\s?(?:گیا|گئی|گئے|دیا|دی|دیے|لیا|لی|چکا|چکی|چکے)';
+const ROMAN_OUTCOME = outcomeClaim('confirm|book|accept|approve|deliver|dispatch|rawana|complete');
+const ROMAN_PLACED = outcomeClaim('place|submit|receive');
+// Past forms only: "کر دیا", "ہو گیا", not "کر دیں", "کر دیجیے" or "کر لیں".
+const URDU_DONE = '(?:ہو|کر)\\s?(?:گیا|گئی|گئے|دیا|دی|دیے|لیا|لی|چکا|چکی|چکے)(?![\\p{L}\\p{M}])';
 const URDU_OUTCOME = new RegExp(
   `(?:آرڈر|ادائیگی)[^۔.!?؟\\n]{0,30}?(?:کنفرم|بک|منظور|روانہ|تصدیق|ڈیلیور|قبول)[^۔.!?؟\\n]{0,10}?${URDU_DONE}`,
   'u',
 );
-const URDU_RECEIVED = new RegExp(
-  `(?:آرڈر|ادائیگی)[^۔.!?؟\\n]{0,30}?(?:موصول|وصول)[^۔.!?؟\\n]{0,10}?${URDU_DONE}`,
+const URDU_PLACED = new RegExp(
+  `(?:آرڈر|ادائیگی)[^۔.!?؟\\n]{0,30}?(?:موصول|وصول|پلیس|سبمٹ)[^۔.!?؟\\n]{0,10}?${URDU_DONE}`,
   'u',
 );
 const ENGLISH_STATUS =
   /\b(?:order|payment)\b[^.!?\n]{0,30}?\b(?:on (?:its|the) way|being prepared|out for delivery)\b/u;
 const ENGLISH_RECEIVED = /\b(?:order|payment)\b[^.!?\n]{0,30}?\breceived\b/u;
+const ENGLISH_PRICE =
+  /\b(?:rs\.?|pkr)\s*[\d۰-۹٠-٩]|\b(?:total|price|cost)\s*(?:(?:is|of|:|=)\s*)?[\d۰-۹٠-٩]/iu;
+const ENGLISH_OUTCOME = /\b(?:accepted|approved|confirmed|delivered|dispatched|completed)\b/iu;
+const ENGLISH_PLACED = /\b(?:submitted|placed)\b/iu;
 const RUPEE_PRICE =
   /\d[\d,]*(?:\.\d+)?\s*(?:\/-|(?:rupees?|rupay|rupaye|rupaiye|rupe|rupiya|rs|pkr)\b|روپے|روپیہ|روپئے|روپیے)|(?:\b(?:rupees?|rupay|rupaye)|روپے)\s*\d|(?:\b(?:qeemat|keemat|kimat)\b|قیمت|ٹوٹل)\s*(?:[:=]\s*)?\d/u;
 function unsafeModelText(text: string, submitted = false): boolean {
-  if (
-    /(?:\b(?:rs\.?|pkr)\s*[\d۰-۹٠-٩]|\b(?:total|price|cost)\s*(?:(?:is|of|:|=)\s*)?[\d۰-۹٠-٩]|\b(?:order\s+)?(?:accepted|approved|submitted|placed|confirmed|delivered|dispatched|completed)\b)/iu.test(
-      text,
-    )
-  )
-    return true;
+  if (ENGLISH_PRICE.test(text) || ENGLISH_OUTCOME.test(text)) return true;
   const value = normalize(text);
   return (
     RUPEE_PRICE.test(value) ||
@@ -858,7 +857,10 @@ function unsafeModelText(text: string, submitted = false): boolean {
     URDU_OUTCOME.test(value) ||
     ENGLISH_STATUS.test(value) ||
     (!submitted &&
-      (ROMAN_RECEIVED.test(value) || URDU_RECEIVED.test(value) || ENGLISH_RECEIVED.test(value)))
+      (ENGLISH_PLACED.test(text) ||
+        ROMAN_PLACED.test(value) ||
+        URDU_PLACED.test(value) ||
+        ENGLISH_RECEIVED.test(value)))
   );
 }
 
