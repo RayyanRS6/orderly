@@ -1,6 +1,13 @@
 -- Every business answers with its own provider API key; Orderly no longer funds a shared
 -- one. Apply after 202610160001 and before deploying the code that stops reading keyMode.
--- Safe to rerun.
+-- Safe to rerun only until 202610180001_spam_protection.sql is applied; after that it refuses to
+-- run, so a replay of the folder cannot pause the businesses saved since (they carry no label).
+do $$
+begin
+  if to_regprocedure('public.reserve_ai_call(text,text,numeric,timestamptz,text,timestamptz)') is not null then
+    raise exception '202610170001_business_keys_only.sql has already done its work (202610180001_spam_protection.sql is applied); do not re-run it';
+  end if;
+end $$;
 
 -- Only on the first run (the shared-budget table still exists): once the new code runs it
 -- drops the label, and an unlabelled business must not be taken for an Orderly-funded one.

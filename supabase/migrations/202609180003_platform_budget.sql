@@ -1,3 +1,13 @@
+-- Superseded by 202610170001_business_keys_only.sql, which removed this shared budget. Once the
+-- later spam protection (202610180001) is installed this file refuses to run: re-creating the
+-- table would make a rerun of 202610170001 switch off every business saved since. A new
+-- installation, applying the files in order, runs it as before.
+do $$
+begin
+  if to_regprocedure('public.reserve_ai_call(text,text,numeric,timestamptz,text,timestamptz)') is not null then
+    raise exception '202609180003_platform_budget.sql is superseded by 202610170001_business_keys_only.sql; do not re-run it';
+  end if;
+end $$;
 create table public.platform_limits(id boolean primary key default true check(id),monthly_budget_usd numeric not null default 100 check(monthly_budget_usd between 0 and 100000));
 insert into public.platform_limits(id) values(true);
 alter table public.platform_limits enable row level security;

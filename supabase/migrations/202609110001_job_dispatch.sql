@@ -1,4 +1,12 @@
--- Apply after the initial two migrations; safe to rerun independently.
+-- Apply after the initial two migrations. Superseded: 202610160001_delivery_followups.sql (and
+-- later files) replaced its job functions, so once those are installed it refuses to run rather
+-- than put back the phone-only versions. A new installation, applying the files in order, runs it.
+do $$
+begin
+  if exists(select 1 from pg_proc where oid = to_regprocedure('public.dispatch_orderly_job(text)') and prosrc like '%streamKey%') then
+    raise exception '202609110001_job_dispatch.sql is superseded by 202610160001_delivery_followups.sql; do not re-run it';
+  end if;
+end $$;
 -- Supabase documents pg_cron in pg_catalog; pg_net creates its own net schema.
 create extension if not exists pg_cron with schema pg_catalog;
 create extension if not exists pg_net;

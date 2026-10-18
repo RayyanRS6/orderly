@@ -1,6 +1,14 @@
--- Follow-ups from the WhatsApp delivery reviews. Apply after 202609200001; safe to rerun.
--- Replaces three job functions from 202609110001 with the same bodies apart from the
+-- Follow-ups from the WhatsApp delivery reviews. Apply after 202609200001. Safe to rerun only
+-- until 202610180001_spam_protection.sql is applied: that file replaced this one's
+-- fail_exhausted_orderly_jobs, so after it this file refuses to run rather than put back the older
+-- version. Replaces three job functions from 202609110001 with the same bodies apart from the
 -- marked changes, and adds one RPC.
+do $$
+begin
+  if exists(select 1 from pg_proc where oid = to_regprocedure('public.fail_exhausted_orderly_jobs(integer)') and prosrc like '%limitPause%') then
+    raise exception '202610160001_delivery_followups.sql is superseded by 202610180001_spam_protection.sql; do not re-run it';
+  end if;
+end $$;
 
 -- Customer streams use the gateway's stream key, as insert_job, list_due_jobs and
 -- claim_job already do (202609200001). A privacy-protected customer's first message can

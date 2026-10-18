@@ -1,6 +1,6 @@
 import { beforeAll, beforeEach, afterAll, describe, expect, it } from 'vitest';
 import { PGlite } from '@electric-sql/pglite';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { seedCompanies, seedProducts } from '../src/shared/seed';
 import { createConversation, processTurn } from '../src/domain/engine';
@@ -71,26 +71,62 @@ async function commit(
   return rpc('commit_turn', [company.id, conversation, version, order ?? null, jobs, null]);
 }
 
+// Every migration, in the order production applied them by hand.
+const chain = [
+  '202609090001_initial.sql',
+  '202609090002_order_transitions.sql',
+  '202609110001_job_dispatch.sql',
+  '202609160001_launch_hardening.sql',
+  '202609160002_message_delivery.sql',
+  '202609170001_retention.sql',
+  '202609170002_retention_schedule.sql',
+  '202609170003_staff_attention.sql',
+  '202609180001_email_alerts.sql',
+  '202609180002_email_alert_schedule.sql',
+  '202609180003_platform_budget.sql',
+  '202609200001_whatsapp_gateway.sql',
+  '202610160001_delivery_followups.sql',
+  '202610170001_business_keys_only.sql',
+  '202610180001_spam_protection.sql',
+  '202610190001_menu_page.sql',
+  '202610190002_menu_ordering.sql',
+  '202610190003_menu_purge_schedule.sql',
+];
+// PGlite cannot install pg_cron, pg_net or Vault: their schemas are stubbed and the extension
+// lines skipped, as in scheduler.test.ts.
+const migrationSql = (file: string) =>
+  readFileSync(`supabase/migrations/${file}`, 'utf8').replace(/^create extension [^;]+;\r?$/gm, '');
+
 beforeAll(async () => {
   await db.exec(
     `create role anon; create role authenticated; create role service_role bypassrls; create schema auth; create table auth.users(id uuid primary key,email text,email_confirmed_at timestamptz); create table auth.mfa_factors(id uuid primary key,user_id uuid,status text); create function auth.jwt() returns jsonb language sql stable as $$ select coalesce(nullif(current_setting('request.jwt.claims',true),'')::jsonb,'{"aal":"aal1"}') $$; create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid $$; grant usage on schema auth to authenticated,service_role; grant execute on function auth.uid() to authenticated,service_role;`,
   );
-  for (const migration of [
-    '202609090001_initial.sql',
-    '202609090002_order_transitions.sql',
-    '202609160001_launch_hardening.sql',
-    '202609160002_message_delivery.sql',
-    '202609170001_retention.sql',
-    '202609170003_staff_attention.sql',
-    '202609180001_email_alerts.sql',
-    '202609180003_platform_budget.sql',
-    '202609200001_whatsapp_gateway.sql',
-    '202610170001_business_keys_only.sql',
-    '202610180001_spam_protection.sql',
-    '202610190001_menu_page.sql',
-    '202610190002_menu_ordering.sql',
-  ])
-    await db.exec(readFileSync(`supabase/migrations/${migration}`, 'utf8'));
+  await db.exec(`
+    create schema vault;
+    create table vault.secrets(id uuid primary key default gen_random_uuid(), name text unique, secret text);
+    create view vault.decrypted_secrets as select id, name, secret as decrypted_secret from vault.secrets;
+    create function vault.create_secret(new_secret text, new_name text default null, new_description text default '') returns uuid language sql as $$
+      insert into vault.secrets(name,secret) values(new_name,new_secret) returning id;
+    $$;
+    create function vault.update_secret(secret_id uuid, new_secret text) returns void language sql as $$
+      update vault.secrets set secret=new_secret where id=secret_id;
+    $$;
+    create schema net;
+    create table net.http_request_queue(id bigserial primary key, url text, body jsonb, headers jsonb, timeout_milliseconds integer);
+    create table net._http_response(id bigint, status_code integer, timed_out boolean, error_msg text, created timestamptz default now());
+    create function net.http_post(url text, body jsonb default '{}', params jsonb default '{}', headers jsonb default '{}', timeout_milliseconds integer default 2000)
+    returns bigint language sql as $$
+      insert into net.http_request_queue(url,body,headers,timeout_milliseconds) values(url,body,headers,timeout_milliseconds) returning id;
+    $$;
+    create schema cron;
+    create table cron.job(jobid bigserial primary key, jobname text unique, schedule text, command text, active boolean default true);
+    create table cron.job_run_details(runid bigserial primary key, jobid bigint, status text, end_time timestamptz);
+    create function cron.schedule(job_name text, job_schedule text, job_command text) returns bigint language sql as $$
+      insert into cron.job(jobname,schedule,command) values(job_name,job_schedule,job_command)
+        on conflict(jobname) do update set schedule=excluded.schedule,command=excluded.command returning jobid;
+    $$;
+  `);
+  for (const migration of chain) await db.exec(migrationSql(migration));
   await db.query('insert into auth.users(id) values($1),($2)', [ownerId, outsiderId]);
 }, 30000);
 beforeEach(async () => {
@@ -218,15 +254,33 @@ describe('opt-in retention and staff attention', () => {
     for (const c of [shared, unlabelled, demo, own])
       await db.query('insert into companies(id,slug,data) values($1,$2,$3)', [c.id, c.slug, c]);
     const script = readFileSync('supabase/migrations/202610170001_business_keys_only.sql', 'utf8');
-    // As before the first run, when the shared-budget table still existed.
+    // As before the first run, when the shared-budget table still existed and the spam
+    // protection (202610180001), which makes this file refuse to run, was not applied yet.
+    const reserveAiCall = 'public.reserve_ai_call(text,text,numeric,timestamptz,text,timestamptz)';
+    await db.exec(`alter function ${reserveAiCall} rename to reserve_ai_call_later`);
+    try {
+      await db.exec('create table public.platform_limits(id boolean primary key default true)');
+      await db.exec(script);
+      // The new code then saves businesses without the label; a rerun must leave them alone.
+      await db.query(
+        "update companies set data=jsonb_set(data,'{ai}',(data->'ai')-'keyMode') where id=$1",
+        [own.id],
+      );
+      await db.exec(script);
+    } finally {
+      await db.exec(
+        `alter function public.reserve_ai_call_later(text,text,numeric,timestamptz,text,timestamptz) rename to reserve_ai_call`,
+      );
+    }
+    expect(
+      (await db.query<{ data: Company }>('select data from companies where id=$1', [own.id]))
+        .rows[0]!.data.botEnabled,
+    ).toBe(true);
+    // Once the spam protection is applied, even a shared-budget table brought back by a replay
+    // cannot make it pause the businesses saved since: the file refuses to run.
     await db.exec('create table public.platform_limits(id boolean primary key default true)');
-    await db.exec(script);
-    // The new code then saves businesses without the label; a rerun must leave them alone.
-    await db.query(
-      "update companies set data=jsonb_set(data,'{ai}',(data->'ai')-'keyMode') where id=$1",
-      [own.id],
-    );
-    await db.exec(script);
+    await expect(db.exec(script)).rejects.toThrow('do not re-run it');
+    await db.exec('drop table public.platform_limits');
     expect(
       (await db.query<{ data: Company }>('select data from companies where id=$1', [own.id]))
         .rows[0]!.data.botEnabled,
@@ -733,6 +787,9 @@ describe('people management on the existing schema', () => {
 });
 
 describe('real Postgres migrations and transactional invariants', () => {
+  it('runs every migration file, in filename order', () => {
+    expect(chain).toEqual(readdirSync('supabase/migrations').sort());
+  });
   it('commits a confirmed order and outbox atomically, rejects a stale replay', async () => {
     const { conversation, order } = pendingOrder();
     const job = makeJob(company.id, 'sheet_sync', { orderId: order.id });

@@ -526,9 +526,12 @@ describe('Supabase durable dispatch and scheduler', () => {
     expect(await scalar('select public.orderly_scheduler_ready() as value')).toBe(true);
   });
 
-  it('keeps recent/running and unrelated cron history and can rerun the migration without duplicating jobs', async () => {
-    await db.exec(executableMigration);
-    // The follow-up migration must be rerunnable too, and restores its own definitions.
+  it('keeps recent/running and unrelated cron history and refuses to put back older job functions', async () => {
+    // Superseded by the follow-ups below: a rerun would put back the phone-only versions.
+    await expect(db.exec(executableMigration)).rejects.toThrow(
+      'superseded by 202610160001_delivery_followups.sql',
+    );
+    // The follow-up migration is rerunnable while nothing newer replaced it.
     await db.exec(followups);
     await db.exec(followups);
     expect(
