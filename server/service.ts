@@ -328,12 +328,18 @@ export async function handleTurn(
         },
       });
     // One customer sending many messages at once pauses the bot for them only, for a while.
+    // The minute is measured by when the messages were sent, not when they are answered: a
+    // flood queues up behind slow replies, and counting by answer time would never see it.
+    // Either side of this message, since WhatsApp's times are only to the second. Test chats
+    // never count (they have their own limit).
     const { messagesPerCustomerPerMinute } = effectiveAiLimits(company.aiLimits);
+    const sentAt = Date.parse(input.now);
     if (
+      !sandbox &&
       company.botEnabled &&
       conversation.mode === 'bot' &&
       conversation.messages.filter(
-        (m) => m.role === 'customer' && Date.now() - Date.parse(m.createdAt) < 60000,
+        (m) => m.role === 'customer' && Math.abs(sentAt - Date.parse(m.createdAt)) < 60000,
       ).length +
         1 >=
         messagesPerCustomerPerMinute
