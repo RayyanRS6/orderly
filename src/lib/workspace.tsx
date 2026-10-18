@@ -20,6 +20,14 @@ export interface Toast {
   id: number;
   message: string;
   tone: ToastTone;
+  /** A button in the notification. A notification with one stays until it is used or dismissed. */
+  action?: ToastAction;
+}
+export interface ToastAction {
+  label: string;
+  /** Shown on the button while `run` works. */
+  busyLabel?: string;
+  run: () => Promise<unknown> | void;
 }
 export interface MutateOptions {
   /** Shown as a bottom-right notification once the change is saved. */
@@ -55,6 +63,11 @@ export interface WorkspaceContext {
   automationPaused?: boolean;
   switchCompany: (id: string) => void;
   refresh: () => Promise<void>;
+  /**
+   * Counts "Reload settings" after a save was refused as made from an older copy. Pages that
+   * keep their own copy of the settings (the Settings form) start again from the latest.
+   */
+  settingsReloads?: number;
   notify: (message: string, tone?: ToastTone) => void;
   mutate: <T = unknown>(
     path: string,

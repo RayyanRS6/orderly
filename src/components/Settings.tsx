@@ -1,4 +1,4 @@
-import { useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import {
   ArrowRight,
   Bot,
@@ -18,6 +18,7 @@ import type { Company, Integration, IntegrationKind, Provider } from '../shared/
 import { money } from '../shared/types';
 import { MODEL_DEFAULTS } from '../shared/models';
 import { useAction, useWorkspace } from '../lib/workspace';
+import { pausedOnly, savedCompany } from '../lib/settings';
 import { workspacePath } from '../lib/routes';
 import { cn, initials, shortDate } from '../lib/utils';
 import {
@@ -40,30 +41,54 @@ const providers: Record<Provider, { name: string; model: string }> = {
   gemini: { name: 'Google Gemini', model: MODEL_DEFAULTS.gemini },
 };
 
+// The form's own copy of the settings, with its settingsRevision (sent back with each save).
+type SettingsDraft = Company;
+export function draftFrom(company: Company): SettingsDraft {
+  const c = structuredClone(company || {}) as SettingsDraft;
+  return {
+    ...c,
+    openingHours: c.openingHours || {
+      start: '09:00',
+      end: '22:00',
+      days: [0, 1, 2, 3, 4, 5, 6],
+    },
+    ai: c.ai || {
+      provider: 'mock',
+      model: 'mock',
+      monthlyBudgetUsd: 10,
+    },
+    deliveryZones: c.deliveryZones || [],
+    faqs: c.faqs || [],
+  };
+}
+/**
+ * What a save sends: the form's copy, with the settingsRevision it was read with. The spam
+ * limits are edited in Bot settings. Leaving them out keeps the saved ones, instead of
+ * undoing a change made there after this page opened.
+ */
+export function settingsSaveBody(draft: SettingsDraft) {
+  const { aiLimits: _limits, ...body } = draft;
+  return body;
+}
+
 export function Settings() {
-  const { data, mutate, navigate } = useWorkspace();
+  const { data, mutate, navigate, settingsReloads } = useWorkspace();
   const { pending, run } = useAction();
   const edits = useRef(0);
-  const [draft, setDraft] = useState<Company>(() => {
-    const c = structuredClone(data.company || {});
-    return {
-      ...c,
-      openingHours: c.openingHours || {
-        start: '09:00',
-        end: '22:00',
-        days: [0, 1, 2, 3, 4, 5, 6],
-      },
-      ai: c.ai || {
-        provider: 'mock',
-        model: 'mock',
-        monthlyBudgetUsd: 10,
-      },
-      deliveryZones: c.deliveryZones || [],
-      faqs: c.faqs || [],
-    };
-  });
+  const [draft, setDraft] = useState<SettingsDraft>(() => draftFrom(data.company));
   const [saved, setSaved] = useState(false);
   const [dirty, setDirty] = useState(false);
+  // "Reload settings" after a save refused as made from an older copy: start again from the
+  // latest saved settings.
+  const reloads = useRef(settingsReloads);
+  useEffect(() => {
+    if (reloads.current === settingsReloads) return;
+    reloads.current = settingsReloads;
+    edits.current++;
+    setDraft(draftFrom(data.company));
+    setSaved(false);
+    setDirty(false);
+  }, [settingsReloads]);
   const daysLabel = useId();
   const canEdit = data.role !== 'staff';
   // With no Sheet saved, a Sheet menu source sends every bot turn to staff. A saved but
@@ -75,7 +100,7 @@ export function Settings() {
     usage
       .filter((u) => u.createdAt?.startsWith(new Date().toISOString().slice(0, 7)))
       .reduce((sum, u) => sum + (u.costUsd || 0), 0);
-  const update = (values: Partial<Company>) => {
+  const update = (values: Partial<SettingsDraft>) => {
     edits.current++;
     setSaved(false);
     setDirty(true);
@@ -92,15 +117,20 @@ export function Settings() {
           e.preventDefault();
           const before = edits.current;
           void run('settings', async () => {
-            // The spam limits are edited in Bot settings. Leaving them out keeps the saved
-            // ones, instead of undoing a change made there after this page opened.
-            const { aiLimits: _limits, ...body } = draft;
-            await mutate(`/companies/${draft.id}`, body, 'PUT', { success: 'Settings saved.' });
-            // Edits typed while saving are not saved yet.
+            const body = settingsSaveBody(draft);
+            const path = `/companies/${draft.id}`;
+            const result = await mutate(path, body, 'PUT', { success: 'Settings saved.' });
+            const company = savedCompany(path, 'PUT', result, draft.id);
+            // Only a pause from this older copy was saved: the form stays unsaved.
+            if (company && pausedOnly(body, company)) return;
+            // Edits typed while saving are not saved yet: they stay on top of the saved
+            // revision. Otherwise the form shows what the server saved.
             if (edits.current === before) {
+              if (company) setDraft(draftFrom(company));
               setSaved(true);
               setDirty(false);
-            }
+            } else if (company)
+              setDraft((d) => ({ ...d, settingsRevision: company.settingsRevision }));
           }).catch(() => undefined);
         }}
       >

@@ -1,6 +1,6 @@
-import { useContext, useEffect, useRef, type ReactNode } from 'react';
+import { useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
-import { Workspace, type Toast } from '../lib/workspace';
+import { Workspace, type Toast, type ToastAction } from '../lib/workspace';
 import type { ReadinessCheck } from '../shared/types';
 import * as Dialog from '@radix-ui/react-dialog';
 import * as AlertDialog from '@radix-ui/react-alert-dialog';
@@ -108,7 +108,14 @@ export function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: (id: 
               : 'text-success-700',
         )}
       />
-      <p className="min-w-0 flex-1 font-medium leading-relaxed">{toast.message}</p>
+      {toast.action ? (
+        <div className="min-w-0 flex-1">
+          <p className="font-medium leading-relaxed">{toast.message}</p>
+          <ToastActionButton action={toast.action} />
+        </div>
+      ) : (
+        <p className="min-w-0 flex-1 font-medium leading-relaxed">{toast.message}</p>
+      )}
       <button
         type="button"
         className="-m-1 rounded-full p-1 opacity-60 transition-[opacity,scale] duration-200 hover:opacity-100 active:scale-90"
@@ -118,6 +125,27 @@ export function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: (id: 
         <X className="size-4" />
       </button>
     </div>
+  );
+}
+
+function ToastActionButton({ action }: { action: ToastAction }) {
+  const [running, setRunning] = useState(false);
+  return (
+    <ActionButton
+      className="mt-2"
+      loading={running}
+      loadingLabel={action.busyLabel ?? 'Working…'}
+      onClick={async () => {
+        setRunning(true);
+        try {
+          await action.run();
+        } finally {
+          setRunning(false);
+        }
+      }}
+    >
+      {action.label}
+    </ActionButton>
   );
 }
 
