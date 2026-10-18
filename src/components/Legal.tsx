@@ -6,7 +6,9 @@ type LegalKind = 'privacy' | 'terms' | 'data-deletion';
 
 // Bump this whenever the text of any of the three documents changes.
 export const LEGAL_LAST_UPDATED = '18 October 2026';
-// Facts only the owner can supply stay visibly marked until they are filled in.
+// Facts only the owner can supply stay visibly marked until they are filled in, before the
+// dashboard deploy (docs/DEPLOYMENT.md §7). The backup period is the number of days the nightly
+// task in docs/BACKUP-AND-RESTORE.md §4 keeps encrypted copies; change both together.
 const OPERATOR = '[OWNER TO CONFIRM: legal name and address of the business that runs Orderly]';
 const BACKUP_DAYS = '[OWNER TO CONFIRM: number of]';
 
@@ -18,7 +20,7 @@ const documents: Record<LegalKind, { title: string; intro: string; sections: [st
       sections: [
         [
           'What we collect',
-          'From customers: your name, your WhatsApp number or WhatsApp ID, your delivery address and area, what you order (items, options, notes, totals), and the messages you send and receive in the restaurant’s chat. On a restaurant’s menu page you type your name, WhatsApp number and address; the cart stays in that browser tab. From restaurant owners and staff: email address, login and security details (such as two-step verification), and the business details, menu and settings they enter. Technical data: security and error logs, and rate-limit keys made from your IP address or number with a one-way code, so the raw IP address is not stored. Only the text of chat messages is kept: a shared location is saved as its name, address and coordinates, and a photo’s caption is saved as text, but photos, videos, documents and voice notes themselves are not stored; for those without text the chat is handed to staff.',
+          'From customers: your name, your WhatsApp number or WhatsApp ID, your delivery address and area, what you order (items, options, notes, totals), and the messages you send and receive in the restaurant’s chat. On a restaurant’s menu page you type your name, WhatsApp number and address; the cart stays in that browser tab. From restaurant owners and staff: email address, login and security details (such as two-step verification), and the business details, menu and settings they enter. Technical data: security and error logs, and rate-limit keys made from your IP address or number with a one-way code, so your raw IP address is not stored for them; the sign-in service records the IP address and browser of each dashboard sign-in. Only the text of chat messages is kept: a shared location is saved as its name, address and coordinates, and a photo’s caption is saved as text, but photos, videos, documents and voice notes themselves are not stored; for those without text the chat is handed to staff.',
         ],
         [
           'Why we use it',
@@ -30,7 +32,7 @@ const documents: Record<LegalKind, { title: string; intro: string; sections: [st
         ],
         [
           'Who receives it',
-          'Supabase hosts the database, logins and backend; the database is in Sydney, Australia. Cloudflare serves the website. Meta (WhatsApp) delivers messages for restaurants on the official WhatsApp Business Platform. Railway hosts Orderly’s WhatsApp gateway, only for restaurants that use the linked-phone connection: messages are decrypted and processed there, the encrypted WhatsApp session and contact IDs stay until the restaurant disconnects, incoming messages stay until Orderly has saved them, and sent replies are kept encrypted for up to 3 days. The AI provider each restaurant chooses (OpenAI, Anthropic or Google) receives your current message, recent messages from the chat (which can include the name and address you typed), the menu and the restaurant’s bot settings, but not your WhatsApp number unless you type it. Google Sheets receives order details (name, number, address, items) if the restaurant connects a Sheet. Resend sends optional staff alert emails; it receives only the staff member’s email and a fixed notice with no customer details. Menu photos load from websites the restaurant chose, which can see your IP address. When an owner connects WhatsApp in the dashboard, Meta’s sign-up tool runs in their browser. Each provider handles data under its own terms.',
+          'Supabase hosts the database, logins and backend; the database is in Sydney, Australia. Cloudflare serves the website. Meta (WhatsApp) delivers messages for restaurants on the official WhatsApp Business Platform. Railway hosts Orderly’s WhatsApp gateway, only for restaurants that use the linked-phone connection: messages are decrypted and processed there, the encrypted WhatsApp session and contact IDs stay until the restaurant disconnects, incoming messages stay until Orderly has saved them (one Orderly cannot accept is kept for up to 24 hours, then deleted), and sent replies are kept encrypted for about 3 days so WhatsApp can resend one your phone could not open. The AI provider each restaurant chooses (OpenAI, Anthropic or Google) receives your current message, recent messages from the chat (which can include the name and address you typed, a photo’s caption, and the place name, address and coordinates of a location you shared), the menu and the restaurant’s bot settings, but not your WhatsApp number unless you type it. Google Sheets receives order details (name, number, address, items) if the restaurant connects a Sheet. Resend sends optional staff alert emails; it receives only the staff member’s email and a fixed notice with no customer details. Menu photos load from websites the restaurant chose, which can see your IP address. When an owner connects WhatsApp in the dashboard, Meta’s sign-up tool runs in their browser. Each provider handles data under its own terms.',
         ],
         [
           'International transfers',
@@ -38,7 +40,7 @@ const documents: Record<LegalKind, { title: string; intro: string; sections: [st
         ],
         [
           'How long we keep it',
-          `Customer chats, orders and customer details are kept until the restaurant deletes them, or until the restaurant turns on automatic deletion in Security & privacy (records inactive for 30 to 3,650 days). If a menu-page order code is not used, the details typed with it are wiped within about an hour. Operational logs and finished background jobs are cleaned after about 90 days. Blocked numbers are kept until staff unblock them. Security audit records, which hold no message text, are kept. Orderly’s encrypted database backups are kept for ${BACKUP_DAYS} days. Copies in Google Sheets, WhatsApp, AI providers, the linked-phone gateway, downloaded exports and provider backups follow their own retention.`,
+          `Customer chats, orders and customer details are kept until the restaurant deletes them, or until the restaurant turns on automatic deletion in Security & privacy (records inactive for 30 to 3,650 days). If a menu-page order code is not used, the details typed with it are wiped within about an hour. Activity logs, and delivery receipts not linked to a chat, are deleted after about 90 days. The contents of finished background tasks (such as a message waiting to be processed or a reply waiting to be sent) are cleared after 14 days; a task that failed for good keeps its contents until staff retry it or the restaurant deletes that customer’s details. Blocked numbers are kept until staff unblock them. Security audit records, which hold no message text, are kept. Orderly’s database backups are kept for ${BACKUP_DAYS} days, encrypted and away from the operator’s computer; the computer itself keeps only the two newest copies, and a deleted backup can stay up to 30 more days in the cloud storage’s recycle bin. Copies in Google Sheets, WhatsApp, AI providers, the linked-phone gateway, downloaded exports and provider backups follow their own retention.`,
         ],
         [
           'Your rights and requests',
@@ -46,7 +48,7 @@ const documents: Record<LegalKind, { title: string; intro: string; sections: [st
         ],
         [
           'Payments',
-          'Orderly does not collect card numbers, bank account details or CNIC numbers, and does not handle payments. You pay the restaurant directly: cash, or a JazzCash, Easypaisa or bank transfer that restaurant staff check themselves outside Orderly. Please do not send card, bank or CNIC details in the chat.',
+          'Orderly does not collect card numbers, bank account details or CNIC numbers, and does not handle payments. You pay the restaurant directly, as you arrange with it: usually cash on delivery or at pickup, which is what the order confirmation and the menu page say. A JazzCash, Easypaisa or bank transfer is possible only if the restaurant offers it, and restaurant staff check it themselves outside Orderly. Please do not send card, bank or CNIC details in the chat: anything typed there is kept with the chat until it is deleted.',
         ],
         [
           'Security and incidents',
@@ -127,7 +129,7 @@ const documents: Record<LegalKind, { title: string; intro: string; sections: [st
         ],
         [
           'What happens next',
-          `After confirming a request, the chats and orders are deleted from the active database. Security audit records, which hold no message text, are kept. Copies in Google Sheets, WhatsApp, AI providers, downloaded exports and backups are not removed by this and follow their own retention; Orderly’s encrypted backups expire after ${BACKUP_DAYS} days. We tell you when it is done, or what must be kept and why.`,
+          `After confirming a request, the chats and orders are deleted from the active database. Security audit records, which hold no message text, are kept. Copies in Google Sheets, WhatsApp, AI providers, downloaded exports and backups are not removed by this and follow their own retention; Orderly’s backups expire after ${BACKUP_DAYS} days (a deleted copy can stay up to 30 more days in a cloud recycle bin). We tell you when it is done, or what must be kept and why.`,
         ],
       ],
     },

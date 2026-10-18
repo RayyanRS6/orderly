@@ -87,7 +87,11 @@ describe('privacy policy matches what the software does', () => {
   });
 
   it('marks facts only the owner can supply instead of inventing them', () => {
-    expect(read('src/components/Legal.tsx')).toMatch(/\[OWNER TO CONFIRM: legal name and address/);
+    // The visible marker until the owner fills it in, then their own value: either must pass,
+    // or filling it in would block every backend deploy.
+    const operator =
+      read('src/components/Legal.tsx').match(/const OPERATOR =\s*(['"`])(.+?)\1;/)?.[2] ?? '';
+    expect(operator).toMatch(/^\[OWNER TO CONFIRM: legal name and address[^\]]*\]$|^[^[\]]+$/);
   });
 
   it('claims no certification or guarantee', () => {
