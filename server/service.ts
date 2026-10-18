@@ -427,6 +427,9 @@ export async function handleTurn(
     const submittedCancellation = cancelsSubmittedOrder(conversation, input.text);
     // "staff" (as the automated-assistant notice offers) reaches a person without any AI.
     if (!input.action && isStaffRequest(input.text)) actions = [{ type: 'handoff' }];
+    // "Where is my order?" about the order loaded above: the engine states its real status and
+    // drops any AI text, so no AI is paid for.
+    const statusQuestion = !input.action && !!latestOrder && asksOrderStatus(input.text);
     const skipped: ModelSkipReason | undefined = stale
       ? 'late'
       : input.action
@@ -459,6 +462,7 @@ export async function handleTurn(
       !input.action &&
       !actions &&
       !submittedCancellation &&
+      !statusQuestion &&
       company.ai.provider !== 'mock' &&
       conversation.mode === 'bot' &&
       company.botEnabled

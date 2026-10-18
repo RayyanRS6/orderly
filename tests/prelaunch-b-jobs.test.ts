@@ -436,3 +436,62 @@ describe('G7.1: a customer whose order is still waiting is told so once', () => 
     expect((await repo.getJob(reminder.id))!.status).toBe('done');
   });
 });
+
+describe('F33: the Confirm button goes only with the review the cart awaits', () => {
+  it('attaches it to the review message, and never to another message sent meanwhile', async () => {
+    vi.stubEnv('META_GRAPH_VERSION', 'v21.0');
+    await repo.saveIntegration(
+      company.id,
+      { kind: 'whatsapp', configured: true, status: 'connected', config: { phoneNumberId: '1' } },
+      encryptSecret('meta-token'),
+    );
+    const bodies: { type: string }[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: RequestInit) => {
+        bodies.push(JSON.parse(String(init.body)));
+        return new Response(JSON.stringify({ messages: [{ id: `wamid-${bodies.length}` }] }), {
+          status: 200,
+        });
+      }),
+    );
+    let c: Conversation = {
+      ...createConversation(company.id, '923005500077', 'whatsapp', new Date().toISOString()),
+      version: 0,
+    };
+    let reply = '';
+    for (const action of [
+      { type: 'add_item', productId: products[0]!.id, quantity: 1 },
+      { type: 'set_details', customerName: 'Ali Raza', fulfillment: 'pickup' },
+      { type: 'review' },
+    ] as BotAction[]) {
+      const turn = processTurn(company, products, c, {
+        messageId: randomUUID(),
+        text: 'step',
+        action,
+        now: new Date().toISOString(),
+      });
+      c = turn.conversation;
+      reply = turn.reply;
+    }
+    expect(c.cart.status).toBe('awaiting_confirmation');
+    await repo.commitTurn(company.id, { ...c, version: 1 }, 0);
+    const send = (messageId: string, text: string) =>
+      makeJob(company.id, 'whatsapp_send', {
+        ...jobAddress(c),
+        conversationId: c.id,
+        messageId,
+        text,
+        cartRevision: c.cart.revision,
+        source: 'bot',
+      });
+    // Another message of the same cart revision (a notice, a staff note) is plain text.
+    const other = send('another-message', 'We are open until 11 pm.');
+    await repo.insertJob(other);
+    await processJob(repo, other.id);
+    const review = send(c.cart.reviewMessageId!, reply);
+    await repo.insertJob(review);
+    await processJob(repo, review.id);
+    expect(bodies.map((body) => body.type)).toEqual(['text', 'interactive']);
+  });
+});

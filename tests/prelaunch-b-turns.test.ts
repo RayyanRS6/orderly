@@ -180,9 +180,10 @@ describe('F35: a returning customer can order again without “new order”', ()
 
 describe('G3.10: “where is my order?” gets the order’s real status', () => {
   it.each([
+    ['pending', 'is waiting for the restaurant'],
     ['accepted', 'The restaurant has accepted order'],
     ['completed', 'is completed'],
-  ] as const)('answers for an order that is %s', async (status, wording) => {
+  ] as const)('answers for an order that is %s, without the AI', async (status, wording) => {
     const { conversation, order } = await placedOrder(status);
     ai({
       actions: [{ type: 'answer', text: '' }],
@@ -193,6 +194,9 @@ describe('G3.10: “where is my order?” gets the order’s real status', () =>
     expect(result.reply).toContain(order.reference);
     expect(result.reply).toContain(wording);
     expect(result.reply).not.toContain('on its way');
+    // The engine words the status itself, so the AI is not paid for an answer it would drop.
+    expect(generate).not.toHaveBeenCalled();
+    expect(result.explanation?.ai.called).toBe(false);
     expect(after.mode).toBe('bot');
     // A status question about a finished order keeps it: the next message starts afresh.
     expect(after.cart.orderId).toBe(order.id);
