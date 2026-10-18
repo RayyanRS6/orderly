@@ -88,7 +88,15 @@ export class ApiError extends Error {
   data: unknown;
   /** Seconds to wait before asking again, when the server said so and the browser can read it. */
   retryAfter?: number;
-  constructor(message: string, status: number, data: unknown, retryAfter?: number) {
+  /** The server's reference for this request (its log line has the same one), when known. */
+  requestId?: string;
+  constructor(
+    message: string,
+    status: number,
+    data: unknown,
+    retryAfter?: number,
+    requestId?: string,
+  ) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
@@ -96,7 +104,19 @@ export class ApiError extends Error {
     const code = (data as { code?: unknown } | null)?.code;
     if (typeof code === 'string') this.code = code;
     if (retryAfter !== undefined) this.retryAfter = retryAfter;
+    if (requestId) this.requestId = requestId;
   }
+}
+/**
+ * The server answers an unexpected failure with `requestId`, the reference of its log line.
+ * Dashboard messages then name it, so a report can be matched to the log. The public menu
+ * page keeps its own words for customers.
+ */
+export function withReference(message: string, path: string, data: unknown) {
+  const reference = (data as { requestId?: unknown } | null)?.requestId;
+  if (typeof reference !== 'string' || !reference.trim() || path.startsWith('/public/'))
+    return message;
+  return `${message} Reference: ${reference.trim().slice(0, 80)}`;
 }
 async function currentToken() {
   if (!tokenSource) return token;
@@ -134,10 +154,15 @@ async function retryToken(sent: string): Promise<string | undefined> {
   return fresh;
 }
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+// Both headers are readable across origins only when the server exposes them (CORS).
 const retryAfterSeconds = (response: Response) => {
   const value = Number(response.headers?.get?.('Retry-After'));
   return Number.isFinite(value) && value > 0 ? value : undefined;
 };
+const requestIdOf = (response: Response, result: { requestId?: unknown }) =>
+  typeof result.requestId === 'string'
+    ? result.requestId
+    : response.headers?.get?.('X-Request-Id')?.trim() || undefined;
 export async function api<T>(
   path: string,
   companyId?: string,
@@ -193,14 +218,19 @@ export async function api<T>(
     throw new ApiError(
       signInBusy(reply)
         ? SIGN_IN_UNCHECKED
-        : typeof result.error === 'string'
-          ? result.error
-          : result.error?.message ||
-            result.message ||
-            `Request failed (${response.status}). Please try again.`,
+        : withReference(
+            typeof result.error === 'string'
+              ? result.error
+              : result.error?.message ||
+                  result.message ||
+                  `Request failed (${response.status}). Please try again.`,
+            path,
+            result,
+          ),
       response.status,
       result,
       retryAfterSeconds(response),
+      requestIdOf(response, result),
     );
   return result as T;
 }

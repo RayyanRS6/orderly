@@ -18,6 +18,7 @@ import {
   Status,
 } from './ui';
 import { WhyToggle } from './ReplyExplanation';
+import { CustomerDataActions } from './CustomerData';
 
 type FlagSource = Pick<
   Conversation,
@@ -546,6 +547,16 @@ export function Inbox() {
                       )}
                     </>
                   )}
+                  {/* Owners only; also for a chat whose number WhatsApp never shared. */}
+                  <CustomerDataActions
+                    key={conversation.id}
+                    conversation={conversation}
+                    onErased={(id) => {
+                      // The chat is gone: back to the list, unless staff opened another one.
+                      if (shown.current === id) navigate('inbox', undefined, { keepScroll: true });
+                      void refresh();
+                    }}
+                  />
                 </div>
               </div>
               {/* New messages are announced; older history loading in at the top is not. */}

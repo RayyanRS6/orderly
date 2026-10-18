@@ -44,8 +44,17 @@ import {
   type MutateOptions,
   type Page,
   type Toast,
+  type ToastAction,
   type ToastTone,
 } from './lib/workspace';
+import {
+  adoptSavedCompany,
+  isStaleSettings,
+  PAUSED_ONLY,
+  pausedOnly,
+  RELOAD_SETTINGS,
+  savedCompany,
+} from './lib/settings';
 import {
   ActionButton,
   CustomSelect,
@@ -175,6 +184,8 @@ export default function App() {
   const [automationPaused, setAutomationPaused] = useState(false);
   // Real customer orders waiting for acceptance, from the staff alerts, for the tab title.
   const [waitingOrders, setWaitingOrders] = useState<number>();
+  // How many times "Reload settings" loaded the latest settings after a refused save.
+  const [settingsReloads, setSettingsReloads] = useState(0);
 
   useEffect(() => {
     let active = true;
@@ -281,13 +292,35 @@ export default function App() {
     setToasts((current) => current.filter((toast) => toast.id !== id));
   }, []);
   const notify = useCallback(
-    (message: string, tone: ToastTone = 'success') => {
+    (message: string, tone: ToastTone = 'success', action?: ToastAction) => {
       const id = ++toastId.current;
-      setToasts((current) => [...current.slice(-2), { id, message, tone }]);
-      setTimeout(() => dismissToast(id), tone === 'error' ? 8000 : 4000);
+      // A notification with an action replaces an older one with the same action, and stays
+      // until it is used or dismissed.
+      setToasts((current) => [
+        ...current.filter((toast) => !action || toast.action?.label !== action.label).slice(-2),
+        { id, message, tone, ...(action && { action }) },
+      ]);
+      if (!action) setTimeout(() => dismissToast(id), tone === 'error' ? 8000 : 4000);
     },
     [dismissToast],
   );
+  // After a save refused as made from an older copy: the latest settings, on the same page.
+  const reloadSettings = useCallback(async () => {
+    try {
+      await refresh();
+    } catch (e) {
+      notify((e as Error).message, 'error');
+      return;
+    }
+    setSettingsReloads((n) => n + 1);
+    setToasts((current) => current.filter((toast) => toast.action?.label !== RELOAD_SETTINGS));
+    notify('Latest settings loaded. Check your change and save again.', 'info');
+  }, [refresh, notify]);
+  const reloadAction: ToastAction = {
+    label: RELOAD_SETTINGS,
+    busyLabel: 'Reloading…',
+    run: reloadSettings,
+  };
 
   useEffect(() => {
     if (!authenticated) return;
@@ -361,6 +394,9 @@ export default function App() {
         } catch (e) {
           const message = (e as Error).message;
           setActionError(message);
+          // Saved meanwhile in another tab or by another person: the server's words, with a
+          // way to load the latest settings without leaving the page.
+          const stale = isStaleSettings(e);
           // Turning a bot on is refused during Orderly's emergency stop, which may have started
           // after this page loaded: check, so the banner says why.
           if (e instanceof ApiError && e.status === 409 && path.startsWith('/companies/'))
@@ -369,8 +405,22 @@ export default function App() {
               .catch(() => undefined);
           // A dialog shows the failure only while it is open: closed early, the failure
           // would otherwise appear nowhere.
-          if (!options.quiet && !(options.dialog && dialogOpen())) notify(message, 'error');
+          if (!options.quiet && !(options.dialog && dialogOpen()))
+            notify(message, 'error', stale ? reloadAction : undefined);
           throw e;
+        }
+        // A settings save answers with the saved company: it replaces the one on screen now,
+        // with its new revision, so the next save in this visit is current even if the reload
+        // below fails.
+        let success = options.success;
+        const saved = savedCompany(path, method, result, data?.company.id);
+        if (saved) {
+          setData((current) => (current ? adoptSavedCompany(current, saved) : current));
+          // An older copy asked for a pause: only the pause was saved.
+          if (pausedOnly(body, saved)) {
+            success = undefined;
+            notify(PAUSED_ONLY, 'info', reloadAction);
+          }
         }
         try {
           await refresh();
@@ -379,14 +429,14 @@ export default function App() {
           notify('Saved. Reload the page to see the latest data.', 'info');
           return result;
         }
-        if (options.success) notify(options.success);
+        if (success) notify(success);
         return result;
       } finally {
         savesInFlight.current--;
         setSaving(savesInFlight.current);
       }
     },
-    [data?.company.id, companyId, refresh, notify],
+    [data?.company.id, companyId, refresh, notify, reloadSettings],
   );
 
   // Each page gets its own tab title, so open tabs can be told apart and screen readers
@@ -414,6 +464,8 @@ export default function App() {
     setData(null);
     setError('');
     setActionError('');
+    // "Reload settings" belongs to the business being left.
+    setToasts((current) => current.filter((toast) => !toast.action));
     setCompanyId(id);
     const company = data?.companies.find((c) => c.id === id);
     if (company) go(workspacePath(company.slug, page));
@@ -697,6 +749,7 @@ export default function App() {
         navigate,
         switchCompany,
         refresh,
+        settingsReloads,
         notify,
         mutate,
         detailId: route.id,
