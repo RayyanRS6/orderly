@@ -9,14 +9,19 @@ import { ErrorNotice, Spinner } from './ui';
 export function MenuLinkCard() {
   const { data, mutate, notify } = useWorkspace();
   const { pending, run } = useAction();
-  const [status, setStatus] = useState<MenuLinkStatus>();
+  // undefined while loading, null when it could not be loaded.
+  const [status, setStatus] = useState<MenuLinkStatus | null>();
   const [error, setError] = useState('');
   const companyId = data.company.id;
   useEffect(() => {
     let live = true;
     api<MenuLinkStatus>('/menu-link', companyId).then(
       (value) => live && setStatus(value),
-      (e: Error) => live && setError(e.message),
+      (e: Error) => {
+        if (!live) return;
+        setStatus(null);
+        setError(e.message);
+      },
     );
     return () => {
       live = false;
@@ -51,7 +56,8 @@ export function MenuLinkCard() {
           </p>
         </div>
         <label className="flex shrink-0 cursor-pointer items-center gap-2.5 text-sm font-medium text-stone-600">
-          {pending === 'menu-link' && <Spinner className="size-3.5" />}
+          {/* Until the status loads, show it loading rather than a wrong 'Off'. */}
+          {(pending === 'menu-link' || status === undefined) && <Spinner className="size-3.5" />}
           <input
             className="toggle"
             type="checkbox"
@@ -60,14 +66,14 @@ export function MenuLinkCard() {
             disabled={!canChange || !status || pending === 'menu-link'}
             onChange={(e) => toggle(e.target.checked)}
           />
-          {status?.enabled ? 'On' : 'Off'}
+          {status ? (status.enabled ? 'On' : 'Off') : ''}
         </label>
       </div>
       {status?.enabled && status.url && (
         <div className="mt-4">
           <div className="flex flex-wrap items-center gap-2">
             <input
-              className="input min-w-0 flex-1 font-mono text-[12.5px]"
+              className="input min-w-0 font-mono text-[12.5px] sm:flex-1"
               readOnly
               aria-label="Menu page link"
               value={status.url}
@@ -95,7 +101,7 @@ export function MenuLinkCard() {
       {status?.notes.map((note) => (
         <p
           key={note}
-          className="mt-3 flex items-start gap-2 rounded-xl bg-sun/20 px-3 py-2 text-xs leading-relaxed text-amber-800"
+          className="mt-3 flex items-start gap-2 rounded-xl bg-sun/20 px-3 py-2 text-xs leading-relaxed text-stone-700"
         >
           <Info className="mt-0.5 size-3.5 shrink-0" />
           {note}

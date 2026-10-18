@@ -3,7 +3,7 @@ import { RefreshCw, Smartphone, ShieldAlert } from 'lucide-react';
 import type { WhatsAppConnection as Connection } from '../shared/whatsapp';
 import { api } from '../lib/api';
 import { dialogOpen, useAction, useWorkspace } from '../lib/workspace';
-import { ActionButton, ConfirmDialog, Field } from './ui';
+import { ActionButton, ConfirmDialog, ErrorNotice, Field } from './ui';
 
 type Action = 'pair' | 'disconnect' | 'select-meta' | 'reconnect';
 const DONE: Record<Action, string> = {
@@ -19,6 +19,19 @@ type Snapshot = {
   expiresAt?: string;
   errorCode?: string;
 };
+// Plain words for the gateway's codes. An unknown code shows as it is. A DISCONNECT_ code
+// keeps its number, which the gateway troubleshooting guide looks up (e.g. DISCONNECT_405).
+const REASONS: Record<string, string> = {
+  PAIRING_EXPIRED: 'the pairing code expired',
+  LOGGED_OUT: 'WhatsApp logged this device out',
+  RECONNECT_EXHAUSTED: 'reconnecting failed several times',
+  SESSION_CRASH: 'the connection stopped unexpectedly',
+  GATEWAY_START_FAILED: 'the connection could not start',
+  INVALID_ACCOUNT_IDENTITY: 'WhatsApp did not confirm the linked account',
+};
+const reason = (code: string) =>
+  REASONS[code] ??
+  (code.startsWith('DISCONNECT_') ? `WhatsApp closed the connection (${code})` : code);
 export function WhatsAppConnection() {
   const { data, refresh, notify } = useWorkspace();
   const act = useAction();
@@ -170,6 +183,9 @@ export function WhatsAppConnection() {
   if (!canEdit) return null;
   const state = snapshot?.status ?? connection?.status ?? 'disconnected';
   const phoneValid = method !== 'code' || /^[1-9]\d{5,14}$/.test(phone.replace(/\D/g, ''));
+  // Older Meta setups have saved credentials but no connection row.
+  const metaConfigured = !!(data.integrations || []).find((i) => i.kind === 'whatsapp')?.configured;
+  const noRoute = connection?.status === 'disconnected' || (!connection && !metaConfigured);
   return (
     <section className="card group mb-6 p-6">
       <div className="flex items-center gap-3">
@@ -178,9 +194,11 @@ export function WhatsAppConnection() {
       </div>
       <p className="mt-3 text-sm text-stone-600">
         Active route:{' '}
-        {connection?.provider === 'baileys'
-          ? 'Orderly linked device · unofficial'
-          : 'Official Meta Cloud API'}
+        {noRoute
+          ? 'none connected yet'
+          : connection?.provider === 'baileys'
+            ? 'Orderly linked device · unofficial'
+            : 'Official Meta Cloud API'}
         . Both use your published bot, menu and orders.
       </p>
       <div className="mt-4 flex flex-wrap gap-3">
@@ -190,9 +208,10 @@ export function WhatsAppConnection() {
             !connection || (connection.provider === 'meta' && connection.status !== 'disconnected')
           }
           title={
-            !connection
+            !connection && !metaConfigured
               ? 'Nothing is connected yet. Use the official signup below.'
-              : connection.provider === 'meta' && connection.status !== 'disconnected'
+              : !connection ||
+                  (connection.provider === 'meta' && connection.status !== 'disconnected')
                 ? 'The official Meta route is already in use.'
                 : undefined
           }
@@ -364,19 +383,17 @@ export function WhatsAppConnection() {
           )}
           {(snapshot?.errorCode || connection.errorCode) && (
             <p className="mt-3 rounded-xl bg-red-50 px-3.5 py-2.5 text-sm font-medium text-red-700">
-              Connection needs attention: {snapshot?.errorCode || connection.errorCode}. Try
-              reconnecting, or start fresh pairing if logged out.
+              Connection needs attention:{' '}
+              {reason(snapshot?.errorCode || connection.errorCode || '')}. Try reconnecting, or
+              start fresh pairing if logged out.
             </p>
           )}
         </div>
       )}
       {error && (
-        <p
-          role="alert"
-          className="mt-4 rounded-xl bg-red-50 px-3.5 py-2.5 text-sm font-medium text-red-700"
-        >
-          {error}
-        </p>
+        <div className="mt-4">
+          <ErrorNotice message={error} />
+        </div>
       )}
       <ConfirmDialog
         busy={!!confirm && pending === confirm}
@@ -398,7 +415,13 @@ export function WhatsAppConnection() {
               : 'Switch to official Meta?'
         }
         description="Automatic replies will pause. Pending messages and old chats will not be sent through the new connection. Existing orders and chat history will remain. Also remove the old Orderly session from WhatsApp’s Linked devices."
-        confirmLabel="Confirm"
+        confirmLabel={
+          confirm === 'disconnect'
+            ? 'Disconnect'
+            : confirm === 'pair'
+              ? 'Start pairing'
+              : 'Switch to Meta'
+        }
         onConfirm={() => {
           if (confirm) void run(confirm);
         }}

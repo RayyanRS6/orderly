@@ -71,6 +71,7 @@ export function BlockedNumbers() {
               </div>
               <ActionButton
                 className="btn-quiet"
+                aria-label={`Unblock ${b.label || 'WhatsApp contact'}`}
                 loading={pending === `unblock-${b.blockId}`}
                 loadingLabel="Unblocking…"
                 onClick={() => unblock(b.blockId)}

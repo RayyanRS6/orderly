@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   Check,
   ChevronRight,
@@ -31,6 +31,13 @@ import {
 } from './ui';
 import { MenuLinkCard } from './MenuLinkCard';
 
+/** The last non-empty value: a closing dialog keeps its title and content through its exit fade. */
+function useLast<T>(value: T | null) {
+  const [last, setLast] = useState(value);
+  if (value && value !== last) setLast(value);
+  return value || last;
+}
+
 export function Catalog() {
   const { data, mutate, navigate } = useWorkspace();
   const { pending, run } = useAction();
@@ -40,11 +47,16 @@ export function Catalog() {
   const [removing, setRemoving] = useState<Product | null>(null);
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState('');
+  const searchRef = useRef<HTMLInputElement>(null);
+  const shownEditing = useLast(editing);
+  const shownRemoving = useLast(removing);
   const catalogProducts = data.products || [];
   const categories = [...new Set(catalogProducts.map((product) => product.category))];
+  // A category whose last item was deleted or moved has no tab left: fall back to all items.
+  const activeCategory = categories.includes(category) ? category : 'All items';
   const products = catalogProducts.filter(
     (p) =>
-      (category === 'All items' || p.category === category) &&
+      (activeCategory === 'All items' || p.category === activeCategory) &&
       `${p.name || ''} ${p.description || ''} ${(p.aliases || []).join(' ')}`
         .toLowerCase()
         .includes(query.toLowerCase()),
@@ -117,7 +129,7 @@ export function Catalog() {
           {['All items', ...categories].map((value) => (
             <button
               key={value}
-              aria-pressed={category === value}
+              aria-pressed={activeCategory === value}
               className="tab-btn"
               onClick={() => setCategory(value)}
             >
@@ -133,6 +145,7 @@ export function Catalog() {
         <div className="relative w-full sm:w-64 shrink-0">
           <Search className="pointer-events-none absolute left-3.5 top-2.5 size-4 text-stone-400" />
           <input
+            ref={searchRef}
             aria-label="Search menu"
             className="input pl-9 pr-4"
             placeholder="Search menu…"
@@ -184,8 +197,12 @@ export function Catalog() {
                 {((product.variants?.length || 0) > 0 || (product.modifiers?.length || 0) > 0) && (
                   <p className="mt-3 inline-flex rounded-full bg-ink/[0.05] px-2.5 py-0.5 text-[11px] font-medium text-stone-600">
                     {[
-                      product.variants?.length ? `${product.variants.length} variants` : '',
-                      product.modifiers?.length ? `${product.modifiers.length} extras` : '',
+                      product.variants?.length
+                        ? `${product.variants.length} variant${product.variants.length === 1 ? '' : 's'}`
+                        : '',
+                      product.modifiers?.length
+                        ? `${product.modifiers.length} extra${product.modifiers.length === 1 ? '' : 's'}`
+                        : '',
                     ]
                       .filter(Boolean)
                       .join(' · ')}
@@ -200,7 +217,8 @@ export function Catalog() {
                 {editable && (
                   <div className="flex items-center gap-1">
                     <button
-                      className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold text-stone-600 transition-colors hover:bg-brand-500/10 hover:text-brand-800"
+                      className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold text-stone-600 transition-colors hover:bg-brand-500/10 hover:text-brand-800 max-md:min-h-11 max-md:px-3"
+                      aria-label={`${product.available ? 'Mark sold out' : 'Make available'}: ${product.name}`}
                       aria-busy={pending === `available-${product.id}` || undefined}
                       onClick={() =>
                         void run(`available-${product.id}`, () =>
@@ -221,7 +239,7 @@ export function Catalog() {
                       {product.available ? 'Mark sold out' : 'Make available'}
                     </button>
                     <button
-                      className="inline-flex size-7 items-center justify-center rounded-full text-stone-400 transition-colors hover:bg-red-600/10 hover:text-red-700"
+                      className="inline-flex size-7 items-center justify-center rounded-full text-stone-400 transition-colors hover:bg-red-600/10 hover:text-red-700 max-md:size-11"
                       aria-label={`Delete ${product.name}`}
                       onClick={() => {
                         setRemoving(product);
@@ -239,16 +257,21 @@ export function Catalog() {
       ) : (
         <div className="card">
           <Empty
-            title="A fresh page for your menu"
+            title={query ? 'No matching items' : 'A fresh page for your menu'}
             description={
               query
                 ? 'No items match that search. Try a different name.'
                 : 'Add your first item so the bot knows what’s cooking.'
             }
             action={query ? 'Clear search' : editable ? 'Add menu item' : 'Manage catalog source'}
-            onAction={() =>
-              query ? setQuery('') : editable ? setEditing('new') : navigate('settings')
-            }
+            onAction={() => {
+              if (query) {
+                // The button disappears with the search: keep keyboard focus in the search box.
+                setQuery('');
+                searchRef.current?.focus();
+              } else if (editable) setEditing('new');
+              else navigate('settings');
+            }}
           />
         </div>
       )}
@@ -257,14 +280,16 @@ export function Catalog() {
         onOpenChange={(open) => {
           if (!open) setEditing(null);
         }}
-        title={editing === 'new' ? 'Add a menu item' : 'Edit menu item'}
+        title={shownEditing === 'new' ? 'Add a menu item' : 'Edit menu item'}
         description="Prices are in PKR. The bot always uses these values when calculating an order."
         wide
+        // A stray tap on the backdrop must not throw away a half-filled item.
+        dismissable={false}
       >
-        {editing && (
+        {shownEditing && (
           <ProductEditor
-            key={editing === 'new' ? 'new' : editing.id}
-            product={editing === 'new' ? undefined : editing}
+            key={shownEditing === 'new' ? 'new' : shownEditing.id}
+            product={shownEditing === 'new' ? undefined : shownEditing}
             onDone={() => setEditing(null)}
           />
         )}
@@ -283,7 +308,7 @@ export function Catalog() {
         onOpenChange={(open) => {
           if (!open) setRemoving(null);
         }}
-        title={`Remove ${removing?.name || 'item'}?`}
+        title={`Remove ${shownRemoving?.name || 'item'}?`}
         description="This item will be removed from the menu. Previously placed orders keep their original item details."
         busy={pending === 'delete'}
         busyLabel="Removing…"
@@ -315,7 +340,8 @@ function ProductEditor({ product, onDone }: { product?: Product; onDone: () => v
   const [name, setName] = useState(product?.name || '');
   const [description, setDescription] = useState(product?.description || '');
   const [category, setCategory] = useState(product?.category || 'Mains');
-  const [price, setPrice] = useState(String((product?.price || 0) / 100));
+  // A new item starts empty, so a forgotten price is caught instead of saved as Rs. 0.
+  const [price, setPrice] = useState(product ? String(product.price / 100) : '');
   const [emoji, setEmoji] = useState(product?.emoji || '🍽️');
   const [aliases, setAliases] = useState(product?.aliases ? product.aliases.join(', ') : '');
   const [available, setAvailable] = useState(product?.available ?? true);
@@ -388,7 +414,7 @@ function ProductEditor({ product, onDone }: { product?: Product; onDone: () => v
         </div>
         <Field label="Emoji">
           <input
-            className="input text-center"
+            className="input px-1 text-center"
             maxLength={10}
             value={emoji}
             onChange={(e) => setEmoji(e.target.value)}
@@ -456,10 +482,13 @@ function ProductEditor({ product, onDone }: { product?: Product; onDone: () => v
             className="input tabular-nums"
             required
             type="number"
+            inputMode="decimal"
             min="0"
             max="1000000"
             step="0.01"
             value={price}
+            // The wheel would step a focused price instead of scrolling the dialog.
+            onWheel={(e) => e.currentTarget.blur()}
             onChange={(e) => setPrice(e.target.value)}
           />
         </Field>
@@ -475,7 +504,7 @@ function ProductEditor({ product, onDone }: { product?: Product; onDone: () => v
           onChange={(e) => setAliases(e.target.value)}
         />
         {sharedAliases.length > 0 && (
-          <p className="step-in mt-2 rounded-xl bg-sun/20 px-3 py-2 text-xs leading-relaxed text-amber-800">
+          <p className="step-in mt-2 rounded-xl bg-sun/20 px-3 py-2 text-xs leading-relaxed text-stone-700">
             Shared with another item: {sharedAliases.join(', ')}. The bot will ask the customer to
             choose instead of guessing.
           </p>
@@ -503,7 +532,7 @@ function ProductEditor({ product, onDone }: { product?: Product; onDone: () => v
         Available to order
       </label>
       <ErrorNotice message={error} />
-      <div className="flex justify-end gap-2 border-t border-ink/[0.06] pt-5">
+      <div className="flex flex-wrap justify-end gap-2 border-t border-ink/[0.06] pt-5">
         <button type="button" className="btn" onClick={onDone}>
           Cancel
         </button>
@@ -549,9 +578,9 @@ function OptionEditor({
         </button>
       </div>
       {value.map((option, index) => (
-        <div key={option.id} className="step-in mt-3 flex gap-2">
+        <div key={option.id} className="step-in mt-3 flex flex-wrap gap-2">
           <input
-            className="input flex-1"
+            className="input sm:flex-1"
             aria-label={`${title} ${index + 1} name`}
             placeholder="Option name"
             required
@@ -560,23 +589,12 @@ function OptionEditor({
               onChange(value.map((v) => (v.id === option.id ? { ...v, name: e.target.value } : v)))
             }
           />
-          <input
-            className="input w-28 tabular-nums"
-            aria-label={`${title} ${index + 1} price in PKR`}
-            type="number"
-            min="0"
-            max="1000000"
-            step="0.01"
-            required
-            value={option.price / 100}
-            onChange={(e) =>
-              onChange(
-                value.map((v) =>
-                  v.id === option.id
-                    ? { ...v, price: Math.round(Number(e.target.value) * 100) }
-                    : v,
-                ),
-              )
+          <OptionPrice
+            label={`${title} ${index + 1} price in PKR`}
+            // A row just added has no name yet: its price starts empty, so it has to be typed.
+            initial={option.name ? String(option.price / 100) : ''}
+            onChange={(price) =>
+              onChange(value.map((v) => (v.id === option.id ? { ...v, price } : v)))
             }
           />
           <button
@@ -593,92 +611,149 @@ function OptionEditor({
   );
 }
 
+/** Keeps the typed text, so a cleared price stays empty instead of snapping back to 0. */
+function OptionPrice({
+  label,
+  initial,
+  onChange,
+}: {
+  label: string;
+  initial: string;
+  onChange: (price: number) => void;
+}) {
+  const [text, setText] = useState(initial);
+  return (
+    <input
+      className="input w-28 tabular-nums"
+      aria-label={label}
+      type="number"
+      inputMode="decimal"
+      min="0"
+      max="1000000"
+      step="0.01"
+      required
+      value={text}
+      onWheel={(e) => e.currentTarget.blur()}
+      onChange={(e) => {
+        setText(e.target.value);
+        onChange(Math.round(Number(e.target.value) * 100));
+      }}
+    />
+  );
+}
+
 function CsvImport({ onDone }: { onDone: () => void }) {
   const { mutate } = useWorkspace();
   const { pending, run } = useAction();
   const [csv, setCsv] = useState('');
   const [error, setError] = useState('');
+  const [confirming, setConfirming] = useState(false);
+  const [confirmError, setConfirmError] = useState('');
   const sample =
     'id,name,description,category,price,available,emoji,aliases\nbiryani,Chicken Biryani,Fragrant rice with chicken,Mains,450,true,🍛,biryani\nraita,Raita,Cooling yogurt side,Sides,80,true,🥣,yogurt';
   return (
-    <form
-      className="space-y-5"
-      onSubmit={(e) => {
-        e.preventDefault();
-        setError('');
-        // A failed import shows inside this dialog (Modal), so no notification is needed.
-        void run('import', async () => {
-          await mutate('/catalog/import', { csv }, undefined, {
-            dialog: true,
-            success: 'Menu imported.',
-          });
-          onDone();
-        }).catch(() => undefined);
-      }}
-    >
-      <label className="group block cursor-pointer rounded-2xl border-2 border-dashed border-ink/15 bg-paper p-6 text-center transition-colors hover:border-brand-500/45 hover:bg-brand-50/70">
-        <Upload className="mx-auto mb-3 size-6 text-brand-600 transition-transform duration-300 ease-[var(--ease-spring)] group-hover:-translate-y-1" />
-        <span className="block text-sm font-semibold text-ink">Choose a CSV file</span>
-        <input
-          aria-label="CSV menu file"
-          className="mt-3 max-w-full text-xs text-stone-500 file:mr-3 file:cursor-pointer file:rounded-full file:border-0 file:bg-ink file:px-4 file:py-2 file:font-semibold file:text-cream"
-          type="file"
-          accept=".csv,text/csv"
-          onChange={async (e) => {
-            const file = e.target.files?.[0];
-            if (file) {
-              if (file.size > 500_000) {
-                setError('Please choose a CSV smaller than 500 KB.');
-                return;
+    <>
+      <form
+        className="space-y-5"
+        onSubmit={(e) => {
+          e.preventDefault();
+          setError('');
+          // Replacing the whole menu has no undo: ask first, as deleting one item does.
+          setConfirmError('');
+          setConfirming(true);
+        }}
+      >
+        <label className="group block cursor-pointer rounded-2xl border-2 border-dashed border-ink/15 bg-paper p-6 text-center transition-colors hover:border-brand-500/45 hover:bg-brand-50/70">
+          <Upload className="mx-auto mb-3 size-6 text-brand-600 transition-transform duration-300 ease-[var(--ease-spring)] group-hover:-translate-y-1" />
+          <span className="block text-sm font-semibold text-ink">Choose a CSV file</span>
+          <input
+            aria-label="CSV menu file"
+            className="mt-3 max-w-full text-xs text-stone-500 file:mr-3 file:cursor-pointer file:rounded-full file:border-0 file:bg-ink file:px-4 file:py-2 file:font-semibold file:text-cream"
+            type="file"
+            accept=".csv,text/csv"
+            onChange={async (e) => {
+              const file = e.target.files?.[0];
+              if (file) {
+                if (file.size > 500_000) {
+                  setError('Please choose a CSV smaller than 500 KB.');
+                  return;
+                }
+                setCsv(await file.text());
               }
-              setCsv(await file.text());
-            }
-          }}
-        />
-      </label>
-      <Field
-        label="CSV contents"
-        hint="Prices use rupees. Optional variants and modifiers columns accept JSON arrays with id, name, and price in rupees. Variant prices replace the base; extras are added."
-      >
-        <textarea
-          className="input min-h-44 font-mono text-xs"
-          value={csv}
-          required
-          placeholder={sample}
-          onChange={(e) => setCsv(e.target.value)}
-        />
-      </Field>
-      <button
-        type="button"
-        className="text-xs font-semibold text-brand-700 underline-offset-4 transition-colors hover:text-brand-800 hover:underline"
-        onClick={() => setCsv(sample)}
-      >
-        Use example CSV
-      </button>
-      <a
-        href="/examples/menu.csv"
-        download
-        className="ml-4 inline-flex items-center gap-1 text-xs font-semibold text-brand-700 underline-offset-4 transition-colors hover:text-brand-800 hover:underline"
-      >
-        <Download className="size-3" />
-        Download template
-      </a>
-      <ErrorNotice message={error} />
-      <div className="flex justify-end gap-2 border-t border-ink/[0.06] pt-5">
-        <button type="button" className="btn" onClick={onDone}>
-          Cancel
-        </button>
-        <ActionButton
-          type="submit"
-          className="btn-primary"
-          disabled={!csv.trim()}
-          loading={pending === 'import'}
-          loadingLabel="Importing…"
+            }}
+          />
+        </label>
+        <Field
+          label="CSV contents"
+          hint="Prices use rupees. Optional variants and modifiers columns accept JSON arrays with id, name, and price in rupees. Variant prices replace the base; extras are added."
         >
-          Import menu
-          <Upload className="size-4" />
-        </ActionButton>
-      </div>
-    </form>
+          <textarea
+            className="input min-h-44 font-mono text-xs"
+            value={csv}
+            required
+            placeholder={sample}
+            onChange={(e) => setCsv(e.target.value)}
+          />
+        </Field>
+        <button
+          type="button"
+          className="text-xs font-semibold text-brand-700 underline-offset-4 transition-colors hover:text-brand-800 hover:underline"
+          onClick={() => setCsv(sample)}
+        >
+          Use example CSV
+        </button>
+        <a
+          href="/examples/menu.csv"
+          download
+          className="ml-4 inline-flex items-center gap-1 text-xs font-semibold text-brand-700 underline-offset-4 transition-colors hover:text-brand-800 hover:underline"
+        >
+          <Download className="size-3" />
+          Download template
+        </a>
+        <ErrorNotice message={error} />
+        <div className="flex justify-end gap-2 border-t border-ink/[0.06] pt-5">
+          <button type="button" className="btn" onClick={onDone}>
+            Cancel
+          </button>
+          <ActionButton
+            type="submit"
+            className="btn-primary"
+            disabled={!csv.trim()}
+            loading={pending === 'import'}
+            loadingLabel="Importing…"
+          >
+            Import menu
+            <Upload className="size-4" />
+          </ActionButton>
+        </div>
+      </form>
+      <ConfirmDialog
+        open={confirming}
+        onOpenChange={setConfirming}
+        title="Replace your menu?"
+        description="This replaces the entire menu. Items absent from the CSV will be removed."
+        confirmLabel="Replace menu"
+        tone="danger"
+        busy={pending === 'import'}
+        busyLabel="Importing…"
+        error={confirmError}
+        onConfirm={() => {
+          setConfirmError('');
+          // A failure shows inside this confirmation, so no notification is needed.
+          void run('import', async () => {
+            try {
+              await mutate('/catalog/import', { csv }, undefined, {
+                dialog: true,
+                success: 'Menu imported.',
+              });
+              setConfirming(false);
+              onDone();
+            } catch (e) {
+              setConfirmError((e as Error).message);
+            }
+          });
+        }}
+      />
+    </>
   );
 }

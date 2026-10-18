@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { StaffAlerts } from './components/StaffAlerts';
 import * as Dialog from '@radix-ui/react-dialog';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -19,6 +19,7 @@ import {
   Plus,
   Search,
   Settings2,
+  ShieldCheck,
   ShoppingBag,
   SlidersHorizontal,
   Sparkles,
@@ -45,6 +46,7 @@ import {
   keepOpenForToasts,
   Modal,
   Toaster,
+  useReturnFocus,
 } from './components/ui';
 import { Overview, Orders } from './components/Orders';
 import { Catalog } from './components/Catalog';
@@ -69,7 +71,7 @@ const navigation = [
 const manage = [
   { id: 'integrations', label: 'Integrations', icon: Cable },
   { id: 'settings', label: 'Settings', icon: Settings2 },
-  { id: 'security', label: 'Security & privacy', icon: Settings2 },
+  { id: 'security', label: 'Security & privacy', icon: ShieldCheck },
   { id: 'businesses', label: 'Businesses', icon: Building2 },
 ] as const;
 // Only the platform admin sees People, so owners and staff never download its code.
@@ -138,6 +140,8 @@ export default function App() {
   const [help, setHelp] = useState(false);
   const [firstBusiness, setFirstBusiness] = useState(false);
   const [navSearch, setNavSearch] = useState('');
+  const navSearchRef = useRef<HTMLInputElement>(null);
+  const drawerFocus = useReturnFocus();
   // Shown on the sign-in form when the server rejected this browser's saved session.
   const [sessionNotice, setSessionNotice] = useState('');
 
@@ -339,6 +343,23 @@ export default function App() {
     [data?.company.id, companyId, refresh, notify],
   );
 
+  // Each page gets its own tab title, so open tabs can be told apart and screen readers
+  // hear the page change.
+  useEffect(() => {
+    if (!data) return;
+    const name = [...navigation, ...manage, peopleNav].find((n) => n.id === page)?.label;
+    document.title = name
+      ? `${name} · ${data.company.name} — Orderly`
+      : 'Orderly — Conversations to orders';
+  }, [page, data?.company.name]);
+  // On short screens the links scroll: keep the current page's link in view after each page
+  // change (the phone drawer does the same when it opens).
+  useEffect(() => {
+    document
+      .querySelector('aside .side-link[aria-current="page"]')
+      ?.scrollIntoView({ block: 'nearest' });
+  }, [page, !!data]);
+
   function switchCompany(id: string) {
     if (id === data?.company.id) return;
     setData(null);
@@ -349,11 +370,11 @@ export default function App() {
     if (company) go(workspacePath(company.slug, page));
     setMobile(false);
   }
-  function navigate(value: Page, id?: string) {
+  function navigate(value: Page, id?: string, options?: { keepScroll?: boolean }) {
     if (data) go(workspacePath(data.company.slug, value, id));
     setMobile(false);
     setError('');
-    window.scrollTo(0, 0);
+    if (!options?.keepScroll) window.scrollTo(0, 0);
   }
 
   if (client && mfaFactor)
@@ -457,8 +478,12 @@ export default function App() {
     setMobile(false);
   };
 
-  const sidebar = (
-    <div className="flex h-full flex-col overflow-hidden bg-ink glow-dark px-4 pb-6 pt-7 text-cream/65 border-r border-white/[0.06]">
+  // Only the links scroll, between the pinned top and bottom. On very short screens (a phone
+  // held sideways) that middle would shrink to no links at all, so there the whole column
+  // scrolls instead. `close` (the drawer's button) sits inside, so it scrolls away with the top.
+  const sidebar = (close?: ReactNode) => (
+    <div className="relative flex h-full flex-col overflow-hidden bg-ink glow-dark px-4 pb-6 pt-7 text-cream/65 border-r border-white/[0.06] [@media(max-height:500px)]:overflow-y-auto">
+      {close}
       <div className="shrink-0">
         <div className="px-2 shrink-0">
           <Brand />
@@ -468,18 +493,22 @@ export default function App() {
           <div className="relative flex-1">
             <Search className="pointer-events-none absolute left-3 top-2.5 size-4 text-cream/35" />
             <input
+              ref={navSearchRef}
               type="text"
               aria-label="Search navigation"
               value={navSearch}
               onChange={(e) => setNavSearch(e.target.value)}
               placeholder="Search..."
-              className="h-9 w-full rounded-full border border-white/[0.08] bg-white/[0.05] pl-9 pr-7 text-[13px] text-cream placeholder:text-cream/35 transition-[background-color,border-color,box-shadow] duration-200 focus:border-brand-500/50 focus:bg-white/[0.08] focus:shadow-[0_0_0_4px_rgb(255_105_44/0.15)] focus:outline-none"
+              className="h-9 w-full rounded-full border border-white/[0.08] bg-white/[0.05] pl-9 pr-8 text-[16px] text-cream placeholder:text-cream/55 transition-[background-color,border-color,box-shadow] duration-200 focus:border-brand-500/50 focus:bg-white/[0.08] focus:shadow-[0_0_0_4px_rgb(255_105_44/0.15)] focus:outline-hidden md:text-[13px]"
             />
             {navSearch && (
               <button
                 type="button"
-                className="absolute right-2.5 top-2.5 text-cream/40 hover:text-white"
-                onClick={() => setNavSearch('')}
+                className="absolute right-1.5 top-1/2 grid size-6 -translate-y-1/2 place-items-center rounded-full text-cream/60 hover:text-white"
+                onClick={() => {
+                  setNavSearch('');
+                  navSearchRef.current?.focus();
+                }}
                 aria-label="Clear search"
               >
                 <X className="size-3.5" />
@@ -496,7 +525,7 @@ export default function App() {
               setMobile(false);
             }}
           >
-            <SlidersHorizontal className="size-3.5" />
+            <CircleHelp className="size-3.5" />
           </button>
         </div>
 
@@ -510,7 +539,7 @@ export default function App() {
         </div>
       </div>
 
-      <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar-dark pr-1 -mr-1">
+      <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar-dark pr-1 -mr-1 [@media(max-height:500px)]:flex-none [@media(max-height:500px)]:overflow-visible">
         <nav aria-label="Main navigation" className="stagger space-y-[3px]">
           {filteredNav.map((item) => (
             <button
@@ -524,6 +553,7 @@ export default function App() {
               {item.id === 'orders' && pending > 0 && (
                 <span className="pop-in ml-auto rounded-full bg-brand-500 px-2 py-0.5 text-[11px] font-bold tabular-nums text-ink shadow-[0_6px_14px_-6px_rgb(255_105_44/0.9)]">
                   {pending}
+                  <span className="sr-only"> pending</span>
                 </span>
               )}
               {item.id === 'playground' && (
@@ -555,12 +585,15 @@ export default function App() {
         )}
 
         {filteredNav.length === 0 && filteredManage.length === 0 && (
-          <div className="py-6 text-center text-xs text-cream/40">
+          <div className="py-6 text-center text-xs text-cream/60">
             <p>No matching pages</p>
             <button
               type="button"
               className="mt-2 font-semibold text-brand-500 underline decoration-2 underline-offset-4 transition-colors hover:text-brand-400"
-              onClick={() => setNavSearch('')}
+              onClick={() => {
+                setNavSearch('');
+                navSearchRef.current?.focus();
+              }}
             >
               Clear search
             </button>
@@ -622,7 +655,19 @@ export default function App() {
       }}
     >
       <div className="min-h-dvh canvas-glow">
-        <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 lg:block">{sidebar}</aside>
+        {/* Hidden above the screen until a keyboard user tabs to it. */}
+        <a
+          href="#main"
+          className="btn btn-ink fixed left-4 top-4 z-[70] -translate-y-[200%] focus:translate-y-0"
+          onClick={(e) => {
+            // Focus moves without a #main history entry (Back would then do nothing visible).
+            e.preventDefault();
+            document.getElementById('main')?.focus();
+          }}
+        >
+          Skip to content
+        </a>
+        <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 lg:block">{sidebar()}</aside>
         <Dialog.Root open={mobile} onOpenChange={setMobile}>
           <Dialog.Portal>
             <Dialog.Overlay
@@ -630,21 +675,29 @@ export default function App() {
               onClick={() => setMobile(false)}
             />
             <Dialog.Content
+              {...drawerFocus}
+              onOpenAutoFocus={() => {
+                drawerFocus.onOpenAutoFocus();
+                document
+                  .querySelector('.drawer-content .side-link[aria-current="page"]')
+                  ?.scrollIntoView({ block: 'nearest' });
+              }}
               onInteractOutside={keepOpenForToasts}
               aria-describedby={undefined}
               className="drawer-content fixed inset-y-0 left-0 z-50 flex w-72 max-w-[85vw] flex-col rounded-r-[28px] bg-ink shadow-[24px_0_60px_-24px_rgb(0_0_0/0.6)] overflow-hidden"
             >
               <Dialog.Title className="sr-only">Workspace navigation</Dialog.Title>
-              <div className="absolute right-3 top-4 z-10">
-                <button
-                  className="flex size-8 items-center justify-center rounded-full text-cream/50 transition-[background-color,color,translate,scale] duration-200 hover:bg-white/10 hover:text-white active:scale-90"
-                  aria-label="Close navigation"
-                  onClick={() => setMobile(false)}
-                >
-                  <X className="size-5" />
-                </button>
-              </div>
-              {sidebar}
+              {sidebar(
+                <div className="absolute right-3 top-4 z-10">
+                  <button
+                    className="flex size-11 items-center justify-center rounded-full text-cream/50 transition-[background-color,color,translate,scale] duration-200 hover:bg-white/10 hover:text-white active:scale-90"
+                    aria-label="Close navigation"
+                    onClick={() => setMobile(false)}
+                  >
+                    <X className="size-5" />
+                  </button>
+                </div>,
+              )}
             </Dialog.Content>
           </Dialog.Portal>
         </Dialog.Root>
@@ -700,7 +753,7 @@ export default function App() {
                 </div>
                 <div className="hidden text-xs xl:block">
                   <p className="text-[13px] font-semibold text-ink">{label(data.role)}</p>
-                  <p className="text-[11px] text-stone-400">
+                  <p className="text-[11px] text-stone-500">
                     {data.mode === 'demo' ? 'Demo workspace' : 'Team workspace'}
                   </p>
                 </div>
@@ -737,7 +790,11 @@ export default function App() {
               </button>
             </div>
           )}
-          <main id="main" className="mx-auto max-w-7xl px-4 py-6 sm:px-8 lg:px-10 lg:py-8">
+          <main
+            id="main"
+            tabIndex={-1}
+            className="mx-auto max-w-7xl px-4 py-6 outline-none sm:px-8 lg:px-10 lg:py-8"
+          >
             <div className="mb-4 empty:hidden">
               <ErrorNotice message={error} onDismiss={() => setError('')} />
             </div>
@@ -762,7 +819,7 @@ export default function App() {
                 </Suspense>
               )}
             </div>
-            <footer className="mt-10 flex flex-wrap justify-between gap-2 border-t border-ink/[0.06] pt-5 text-xs text-stone-400">
+            <footer className="mt-10 flex flex-wrap justify-between gap-2 border-t border-ink/[0.06] pt-5 text-xs text-stone-500">
               <span>Orderly · Conversations to orders</span>
               <nav className="flex flex-wrap gap-3">
                 <a className="transition-colors hover:text-ink" href="/privacy">
@@ -847,7 +904,10 @@ function Brand({ dark = true }: { dark?: boolean }) {
         <MessageCircle className="size-5" strokeWidth={2.5} />
         <span className="live-dot absolute right-1.5 top-1.5 size-1.5 rounded-full bg-current text-brand-500 ring-2 ring-canvas" />
       </span>
-      orderly<span className="text-brand-500">.</span>
+      {/* One flex item, so the gap doesn't separate the word from its dot. */}
+      <span>
+        orderly<span className="text-brand-500">.</span>
+      </span>
     </div>
   );
 }
@@ -857,7 +917,7 @@ function FirstBusiness({ onCreated }: { onCreated: (id: string) => void }) {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   return (
-    <div className="grid min-h-dvh place-items-center canvas-glow px-4 py-8">
+    <main className="grid min-h-dvh place-items-center canvas-glow px-4 py-8">
       <div className="w-full max-w-md">
         <Brand dark={false} />
         <form
@@ -900,7 +960,7 @@ function FirstBusiness({ onCreated }: { onCreated: (id: string) => void }) {
           </ActionButton>
         </form>
       </div>
-    </div>
+    </main>
   );
 }
 
@@ -911,7 +971,7 @@ function Login({ client, notice: initialNotice }: { client: SupabaseClient; noti
   const [busy, setBusy] = useState<'' | 'signin' | 'reset'>('');
   const [notice, setNotice] = useState(initialNotice ?? '');
   return (
-    <div className="grid min-h-dvh place-items-center canvas-glow px-4 py-8">
+    <main className="grid min-h-dvh place-items-center canvas-glow px-4 py-8">
       <div className="w-full max-w-md">
         <Brand dark={false} />
         <div className="card enter-rise mt-8 p-7 sm:p-9 [--d:120ms]">
@@ -1006,12 +1066,12 @@ function Login({ client, notice: initialNotice }: { client: SupabaseClient; noti
             Send password reset link
           </ActionButton>
           <p className="mt-6 text-xs leading-relaxed text-stone-400">
-            Workspace access is managed by your administrator. Contact them if you need an account
+            Workspace access is managed by your administrator. Contact them if you need account
             access. Enter your email above to request a password reset.
           </p>
         </div>
       </div>
-    </div>
+    </main>
   );
 }
 
@@ -1074,10 +1134,12 @@ function AccountChallenge({
         <button type="button" className="btn w-full" onClick={() => void client.auth.signOut()}>
           Sign out
         </button>
-        <p className="text-xs text-stone-500">
-          Lost your authenticator? Contact Orderly support for identity verification and account
-          recovery.
-        </p>
+        {factorId && (
+          <p className="text-xs text-stone-500">
+            Lost your authenticator? Contact Orderly support for identity verification and account
+            recovery.
+          </p>
+        )}
       </form>
     </main>
   );

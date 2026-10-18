@@ -10,6 +10,7 @@ import {
   Plus,
   RefreshCw,
   ShoppingBag,
+  Trash2,
   Truck,
   X,
 } from 'lucide-react';
@@ -57,6 +58,25 @@ function hoursText({ start, end, days }: PublicMenu['restaurant']['openingHours'
           .map((day) => DAYS[day])
           .join(', ') || 'Closed';
   return start === end ? `${when} · open all day` : `${when} · ${start}–${end}`;
+}
+/** Whether the restaurant still opens later today, in its own time zone. */
+function opensLaterToday({ timezone, openingHours }: PublicMenu['restaurant']) {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      weekday: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(new Date());
+    const part = (type: string) => parts.find((p) => p.type === type)?.value ?? '';
+    return (
+      openingHours.days.includes(DAYS.indexOf(part('weekday'))) &&
+      `${part('hour')}:${part('minute')}` < openingHours.start
+    );
+  } catch {
+    return false;
+  }
 }
 const LINK_ENDED = 'This link has expired. Send “menu” in WhatsApp to get a fresh one.';
 const ENDED_STATES = ['expired', 'used', 'stale', 'invalid'];
@@ -109,20 +129,27 @@ function Stepper({
   value,
   onChange,
   label,
+  min = 0,
+  removeAtOne = false,
 }: {
   value: number;
   onChange: (value: number) => void;
   label: string;
+  min?: number;
+  /** Minus at 1 takes the line out, so it says so (checkout lines only). */
+  removeAtOne?: boolean;
 }) {
+  const removes = removeAtOne && value === 1;
   return (
     <div className="inline-flex items-center gap-1 rounded-full bg-white/80 p-0.5">
       <button
         type="button"
         className="icon-btn size-8"
-        aria-label={`One less ${label}`}
+        aria-label={removes ? `Remove ${label}` : `One less ${label}`}
+        disabled={value <= min}
         onClick={() => onChange(value - 1)}
       >
-        <Minus className="size-3.5" />
+        {removes ? <Trash2 className="size-3.5" /> : <Minus className="size-3.5" />}
       </button>
       <span
         className="min-w-6 text-center text-[13px] font-semibold tabular-nums"
@@ -178,7 +205,10 @@ function OptionPicker({
         <fieldset className="space-y-1.5">
           <legend className="field-label">Extras</legend>
           {item.modifiers.map((extra) => (
-            <label key={extra.id} className="flex items-center gap-2.5 text-[13px] text-stone-700">
+            <label
+              key={extra.id}
+              className="flex items-center gap-2.5 text-[13px] text-stone-700 max-md:min-h-11"
+            >
               <input
                 type="checkbox"
                 className="size-4 accent-brand-600"
@@ -199,6 +229,7 @@ function OptionPicker({
         <Stepper
           value={quantity}
           label={item.name}
+          min={1}
           onChange={(value) => setQuantityValue(Math.max(1, Math.min(50, value)))}
         />
         <button
@@ -237,24 +268,30 @@ export function ItemCard({
   onAdd: (line: Omit<CartItem, 'notes'>) => void;
 }) {
   const options = item.variants.length > 0 || item.modifiers.length > 0;
+  const toggle = useRef<HTMLButtonElement>(null);
+  const action = options ? (picking ? 'Close' : 'Choose') : 'Add';
   return (
     <article className="card p-4">
       <div className="flex gap-4">
         <Photo item={item} />
         <div className="min-w-0 flex-1">
-          <div className="flex items-start justify-between gap-2">
+          {/* Live, so a screen reader hears '1 in order' after Add. */}
+          <div className="flex flex-wrap items-start justify-between gap-2" aria-live="polite">
             <h3 className="text-[15px] leading-snug font-semibold text-ink">{item.name}</h3>
             {!item.available ? (
               <Badge>Sold out</Badge>
             ) : inCart > 0 ? (
-              <Badge tone="green">{inCart} in order</Badge>
+              <Badge tone="green">{`${inCart} in order`}</Badge>
             ) : null}
           </div>
           {item.description && (
             <p className="mt-1 text-[12.5px] leading-relaxed text-stone-500">{item.description}</p>
           )}
           <p className="mt-2 text-[13.5px] font-semibold tabular-nums text-brand-800">
-            {money(item.price)}
+            {/* With variants, a variant's price is charged, never the base price. */}
+            {money(
+              item.variants.length ? Math.min(...item.variants.map((v) => v.price)) : item.price,
+            )}
           </p>
           {item.variants.length > 0 && (
             <p className="mt-1 text-xs leading-relaxed text-stone-600">
@@ -268,8 +305,10 @@ export function ItemCard({
           )}
           {ordering && item.available && (
             <button
+              ref={toggle}
               type="button"
               className="btn mt-3 min-h-9 px-4"
+              aria-label={`${action} ${item.name}`}
               aria-expanded={options ? picking : undefined}
               onClick={() =>
                 options
@@ -278,7 +317,7 @@ export function ItemCard({
               }
             >
               {options && picking ? <X className="size-4" /> : <Plus className="size-4" />}
-              {options ? (picking ? 'Close' : 'Choose') : 'Add'}
+              {action}
             </button>
           )}
         </div>
@@ -289,6 +328,8 @@ export function ItemCard({
           onAdd={(line) => {
             onAdd(line);
             onPick(false);
+            // The picker (and its focused Add) goes away: keep focus on this dish.
+            toggle.current?.focus();
           }}
         />
       )}
@@ -338,6 +379,11 @@ export function OrderingNotice({
   whatsapp?: string;
 }) {
   const { ordering, restaurant } = menu;
+  const { start, end } = restaurant.openingHours;
+  const closed = ordering.reason === 'closed' || session?.state === 'closed';
+  // Only before today's opening time; 'open all day' has none.
+  const opensAt =
+    closed && start !== end && opensLaterToday(restaurant) ? ` We open at ${start}.` : '';
   return session?.state === 'staff' ? (
     <Banner>
       Our team is chatting with you on WhatsApp. Continue there to order.
@@ -352,10 +398,14 @@ export function OrderingNotice({
     <Banner>Ordering isn’t available for this chat.</Banner>
   ) : ordering.reason === 'bot_off' || session?.state === 'bot_off' ? (
     <Banner>Online ordering is paused right now. You can still browse the menu.</Banner>
-  ) : ordering.reason === 'closed' || session?.state === 'closed' ? (
-    <Banner>We’re closed right now. We open at {restaurant.openingHours.start}.</Banner>
+  ) : closed ? (
+    <Banner>{`We’re closed right now.${opensAt}`}</Banner>
   ) : ordering.reason === 'unavailable' ? (
-    <Banner>Ordering isn’t available right now. You can still browse the menu.</Banner>
+    <Banner>
+      {menu.categories.length
+        ? 'Ordering isn’t available right now. You can still browse the menu.'
+        : 'Ordering isn’t available right now.'}
+    </Banner>
   ) : ordering.reason === 'no_whatsapp' && !hasLink ? (
     // A personal link still orders into its own chat, so this is only for Instagram/QR visitors.
     <Banner>
@@ -377,7 +427,14 @@ export function MenuPage({ slug }: { slug: string }) {
   const [drafted, setDrafted] = useState<DraftCode | undefined>(() => loadDraft(slug));
   const [cart, setCart] = useState<CartItem[]>(() => loadCart(slug));
   const [picking, setPicking] = useState<string>();
-  const [checkout, setCheckout] = useState(false);
+  // A reload during checkout keeps its Back entry, so checkout reopens and Back still closes it.
+  const [checkout, setCheckout] = useState(() => {
+    try {
+      return (history.state as { menuCheckout?: boolean } | null)?.menuCheckout === true;
+    } catch {
+      return false;
+    }
+  });
   const [fulfillment, setFulfillment] = useState<WebCart['fulfillment']>('pickup');
   const [name, setName] = useState('');
   const [address, setAddress] = useState('');
@@ -390,6 +447,9 @@ export function MenuPage({ slug }: { slug: string }) {
   const placing = useRef(false);
   // The personal link's token, also kept here so Try again works where storage is refused.
   const linkToken = useRef<string>(undefined);
+  const checkoutHeading = useRef<HTMLHeadingElement>(null);
+  const menuHeading = useRef<HTMLHeadingElement>(null);
+  const cartBar = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     let live = true;
@@ -465,6 +525,15 @@ export function MenuPage({ slug }: { slug: string }) {
     return () => window.removeEventListener('popstate', close);
   }, []);
 
+  // The button that opened or left checkout is gone, so focus moves to the new view: the
+  // checkout heading, or back on the menu the View order bar (the heading if the cart emptied).
+  // No scroll: Back restores the menu where the customer left it.
+  useEffect(() => {
+    (checkout ? checkoutHeading.current : (cartBar.current ?? menuHeading.current))?.focus({
+      preventScroll: true,
+    });
+  }, [checkout]);
+
   // Checkout has its own history entry so the phone's Back button closes it. Every way out of
   // checkout comes through here and drops that entry, so Back never lands on a stale one.
   const leaveCheckout = () => {
@@ -489,7 +558,7 @@ export function MenuPage({ slug }: { slug: string }) {
             <MessageCircle className="size-5" />
             Confirm on WhatsApp
           </a>
-          <p className="mt-5 font-mono text-[26px] font-semibold tracking-[0.12em] text-ink">
+          <p className="mt-5 font-mono text-[26px] font-semibold tracking-[0.12em] text-ink select-all">
             {drafted.code}
           </p>
           <p className="mt-3 text-[13px] leading-relaxed text-stone-500">
@@ -540,7 +609,15 @@ export function MenuPage({ slug }: { slug: string }) {
                 : failure.message}
             </p>
             {!failure.missing && (
-              <button className="btn mt-5" onClick={() => setAttempt((n) => n + 1)}>
+              <button
+                type="button"
+                className="btn mt-5"
+                onClick={() => {
+                  // Back to 'Opening the menu…' while it tries again.
+                  setFailure(undefined);
+                  setAttempt((n) => n + 1);
+                }}
+              >
                 <RefreshCw className="size-4" />
                 Try again
               </button>
@@ -714,7 +791,9 @@ export function MenuPage({ slug }: { slug: string }) {
           <ArrowLeft className="size-4" />
           Back to menu
         </button>
-        <h1 className="page-title mb-5">Your order</h1>
+        <h1 ref={checkoutHeading} tabIndex={-1} className="page-title mb-5 outline-none">
+          Your order
+        </h1>
         {notice && <Banner>{notice}</Banner>}
         <section className="card mb-4 divide-y divide-ink/[0.06] px-4">
           {cart.map((line, index) => {
@@ -725,7 +804,12 @@ export function MenuPage({ slug }: { slug: string }) {
               ...line.modifierIds.map((id) => item?.modifiers.find((m) => m.id === id)?.name),
             ].filter(Boolean);
             return (
-              <div key={index} className="flex items-center gap-3 py-3">
+              // Keyed by the line itself, so removing one row doesn't hand its focused
+              // button to the next dish.
+              <div
+                key={`${line.productId}|${line.variantId ?? ''}|${[...line.modifierIds].sort().join(',')}`}
+                className="flex items-center gap-3 py-3"
+              >
                 <div className="min-w-0 flex-1">
                   <p className="text-[14px] font-semibold text-ink">
                     {item?.name ?? 'No longer on the menu'}
@@ -743,6 +827,7 @@ export function MenuPage({ slug }: { slug: string }) {
                 <Stepper
                   value={line.quantity}
                   label={item?.name ?? 'item'}
+                  removeAtOne
                   onChange={(value) => setCart((current) => setQuantity(current, index, value))}
                 />
               </div>
@@ -780,7 +865,10 @@ export function MenuPage({ slug }: { slug: string }) {
               autoComplete="name"
               maxLength={80}
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(e) => {
+                setName(e.target.value);
+                setError('');
+              }}
             />
           </Field>
           {fulfillment === 'delivery' && (
@@ -789,7 +877,10 @@ export function MenuPage({ slug }: { slug: string }) {
                 <CustomSelect
                   aria-label="Delivery area"
                   value={zone}
-                  onChange={setZone}
+                  onChange={(value) => {
+                    setZone(value);
+                    setError('');
+                  }}
                   placeholder="Choose your area"
                   options={restaurant.deliveryZones.map((z) => ({
                     value: z.name,
@@ -803,7 +894,10 @@ export function MenuPage({ slug }: { slug: string }) {
                   autoComplete="street-address"
                   maxLength={400}
                   value={address}
-                  onChange={(e) => setAddress(e.target.value)}
+                  onChange={(e) => {
+                    setAddress(e.target.value);
+                    setError('');
+                  }}
                 />
               </Field>
             </>
@@ -861,7 +955,8 @@ export function MenuPage({ slug }: { slug: string }) {
               <span className="tabular-nums">{money(priced.quote.total)}</span>
             </p>
           ) : (
-            <p className="text-stone-500">{priced.error}</p>
+            // An empty cart is already explained in the order card above.
+            cart.length > 0 && <p className="text-stone-500">{priced.error}</p>
           )}
           <p className="pt-1 text-xs text-stone-500">
             Pay cash {fulfillment === 'delivery' ? 'on delivery' : 'at pickup'}.
@@ -888,7 +983,9 @@ export function MenuPage({ slug }: { slug: string }) {
   return (
     <Shell>
       <header className="mb-5">
-        <h1 className="page-title">{restaurant.name}</h1>
+        <h1 ref={menuHeading} tabIndex={-1} className="page-title outline-none">
+          {restaurant.name}
+        </h1>
         <div className="mt-3 flex flex-wrap items-center gap-2 text-[13px] text-stone-500">
           <Badge tone={ordering.open ? 'green' : 'neutral'}>
             <span className="size-1.5 rounded-full bg-current" />
@@ -921,7 +1018,7 @@ export function MenuPage({ slug }: { slug: string }) {
       {menu.categories.length > 1 && (
         <nav
           aria-label="Menu sections"
-          className="sticky top-0 z-10 -mx-4 mb-5 bg-canvas/95 px-4 py-2"
+          className="sticky top-0 z-10 -mx-4 mb-5 bg-canvas px-4 py-2"
         >
           <div className="tab-group">
             {menu.categories.map((category, index) => (
@@ -934,7 +1031,13 @@ export function MenuPage({ slug }: { slug: string }) {
       )}
       {menu.categories.length ? (
         menu.categories.map((category, index) => (
-          <section key={category.name} id={`section-${index}`} className="mb-7 scroll-mt-16">
+          <section
+            key={category.name}
+            id={`section-${index}`}
+            // The page's 88px scroll padding is sized for the taller phone bar; the 52px bar
+            // from md would otherwise show a sliver of the previous card.
+            className="mb-7 md:-scroll-mt-3"
+          >
             <h2 className="eyebrow mb-3">{category.name}</h2>
             <div className="grid gap-3">
               {category.items.map((item) => (
@@ -952,7 +1055,9 @@ export function MenuPage({ slug }: { slug: string }) {
           </section>
         ))
       ) : (
-        <ErrorNotice message="The menu is empty right now. Please check back soon." />
+        <p className="card p-6 text-center text-[13.5px] text-stone-500">
+          The menu is empty right now. Please check back soon.
+        </p>
       )}
       <section className="card mt-8 space-y-3 p-5 text-[13px] text-stone-600">
         <h2 className="panel-title text-[22px]">Visit or order</h2>
@@ -991,10 +1096,11 @@ export function MenuPage({ slug }: { slug: string }) {
           </a>
         )}
       </section>
-      <p className="mt-6 text-center text-[11px] text-stone-400">Menu by Orderly</p>
+      <p className="mt-6 text-center text-[11px] text-stone-500">Menu by Orderly</p>
       {canOrder && total > 0 && (
         <div className="fixed inset-x-0 bottom-0 z-20 px-4 pb-4">
           <button
+            ref={cartBar}
             type="button"
             className="btn btn-primary mx-auto flex w-full max-w-2xl justify-between"
             onClick={openCheckout}

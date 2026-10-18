@@ -715,7 +715,9 @@ describe('UI Helper Utilities and Edge Case Resilience', () => {
     expect(initials('')).toBe('O');
     expect(initials('   ')).toBe('O');
     expect(initials('Orderly')).toBe('O');
-    expect(initials('Bun & Co.')).toBe('B&');
+    expect(initials('Bun & Co.')).toBe('BC');
+    expect(initials('Ali (demo)')).toBe('AD');
+    expect(initials('😊 Sana')).toBe('S');
     expect(initials('The Pizza Place')).toBe('TP');
   });
 

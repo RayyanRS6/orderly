@@ -46,9 +46,9 @@ const publicPage = legalKind ? (
 );
 const rootElement = typeof document !== 'undefined' ? document.getElementById('root') : null;
 
-const wrap = (page: ReactNode) => (
+const wrap = (page: ReactNode, customer = false) => (
   <StrictMode>
-    <ErrorBoundary>{page}</ErrorBoundary>
+    <ErrorBoundary customer={customer}>{page}</ErrorBoundary>
   </StrictMode>
 );
 
@@ -61,8 +61,10 @@ if (rootElement) {
   if (menuSlug) {
     // The page's "Opening the menu…" shell stays up until the code arrives (no hydration).
     import('./components/MenuPage').then(
-      ({ MenuPage }) => ReactDOM.createRoot(rootElement).render(wrap(<MenuPage slug={menuSlug} />)),
-      (error: Error) => ReactDOM.createRoot(rootElement).render(wrap(<LoadFailed error={error} />)),
+      ({ MenuPage }) =>
+        ReactDOM.createRoot(rootElement).render(wrap(<MenuPage slug={menuSlug} />, true)),
+      (error: Error) =>
+        ReactDOM.createRoot(rootElement).render(wrap(<LoadFailed error={error} />, true)),
     );
   } else if (isWorkspace) {
     // The page's own "Opening your workspace…" shell stays up until the code arrives.

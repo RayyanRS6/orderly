@@ -76,7 +76,15 @@ export function Overview() {
     };
   });
   const maxCount = Math.max(1, ...daysData.map((day) => day.count));
+  const periodTotal = daysData.reduce((sum, day) => sum + day.count, 0);
   const whatsapp = integrations.find((i) => i.kind === 'whatsapp');
+  // Same answer as Launch readiness: a number that is connected but not yet verified isn't done.
+  const whatsappDone =
+    data.readiness?.find((c) => c.id === 'whatsapp')?.ready ?? whatsapp?.status === 'connected';
+  const setupDone =
+    Number(products.length > 0) +
+    Number(whatsappDone) +
+    Number(integrations.some((i) => i.kind === 'sheets' && i.status === 'connected'));
   return (
     <>
       <PageHeading
@@ -107,6 +115,8 @@ export function Overview() {
                 className="flex items-center gap-2.5 rounded-2xl bg-white/60 px-3 py-2 ring-1 ring-ink/[0.04]"
               >
                 <span
+                  role="img"
+                  aria-label={c.ready ? 'Complete' : 'Required'}
                   className={cn(
                     'inline-flex size-5 shrink-0 items-center justify-center rounded-full text-[11px] leading-none font-bold',
                     c.ready
@@ -121,7 +131,8 @@ export function Overview() {
             ))}
           </ul>
           <p className="mt-4 text-xs text-stone-500">
-            {data.summary?.needsStaff ?? 0} conversations need staff.{' '}
+            {data.summary?.needsStaff ?? 0}{' '}
+            {data.summary?.needsStaff === 1 ? 'conversation needs' : 'conversations need'} staff.{' '}
             <button
               className="font-semibold text-brand-700 underline-offset-4 transition-colors hover:text-brand-800 hover:underline"
               onClick={() => navigate('inbox')}
@@ -233,13 +244,13 @@ export function Overview() {
           </div>
         ))}
       </section>
-      <div className="mb-8 grid gap-6 xl:grid-cols-3">
+      <div className="mb-8 grid grid-cols-1 gap-6 xl:grid-cols-3">
         <section className="card p-6 overflow-hidden xl:col-span-2">
           <div className="flex flex-wrap items-center justify-between gap-3 mb-5">
             <div>
               <h2 className="panel-title">Orders over time</h2>
               <p className="mt-1 text-xs text-stone-400">
-                {daysData.reduce((sum, day) => sum + day.count, 0)} orders in the last {days} days
+                {periodTotal} {periodTotal === 1 ? 'order' : 'orders'} in the last {days} days
               </p>
             </div>
             <div className="tab-group">
@@ -264,7 +275,7 @@ export function Overview() {
           <div className="mb-5 flex flex-wrap items-center gap-x-6 gap-y-3 border-b border-ink/[0.06] pb-4 text-xs font-bold">
             <div className="flex items-baseline gap-2">
               <span className="pop-up inline-block origin-bottom-left font-serif text-[34px] leading-none font-normal tracking-[-0.01em] text-ink tabular-nums [--d:180ms]">
-                {daysData.reduce((sum, day) => sum + day.count, 0)}
+                {periodTotal}
               </span>
               <span className="text-[10.5px] font-semibold tracking-[0.12em] text-stone-400 uppercase">
                 Total
@@ -278,7 +289,7 @@ export function Overview() {
             </div>
             <div className="flex items-baseline gap-2">
               <span className="pop-up inline-block origin-bottom-left font-serif text-[34px] leading-none font-normal tracking-[-0.01em] text-ink tabular-nums [--d:320ms]">
-                {(daysData.reduce((sum, day) => sum + day.count, 0) / days).toFixed(1)}
+                {(periodTotal / days).toFixed(1)}
               </span>
               <span className="text-[10.5px] font-semibold tracking-[0.12em] text-stone-400 uppercase">
                 Avg / day
@@ -295,17 +306,24 @@ export function Overview() {
               <div className="border-t border-dashed border-ink/[0.09]" />
             </div>
             <div
-              className="relative flex h-48 items-end justify-between gap-2 pt-3"
+              className={cn(
+                'relative flex h-48 items-end justify-between gap-2 pt-3',
+                // 29 full gaps would leave 30 bars about 2px wide on a phone.
+                days === 30 && 'gap-0.5 sm:gap-1.5',
+              )}
               role="img"
               aria-label={daysData
-                .map((d) => `${d.date.toLocaleDateString()}: ${d.count} orders`)
+                .map(
+                  (d) =>
+                    `${d.date.toLocaleDateString()}: ${d.count} ${d.count === 1 ? 'order' : 'orders'}`,
+                )
                 .join('; ')}
             >
               {daysData.map((day, i) => (
                 <div key={i} className="flex h-full min-w-0 flex-1 flex-col justify-end">
                   <div className="flex flex-1 items-end justify-center">
                     <div
-                      title={`${day.count} orders`}
+                      title={`${day.count} ${day.count === 1 ? 'order' : 'orders'}`}
                       style={
                         {
                           height: day.count
@@ -344,31 +362,14 @@ export function Overview() {
             <div className="flex items-center justify-between">
               <h2 className="panel-title">Your setup</h2>
               <span className="pop-in inline-block rounded-full bg-ink px-2.5 py-0.5 text-[11px] font-semibold text-cream tabular-nums shadow-[0_8px_16px_-8px_rgb(14_6_4/0.7)] [--d:220ms]">
-                {Number(data.products.length > 0) +
-                  Number(whatsapp?.status === 'connected') +
-                  Number(
-                    data.integrations.some((i) => i.kind === 'sheets' && i.status === 'connected'),
-                  )}
-                /3
+                {setupDone}/3
               </span>
             </div>
             <div className="mt-3">
               <div className="h-2 w-full overflow-hidden rounded-full bg-ink/[0.07]">
                 <div
                   className="h-full rounded-full bg-brand-500 transition-[width] duration-700 ease-[var(--ease-soft)]"
-                  style={{
-                    width: `${
-                      ((Number(data.products.length > 0) +
-                        Number(whatsapp?.status === 'connected') +
-                        Number(
-                          data.integrations.some(
-                            (i) => i.kind === 'sheets' && i.status === 'connected',
-                          ),
-                        )) /
-                        3) *
-                      100
-                    }%`,
-                  }}
+                  style={{ width: `${(setupDone / 3) * 100}%` }}
                 />
               </div>
             </div>
@@ -382,11 +383,8 @@ export function Overview() {
                 },
                 {
                   title: 'Connect WhatsApp',
-                  sub:
-                    whatsapp?.status === 'connected'
-                      ? 'Credentials verified'
-                      : 'Link a business phone number',
-                  done: whatsapp?.status === 'connected',
+                  sub: whatsappDone ? 'Credentials verified' : 'Link a business phone number',
+                  done: whatsappDone,
                   page: 'integrations' as const,
                 },
                 {
@@ -416,10 +414,10 @@ export function Overview() {
                     )}
                   </span>
                   <span className="flex-1 min-w-0">
-                    <span className="block truncate text-[13px] font-semibold text-ink">
+                    <span className="line-clamp-2 text-[13px] font-semibold text-ink">
                       {step.title}
                     </span>
-                    <span className="mt-0.5 block truncate text-[11.5px] text-stone-500">
+                    <span className="mt-0.5 line-clamp-2 text-[11.5px] text-stone-500">
                       {step.sub}
                     </span>
                   </span>
@@ -434,10 +432,11 @@ export function Overview() {
         <div className="flex items-center justify-between gap-3 px-6 pt-6 pb-3">
           <div className="flex items-center gap-2.5">
             <h2 className="panel-title">Recent orders</h2>
-            <Badge tone="neutral">{orders.length}</Badge>
+            {/* The workspace total: the loaded list stops at 50. */}
+            <Badge tone="neutral">{(data.summary?.orders ?? orders.length).toLocaleString()}</Badge>
           </div>
           <button
-            className="-mr-3 inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[12.5px] font-semibold text-brand-700 transition-colors hover:bg-brand-500/10 hover:text-brand-800"
+            className="-mr-3 inline-flex min-h-11 items-center gap-1.5 whitespace-nowrap rounded-full px-3 py-1.5 text-[12.5px] font-semibold text-brand-700 transition-colors hover:bg-brand-500/10 hover:text-brand-800 md:min-h-0"
             onClick={() => navigate('orders')}
           >
             View all orders
@@ -450,6 +449,8 @@ export function Overview() {
             .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
             .slice(0, 5)}
           onSelect={setSelected}
+          // In a live workspace this list leaves out the bot's test orders.
+          emptyDescription={data.mode === 'demo' ? undefined : 'Try the bot and confirm an order.'}
         />
       </section>
       {activity.length > 0 && (
@@ -496,13 +497,22 @@ export function Orders() {
     page: 1,
     pageSize: 50,
   });
+  // error: opening an order or exporting failed. listError: loading the list failed, and
+  // the next good load clears it.
   const [error, setError] = useState('');
+  const [listError, setListError] = useState('');
   const [exporting, setExporting] = useState(false);
   const [sandbox, setSandbox] = useState(data.mode === 'demo');
+  const [loading, setLoading] = useState(false);
   const orders = result.items;
   const filtered = orders;
+  const listKey = [page, query, filter, sandbox].join('|');
+  const loadedKey = useRef(listKey);
   useEffect(() => {
     let active = true;
+    // A new search, filter or page dims the old rows until it loads; the 15s refresh doesn't.
+    const changed = loadedKey.current !== listKey;
+    if (changed) setLoading(true);
     const timer = setTimeout(() => {
       void api<PageResult<Order>>(
         '/orders?page=' +
@@ -516,10 +526,18 @@ export function Orders() {
         data.company.id,
       )
         .then((r) => {
-          if (active) setResult(r);
+          if (!active) return;
+          setResult(r);
+          setListError('');
+          if (changed) setError('');
         })
         .catch((e) => {
-          if (active) setError(e.message);
+          if (active) setListError(e.message);
+        })
+        .finally(() => {
+          if (!active) return;
+          loadedKey.current = listKey;
+          setLoading(false);
         });
     }, 200);
     return () => {
@@ -527,17 +545,31 @@ export function Orders() {
       clearTimeout(timer);
     };
   }, [data.company.id, data.orders, data.summary, query, filter, page, sandbox]);
+  const failedId = useRef<string | undefined>(undefined);
   useEffect(() => {
     let active = true;
-    if (detailId)
+    if (detailId) {
+      // Open at once with the row already loaded; the fetch brings it up to date.
+      const known =
+        result.items.find((o) => o.id === detailId) ?? data.orders.find((o) => o.id === detailId);
+      if (known) setSelected((current) => (current?.id === detailId ? current : known));
       void api<Order>('/orders/' + detailId, data.company.id)
         .then((o) => {
-          if (active) setSelected(o);
+          if (!active) return;
+          failedId.current = undefined;
+          setSelected(o);
+          setError('');
         })
         .catch((e) => {
-          if (active) setError(e.message);
+          if (!active) return;
+          // The 15s refresh asks again: say it once per order, so a dismissed notice stays away.
+          if (failedId.current !== detailId) setError(e.message);
+          failedId.current = detailId;
         });
-    else setSelected(null);
+    } else {
+      failedId.current = undefined;
+      setSelected(null);
+    }
     return () => {
       active = false;
     };
@@ -602,14 +634,15 @@ export function Orders() {
         title="Orders"
         description="From the first hello to the last bite. Keep every order moving."
       >
-        <button
-          className="btn"
-          disabled={!result.total || exporting}
+        <ActionButton
+          disabled={!result.total}
+          loading={exporting}
+          loadingLabel="Exporting…"
           onClick={() => void exportCsv()}
         >
           <ArrowDownToLine className="size-4" />
-          {exporting ? 'Exporting…' : 'Export all matching orders'}
-        </button>
+          Export all matching orders
+        </ActionButton>
         <button className="btn btn-primary" onClick={() => navigate('playground')}>
           <ShoppingBag className="size-4" />
           Try an order
@@ -617,7 +650,7 @@ export function Orders() {
       </PageHeading>
       <section className="card overflow-hidden">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-4 sm:p-6 border-b border-ink/[0.06]">
-          <div className="tab-group" aria-label="Order filters">
+          <div className="tab-group flex-wrap" role="group" aria-label="Order filters">
             {['all', 'pending', 'active', 'completed', 'rejected', 'cancelled'].map((value) => (
               <button
                 key={value}
@@ -651,7 +684,17 @@ export function Orders() {
             />
           </div>
         </div>
-        <ErrorNotice message={error} />
+        {(error || listError) && (
+          <div className="mx-4 mt-4">
+            <ErrorNotice
+              message={error || listError}
+              onDismiss={() => {
+                setError('');
+                setListError('');
+              }}
+            />
+          </div>
+        )}
         <label className="m-4 flex w-fit cursor-pointer items-center gap-2.5 text-[13px] font-medium text-stone-600">
           <input
             className="toggle"
@@ -662,15 +705,36 @@ export function Orders() {
               setPage(1);
             }}
           />
-          Show sandbox orders
+          Show sandbox orders only
         </label>
-        <OrderTable orders={filtered} onSelect={(o) => navigate('orders', o.id)} />
+        <div
+          aria-busy={loading || undefined}
+          className={cn('transition-opacity', loading && 'opacity-60')}
+        >
+          {/* Nothing matches a search or filter: the first-run invitation would wrongly
+              suggest the business has no orders. */}
+          {!orders.length && (query || filter !== 'all') ? (
+            <Empty title="No matching orders" description="Try another search or filter." />
+          ) : (
+            <OrderTable
+              orders={filtered}
+              onSelect={(o) => navigate('orders', o.id, { keepScroll: true })}
+              // The bot's test orders are sandbox orders, hidden while the toggle is off.
+              emptyDescription={
+                sandbox
+                  ? undefined
+                  : 'Try the bot and confirm an order, then turn on “Show sandbox orders only” to see it here.'
+              }
+            />
+          )}
+        </div>
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-ink/[0.06] p-4 text-[13px] text-stone-500">
           <button className="btn" disabled={page === 1} onClick={() => setPage(page - 1)}>
             Previous
           </button>
           <span className="tabular-nums">
-            {result.total} orders · Page {page} of {Math.max(1, Math.ceil(result.total / 50))}
+            {result.total} {result.total === 1 ? 'order' : 'orders'} · Page {page} of{' '}
+            {Math.max(1, Math.ceil(result.total / 50))}
           </span>
           <button
             className="btn"
@@ -683,19 +747,28 @@ export function Orders() {
       </section>
       <OrderDetails
         order={selected ? data.orders.find((o) => o.id === selected.id) || selected : null}
-        onClose={() => navigate('orders')}
+        onClose={() => navigate('orders', undefined, { keepScroll: true })}
       />
     </>
   );
 }
 
-function OrderTable({ orders, onSelect }: { orders: Order[]; onSelect: (order: Order) => void }) {
+function OrderTable({
+  orders,
+  onSelect,
+  emptyDescription = 'Try the bot and confirm an order. It will appear here, ready for your team.',
+}: {
+  orders: Order[];
+  onSelect: (order: Order) => void;
+  emptyDescription?: string;
+}) {
   const { navigate } = useWorkspace();
+  const itemCount = (order: Order) => order.items.reduce((sum, i) => sum + i.quantity, 0);
   if (!orders.length)
     return (
       <Empty
         title="Your next order starts here"
-        description="Try the bot and confirm an order. It will appear here, ready for your team."
+        description={emptyDescription}
         action="Test your bot"
         onAction={() => navigate('playground')}
       />
@@ -738,16 +811,23 @@ function OrderTable({ orders, onSelect }: { orders: Order[]; onSelect: (order: O
           </thead>
           <tbody className="stagger divide-y divide-ink/[0.04] [&>tr]:[animation-name:fade-in]">
             {orders.map((order) => (
-              <tr key={order.id} className="group">
+              <tr
+                key={order.id}
+                className="group cursor-pointer"
+                // The whole row opens the order (the reference button is its keyboard way in,
+                // and its click lands here too). A drag to copy a name or number doesn't.
+                onClick={(event) => {
+                  const fromButton = (event.target as Element).closest('button');
+                  if (!fromButton && window.getSelection()?.toString()) return;
+                  onSelect(order);
+                }}
+              >
                 <td className="table-cell group-hover:shadow-[inset_3px_0_0_var(--color-brand-500)]">
-                  <button
-                    className="text-left font-mono text-[12.5px] font-semibold tracking-[0.02em] text-ink decoration-brand-500 decoration-2 underline-offset-4 transition-colors hover:text-brand-700 hover:underline"
-                    onClick={() => onSelect(order)}
-                  >
+                  <button className="text-left font-mono text-[12.5px] font-semibold tracking-[0.02em] whitespace-nowrap text-ink decoration-brand-500 decoration-2 underline-offset-4 transition-colors hover:text-brand-700 hover:underline">
                     {order.reference}
                   </button>
                   <p className="mt-0.5 text-xs text-stone-500">
-                    {order.items.reduce((sum, i) => sum + i.quantity, 0)} items
+                    {itemCount(order)} {itemCount(order) === 1 ? 'item' : 'items'}
                   </p>
                   {order.source === 'menu_page' && (
                     <div className="mt-1">
@@ -792,8 +872,11 @@ function OrderTable({ orders, onSelect }: { orders: Order[]; onSelect: (order: O
 function OrderDetails({ order, onClose }: { order: Order | null; onClose: () => void }) {
   const { mutate, notify, clearError } = useWorkspace();
   const { pending, run } = useAction();
-  const [reject, setReject] = useState(false);
-  const [rejectError, setRejectError] = useState('');
+  // Stopping an order: rejected while it is pending, cancelled after it was accepted.
+  // The status is kept apart from `open` so the dialog's text holds while it closes.
+  const [stopOpen, setStopOpen] = useState(false);
+  const [stopStatus, setStopStatus] = useState<'rejected' | 'cancelled'>('rejected');
+  const [stopError, setStopError] = useState('');
   // This dialog is reused for every order: an answer about an order no longer shown
   // must not appear as this order's.
   const shown = useRef(order?.id);
@@ -858,7 +941,7 @@ function OrderDetails({ order, onClose }: { order: Order | null; onClose: () => 
                       <p className="mt-1 text-xs text-stone-500">{item.modifiers.join(', ')}</p>
                     )}
                     {item.notes && (
-                      <p className="mt-1 text-xs italic text-stone-500">{item.notes}</p>
+                      <p className="mt-1 text-xs italic text-stone-700">{item.notes}</p>
                     )}
                   </div>
                   <span className="text-sm font-semibold whitespace-nowrap text-ink tabular-nums">
@@ -888,7 +971,7 @@ function OrderDetails({ order, onClose }: { order: Order | null; onClose: () => 
             <div className="mt-5 space-y-2 rounded-2xl border border-ink/[0.05] bg-paper p-4 text-xs text-stone-500">
               <p>
                 <span className="font-semibold text-stone-700">Customer:</span> {order.customerName}{' '}
-                · {order.customerPhone}
+                · <span className="whitespace-nowrap tabular-nums">{order.customerPhone}</span>
               </p>
               {order.address && (
                 <p>
@@ -905,20 +988,20 @@ function OrderDetails({ order, onClose }: { order: Order | null; onClose: () => 
               <CallConfirmation order={order} />
             )}
             {nextStatus && (
-              <div className="mt-6 flex gap-2.5">
-                {order.status === 'pending' && (
-                  <button
-                    className="btn hover:border-red-600/30 hover:bg-red-50 hover:text-red-700"
-                    onClick={() => {
-                      setRejectError('');
-                      setReject(true);
-                    }}
-                  >
-                    Reject order
-                  </button>
-                )}
+              // Wraps on narrow phones; each button then fills its own row.
+              <div className="mt-6 flex flex-wrap gap-2.5">
+                <button
+                  className="btn hover:border-red-600/30 hover:bg-red-50 hover:text-red-700 max-sm:grow"
+                  onClick={() => {
+                    setStopError('');
+                    setStopStatus(order.status === 'pending' ? 'rejected' : 'cancelled');
+                    setStopOpen(true);
+                  }}
+                >
+                  {order.status === 'pending' ? 'Reject order' : 'Cancel order'}
+                </button>
                 <ActionButton
-                  className="btn-primary flex-1"
+                  className="btn-primary grow"
                   loading={pending === `status-${order.id}`}
                   loadingLabel={nextStatus === 'accepted' ? 'Accepting…' : 'Updating…'}
                   onClick={() =>
@@ -936,27 +1019,28 @@ function OrderDetails({ order, onClose }: { order: Order | null; onClose: () => 
         )}
       </Modal>
       <ConfirmDialog
-        open={reject}
-        onOpenChange={setReject}
-        title="Reject this order?"
-        description="The order will be marked rejected. In a live workspace the customer will receive an update."
+        open={stopOpen}
+        onOpenChange={setStopOpen}
+        title={stopStatus === 'rejected' ? 'Reject this order?' : 'Cancel this order?'}
+        description={`The order will be marked ${stopStatus}. In a live workspace the customer will receive an update.`}
         onConfirm={() => {
           const target = order?.id;
-          setRejectError('');
-          void run(`reject-${target}`, async () => {
+          const status = stopStatus;
+          setStopError('');
+          void run(`${status === 'rejected' ? 'reject' : 'cancel'}-${target}`, async () => {
             // The confirmation is shared by all orders: only answer it for this order.
             try {
-              await update('rejected');
-              if (shown.current === target) setReject(false);
+              await update(status);
+              if (shown.current === target) setStopOpen(false);
             } catch (e) {
-              if (shown.current === target) setRejectError((e as Error).message);
+              if (shown.current === target) setStopError((e as Error).message);
             }
           });
         }}
-        busy={pending === `reject-${order?.id}`}
-        busyLabel="Rejecting…"
-        error={rejectError}
-        confirmLabel="Reject order"
+        busy={pending === `${stopStatus === 'rejected' ? 'reject' : 'cancel'}-${order?.id}`}
+        busyLabel={stopStatus === 'rejected' ? 'Rejecting…' : 'Cancelling…'}
+        error={stopError}
+        confirmLabel={stopStatus === 'rejected' ? 'Reject order' : 'Cancel order'}
       />
     </>
   );
@@ -978,8 +1062,9 @@ function CallConfirmation({ order }: { order: Order }) {
         Phone confirmation required
       </h3>
       <p className="text-xs leading-5">
-        Call {order.customerPhone}, verify the order and delivery address, then record the outcome.
-        Orderly does not make this phone call.
+        Call <span className="whitespace-nowrap tabular-nums">{order.customerPhone}</span>, verify
+        the order and delivery address, then record the outcome. Orderly does not make this phone
+        call.
       </p>
       {order.phoneConfirmation && (
         <p className="text-xs">

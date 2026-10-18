@@ -1,4 +1,6 @@
+import { Fragment } from 'react';
 import { MessageCircle } from 'lucide-react';
+import { supportEmail } from './Public';
 
 type LegalKind = 'privacy' | 'terms' | 'data-deletion';
 
@@ -6,8 +8,7 @@ const documents: Record<LegalKind, { title: string; intro: string; sections: [st
   {
     privacy: {
       title: 'Privacy Policy',
-      intro:
-        'Orderly operates this service for connected businesses. The business you message controls its menu, customer relationships and use of your order information; Orderly processes that information to provide the service. Orderly manages its own account, support and security records. Our public contact is waytogalaxy999@gmail.com.',
+      intro: `Orderly operates this service for connected businesses. The business you message controls its menu, customer relationships and use of your order information; Orderly processes that information to provide the service. Orderly manages its own account, support and security records. Our public contact is ${supportEmail}.`,
       sections: [
         [
           'Information we process',
@@ -31,7 +32,7 @@ const documents: Record<LegalKind, { title: string; intro: string; sections: [st
         ],
         [
           'Contact',
-          'Contact Orderly at waytogalaxy999@gmail.com for privacy questions, access, correction or deletion requests. Include the business name and relevant account or phone number. You may also contact the restaurant directly. We verify identity and authorization before acting, and explain any applicable retention restriction. Do not send passwords or access tokens.',
+          `Contact Orderly at ${supportEmail} for privacy questions, access, correction or deletion requests. Include the business name and relevant account or phone number. You may also contact the restaurant directly. We verify identity and authorization before acting, and explain any applicable retention restriction. Do not send passwords or access tokens.`,
         ],
       ],
     },
@@ -69,7 +70,7 @@ const documents: Record<LegalKind, { title: string; intro: string; sections: [st
       sections: [
         [
           'Request deletion',
-          'Email Orderly at waytogalaxy999@gmail.com or contact the business you messaged. Identify the workspace and the account or phone number whose data should be deleted. Owners can also use Security & privacy in the workspace to export or delete customer records after verifying the request. Do not send passwords, access tokens, or verification codes.',
+          `Email Orderly at ${supportEmail} or contact the business you messaged. Identify the workspace and the account or phone number whose data should be deleted. Owners can also use Security & privacy in the workspace to export or delete customer records after verifying the request. Do not send passwords, access tokens, or verification codes.`,
         ],
         [
           'Disconnect Meta access',
@@ -83,10 +84,25 @@ const documents: Record<LegalKind, { title: string; intro: string; sections: [st
     },
   };
 
+// Turns the support address in the copy into a mailto link; the words stay the same.
+function withEmailLink(text: string) {
+  const parts = text.split(supportEmail);
+  return parts.map((part, i) => (
+    <Fragment key={i}>
+      {part}
+      {i < parts.length - 1 && (
+        <a className="text-brand-800 underline underline-offset-2" href={`mailto:${supportEmail}`}>
+          {supportEmail}
+        </a>
+      )}
+    </Fragment>
+  ));
+}
+
 export function LegalPage({ kind }: { kind: LegalKind }) {
   const document = documents[kind];
   return (
-    <div className="min-h-dvh canvas-glow px-4 py-10 text-stone-800 sm:py-16">
+    <main className="min-h-dvh canvas-glow px-4 py-10 text-stone-800 sm:py-16">
       <article className="card enter-rise mx-auto max-w-3xl p-7 sm:p-12">
         <a
           className="group inline-flex items-center gap-3 font-serif text-[28px] font-normal leading-none tracking-[-0.01em] text-ink"
@@ -96,18 +112,21 @@ export function LegalPage({ kind }: { kind: LegalKind }) {
             <MessageCircle className="size-5" strokeWidth={2.5} />
             <span className="live-dot absolute right-1.5 top-1.5 size-1.5 rounded-full bg-current text-brand-500 ring-2 ring-canvas" />
           </span>
-          orderly<span className="text-brand-500">.</span>
+          {/* One flex item, so the gap doesn't separate the word from its dot. */}
+          <span>
+            orderly<span className="text-brand-500">.</span>
+          </span>
         </a>
         <h1 className="mt-10 font-serif text-[40px] font-normal leading-[1.02] tracking-[-0.012em] text-ink sm:text-[52px]">
           {document.title}
         </h1>
-        <p className="mt-4 leading-7 text-stone-600">{document.intro}</p>
+        <p className="mt-4 leading-7 text-stone-600">{withEmailLink(document.intro)}</p>
         <p className="eyebrow mt-4">Effective 16 September 2026</p>
         <div className="stagger mt-10 space-y-8">
           {document.sections.map(([title, copy]) => (
             <section key={title}>
               <h2 className="panel-title">{title}</h2>
-              <p className="mt-2 leading-7 text-stone-600">{copy}</p>
+              <p className="mt-2 leading-7 text-stone-600">{withEmailLink(copy)}</p>
             </section>
           ))}
         </div>
@@ -132,6 +151,6 @@ export function LegalPage({ kind }: { kind: LegalKind }) {
           </a>
         </nav>
       </article>
-    </div>
+    </main>
   );
 }

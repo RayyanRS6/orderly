@@ -27,16 +27,25 @@ export function download(name: string, value: unknown) {
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+/** Event and job codes as words: 'whatsapp.accepted' reads 'WhatsApp accepted'. */
+const codeLabel = (code: string) =>
+  label(code.replaceAll('.', ' '))
+    .replace(/\bwhatsapp\b/gi, 'WhatsApp')
+    .replace(/\bai\b/gi, 'AI');
 export function Activity() {
-  const { data, mutate, navigate } = useWorkspace();
+  const { data, mutate, navigate, notify } = useWorkspace();
   const { pending, run } = useAction();
-  const [jobs, setJobs] = useState<Job[]>(data.jobs ?? []);
+  // Undefined until a list arrives: the workspace's first load carries no jobs.
+  const [jobs, setJobs] = useState<Job[] | undefined>(data.jobs);
   const [error, setError] = useState('');
   useEffect(() => {
     let active = true;
     api<{ jobs: Job[] }>('/activity', data.company.id)
       .then((r) => {
-        if (active) setJobs(r.jobs);
+        if (active) {
+          setJobs(r.jobs);
+          setError('');
+        }
       })
       .catch((e) => {
         if (active) setError(e.message);
@@ -44,30 +53,47 @@ export function Activity() {
     return () => {
       active = false;
     };
-  }, [data.company.id, data.traces]);
+  }, [data.company.id]);
+  // The workspace's 15-second refresh brings jobs; a reload after a save doesn't, so the
+  // last list stays until the next one.
+  useEffect(() => {
+    if (!data.jobs) return;
+    setJobs(data.jobs);
+    setError('');
+  }, [data.jobs]);
+  const events = data.traces.length;
   return (
     <>
       <PageHeading
         title="Activity & errors"
         description="Recorded actions, model usage and delivery work for this business."
       />
-      <ErrorNotice message={error} />
+      <div className="mb-4 empty:hidden">
+        <ErrorNotice message={error} onDismiss={() => setError('')} />
+      </div>
       <section className="card mb-6 p-5 sm:p-6">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className="panel-title">
-            Delivery work · {jobs.length}
-            {jobs.length === 100 ? '+' : ''} open jobs
+            Delivery work
+            {jobs &&
+              ` · ${jobs.length}${jobs.length === 100 ? '+' : ''} ${jobs.length === 1 ? 'open job' : 'open jobs'}`}
           </h2>
           {data.role !== 'staff' && (
             <ActionButton
               loading={pending === 'retry'}
               loadingLabel="Retrying…"
               onClick={() =>
-                void run('retry', () =>
-                  mutate('/jobs/retry', {}, undefined, {
-                    success: 'Failed work queued to try again.',
-                  }),
-                ).catch(() => undefined)
+                void run('retry', async () => {
+                  const r = await mutate<{ queued: number }>('/jobs/retry', {});
+                  notify(
+                    r.queued ? 'Failed work queued to try again.' : 'Nothing waiting to retry.',
+                    r.queued ? 'success' : 'info',
+                  );
+                  // The reload after a save carries no jobs, so ask for them again.
+                  const fresh = await api<{ jobs: Job[] }>('/activity', data.company.id);
+                  setJobs(fresh.jobs);
+                  setError('');
+                }).catch(() => undefined)
               }
             >
               Retry failed work
@@ -79,13 +105,13 @@ export function Activity() {
           quota before retrying. A Meta “sent” receipt is different from “delivered” or “read”.
         </p>
         <div className="stagger mt-4 space-y-2.5">
-          {jobs.map((j) => (
+          {jobs?.map((j) => (
             <div
               key={j.id}
               className="rounded-2xl border border-white bg-white/60 p-4 text-[13px] shadow-[0_12px_26px_-22px_rgb(14_6_4/0.45)]"
             >
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <strong className="font-semibold text-ink">{label(j.kind)}</strong>
+                <strong className="font-semibold text-ink">{codeLabel(j.kind)}</strong>
                 <Status value={j.status} />
               </div>
               <p className="mt-2 break-words text-red-700">{j.error}</p>
@@ -94,41 +120,61 @@ export function Activity() {
               </p>
             </div>
           ))}
-          {!jobs.length && <p className="text-sm text-stone-500">No pending or failed work.</p>}
+          {jobs?.length === 0 && (
+            <p className="rounded-2xl border border-dashed border-ink/10 bg-paper/70 px-4 py-6 text-center text-sm text-stone-500">
+              No pending or failed work.
+            </p>
+          )}
+          {!jobs && !error && <p className="text-sm text-stone-500">Loading delivery work…</p>}
         </div>
       </section>
       <section className="card p-5 sm:p-6">
         <h2 className="panel-title">Recent events</h2>
         <p className="mt-2 text-sm text-stone-500">
           These are recorded actions and outcomes. Model IDs, bot versions, token estimates and
-          staff changes appear when available. Showing the latest {data.traces.length} events.
+          staff changes appear when available. Showing the latest {events}{' '}
+          {events === 1 ? 'event' : 'events'}.
         </p>
         <ol className="stagger mt-5 divide-y divide-ink/[0.05]">
-          {data.traces.map((t) => (
-            <li key={t.id} className="py-4 text-sm">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <strong className="break-all font-semibold text-ink">{label(t.action)}</strong>
-                <time className="rounded-full bg-ink/[0.05] px-2.5 py-0.5 font-mono text-[11px] text-stone-600">
-                  {shortDate(t.createdAt)}
-                </time>
-              </div>
-              <p className="mt-2 whitespace-pre-wrap break-words text-stone-600">{t.detail}</p>
-              <p className="mt-2 break-all font-mono text-[11px] tracking-[0.02em] text-stone-500">
-                {t.model && `Model: ${t.model} · `}
-                {t.botVersion !== undefined && `Bot v${t.botVersion} · `}
-                {t.durationMs !== undefined && `${t.durationMs} ms · `}
-                {t.actorId && `By ${t.actorId}`}
-              </p>
-              {t.conversationId && (
-                <button
-                  className="mt-2.5 rounded-full bg-brand-500/10 px-3 py-1 text-xs font-semibold text-brand-800 transition-colors hover:bg-brand-500 hover:text-ink hover:shadow-[0_8px_16px_-8px_rgb(255_105_44/0.9)]"
-                  onClick={() => navigate('inbox', t.conversationId)}
-                >
-                  Open conversation
-                </button>
-              )}
-            </li>
-          ))}
+          {data.traces.map((t) => {
+            const meta = [
+              t.model && `Model: ${t.model}`,
+              t.botVersion !== undefined && `Bot v${t.botVersion}`,
+              t.durationMs !== undefined && `${t.durationMs} ms`,
+              t.actorId && `By ${t.actorId}`,
+            ]
+              .filter(Boolean)
+              .join(' · ');
+            return (
+              <li key={t.id} className="py-4 text-sm">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <strong className="break-all font-semibold text-ink">
+                    {codeLabel(t.action)}
+                  </strong>
+                  <time
+                    dateTime={t.createdAt}
+                    className="rounded-full bg-ink/[0.05] px-2.5 py-0.5 font-mono text-[11px] text-stone-600"
+                  >
+                    {shortDate(t.createdAt)}
+                  </time>
+                </div>
+                <p className="mt-2 whitespace-pre-wrap break-words text-stone-600">{t.detail}</p>
+                {meta && (
+                  <p className="mt-2 break-all font-mono text-[11px] tracking-[0.02em] text-stone-500">
+                    {meta}
+                  </p>
+                )}
+                {t.conversationId && (
+                  <button
+                    className="mt-2.5 inline-flex items-center rounded-full bg-brand-500/10 px-3 py-1 text-xs font-semibold text-brand-800 transition-colors hover:bg-brand-500 hover:text-ink hover:shadow-[0_8px_16px_-8px_rgb(255_105_44/0.9)] max-md:min-h-9"
+                    onClick={() => navigate('inbox', t.conversationId)}
+                  >
+                    Open conversation
+                  </button>
+                )}
+              </li>
+            );
+          })}
         </ol>
         {!data.traces.length && (
           <p className="mt-4 rounded-2xl border border-dashed border-ink/10 bg-paper/70 px-4 py-6 text-center text-sm text-stone-500">
@@ -145,7 +191,7 @@ function TeamAccess() {
   const { data, mutate, notify } = useWorkspace();
   const action = useAction();
   const pending = action.pending;
-  const [members, setMembers] = useState<TeamMember[]>([]);
+  const [members, setMembers] = useState<TeamMember[]>();
   const [email, setEmail] = useState('');
   const [role, setRole] = useState<'owner' | 'staff'>('staff');
   const [error, setError] = useState('');
@@ -153,9 +199,17 @@ function TeamAccess() {
   const [teamChange, setTeamChange] = useState<TeamChange>();
   const [confirming, setConfirming] = useState(false);
   const [teamError, setTeamError] = useState('');
-  const loadTeam = () => api<TeamMember[]>('/team', data.company.id).then(setMembers);
+  const [teamFailed, setTeamFailed] = useState(false);
+  const loadTeam = () =>
+    api<TeamMember[]>('/team', data.company.id).then((list) => {
+      setMembers(list);
+      setTeamFailed(false);
+    });
   useEffect(() => {
-    void loadTeam().catch((e) => setError(e.message));
+    void loadTeam().catch((e) => {
+      setTeamFailed(true);
+      setError(e.message);
+    });
   }, [data.company.id]);
   const ask = (change: TeamChange) => {
     // One change at a time: a running one must finish against the person it was asked for.
@@ -227,8 +281,9 @@ function TeamAccess() {
           Add person
         </ActionButton>
       </form>
+      {!members && !error && !teamFailed && <p className="text-sm text-stone-500">Loading team…</p>}
       <ul className="stagger divide-y divide-ink/[0.05]">
-        {members.map((m) => (
+        {members?.map((m) => (
           <li key={m.userId} className="flex flex-wrap items-center justify-between gap-3 py-3">
             <div className="min-w-0">
               <p className="text-sm font-semibold text-ink break-all">{personName(m)}</p>
@@ -239,19 +294,24 @@ function TeamAccess() {
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <CustomSelect
-                aria-label={`Role for ${personName(m)}`}
-                value={m.role}
-                disabled={m.you}
-                onChange={(v) => {
-                  if (v !== m.role) ask({ kind: 'role', member: m, role: v as 'owner' | 'staff' });
-                }}
-                options={roles}
-              />
+              {/* A fixed width keeps Remove beside the select. */}
+              <div className="w-36 shrink-0">
+                <CustomSelect
+                  aria-label={`Role for ${personName(m)}`}
+                  value={m.role}
+                  disabled={m.you}
+                  onChange={(v) => {
+                    if (v !== m.role)
+                      ask({ kind: 'role', member: m, role: v as 'owner' | 'staff' });
+                  }}
+                  options={roles}
+                />
+              </div>
               {!m.you && (
                 <button
                   type="button"
                   className="btn btn-quiet hover:bg-red-50 hover:text-red-700"
+                  aria-label={`Remove ${personName(m)}`}
                   onClick={() => ask({ kind: 'remove', member: m })}
                 >
                   Remove
@@ -312,17 +372,21 @@ export function SecuritySettings() {
   const [ack, setAck] = useState(false);
   const [erase, setErase] = useState(false);
   const [eraseError, setEraseError] = useState('');
-  const [factor, setFactor] = useState<{ id: string; qr: string }>();
-  const [enrolled, setEnrolled] = useState<string>();
+  const [factor, setFactor] = useState<{ id: string; qr: string; secret: string }>();
+  // Undefined while checking, null when no authenticator is enabled.
+  const [enrolled, setEnrolled] = useState<string | null>();
   const [code, setCode] = useState('');
   const [password, setPassword] = useState('');
   const owner = data.role !== 'staff';
-  // Changes here report success and failure once, bottom right.
-  const run = (key: string, work: () => Promise<unknown>, success: string) =>
+  const noMatch = 'No conversations found for this number.';
+  // Changes here report success and failure once, bottom right. Work can answer with its
+  // own note instead, such as when nothing matched.
+  const run = (key: string, work: () => Promise<string | void>, success: string) =>
     action.run(key, async () => {
       try {
-        await work();
-        notify(success);
+        const note = await work();
+        if (note) notify(note, 'info');
+        else notify(success);
       } catch (e) {
         notify((e as Error).message, 'error');
       }
@@ -331,7 +395,14 @@ export function SecuritySettings() {
     if (auth)
       void auth.auth.mfa
         .listFactors()
-        .then((r) => setEnrolled(r.data?.totp.find((f) => f.status === 'verified')?.id));
+        .then((r) => {
+          if (r.error) throw r.error;
+          setEnrolled(r.data.totp.find((f) => f.status === 'verified')?.id ?? null);
+        })
+        .catch(() => {
+          setEnrolled(null);
+          notify('Couldn’t check authenticator protection. Reload to try again.', 'error');
+        });
   }, [data.company.id, auth]);
   return (
     <>
@@ -344,11 +415,14 @@ export function SecuritySettings() {
         {auth ? (
           <>
             <p className="text-sm text-stone-500">
-              Authenticator protection: <strong>{enrolled ? 'Enabled' : 'Not enabled'}</strong>.
-              Once enabled, a verification code is required to access the workspace after password
+              Authenticator protection:{' '}
+              <strong>
+                {enrolled === undefined ? 'Checking…' : enrolled ? 'Enabled' : 'Not enabled'}
+              </strong>
+              . Once enabled, a verification code is required to access the workspace after password
               sign-in.
             </p>
-            {!enrolled && !factor && (
+            {enrolled === null && !factor && (
               <ActionButton
                 className="btn-primary"
                 loading={pending === 'mfa-enroll'}
@@ -362,9 +436,13 @@ export function SecuritySettings() {
                         friendlyName: `Orderly ${new Date().toISOString()}`,
                       });
                       if (r.error) throw r.error;
-                      setFactor({ id: r.data.id, qr: r.data.totp.qr_code });
+                      setFactor({
+                        id: r.data.id,
+                        qr: r.data.totp.qr_code,
+                        secret: r.data.totp.secret,
+                      });
                     },
-                    'Scan the QR code in your authenticator, then verify a code.',
+                    'Scan the QR code or enter the key in your authenticator, then verify a code.',
                   )
                 }
               >
@@ -372,46 +450,59 @@ export function SecuritySettings() {
               </ActionButton>
             )}
             {factor && (
-              <div className="space-y-3 rounded-2xl border border-white bg-white/60 p-4 shadow-[0_14px_30px_-24px_rgb(14_6_4/0.45)]">
+              <form
+                className="space-y-3 rounded-2xl border border-white bg-white/60 p-4 shadow-[0_14px_30px_-24px_rgb(14_6_4/0.45)]"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void run(
+                    'mfa-verify',
+                    async () => {
+                      const r = await auth.auth.mfa.challengeAndVerify({
+                        factorId: factor.id,
+                        code,
+                      });
+                      if (r.error) throw r.error;
+                      setEnrolled(factor.id);
+                      setFactor(undefined);
+                      setCode('');
+                    },
+                    'Authenticator protection enabled.',
+                  );
+                }}
+              >
                 <img
                   className="pop-in size-48 max-w-full rounded-2xl bg-white p-2 shadow-[0_0_0_1px_rgb(14_6_4/0.06),0_18px_36px_-24px_rgb(14_6_4/0.5)]"
                   src={factor.qr}
                   alt="Authenticator enrollment QR code"
                 />
+                {/* For an authenticator on this same phone, or a screen reader. */}
+                <div>
+                  <p className="field-label">Or enter this key</p>
+                  <p className="font-mono text-[13px] break-all select-all text-stone-700">
+                    {factor.secret}
+                  </p>
+                </div>
                 <Field label="Six-digit authenticator code">
                   <input
                     className="input max-w-xs font-mono tracking-[0.3em]"
                     inputMode="numeric"
                     autoComplete="one-time-code"
+                    pattern="\d{6}"
                     value={code}
                     maxLength={6}
                     onChange={(e) => setCode(e.target.value)}
                   />
                 </Field>
                 <ActionButton
+                  type="submit"
                   className="btn-primary"
+                  disabled={code.length !== 6}
                   loading={pending === 'mfa-verify'}
                   loadingLabel="Verifying…"
-                  onClick={() =>
-                    void run(
-                      'mfa-verify',
-                      async () => {
-                        const r = await auth.auth.mfa.challengeAndVerify({
-                          factorId: factor.id,
-                          code,
-                        });
-                        if (r.error) throw r.error;
-                        setEnrolled(factor.id);
-                        setFactor(undefined);
-                        setCode('');
-                      },
-                      'Authenticator protection enabled.',
-                    )
-                  }
                 >
                   Verify and enable
                 </ActionButton>
-              </div>
+              </form>
             )}
             <form
               className="flex flex-wrap items-end gap-3"
@@ -478,21 +569,22 @@ export function SecuritySettings() {
             </Field>
             <ActionButton
               className="btn-ink"
-              disabled={!phone}
-              title={!phone ? 'Enter the customer’s phone number first.' : undefined}
+              disabled={!phone.trim()}
+              title={!phone.trim() ? 'Enter the customer’s phone number first.' : undefined}
               loading={pending === 'export'}
               loadingLabel="Preparing export…"
               onClick={() =>
                 void run(
                   'export',
-                  async () =>
-                    download(
-                      'orderly-customer-export.json',
-                      await api(
-                        `/privacy/customer?phone=${encodeURIComponent(phone)}`,
-                        data.company.id,
-                      ),
-                    ),
+                  async () => {
+                    const found = await api<{ conversations: unknown[]; orders: unknown[] }>(
+                      `/privacy/customer?phone=${encodeURIComponent(phone.trim())}`,
+                      data.company.id,
+                    );
+                    // Matching is exact: an empty file would look like a finished export.
+                    if (!found.conversations.length && !found.orders.length) return noMatch;
+                    download('orderly-customer-export.json', found);
+                  },
                   'Customer export downloaded.',
                 )
               }
@@ -515,28 +607,30 @@ export function SecuritySettings() {
               Pause automation and wait for running jobs before deleting. New customer messages
               after deletion can create a new conversation.
             </p>
-            <button
-              className="btn border-red-700/20 text-red-700 hover:border-red-700/35 hover:bg-red-50 hover:text-red-800"
-              disabled={!phone || !ack || data.company.botEnabled}
-              title={
-                !phone
-                  ? 'Enter the customer’s phone number first.'
-                  : !ack
-                    ? 'Tick the confirmation above first.'
-                    : data.company.botEnabled
-                      ? 'Pause automation in Bot settings first.'
-                      : undefined
-              }
-              onClick={() => {
-                setEraseError('');
-                setErase(true);
-              }}
-            >
-              Delete this customer’s data
-            </button>
-            <button className="btn ml-2" onClick={() => navigate('bot')}>
-              Bot controls
-            </button>
+            <div className="flex flex-wrap gap-2">
+              <button
+                className="btn border-red-700/20 text-red-700 hover:border-red-700/35 hover:bg-red-50 hover:text-red-800"
+                disabled={!phone.trim() || !ack || data.company.botEnabled}
+                title={
+                  !phone.trim()
+                    ? 'Enter the customer’s phone number first.'
+                    : !ack
+                      ? 'Tick the confirmation above first.'
+                      : data.company.botEnabled
+                        ? 'Pause automation in Bot settings first.'
+                        : undefined
+                }
+                onClick={() => {
+                  setEraseError('');
+                  setErase(true);
+                }}
+              >
+                Delete this customer’s data
+              </button>
+              <button className="btn" onClick={() => navigate('bot')}>
+                Bot controls
+              </button>
+            </div>
           </section>
         </>
       )}
@@ -581,7 +675,7 @@ export function SecuritySettings() {
         open={erase}
         onOpenChange={setErase}
         title="Delete this customer’s data?"
-        description={`This permanently removes active Orderly conversations and orders for ${phone}. Connected Sheets and provider records are separate.`}
+        description={`This permanently removes active Orderly conversations and orders for ${phone.trim()}. Connected Sheets and provider records are separate.`}
         confirmLabel="Delete customer data"
         busy={pending === 'erase'}
         busyLabel="Deleting…"
@@ -591,13 +685,16 @@ export function SecuritySettings() {
           // The dialog shows a failure inline, where screen readers can reach it.
           void action.run('erase', async () => {
             try {
-              await mutate(
+              const r = await mutate<{ deleted: number }>(
                 '/privacy/erase',
-                { phone, externalCopiesAcknowledged: true },
+                { phone: phone.trim(), externalCopiesAcknowledged: true },
                 undefined,
-                { dialog: true, success: 'Customer data removed from Orderly’s active database.' },
+                { dialog: true },
               );
               setErase(false);
+              // Matching is exact, so say so when nothing was there to remove.
+              if (r.deleted) notify('Customer data removed from Orderly’s active database.');
+              else notify(noMatch, 'info');
             } catch (e) {
               setEraseError((e as Error).message);
             }

@@ -32,9 +32,27 @@ export type TeamChange =
 export const personName = (p: { email?: string; userId: string }) =>
   p.email || `Account ${p.userId.slice(0, 8)}`;
 
+/** shortDate, plus the year when it isn't this year, so an old sign-in doesn't look recent. */
+function signInDate(value: string) {
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime()) || d.getFullYear() === new Date().getFullYear())
+    return shortDate(value);
+  try {
+    return d.toLocaleString('en-PK', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return d.toISOString().slice(0, 16).replace('T', ' ');
+  }
+}
+
 /** Empty when the account itself couldn't be read, so nobody looks inactive by mistake. */
 export function lastSeen(p: Account) {
-  if (p.lastSignInAt) return `Last signed in ${shortDate(p.lastSignInAt)}`;
+  if (p.lastSignInAt) return `Last signed in ${signInDate(p.lastSignInAt)}`;
   if (p.invited) return 'Invited, hasn’t signed in yet';
   return p.createdAt ? 'Hasn’t signed in yet' : '';
 }
@@ -128,15 +146,19 @@ export function describeChange(change: PeopleChange, d: PeopleDirectory): Change
     return roleCopy(name, businessName(d.businesses, change.companyId), change.role);
   if (change.kind === 'remove')
     return removeCopy(name, businessName(d.businesses, change.companyId));
-  const businesses = change.person.memberships.map((m) => businessName(d.businesses, m.companyId));
+  const businesses = change.person.memberships
+    .map((m) => businessName(d.businesses, m.companyId))
+    .join(', ');
+  // A name such as 'Bun & Co.' already ends the sentence.
+  const stop = businesses.endsWith('.') ? '' : '.';
   const orphaned = soleOwnerOf(d, change.person);
   return {
     title: change.person.email
       ? `Delete ${name}’s account?`
       : `Delete this account (${change.person.userId.slice(0, 8)})?`,
     description: [
-      businesses.length
-        ? `This deletes their sign-in for good and removes them from: ${businesses.join(', ')}.`
+      businesses
+        ? `This deletes their sign-in for good and removes them from: ${businesses}${stop}`
         : 'This deletes their sign-in for good.',
       orphaned.length &&
         `${list(orphaned)} will have no owner left. You can still open ${
