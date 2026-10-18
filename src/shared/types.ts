@@ -568,8 +568,10 @@ export interface TurnInput {
   now: string;
   testTarget?: 'draft' | 'published';
   /**
-   * Set when a queued message is processed more than 10 minutes late: a confirmation is asked
-   * again. One more than 2 hours late is left for staff, and the bot takes the next message.
+   * Set when a queued message is processed more than 10 minutes late: it is answered, but a
+   * confirmation in it gets a fresh order summary to confirm instead of placing the order. One
+   * more than 2 hours late gets no answer: the chat pauses for staff to see it, and the bot
+   * answers the customer's next message.
    */
   late?: boolean;
   /** Server only: the public menu page URL when it is on, for menu replies and {menu_link}. */

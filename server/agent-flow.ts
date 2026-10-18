@@ -9,6 +9,8 @@ import type {
 } from '../src/shared/agent-flow.js';
 import { botConfig, sameBotConfig } from '../src/shared/bot.js';
 import {
+  AI_ERROR_PAUSE_MS,
+  BURST_PAUSE_MS,
   effectiveAiLimits,
   generationProfile,
   MODEL_LIMITS,
@@ -159,8 +161,9 @@ export async function buildAgentFlow(
       'No connection means real customers cannot reach the bot. Use Test your bot meanwhile.',
     ],
     fixed: [
-      'Voice notes, images and other media go straight to staff.',
-      'A message still waiting after 10 minutes is handed to staff instead of answered late.',
+      'Photo, video and document captions and shared locations are read as text; voice notes, stickers and media without a caption go to staff.',
+      'A message that arrives more than 10 minutes late is still answered, but an order in it gets a fresh summary to confirm. One more than 2 hours late pauses the bot for that chat; it answers the customer’s next message.',
+      'A message that cannot be processed is put in the chat for staff.',
       'Replies are only sent within 24 hours of the customer’s last message.',
       'The same WhatsApp message delivered twice is answered once.',
     ],
@@ -231,8 +234,8 @@ export async function buildAgentFlow(
     ],
     fixed: [
       'A chat a staff member has taken over stays with staff until they hand it back.',
-      '15 or more messages from one customer within a minute go to staff.',
-      'If the menu Sheet cannot be refreshed, the chat goes to staff.',
+      `${limits.messagesPerCustomerPerMinute} messages from one customer within a minute pause the bot for that customer for ${BURST_PAUSE_MS / 60000} minutes.`,
+      'If the menu Sheet cannot be read, the menu last read from it is used for up to 12 hours; after that the chat goes to staff.',
       'Messages from a number staff blocked are ignored before they are saved.',
       'Orders from your menu page, and the order codes customers send from it, skip the AI.',
     ],
@@ -302,7 +305,10 @@ export async function buildAgentFlow(
                 ? 'Used only when your instructions are very long on this model'
                 : 'Anthropic keeps a 5-minute copy of your fixed instructions, so repeat messages cost less. The text the AI reads is unchanged.',
       },
-      { label: 'Time limit', value: `${MODEL_LIMITS.timeoutMs / 1000}s, no automatic retry` },
+      {
+        label: 'Time limit',
+        value: `${MODEL_LIMITS.timeoutMs / 1000}s; a busy or unreachable provider is tried again up to ${MODEL_LIMITS.refusedRetries} times within it`,
+      },
       {
         label: 'Spent this month',
         value: `${usd(summary.monthlySpend)} of ${usd(ai.monthlyBudgetUsd)}`,
@@ -311,7 +317,7 @@ export async function buildAgentFlow(
     affects: [
       'The model is the main reason replies understand (or misunderstand) English, Urdu and Roman Urdu.',
       'Switching provider or model keeps every order rule the same; only understanding and wording change.',
-      'If the model fails or times out on WhatsApp, the customer gets a short notice and staff take over.',
+      `If the model fails or times out on WhatsApp, the customer gets a short notice and the bot pauses for that chat; it tries again after ${AI_ERROR_PAUSE_MS / 60000} minutes unless staff reply.`,
     ],
     fixed: [
       'It cannot create orders, set prices, invent menu items, approve orders or claim payment.',
@@ -338,7 +344,11 @@ export async function buildAgentFlow(
         value: `${MODEL_LIMITS.historyMessageChars.toLocaleString('en-US')} characters each`,
       },
       { label: 'Cart', value: 'Items, options, pickup/delivery and review status' },
-      { label: 'Customer name and address', value: 'Sent only as “[collected]”' },
+      {
+        label: 'Customer name and address',
+        value:
+          'Shown as “[collected]” in the cart; recent messages carry them as the customer wrote them',
+      },
     ],
     affects: [
       'The cart, not the chat text, is the source of truth, so long chats never lose items.',
@@ -433,8 +443,8 @@ export async function buildAgentFlow(
     ],
     affects: [
       'Questions about hours, address or delivery are answered from these facts only.',
-      'An answer that matches an approved question is sent word-for-word.',
-      'If no fact covers a question, the bot says it isn’t sure and hands off to staff.',
+      'An answer that matches an approved question is sent word-for-word, allergy answers included.',
+      'If no fact covers a question, the bot says it isn’t sure and hands off to staff. An allergy question without an approved answer gets a fixed safety notice and goes to staff.',
     ],
     fixed: [
       'Payment options are cash on pickup or delivery.',
@@ -552,7 +562,7 @@ export async function buildAgentFlow(
     ],
     affects: [
       'If the AI picks a different dish than the customer clearly named, the engine corrects it.',
-      'AI text that states prices, totals or “order confirmed” is dropped; the engine writes those.',
+      'AI text that states prices, totals or “order confirmed”, in English, Urdu or Roman Urdu, is dropped; the engine writes those.',
       'If the AI asks for something already collected, its question is ignored.',
     ],
     fixed: [
@@ -602,7 +612,7 @@ export async function buildAgentFlow(
     affects: ['Delivery status (sent, delivered, read) appears in the Inbox.'],
     fixed: [
       'A reply is not resent automatically if its delivery result is uncertain.',
-      'Bot replies are dropped if staff took over the chat or replies were paused meanwhile.',
+      'Bot replies are dropped if staff took over the chat or replies were paused meanwhile. An order confirmation always goes out, because the order exists.',
     ],
   };
 
