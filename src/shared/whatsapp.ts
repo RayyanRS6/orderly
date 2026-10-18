@@ -118,6 +118,18 @@ export function locationText(location: {
   const coordinates = valid ? `(${+latitude.toFixed(6)}, ${+longitude.toFixed(6)})` : '';
   return ['Location shared:', place, coordinates].filter(Boolean).join(' ');
 }
+// WhatsApp Business app greeting and away messages reach Orderly exactly like a reply staff typed
+// on the phone, and WhatsApp marks them no differently. A restaurant may list those texts; only an
+// exact match (ignoring spacing) counts as automatic, so a staff quick reply still pauses the bot.
+export const phoneAutoMessagesSchema = z.array(z.string().trim().min(1).max(1000)).max(5);
+const autoMessageText = (text: string) => text.normalize('NFC').replace(/\s+/g, ' ').trim();
+export function isPhoneAutoMessage(
+  text: string | undefined,
+  autoMessages: readonly string[] | undefined,
+): boolean {
+  const value = text ? autoMessageText(text) : '';
+  return !!value && !!autoMessages?.some((entry) => autoMessageText(entry) === value);
+}
 export function sameAddress(a?: WhatsAppAddress, b?: WhatsAppAddress): boolean {
   return (
     !!a &&

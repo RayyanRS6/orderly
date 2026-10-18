@@ -98,6 +98,11 @@ the migration so old queued replies can be fenced safely.
   the place; a voice note or sticker goes to staff.
 - Reply on the restaurant phone during a slow bot turn: the bot must pause; its own echoes
   must not pause it. Resume only from Orderly's staff controls.
+- WhatsApp Business app **greeting and away messages** are sent by the phone and reach Orderly
+  like a staff reply, so they pause the bot for that chat (WhatsApp marks them no differently).
+  Ask the owner to turn them off (Business tools → Greeting message / Away message) and use
+  Orderly's own greeting instead. Test once from a number that has never chatted, with the
+  greeting on and then off, and resume any chat it paused.
 - Interrupt/restart the gateway. Verify encrypted credentials restore without new pairing,
   queued inbound events retry once, and uncertain sends do not automatically resend.
 - Simulate network loss, logout and competing-session errors. Verify the session keeps retrying
