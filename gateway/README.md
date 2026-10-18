@@ -14,9 +14,11 @@ the only business-logic authority. Official Meta connections remain supported.
   ten-account production capacity guarantee. The ten-process automated test uses fake
   sockets, not ten real WhatsApp accounts.
 - Text only. A photo, video or document caption reaches the bot as text marked "(sent with a
-  photo)" and so on; a location pin becomes "Location shared: <place> (lat, long)". Voice notes,
-  stickers, contacts and uncaptioned media trigger staff handoff; staff use the WhatsApp phone
-  app to inspect them. Media is never downloaded; playback and transcription are not part of v1.
+  photo)" and so on; a location pin becomes "Location shared: <place> (lat, long)", and a live
+  location is read the same way, from the position it was shared with (its caption as the place).
+  Voice notes, stickers, contacts and uncaptioned media trigger staff handoff; staff use the
+  WhatsApp phone app to inspect them. Media is never downloaded; playback and transcription are
+  not part of v1.
 - Every message is judged on its own, whatever the batch type. History, groups, newsletters,
   status broadcasts, protocol events and reactions are excluded, and messages older than 24
   hours are not replayed as new orders. A customer message that arrives here without content
@@ -103,7 +105,8 @@ the migration so old queued replies can be fenced safely.
 - Test a native LID customer with and without a phone mapping. Ensure no LID becomes a phone.
   Check that replies to a chat mapped from LID to phone number (or back) are delivered.
 - Send a captioned photo and a location pin from a customer phone: the bot reads the caption and
-  the place; a voice note or sticker goes to staff.
+  the place; a voice note or sticker goes to staff. Share a live location for a few minutes: the
+  bot should get it once, not once per position update.
 - Reply on the restaurant phone during a slow bot turn: the bot must pause; its own echoes
   must not pause it. Resume only from Orderly's staff controls.
 - WhatsApp Business app **greeting and away messages** are sent by the phone and reach Orderly

@@ -45,9 +45,10 @@ export function chatContent(message?: proto.IMessage | null): proto.IMessage | u
   return content;
 }
 // The text the bot reads. A photo, video or document caption and a shared location become text
-// (worded as on the Meta route); a quick-reply or list choice is its visible label. Anything
-// else without text (voice notes, stickers, contacts, uncaptioned media) returns '' and is
-// handed to staff, who see it on the phone.
+// (worded as on the Meta route); a live location is read as the place it started from, with its
+// caption. A quick-reply or list choice is its visible label. Anything else without text (voice
+// notes, stickers, contacts, uncaptioned media) returns '' and is handed to staff, who see it on
+// the phone.
 export function messageText(content: proto.IMessage): string {
   const text = content.conversation || content.extendedTextMessage?.text;
   if (text) return text.slice(0, 4000);
@@ -59,13 +60,14 @@ export function messageText(content: proto.IMessage): string {
   for (const [kind, value] of media)
     if (value?.caption?.trim()) return captionText(value.caption, kind);
   const location = content.locationMessage;
-  if (location)
+  const live = content.liveLocationMessage;
+  if (location || live)
     return (
       locationText({
-        latitude: location.degreesLatitude,
-        longitude: location.degreesLongitude,
-        name: location.name,
-        address: location.address,
+        latitude: (location ?? live)!.degreesLatitude,
+        longitude: (location ?? live)!.degreesLongitude,
+        name: location ? location.name : live!.caption,
+        address: location?.address,
       }) ?? ''
     );
   const choice =

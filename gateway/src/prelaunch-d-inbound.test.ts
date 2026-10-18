@@ -266,7 +266,6 @@ test('captions and location pins become customer text; voice notes and stickers 
     { imageMessage: {} },
     { imageMessage: { caption: '   ' } },
     { contactMessage: { displayName: 'Ali' } },
-    { liveLocationMessage: { degreesLatitude: 31.5, degreesLongitude: 74.3 } },
   ])
     assert.equal(text(media), '', JSON.stringify(media));
   assert.ok(text({ imageMessage: { caption: 'x'.repeat(5000) } }).length <= 4000);
