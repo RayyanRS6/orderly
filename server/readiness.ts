@@ -5,6 +5,7 @@ import { modelFingerprint } from './integrations/model-catalog';
 import { gatewayAvailable } from './whatsapp/client';
 import { AI_TERMS_VERSION } from './validation';
 import { GATEWAY_HEARTBEAT_STALE_MS } from '../src/shared/whatsapp';
+import { offeredFulfillment } from '../src/shared/bot';
 
 export async function readiness(repo: Repository, company: Company): Promise<ReadinessCheck[]> {
   const [products, integrations] = await Promise.all([
@@ -43,6 +44,13 @@ export async function readiness(repo: Repository, company: Company): Promise<Rea
   return [
     { id: 'bot', label: 'Publish a bot configuration', ready: !!company.bot?.published },
     { id: 'menu', label: 'Add an available menu item', ready: products.some((p) => p.available) },
+    {
+      // Delivery needs a delivery area. "Pickup and delivery" without one is pickup only, which
+      // works; delivery only without one offers customers nothing.
+      id: 'fulfillment',
+      label: 'Add a delivery area, or offer pickup',
+      ready: offeredFulfillment(company) !== undefined,
+    },
     { id: 'model', label: 'Connect and test the AI model', ready: verified },
     {
       id: 'privacy',
