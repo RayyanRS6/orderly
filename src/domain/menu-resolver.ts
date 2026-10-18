@@ -91,32 +91,100 @@ export function editDistance(a: string, b: string): number {
   return matrix[a.length]![b.length]!;
 }
 
+const NUMBER_WORDS: Record<string, number> = {
+  one: 1,
+  a: 1,
+  an: 1,
+  ek: 1,
+  aik: 1,
+  ایک: 1,
+  two: 2,
+  do: 2,
+  دو: 2,
+  three: 3,
+  teen: 3,
+  تین: 3,
+  four: 4,
+  char: 4,
+  چار: 4,
+  five: 5,
+  panch: 5,
+  پانچ: 5,
+};
+// Roman Urdu "do" (Urdu "دو") is also "give": "biryani de do", "tikka do na", "kar do". It is a
+// count only before another word that is not a softener, and never straight after a verb.
+const GIVE_VERBS = new Set(
+  'de dey day kar kr karr le lay bhej bhij la laa rehne rehnay bana dikha bata laga rakh mangwa hata nikal dila دے کر لے بھیج لا دلا دکھا بتا بنا'.split(
+    ' ',
+  ),
+);
+const SOFTENERS = new Set(
+  'na naa nah please pls plz plzz bhai bhaiya yaar yar ji jee g sir jaldi zara mujhe mjhe hamein humein hume isay usay abhi نا پلیز جی بھائی مجھے ہمیں ذرا جلدی ابھی'.split(
+    ' ',
+  ),
+);
+function countsAsNumber(tokens: string[], index: number): boolean {
+  if (tokens[index] !== 'do' && tokens[index] !== 'دو') return true;
+  const next = tokens[index + 1];
+  return !!next && !SOFTENERS.has(next) && !GIVE_VERBS.has(tokens[index - 1] ?? '');
+}
+
 export function quantityFromText(text: string): number {
   const value = normalizeCatalogText(text);
   const numeric = value.match(/(?:^|\s)(\d{1,2})(?:\s|$)/)?.[1];
   if (numeric) return Math.max(1, Math.min(50, Number(numeric)));
-  const words: Record<string, number> = {
-    one: 1,
-    a: 1,
-    an: 1,
-    ek: 1,
-    aik: 1,
-    ایک: 1,
-    two: 2,
-    do: 2,
-    دو: 2,
-    three: 3,
-    teen: 3,
-    تین: 3,
-    four: 4,
-    char: 4,
-    چار: 4,
-    five: 5,
-    panch: 5,
-    پانچ: 5,
-  };
-  for (const token of value.split(' ')) if (words[token]) return words[token]!;
+  const tokens = value.split(' ');
+  for (let i = 0; i < tokens.length; i++)
+    if (NUMBER_WORDS[tokens[i]!] && countsAsNumber(tokens, i)) return NUMBER_WORDS[tokens[i]!]!;
   return 1;
+}
+
+// Words that may sit between a count and the dish: "2 full karahi", "3 plate biryani".
+const MEASURE_WORDS = new Set(
+  'x plate plates glass glasses cup cups bowl bowls piece pieces pc pcs serving servings portion portions kg kilo packet packets box boxes'.split(
+    ' ',
+  ),
+);
+const sameWord = (input: string, label: string) => {
+  if (input === label) return true;
+  const limit = input.length >= 8 ? 2 : 1;
+  return (
+    input.length >= 4 &&
+    label.length >= 4 &&
+    Math.abs(input.length - label.length) <= limit &&
+    editDistance(input, label) <= limit
+  );
+};
+/**
+ * The count written right before the chosen dish ("3 chicken biryani", "do chicken wali",
+ * "2 full karahi"), or undefined. A number elsewhere is another item's count or a detail
+ * ("chicken wali, aur 3 naan", "house 12"), and "a"/"an" leave an earlier count as it was.
+ */
+export function quantityBefore(product: Product, text: string): number | undefined {
+  const tokens = normalizeCatalogText(text).split(' ').filter(Boolean);
+  const labels = [product.name, ...product.aliases]
+    .flatMap((label) => normalizeCatalogText(label).split(' '))
+    .filter((token) => token && !STOP_WORDS.has(token));
+  const options = new Set(
+    product.variants.flatMap((option) => normalizeCatalogText(option.name).split(' ')),
+  );
+  const at = tokens.findIndex((token) => labels.some((label) => sameWord(token, label)));
+  let i = at - 1;
+  while (i >= 0 && (options.has(tokens[i]!) || MEASURE_WORDS.has(tokens[i]!))) i--;
+  if (at < 1 || i < 0) return undefined;
+  const digits = tokens[i]!.match(/^(\d{1,2})x?$/)?.[1];
+  if (digits) return Math.max(1, Math.min(50, Number(digits)));
+  return tokens[i] === 'a' || tokens[i] === 'an' ? undefined : NUMBER_WORDS[tokens[i]!];
+}
+/** Whether the text states this count anywhere, as digits or a word that can only be a count. */
+export function mentionsQuantity(text: string, quantity: number): boolean {
+  return normalizeCatalogText(text)
+    .split(' ')
+    .some(
+      (token) =>
+        token.replace(/^x(?=\d)|(?<=\d)x$/, '') === String(quantity) ||
+        (!['a', 'an', 'do', 'دو'].includes(token) && NUMBER_WORDS[token] === quantity),
+    );
 }
 
 export type ItemResolution =

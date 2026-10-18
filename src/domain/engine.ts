@@ -19,7 +19,12 @@ import type {
 } from '../shared/types';
 import { money } from '../shared/types';
 import { effectiveAiLimits, MODEL_LIMITS } from '../shared/models';
-import { quantityFromText, resolveItemMention, resolvePendingItemChoice } from './menu-resolver';
+import {
+  mentionsQuantity,
+  quantityBefore,
+  resolveItemMention,
+  resolvePendingItemChoice,
+} from './menu-resolver';
 import { normalizeText as normalize, quoteCart, type CartQuote } from './pricing';
 export { quoteCart, type CartQuote } from './pricing';
 
@@ -735,18 +740,16 @@ export function parseActions(
         ...conversation.pendingItemChoice.requestedOptionNames,
         ...requestedOptions([selected], text),
       ];
-      const explicitQuantity =
-        !/^option\b/u.test(value) &&
-        /(?:^|\s)(?:\d{1,2}|one|two|three|four|five|ek|aik|do|teen|char|panch|ایک|دو|تین|چار|پانچ)\s+\p{L}/u.test(
-          value,
-        );
+      // Only a count written right before the chosen dish changes the one asked about: "3 naan"
+      // or "house 12" in the same message is not this dish's count.
+      const explicitQuantity = !/^option\b/u.test(value)
+        ? quantityBefore(selected, text)
+        : undefined;
       return [
         {
           type: 'add_item',
           productId: selected.id,
-          quantity: explicitQuantity
-            ? quantityFromText(text)
-            : conversation.pendingItemChoice.quantity,
+          quantity: explicitQuantity ?? conversation.pendingItemChoice.quantity,
           variantId:
             selected.variants.find((option) => contains(text, option.name))?.id ??
             selected.variants.find((option) =>
@@ -1358,11 +1361,27 @@ export function processTurn(
       (requested.some((action) => action.type === 'clarify_item') || next.pendingItemChoice)
     ) {
       // A specific name/ordinal resolves the outstanding choice; keep its options and quantity.
+      // The count: one written right before the dish (the parser's); else the AI's when the
+      // customer wrote that number ("chicken biryani, make it 3"); else the pending choice's,
+      // so an AI that forgot "2 chicken" still adds 2, and "aur 3 naan" stays the naan's.
+      const pending = next.pendingItemChoice?.candidateProductIds.includes(first.productId)
+        ? next.pendingItemChoice
+        : undefined;
+      const product = products.find((p) => p.id === first.productId);
+      const explicit = !!product && quantityBefore(product, input.text) !== undefined;
+      const quantityFor = (proposed: number) =>
+        !pending || explicit
+          ? first.quantity
+          : proposed === pending.quantity || mentionsQuantity(input.text, proposed)
+            ? proposed
+            : first.quantity;
       requested = requested.map((action) => {
-        if (action.type === 'clarify_item') return first;
+        if (action.type === 'clarify_item')
+          return { ...first, quantity: quantityFor(action.quantity) };
         if (action.type === 'add_item' && action.productId === first.productId)
           return {
             ...first,
+            quantity: quantityFor(action.quantity),
             variantId: action.variantId ?? first.variantId,
             modifierIds: action.modifierIds?.length ? action.modifierIds : first.modifierIds,
             notes: action.notes?.trim() ? action.notes : first.notes,
