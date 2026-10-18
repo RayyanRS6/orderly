@@ -11,6 +11,7 @@ import {
 } from '../../src/shared/whatsapp';
 import { z } from 'zod';
 import { PublicError } from '../security';
+import { workerLeaseMs } from '../config';
 import { gatewayAvailable, gatewayRequest, gatewaySnapshotSchema } from './client';
 import { dispatchJob, makeJob } from '../jobs';
 
@@ -43,7 +44,9 @@ export async function withConnectionLock<T>(
       companyId,
       'whatsapp-connection',
       lock,
-      new Date(Date.now() + 480000).toISOString(),
+      // A worker stopped mid-operation (Supabase Free ends functions after 150 s) frees the
+      // line after one worker lease, not eight minutes later.
+      new Date(Date.now() + workerLeaseMs()).toISOString(),
     ))
   )
     throw new PublicError('WhatsApp is processing another operation. Try again shortly.', 409);

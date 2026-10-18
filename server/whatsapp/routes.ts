@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { AppEnv } from '../management';
 import type { Repository } from '../repository';
 import type { Company } from '../../src/shared/types';
-import type { WhatsAppConnection } from '../../src/shared/whatsapp';
+import { GATEWAY_HEARTBEAT_STALE_MS, type WhatsAppConnection } from '../../src/shared/whatsapp';
 import { PublicError } from '../security';
 import { gatewayAvailable, gatewayRequest, gatewaySnapshotSchema } from './client';
 import {
@@ -83,9 +83,31 @@ export function whatsappRoutes(repo: Repository) {
     return c.json(await startPairing(repo, company.id, body.method, body.phone, consent));
   });
   app.post('/pairing-status', async (c) => {
-    const current = await repo.getWhatsAppConnection(c.get('company').id);
+    const companyId = c.get('company').id;
+    // The dashboard asks every 5 seconds while this page is open, in every open tab.
+    if (!(await repo.consumeRateLimit(`wa-status:${companyId}`, 40))) {
+      c.header('Retry-After', '60');
+      throw new PublicError('Too many connection status checks. Wait a minute.', 429);
+    }
+    const current = await repo.getWhatsAppConnection(companyId);
     if (!current || current.provider !== 'baileys')
       throw new PublicError('No linked-device connection.', 409);
+    // A connected phone that reported recently needs no question to the gateway: nothing is
+    // being paired, and its heartbeats already keep the stored status current.
+    if (
+      current.status === 'connected' &&
+      !!current.lastHeartbeatAt &&
+      Date.now() - Date.parse(current.lastHeartbeatAt) < GATEWAY_HEARTBEAT_STALE_MS
+    )
+      return c.json({
+        connection: current,
+        snapshot: gatewaySnapshotSchema.parse({
+          connectionId: current.id,
+          generation: current.generation,
+          status: current.status,
+          ...(current.errorCode && { errorCode: current.errorCode }),
+        }),
+      });
     const snapshot = gatewaySnapshotSchema.parse(
       await gatewayRequest('/status', { connectionId: current.id, generation: current.generation }),
     );

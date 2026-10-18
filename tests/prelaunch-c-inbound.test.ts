@@ -99,8 +99,9 @@ describe('what a WhatsApp Cloud API message becomes', () => {
     expect(metaInboundContent({ type: 'image', image: { caption: ' 2 biryani please ' } })).toEqual(
       { text: '2 biryani please (sent with a photo)' },
     );
+    // Worded as on the linked phone; the caption's own script still makes the reply Urdu.
     expect(metaInboundContent({ type: 'video', video: { caption: 'دو بریانی' } })).toEqual({
-      text: 'دو بریانی (ویڈیو کے ساتھ)',
+      text: 'دو بریانی (sent with a video)',
     });
     expect(
       metaInboundContent({ type: 'document', document: { caption: 'Order list', filename: 'a' } }),

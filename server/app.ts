@@ -431,6 +431,8 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
       c.res.ok &&
       !['GET', 'OPTIONS'].includes(c.req.method) &&
       c.req.path !== '/api/chat' &&
+      // A status check every few seconds, not a change.
+      c.req.path !== '/api/whatsapp/pairing-status' &&
       !c.req.path.startsWith('/api/admin/')
     )
       await repo.audit(company.id, userId, `${c.req.method} ${routePattern(c.req.path)}`);

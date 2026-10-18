@@ -116,5 +116,7 @@ export class PublicError extends Error {
     super(message, options);
   }
 }
+/** A linked phone whose WhatsApp account another business already has connected (409). */
+export const ACCOUNT_IN_USE = 'This account is already connected to another restaurant.';
 export const LAST_OWNER_MESSAGE =
   'Every business needs at least one owner. Add another owner first. You also can’t remove or demote yourself.';

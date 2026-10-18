@@ -1,4 +1,5 @@
 import type { BotAction } from '../../src/shared/types';
+import { captionText, locationText as sharedLocationText } from '../../src/shared/whatsapp';
 
 // What a WhatsApp Cloud API message becomes. Pure, so every message type is testable offline.
 // Reactions and system notices are not the customer writing to the restaurant: they create
@@ -13,13 +14,8 @@ type MetaMessage = Record<string, any>;
 
 export const MEDIA_HANDOFF_TEXT = 'Customer sent a media message. Staff assistance requested.';
 const MEDIA = ['image', 'video', 'document'] as const;
-// Added after a caption so staff and the AI model know what came with it, in the caption's
-// script: an Urdu caption keeps an Urdu marker and is still read as Urdu.
-const MEDIA_MARKER: Record<(typeof MEDIA)[number], { en: string; ur: string }> = {
-  image: { en: '(sent with a photo)', ur: '(تصویر کے ساتھ)' },
-  video: { en: '(sent with a video)', ur: '(ویڈیو کے ساتھ)' },
-  document: { en: '(sent with a document)', ur: '(دستاویز کے ساتھ)' },
-};
+// Worded as on the linked phone (captionText): '<caption> (sent with a photo)', and so on. An
+// Urdu caption is still read as Urdu: its own script decides the reply language.
 const STAFF_MEDIA = { image: 'photo', video: 'video', document: 'document' } as const;
 const IGNORED = new Map([
   ['reaction', 'A reaction to a message was ignored.'],
@@ -28,29 +24,28 @@ const IGNORED = new Map([
 ]);
 const clean = (value: unknown, max: number) =>
   typeof value === 'string' ? value.replace(/\s+/g, ' ').trim().slice(0, max) : '';
-function coordinate(value: unknown, limit: number): string | undefined {
-  const n =
-    typeof value === 'number'
-      ? value
-      : typeof value === 'string' && /^-?\d{1,3}(?:\.\d+)?$/.test(value.trim())
-        ? Number(value)
-        : NaN;
-  return Number.isFinite(n) && Math.abs(n) <= limit ? String(Number(n.toFixed(6))) : undefined;
+// Meta sends numbers; a number written as text is accepted too.
+function coordinate(value: unknown): number | undefined {
+  if (typeof value === 'number') return value;
+  return typeof value === 'string' && /^-?\d{1,3}(?:\.\d+)?$/.test(value.trim())
+    ? Number(value)
+    : undefined;
 }
 
 /**
- * A shared location pin as one line of text: 'Location shared: Gulberg III, Main Boulevard
- * (31.5204, 74.3587)'. Coordinates only, never a map link. Undefined when it holds nothing.
+ * A shared location pin as one line of text, worded as on the linked phone (locationText in
+ * src/shared/whatsapp.ts): 'Location shared: Gulberg III, Main Boulevard (31.5204, 74.3587)'.
+ * Coordinates only, never a map link. Undefined when it holds nothing.
  */
 export function locationText(location: unknown): string | undefined {
   if (!location || typeof location !== 'object') return undefined;
   const pin = location as Record<string, unknown>;
-  const place = [clean(pin.name, 200), clean(pin.address, 400)].filter(Boolean).join(', ');
-  const latitude = coordinate(pin.latitude, 90);
-  const longitude = coordinate(pin.longitude, 180);
-  const point = latitude && longitude ? `(${latitude}, ${longitude})` : '';
-  if (!place && !point) return undefined;
-  return `Location shared: ${[place, point].filter(Boolean).join(' ')}`;
+  return sharedLocationText({
+    latitude: coordinate(pin.latitude),
+    longitude: coordinate(pin.longitude),
+    name: typeof pin.name === 'string' ? pin.name : undefined,
+    address: typeof pin.address === 'string' ? pin.address : undefined,
+  });
 }
 
 function captioned(message: MetaMessage) {
@@ -92,10 +87,7 @@ export function metaInboundContent(message: MetaMessage): InboundContent {
   const tapped = clean(message.button?.text, 2000) || clean(message.button?.payload, 2000);
   if (tapped) return { text: tapped };
   const media = captioned(message);
-  if (media) {
-    const marker = MEDIA_MARKER[media.kind][/[؀-ۿ]/u.test(media.caption) ? 'ur' : 'en'];
-    return { text: `${media.caption} ${marker}` };
-  }
+  if (media) return { text: captionText(media.caption, STAFF_MEDIA[media.kind]) };
   const shared = locationText(message.location);
   if (shared) return { text: shared };
   // Voice notes, stickers, contacts, media without a caption and types Orderly does not read.

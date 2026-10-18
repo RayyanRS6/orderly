@@ -31,7 +31,7 @@ import type {
   WebOrderOutcome,
 } from '../../src/shared/menu';
 import type { PipelineHealth, Repository } from '../repository';
-import { LAST_OWNER_MESSAGE, PublicError } from '../security';
+import { ACCOUNT_IN_USE, LAST_OWNER_MESSAGE, PublicError } from '../security';
 import { env } from '../config';
 
 type Result<T> = { data: T | null; error: { message: string } | null };
@@ -150,6 +150,9 @@ export class SupabaseRepository implements Repository {
         'Apply the WhatsApp gateway database migration before changing connection methods.',
         503,
       );
+    // The same WhatsApp account linked by another business (unique index whatsapp_account_unique).
+    if (result.error?.code === '23505' && result.error.message.includes('whatsapp_account_unique'))
+      throw new PublicError(ACCOUNT_IN_USE, 409);
     return unwrap(result) as boolean;
   }
   async findWhatsAppConversation(

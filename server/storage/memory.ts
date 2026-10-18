@@ -36,7 +36,7 @@ import {
 } from '../../src/shared/seed';
 import type { PipelineHealth, Repository } from '../repository';
 import { transitionOrder } from '../../src/domain/engine';
-import { LAST_OWNER_MESSAGE, PublicError } from '../security';
+import { ACCOUNT_IN_USE, LAST_OWNER_MESSAGE, PublicError } from '../security';
 import { PLATFORM_AUDIT_ID } from '../config';
 import { orderMatches, pageOf, summaryOf } from '../queries';
 import { effectiveAiLimits } from '../../src/shared/models';
@@ -367,7 +367,7 @@ export class MemoryRepository implements Repository {
             !['disconnected', 'logged_out'].includes(c.status),
         )
       )
-        throw new PublicError('This account is already connected to another restaurant.', 409);
+        throw new PublicError(ACCOUNT_IN_USE, 409);
       put(rows, connection);
       return true;
     });
