@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { Overview } from '../src/components/Orders';
 import { BotSettings } from '../src/components/BotSettings';
 import { AI_LIMIT_DEFAULTS, AI_LIMIT_RANGES } from '../src/shared/models';
 import { seedCompanies } from '../src/shared/seed';
@@ -16,12 +17,19 @@ describe('readiness rows', () => {
   ];
 
   it('links the delivery row to the delivery settings wherever the checklist shows', () => {
-    for (const [component, page] of [[BotSettings, 'bot']] as const) {
+    for (const [component, page] of [
+      [Overview, 'overview'],
+      [BotSettings, 'bot'],
+    ] as const) {
       const html = render(component, bootstrap({ readiness }), page);
       expect(html).toContain('Add a delivery area, or offer pickup');
       expect(html).toContain('Delivery settings');
     }
-    const done = render(BotSettings, bootstrap({ readiness: [check('fulfillment', true)] }), 'bot');
+    const done = render(
+      Overview,
+      bootstrap({ readiness: [check('fulfillment', true)] }),
+      'overview',
+    );
     expect(done).not.toContain('Delivery settings');
     expect(readFileSync(join(process.cwd(), 'src/components/Settings.tsx'), 'utf8')).toContain(
       '<section id="delivery-areas"',
