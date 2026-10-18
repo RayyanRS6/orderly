@@ -311,14 +311,17 @@ create or replace function public.workspace_summary(p_company_id text,p_sandbox 
 $$;
 
 -- Latest body from 202610180001_spam_protection.sql. Changed, as the worker does since these
--- fixes: an incoming message that failed for good goes into its chat (unless it is there already)
--- and the chat goes to staff, then the job ends as done with payload.failedPermanently, so the
--- customer's later messages are no longer held back behind it. A message whose chat does not
--- exist or is blocked keeps its job failed, as before.
+-- fixes (recordFailedMessage in server/service.ts): an incoming message that failed for good goes
+-- into its chat (unless it is there already) and the chat goes to staff, then the job ends as
+-- done with payload.failedPermanently, so the customer's later messages are no longer held back
+-- behind it. A customer's first message, with no chat yet, starts one for staff, unless it
+-- belongs to a previous WhatsApp connection. A blocked number's message is dropped as on arrival:
+-- its job ends too and its chat stays as it is.
 create or replace function public.fail_exhausted_orderly_jobs(p_limit integer default 20) returns integer
 language plpgsql security definer set search_path = '' as $$
 declare target record; failed_conversation_id text; trace_id text; affected integer := 0;
   conversation_blocked boolean; message_id text; echo boolean; present boolean; released boolean;
+  new_id text;
   failed_at timestamptz := now();
   stamp text := to_char(failed_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"');
   failure_message text := 'Worker stopped after the retry limit. Review this job before retrying.';
@@ -352,9 +355,37 @@ begin
       end if;
       message_id := target.data->'payload'->>'messageId';
       echo := coalesce(target.data->'payload'->>'echo', '') = 'true';
-      released := failed_conversation_id is not null and not coalesce(conversation_blocked, false)
-        and message_id is not null;
-      present := released and exists (select 1 from public.conversation_messages m
+      -- No chat yet: start one, as the worker does, when the message is for the business's
+      -- current WhatsApp connection (or, without an address, when it has none).
+      if failed_conversation_id is null and message_id is not null and (case
+          when target.data->'payload' ? 'whatsappAddress' then exists (
+            select 1 from public.whatsapp_connections w where w.company_id = target.company_id
+              and w.id = target.data->'payload'->'whatsappAddress'->>'connectionId'
+              and w.data->>'generation' = target.data->'payload'->'whatsappAddress'->>'generation'
+              and w.data->>'provider' = target.data->'payload'->'whatsappAddress'->>'provider'
+              and coalesce(w.data->>'status', '') not in ('disconnected', 'logged_out'))
+          else not exists (select 1 from public.whatsapp_connections w where w.company_id = target.company_id)
+          end) then
+        new_id := gen_random_uuid()::text;
+        insert into public.conversations(id, company_id, customer_phone, channel, version, updated_at, data)
+          values (new_id, target.company_id, coalesce(target.data->'payload'->>'phone', ''), 'whatsapp', 0, failed_at,
+            jsonb_build_object('id', new_id, 'companyId', target.company_id,
+              'customerPhone', coalesce(target.data->'payload'->>'phone', ''), 'customerName', 'Guest',
+              'channel', 'whatsapp', 'language', 'en', 'mode', 'human', 'messages', '[]'::jsonb,
+              'cart', jsonb_build_object('items', '[]'::jsonb, 'revision', 0, 'status', 'building'),
+              'version', 0, 'updatedAt', stamp,
+              'lastInboundAt', coalesce(target.data->'createdAt', to_jsonb(stamp)))
+              || case when target.data->'payload' ? 'whatsappAddress'
+                then jsonb_build_object('whatsappAddress', target.data->'payload'->'whatsappAddress')
+                else '{}'::jsonb end)
+          -- A worker that started the chat meanwhile wins; the job stays failed for a retry.
+          on conflict do nothing
+          returning id into failed_conversation_id;
+        conversation_blocked := false;
+      end if;
+      released := failed_conversation_id is not null
+        and (coalesce(conversation_blocked, false) or message_id is not null);
+      present := released and not coalesce(conversation_blocked, false) and exists (select 1 from public.conversation_messages m
         where m.company_id = target.company_id and m.conversation_id = failed_conversation_id and m.id = message_id);
       -- Preserve every other field and advance both representations of version. A customer's
       -- message also reopens the reply window, as when it is processed.
@@ -400,7 +431,9 @@ begin
     if released then
       update public.jobs set status = 'done', lease_until = null,
         data = (data - 'leaseUntil') || jsonb_build_object('status', 'done',
-          'error', 'Worker stopped after the retry limit. The message is in the chat for staff.',
+          'error', case when conversation_blocked
+            then 'Worker stopped after the retry limit. The number is blocked, so the message was dropped.'
+            else 'Worker stopped after the retry limit. The message is in the chat for staff.' end,
           'payload', coalesce(data->'payload', '{}'::jsonb) || '{"failedPermanently":true}'::jsonb)
         where id = target.id;
     else
@@ -413,8 +446,11 @@ begin
       values (trace_id, target.company_id, failed_conversation_id, failed_at,
         jsonb_strip_nulls(jsonb_build_object('id', trace_id, 'companyId', target.company_id,
           'conversationId', failed_conversation_id, 'action', 'job.failed',
-          'detail', 'Job ' || target.id || case when released
-            then ' stopped after the retry limit. Its message is in the chat for staff.'
+          'detail', 'Job ' || target.id || case
+            when released and conversation_blocked
+              then ' stopped after the retry limit. The number is blocked, so its message was dropped.'
+            when released
+              then ' stopped after the retry limit. Its message is in the chat for staff.'
             else ' stopped after the retry limit. Review saved work before retrying.' end,
           'createdAt', stamp)));
     affected := affected + 1;
