@@ -13,7 +13,7 @@
 
 A WhatsApp ordering platform for restaurants in Pakistan. Customers order through the restaurant’s WhatsApp number in English, Urdu or Roman Urdu; owners and staff manage menus, orders and conversations from this dashboard. Orderly replaces n8n with its own TypeScript ordering engine.
 
-**Status (October 2026): pilot.** Two test restaurants run on the live Cloudflare and Supabase setup, and a friend's restaurant is the first real one to go live, before any other client. Both WhatsApp routes are in use: the official Meta Cloud API and, for restaurants the platform admin enables, the unofficial linked phone. Customers pay the restaurant directly: the order confirmation and the menu page say cash at pickup or on delivery, and any JazzCash, Easypaisa or bank transfer is arranged with the restaurant and checked by its staff. Orderly takes no payments and never asks for payment details. Earlier records from the launch: the [implementation and launch handover](docs/ORDERLY-IMPLEMENTATION-2026-09-17.md), the [audit](docs/ORDERLY-AUDIT-2026-09-16.md) and the [Pakistan budget](docs/ORDERLY-BUDGET-2026-09-16.md).
+**Status (October 2026): pilot.** Two test restaurants run on the live Cloudflare and Supabase setup, and a friend's restaurant is the first real one to go live, before any other client. Both WhatsApp routes are in use: the official Meta Cloud API and, for restaurants the platform admin enables, the unofficial linked phone. Customers pay the restaurant directly: by default the order confirmation and the menu page say cash at pickup or on delivery. A restaurant can also list JazzCash, Easypaisa or bank transfer in its payment methods; the order confirmation then names them and says the restaurant will share the payment details and confirm the transfer itself, and its staff check every transfer. Orderly takes no payments and never asks for payment details. Earlier records from the launch: the [implementation and launch handover](docs/ORDERLY-IMPLEMENTATION-2026-09-17.md), the [audit](docs/ORDERLY-AUDIT-2026-09-16.md) and the [Pakistan budget](docs/ORDERLY-BUDGET-2026-09-16.md).
 
 **Start here:** [Get Orderly running](docs/GET-IT-RUNNING.md) is the current step-by-step checklist (accounts, Claude Haiku 5.5, WhatsApp, per-client setup and costs). Before going live also read the [deployment guide](docs/DEPLOYMENT.md) (release order and owner actions), [backups and the restore drill](docs/BACKUP-AND-RESTORE.md), the [incident runbook](docs/INCIDENT-RUNBOOK.md) and the [compliance notes](docs/COMPLIANCE-NOTES-2026-10-18.md). In the dashboard, **Agent flow** shows everything connected to a business's bot, what is missing, and why the bot sent each reply.
 
@@ -50,7 +50,7 @@ Local demo mode does not automatically dispatch cloud queue jobs. Use **Integrat
 ## What is implemented
 
 - Responsive dashboard, business switching and creation, menu CRUD, variants, extras, availability, and CSV import.
-- Pickup, cash delivery, delivery areas and fees, opening days/hours, approved FAQ answers.
+- Pickup, cash delivery, optional JazzCash, Easypaisa or bank transfer (confirmed by the restaurant), delivery areas and fees, opening days/hours, approved FAQ answers.
 - English, Urdu and Roman Urdu ordering responses; prices calculated in integer paisa.
 - Persistent cart, versioned customer review, explicit confirmation, and pending orders awaiting staff acceptance.
 - Order status workflow, export CSV, inbox, staff takeover and manual replies.
