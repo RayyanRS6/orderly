@@ -14,7 +14,7 @@ import type {
 } from '../src/shared/types';
 import type { Repository } from './repository';
 import { PublicError } from './security';
-import { AI_TERMS_VERSION, botSchema } from './validation';
+import { AI_TERMS_VERSION, botSchema, settingsRevision } from './validation';
 import { normalizeTypedPhone } from '../src/shared/menu';
 import { defaultBot, configuredCompany } from '../src/shared/bot';
 import { availableModels, modelFingerprint, verifyProviderKey } from './integrations/model-catalog';
@@ -278,6 +278,8 @@ export function managementRoutes(repo: Repository) {
     const latest = (await repo.getCompany(company.id)) ?? company;
     await repo.saveCompany({
       ...latest,
+      // A settings copy from before this switch must not save the old model back.
+      settingsRevision: settingsRevision(latest) + 1,
       ai: candidate.ai,
       privacy: {
         aiDataApproved: true,

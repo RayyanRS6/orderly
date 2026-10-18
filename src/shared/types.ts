@@ -68,6 +68,11 @@ export interface Company {
   modelVerification?: { fingerprint: string; checkedAt: string };
   /** Set only by the Orderly admin: this business may pair a new linked phone. */
   linkedDeviceAllowed?: boolean;
+  /**
+   * Counts settings saves (PUT /api/companies/:id and Connect and test), so a save sent from an
+   * older copy of the settings is refused instead of undoing a newer change. Missing means 0.
+   */
+  settingsRevision?: number;
 }
 /** Who accepted the AI data terms, for which provider, and what they confirmed. */
 export interface AiDataApproval {

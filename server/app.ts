@@ -20,7 +20,13 @@ import {
   sanitizeError,
   verifyMetaSignature,
 } from './security.js';
-import { productSchema, companySchema, chatSchema } from './validation.js';
+import {
+  productSchema,
+  companySchema,
+  chatSchema,
+  settingsRevision,
+  withSettingsRevision,
+} from './validation.js';
 import { catalogFromRows, parseCsv } from './integrations/catalog.js';
 import { modelDefaults, providerKey, validateModelConfiguration } from './integrations/models.js';
 import {
@@ -488,7 +494,8 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
     return c.json({
       mode: appMode(),
       role: c.get('role'),
-      company,
+      // Sent back with a settings save, so a save from an older copy is refused (STALE_SETTINGS).
+      company: withSettingsRevision(company),
       companies: c.get('allowedCompanies'),
       products,
       orders: orderPage.items,
@@ -532,6 +539,7 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
         monthlyBudgetUsd: 10,
       },
       createdAt: new Date().toISOString(),
+      settingsRevision: 0,
     };
     await repo.saveCompany(company);
     return c.json(company, 201);
@@ -545,19 +553,42 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
     // hold one the schema refuses, and its own slug must never block a save.
     if (input && typeof input === 'object' && input.slug === stored.slug) delete input.slug;
     const body = companySchema.parse(input);
+    const revision = settingsRevision(stored);
+    // A copy of the settings older than the stored ones (another tab, another person, or a
+    // change made in Bot settings) must not undo the newer change. Only pausing automation
+    // always goes through, and then nothing else from the old copy is saved. A dashboard from
+    // before revisions sends none and saves as before.
+    if (body.settingsRevision !== undefined && body.settingsRevision !== revision) {
+      if (!(stored.botEnabled && body.botEnabled === false))
+        return c.json(
+          {
+            error:
+              'Settings changed in another tab or by another person. Reload to see the latest settings.',
+            code: 'STALE_SETTINGS',
+          },
+          409,
+        );
+      const paused: Company = { ...stored, botEnabled: false, settingsRevision: revision + 1 };
+      await repo.saveCompany(paused);
+      return c.json(paused);
+    }
     // Fields the server manages keep their stored values whatever the body says: a stale or
     // edited copy must not approve AI data sharing, stop Sheet refreshes (a future
     // catalogSyncedAt), rename the workspace URL or allow linked-phone pairing.
-    const { id, slug, createdAt, catalogSyncedAt, privacy, linkedDeviceAllowed } = stored;
+    const { id, slug, createdAt, privacy, linkedDeviceAllowed } = stored;
     const company: Company = {
       ...stored,
       ...body,
       id,
       slug,
       createdAt,
-      catalogSyncedAt,
+      // A menu read from the other source is not a last good Sheet menu: after a switch the
+      // next chat reads the Sheet afresh.
+      catalogSyncedAt:
+        body.catalogSource === stored.catalogSource ? stored.catalogSyncedAt : undefined,
       privacy,
       linkedDeviceAllowed,
+      settingsRevision: revision + 1,
     };
     validateModelConfiguration(company);
     // The AI data approval was given for one provider and model; another needs a new one,

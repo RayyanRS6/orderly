@@ -6,6 +6,18 @@ import { SLUG_RE } from '../src/shared/slug.js';
 const text = (max: number) => z.string().trim().max(max);
 /** The AI data terms an owner confirms in Connect and test. Raise it when their wording changes. */
 export const AI_TERMS_VERSION = 'ai-data-terms-2026-10-18';
+/** The stored settings revision (Company.settingsRevision); a business saved before it has 0. */
+export const settingsRevision = (company: { settingsRevision?: unknown }): number =>
+  typeof company.settingsRevision === 'number' &&
+  Number.isInteger(company.settingsRevision) &&
+  company.settingsRevision >= 0
+    ? company.settingsRevision
+    : 0;
+/** A company as the dashboard receives it: with its settings revision, 0 when never saved. */
+export const withSettingsRevision = <T extends { settingsRevision?: unknown }>(company: T) => ({
+  ...company,
+  settingsRevision: settingsRevision(company),
+});
 export const behaviorRuleSchema = z
   .object({
     id: text(80).min(1),
@@ -147,6 +159,8 @@ export const companySchema = z
       })
       .strict()
       .optional(),
+    // The settingsRevision the edited copy was read with. Left out by dashboards from before it.
+    settingsRevision: z.number().int().min(0).optional(),
   })
   .superRefine((company, ctx) => {
     if (
