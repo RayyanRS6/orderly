@@ -69,8 +69,14 @@ export const MODEL_LIMITS = {
   maxPromptBytes: 200_000,
   /** Most actions one reply may propose. */
   maxActions: 6,
+  /** One deadline for a reply, retries of a refused call included. */
   timeoutMs: 25_000,
+  /** The AI SDK's own retries stay off: Orderly retries only calls that were never billed. */
   retries: 0,
+  /** Retries of a call the provider refused unbilled (busy, overloaded, not reachable). */
+  refusedRetries: 2,
+  /** Longest total wait between those retries, a provider's retry-after included. */
+  refusedRetryWaitMs: 10_000,
   /** Output cap for models that answer without a separate thinking phase. */
   maxOutputTokens: 1200,
   /** Output cap when the model thinks before answering; thinking counts toward the cap. */

@@ -4,6 +4,7 @@ import {
   generateText,
   NoObjectGeneratedError,
   Output,
+  RetryError,
   type SystemModelMessage,
 } from 'ai';
 import { createOpenAI } from '@ai-sdk/openai';
@@ -23,7 +24,7 @@ import type {
 import type { Repository } from '../repository.js';
 import { decryptSecret, PublicError } from '../security.js';
 import { modelOutputSchema } from '../validation.js';
-import { botConfig } from '../../src/shared/bot.js';
+import { botConfig, offeredFulfillment } from '../../src/shared/bot.js';
 import { resolveItemMention } from '../../src/domain/menu-resolver.js';
 import { isOpen, parseActions } from '../../src/domain/engine.js';
 import {
@@ -56,10 +57,81 @@ export class AiLimitError extends PublicError {
   }
 }
 
+/** Why an AI call failed, safe to show staff and record: never the provider's own words. */
+export type AiFailureReason =
+  | 'auth'
+  | 'quota'
+  | 'rate_limited'
+  | 'overloaded'
+  | 'timeout'
+  | 'model_not_found'
+  | 'bad_output'
+  | 'unreachable'
+  | 'provider_error';
+const FAILURE_MESSAGES: Record<AiFailureReason, string> = {
+  auth: 'The AI provider rejected this restaurant’s API key. Paste a working key in Bot settings → AI model.',
+  quota:
+    'The AI provider account has no quota or credit left. Check the provider’s billing and limits.',
+  rate_limited:
+    'The AI provider is limiting requests for this restaurant’s key. Replies resume shortly; a higher provider usage tier helps at busy times.',
+  overloaded: 'The AI provider is overloaded. Replies resume shortly.',
+  timeout: 'The AI model did not answer in time.',
+  model_not_found:
+    'The AI provider does not offer the selected model to this key. Choose another model in Bot settings → AI model.',
+  bad_output: 'The AI model’s reply could not be used.',
+  unreachable: 'The AI provider could not be reached.',
+  provider_error:
+    'The selected AI model could not generate a valid response. Check model access, provider quota and credentials in Bot settings.',
+};
+/** The AI call failed. The message names the cause and the HTTP status only. */
+export class AiCallError extends PublicError {
+  constructor(
+    readonly reason: AiFailureReason,
+    readonly httpStatus: number | undefined,
+    cause: unknown,
+  ) {
+    super(`${FAILURE_MESSAGES[reason]}${httpStatus ? ` (HTTP ${httpStatus})` : ''}`, 503, {
+      cause,
+    });
+  }
+}
+/**
+ * The database could not be read or written before the AI call. Nothing was spent, so the
+ * message can be processed again; it is not an AI failure.
+ */
+export class StoreUnavailableError extends Error {
+  constructor(cause: unknown) {
+    super('The database could not be reached before the AI call.', { cause });
+  }
+}
+async function fromStore<T>(work: () => Promise<T>): Promise<T> {
+  try {
+    return await work();
+  } catch (error) {
+    if (error instanceof PublicError) throw error;
+    throw new StoreUnavailableError(error);
+  }
+}
+
 // Statuses where the provider refused the request before generating anything, so it was not
 // billed. A timeout (408) or other server error may have generated text first: those keep
 // the conservative charge.
 const REFUSED_STATUSES = new Set([400, 401, 403, 404, 413, 422, 429, 503, 529]);
+// Refusals worth trying again a moment later: busy or overloaded.
+const BUSY_STATUSES = new Set([429, 503, 529]);
+// A retry is made only with at least this long left before the reply's deadline.
+const REFUSED_RETRY_MIN_MS = 5000;
+// Network failures that happen before the request reaches the provider, so nothing was billed.
+const NOT_CONNECTED = new Set([
+  'ECONNREFUSED',
+  'ConnectionRefused',
+  'FailedToOpenSocket',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+]);
+// A refusal that will not pass by itself: no credit, or a quota for the whole day.
+const QUOTA_REFUSAL = /insufficient_quota|credit balance|billing|PerDay|per_day/i;
 type FailedCallCharge =
   | { kind: 'none' }
   | { kind: 'reserved' }
@@ -70,8 +142,23 @@ type FailedCallCharge =
       cacheReadTokens?: number;
       cacheWriteTokens?: number;
     };
-/** What a failed generateText call cost. Retries are off, so errors arrive unwrapped. */
-export function failedCallCharge(error: unknown): FailedCallCharge {
+// The SDK's own retries are off, but a RetryError is unwrapped in case it ever wraps one.
+const unwrapped = (error: unknown) => (RetryError.isInstance(error) ? error.lastError : error);
+function neverConnected(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  for (let current = error; current instanceof Error && !seen.has(current);) {
+    seen.add(current);
+    const code = (current as { code?: unknown }).code;
+    if (typeof code === 'string' && NOT_CONNECTED.has(code)) return true;
+    current = current.cause;
+  }
+  return false;
+}
+/** What a failed generateText call cost. */
+export function failedCallCharge(raw: unknown): FailedCallCharge {
+  const error = unwrapped(raw);
+  if (APICallError.isInstance(error) && error.statusCode === undefined && neverConnected(error))
+    return { kind: 'none' };
   if (
     APICallError.isInstance(error) &&
     typeof error.statusCode === 'number' &&
@@ -91,6 +178,53 @@ export function failedCallCharge(error: unknown): FailedCallCharge {
       cacheWriteTokens: error.usage.inputTokenDetails?.cacheWriteTokens,
     };
   return { kind: 'reserved' };
+}
+/** The safe cause of a failed call, with the HTTP status when there was one. */
+export function failureReason(raw: unknown): { reason: AiFailureReason; status?: number } {
+  const error = unwrapped(raw);
+  if (NoObjectGeneratedError.isInstance(error) || error instanceof z.ZodError)
+    return { reason: 'bad_output' };
+  if (
+    (error instanceof Error || error instanceof DOMException) &&
+    (error.name === 'TimeoutError' || error.name === 'AbortError')
+  )
+    return { reason: 'timeout' };
+  if (!APICallError.isInstance(error)) return { reason: 'provider_error' };
+  const status = error.statusCode;
+  if (status === undefined) return { reason: 'unreachable' };
+  const body = typeof error.responseBody === 'string' ? error.responseBody : '';
+  if ([400, 402, 403, 429].includes(status) && QUOTA_REFUSAL.test(body))
+    return { reason: 'quota', status };
+  if (status === 401 || status === 403) return { reason: 'auth', status };
+  if (status === 404) return { reason: 'model_not_found', status };
+  if (status === 429) return { reason: 'rate_limited', status };
+  if (status === 503 || status === 529) return { reason: 'overloaded', status };
+  return { reason: 'provider_error', status };
+}
+/**
+ * How long to wait before trying a failed call again, or undefined when it must not be retried:
+ * only a busy or overloaded refusal, or a request that never reached the provider, cost nothing.
+ * The provider's retry-after is honoured; a wait longer than `maxWaitMs` is not worth it.
+ */
+export function refusedRetryDelay(raw: unknown, attempt: number, maxWaitMs: number) {
+  const error = unwrapped(raw);
+  if (failedCallCharge(error).kind !== 'none' || !APICallError.isInstance(error)) return;
+  const busy =
+    error.statusCode !== undefined &&
+    BUSY_STATUSES.has(error.statusCode) &&
+    failureReason(error).reason !== 'quota';
+  if (!busy && !(error.statusCode === undefined && neverConnected(error))) return;
+  const headers = error.responseHeaders ?? {};
+  const body = typeof error.responseBody === 'string' ? error.responseBody : '';
+  const number = (value?: string) => (value && /^\d+(\.\d+)?$/.test(value) ? Number(value) : NaN);
+  // retry-after-ms (OpenAI, Anthropic), retry-after in seconds, or Gemini's retryDelay "17s".
+  const asked = [
+    number(headers['retry-after-ms']),
+    number(headers['retry-after']) * 1000,
+    number(/"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"/.exec(body)?.[1]) * 1000,
+  ].find((ms) => Number.isFinite(ms));
+  const wait = asked ?? 500 * 2 ** attempt + Math.floor(Math.random() * 250);
+  return wait <= maxWaitMs ? wait : undefined;
 }
 export function modelRate(
   model: string,
@@ -214,7 +348,7 @@ export class AiModelAdapter implements ModelAdapter {
         'An owner must approve the AI provider data terms in Bot settings before processing customer messages.',
         409,
       );
-    const apiKey = this.apiKeyOverride ?? (await providerKey(this.repo, company));
+    const apiKey = this.apiKeyOverride ?? (await fromStore(() => providerKey(this.repo, company)));
     modelRate(company.ai.model, company.ai.pricing);
     const profile = generationProfile(company.ai.provider, company.ai.model);
     const started = Date.now();
@@ -228,7 +362,7 @@ For add_item, the application renders corrected item names, options, unit prices
 Use only the exact action names and fields in this JSON schema. Combine fulfillment and customer details in set_details. The response should naturally acknowledge the customer or ask the next useful question after the proposed actions. Set askFor to the field actually requested, anything_else for another menu item, or none when there is no structured-field question. Never ask for a detail already present in cart or provided in this message. Use answer only when no transactional action fits. Include product IDs, faq:N IDs, business:hours, business:address, business:phone, business:delivery or behavior-rule IDs in groundingIds for factual responses.
 ${JSON.stringify(z.toJSONSchema(modelOutputSchema))}
 The authenticated restaurant operator has configured the following behavior. Immutable transaction and security rules above take precedence. Then evaluate enabled behaviorRules in their listed order and apply only the first matching rule. Return its ID as matchedRuleId. An exact rule's response is rendered verbatim by the application; do not rewrite it. Otherwise follow goal and instructions, then personality and language. Never discard details the customer already supplied.
-${JSON.stringify({ name: config.name, personality: config.personality, language: config.language, goal: config.goal, instructions: config.instructions, behaviorRules: config.behaviorRules, fulfillment: config.fulfillment, requirePhoneConfirmation: config.requirePhoneConfirmation, greeting: config.greeting, handoffMessage: config.handoffMessage })}`;
+${JSON.stringify({ name: config.name, personality: config.personality, language: config.language, goal: config.goal, instructions: config.instructions, behaviorRules: config.behaviorRules, fulfillment: offeredFulfillment(company) ?? config.fulfillment, requirePhoneConfirmation: config.requirePhoneConfirmation, greeting: config.greeting, handoffMessage: config.handoffMessage })}`;
     // Context is bounded and company-scoped. Structured cart is authoritative memory.
     const eligible = products.filter((p) => p.companyId === company.id);
     const resolution = resolveItemMention(products, company.id, text);
@@ -247,6 +381,8 @@ ${JSON.stringify({ name: config.name, personality: config.personality, language:
       ),
     ]);
     const relevant = eligible.filter((product) => candidateIds.has(product.id));
+    // Which message showed the review is the engine's bookkeeping, not the model's business.
+    const { reviewMessageId: _reviewMessage, reviewedAt: _reviewedAt, ...cart } = conversation.cart;
     const prompt = JSON.stringify({
       business: {
         name: company.name,
@@ -290,7 +426,7 @@ ${JSON.stringify({ name: config.name, personality: config.personality, language:
                 quantity: resolution.quantity,
               },
       cart: {
-        ...conversation.cart,
+        ...cart,
         customerName: conversation.cart.customerName ? '[collected]' : undefined,
         address: conversation.cart.address ? '[collected]' : undefined,
       },
@@ -318,13 +454,16 @@ ${JSON.stringify({ name: config.name, personality: config.personality, language:
       .filter((value): value is string => !!value)
       .sort()
       .at(-1);
-    const reservation = await this.repo.reserveAiCall(
-      company.id,
-      reservationId,
-      reservedCost,
-      new Date(Date.now() + MODEL_LIMITS.budgetHoldMs).toISOString(),
-      live ? conversation.id : undefined,
-      live ? customerSince : undefined,
+    const model = makeModel(company.ai.provider, company.ai.model, apiKey);
+    const reservation = await fromStore(() =>
+      this.repo.reserveAiCall(
+        company.id,
+        reservationId,
+        reservedCost,
+        new Date(Date.now() + MODEL_LIMITS.budgetHoldMs).toISOString(),
+        live ? conversation.id : undefined,
+        live ? customerSince : undefined,
+      ),
     );
     if (!reservation.ok) {
       if (reservation.limit === 'duplicate')
@@ -344,46 +483,95 @@ ${JSON.stringify({ name: config.name, personality: config.personality, language:
       sandbox: conversation.channel === 'demo',
       estimated: true,
     };
-    try {
-      const result = await generateText({
-        model: makeModel(company.ai.provider, company.ai.model, apiKey),
+    // Not kept by OpenAI (it stores calls for 30 days by default), and its strict schema mode
+    // refuses optional fields and oneOf: the reply is checked against the schema here instead.
+    const providerOptions = {
+      ...(profile.effort && { anthropic: { effort: profile.effort } }),
+      ...(company.ai.provider === 'openai' && {
+        openai: { store: false, strictJsonSchema: false },
+      }),
+    };
+    // One deadline for the reply. A call the provider refused unbilled (busy, overloaded, never
+    // reached) is tried again under the same reservation, at most twice, while time is left.
+    const deadline = Date.now() + MODEL_LIMITS.timeoutMs;
+    const call = () =>
+      generateText({
+        model,
         system: systemInstruction(company.ai.provider, system),
         prompt,
         output: Output.object({ schema: modelOutputSchema }),
         maxOutputTokens,
         maxRetries: MODEL_LIMITS.retries,
-        abortSignal: AbortSignal.timeout(MODEL_LIMITS.timeoutMs),
-        ...(profile.effort && { providerOptions: { anthropic: { effort: profile.effort } } }),
-      }).catch((error: unknown) => {
-        // Record what the failed call really cost before it is settled below.
-        const charge = failedCallCharge(error);
-        if (charge.kind === 'none')
-          Object.assign(usage, {
-            inputTokens: 0,
-            outputTokens: 0,
-            costUsd: 0,
-            estimated: false,
-            rejected: true,
-          });
-        else if (charge.kind === 'actual') {
-          usage.inputTokens = charge.inputTokens ?? reservedInput;
-          usage.outputTokens = charge.outputTokens ?? maxOutputTokens;
-          if (charge.inputTokens !== undefined)
-            Object.assign(usage, cacheCounts(company.ai.provider, charge));
-          usage.costUsd = usageCost(company.ai, usage);
-          usage.estimated = charge.inputTokens === undefined || charge.outputTokens === undefined;
-        }
-        throw error;
+        abortSignal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
+        ...(Object.keys(providerOptions).length > 0 && { providerOptions }),
       });
-      usage.inputTokens = result.usage.inputTokens ?? reservedInput;
-      usage.outputTokens = result.usage.outputTokens ?? maxOutputTokens;
-      if (result.usage.inputTokens !== undefined)
-        Object.assign(usage, cacheCounts(company.ai.provider, result.usage.inputTokenDetails));
-      usage.costUsd = usageCost(company.ai, usage);
-      usage.estimated =
-        result.usage.inputTokens === undefined || result.usage.outputTokens === undefined;
-      await this.repo.settleBudget(reservationId, usage);
-      await this.repo.addTrace({
+    const answer = async () => {
+      let waited = 0;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await call();
+        } catch (error) {
+          // Record what the failed call really cost before it is settled below.
+          const charge = failedCallCharge(error);
+          if (charge.kind === 'none')
+            Object.assign(usage, {
+              inputTokens: 0,
+              outputTokens: 0,
+              costUsd: 0,
+              estimated: false,
+              rejected: true,
+            });
+          else if (charge.kind === 'actual') {
+            usage.inputTokens = charge.inputTokens ?? reservedInput;
+            usage.outputTokens = charge.outputTokens ?? maxOutputTokens;
+            if (charge.inputTokens !== undefined)
+              Object.assign(usage, cacheCounts(company.ai.provider, charge));
+            usage.costUsd = usageCost(company.ai, usage);
+            usage.estimated = charge.inputTokens === undefined || charge.outputTokens === undefined;
+          }
+          const wait =
+            attempt < MODEL_LIMITS.refusedRetries
+              ? refusedRetryDelay(error, attempt, MODEL_LIMITS.refusedRetryWaitMs - waited)
+              : undefined;
+          // The next try needs its wait plus a fair chance to answer before the deadline.
+          if (wait === undefined || deadline - Date.now() - wait < REFUSED_RETRY_MIN_MS)
+            throw error;
+          await new Promise((resolve) => setTimeout(resolve, wait));
+          waited += wait;
+          // Back to the reserved estimate: the next try may be billed.
+          Object.assign(usage, {
+            inputTokens: reservedInput,
+            outputTokens: maxOutputTokens,
+            costUsd: reservedCost,
+            estimated: true,
+          });
+          delete usage.rejected;
+        }
+      }
+    };
+    let result: Awaited<ReturnType<typeof call>>;
+    try {
+      result = await answer();
+    } catch (error) {
+      // A refused call is settled at $0 and a billed but unusable reply at its real usage
+      // (see failedCallCharge). If an upstream timeout hides actual usage, retain a
+      // conservative charge in our usage ledger. A failed settle must not hide the cause.
+      await this.repo.settleBudget(reservationId, usage).catch(() => undefined);
+      if (error instanceof PublicError) throw error;
+      const { reason, status } = failureReason(error);
+      throw new AiCallError(reason, status, error);
+    }
+    usage.inputTokens = result.usage.inputTokens ?? reservedInput;
+    usage.outputTokens = result.usage.outputTokens ?? maxOutputTokens;
+    if (result.usage.inputTokens !== undefined)
+      Object.assign(usage, cacheCounts(company.ai.provider, result.usage.inputTokenDetails));
+    usage.costUsd = usageCost(company.ai, usage);
+    usage.estimated =
+      result.usage.inputTokens === undefined || result.usage.outputTokens === undefined;
+    // The answer is paid for: a database hiccup in the bookkeeping must not throw it away.
+    await this.settle(company, reservationId, usage);
+    await this.repo
+      .addTrace({
         id: randomUUID(),
         companyId: company.id,
         action: 'model.completed',
@@ -392,32 +580,50 @@ ${JSON.stringify({ name: config.name, personality: config.personality, language:
         botVersion: company.bot?.published?.version,
         durationMs: Date.now() - started,
         createdAt: new Date().toISOString(),
-      });
-      const parsed = modelOutputSchema.parse(result.output);
-      return {
-        actions: parsed.actions as BotAction[],
-        response: parsed.response,
-        usage: {
-          inputTokens: usage.inputTokens,
-          ...cacheCounts(company.ai.provider, usage),
-          outputTokens: usage.outputTokens,
-          costUsd: usage.costUsd,
-          durationMs: Date.now() - started,
-          estimated: !!usage.estimated,
-        },
-      };
+      })
+      .catch(() => undefined);
+    let parsed: z.infer<typeof modelOutputSchema>;
+    try {
+      parsed = modelOutputSchema.parse(result.output);
     } catch (error) {
-      // A refused call is settled at $0 and a billed but unusable reply at its real usage
-      // (see failedCallCharge). If an upstream timeout hides actual usage, retain a
-      // conservative charge in our usage ledger.
-      await this.repo.settleBudget(reservationId, usage);
-      throw error instanceof PublicError
-        ? error
-        : new PublicError(
-            'The selected AI model could not generate a valid response. Check model access, provider quota and credentials in Bot settings.',
-            503,
-            { cause: error },
-          );
+      throw new AiCallError('bad_output', undefined, error);
     }
+    return {
+      actions: parsed.actions as BotAction[],
+      response: parsed.response,
+      usage: {
+        inputTokens: usage.inputTokens,
+        ...cacheCounts(company.ai.provider, usage),
+        outputTokens: usage.outputTokens,
+        costUsd: usage.costUsd,
+        durationMs: Date.now() - started,
+        estimated: !!usage.estimated,
+      },
+    };
+  }
+  /**
+   * Settles a paid call, trying once more. If both fail, the reservation stays counted at its
+   * reserved amount until the month ends (the same as a worker stopped mid-call).
+   */
+  private async settle(company: Company, reservationId: string, usage: Usage) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        await this.repo.settleBudget(reservationId, usage);
+        return;
+      } catch {
+        /* Tried again below, then left counted at the reserved amount. */
+      }
+    }
+    await this.repo
+      .addTrace({
+        id: randomUUID(),
+        companyId: company.id,
+        action: 'budget.settle_failed',
+        detail:
+          'The AI reply was used, but its cost could not be recorded. It counts at the reserved amount for this month.',
+        model: company.ai.model,
+        createdAt: new Date().toISOString(),
+      })
+      .catch(() => undefined);
   }
 }

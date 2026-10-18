@@ -231,12 +231,14 @@ describe('AiModelAdapter generation settings and usage', () => {
   });
 
   it.each([
-    ['gemini', 'gemini-3.5-flash-lite', [0.3, 2.5]],
-    ['openai', 'gpt-5.4-mini', [0.75, 4.5]],
-    ['anthropic', 'claude-haiku-4-5', [1, 5]],
+    ['gemini', 'gemini-3.5-flash-lite', [0.3, 2.5], undefined],
+    // OpenAI keeps no copy of the call, and its strict schema mode (which refuses optional
+    // fields and oneOf) is off: the reply is checked against the schema in Orderly.
+    ['openai', 'gpt-5.4-mini', [0.75, 4.5], { openai: { store: false, strictJsonSchema: false } }],
+    ['anthropic', 'claude-haiku-4-5', [1, 5], undefined],
   ] as const)(
-    'sends no provider options to %s %s and caps output at 1,200 tokens',
-    async (provider, model, [inputRate, outputRate]) => {
+    'sends only the provider options %s %s needs and caps output at 1,200 tokens',
+    async (provider, model, [inputRate, outputRate], options) => {
       const configured = await configure(provider, model);
       generate.mockResolvedValueOnce({
         output: answer,
@@ -244,7 +246,8 @@ describe('AiModelAdapter generation settings and usage', () => {
       });
       const result = await interpret(configured);
       const call = generate.mock.calls[0]![0];
-      expect('providerOptions' in call).toBe(false);
+      if (options) expect(call.providerOptions).toEqual(options);
+      else expect('providerOptions' in call).toBe(false);
       // Only Anthropic gets the instruction text wrapped with a cache marker.
       expect(typeof call.system).toBe(provider === 'anthropic' ? 'object' : 'string');
       expect(call.maxOutputTokens).toBe(1200);
@@ -255,13 +258,18 @@ describe('AiModelAdapter generation settings and usage', () => {
     },
   );
 
-  const refused = (statusCode: number, responseBody: unknown = '{"type":"error"}') =>
+  const refused = (
+    statusCode: number,
+    responseBody: unknown = '{"type":"error"}',
+    responseHeaders?: Record<string, string>,
+  ) =>
     new APICallError({
       message: 'refused',
       url: 'https://api.anthropic.com/v1/messages',
       requestBodyValues: {},
       statusCode,
       responseBody: responseBody as string,
+      responseHeaders,
     });
   const unusable = (
     inputTokens: number | undefined,
@@ -290,8 +298,11 @@ describe('AiModelAdapter generation settings and usage', () => {
     'records no spending when the provider refuses the call with HTTP %i',
     async (status) => {
       const configured = await configure('anthropic', 'claude-haiku-5-5');
-      generate.mockRejectedValueOnce(refused(status));
+      // Busy and overloaded refusals are tried twice more first, as soon as allowed.
+      generate.mockRejectedValue(refused(status, undefined, { 'retry-after-ms': '1' }));
       await expect(interpret(configured)).rejects.toMatchObject({ status: 503 });
+      expect(generate).toHaveBeenCalledTimes([429, 503, 529].includes(status) ? 3 : 1);
+      expect(await repo.listUsage(company.id)).toHaveLength(1);
       const [ledger] = await repo.listUsage(company.id);
       expect(ledger).toMatchObject({
         costUsd: 0,
