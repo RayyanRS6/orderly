@@ -590,6 +590,11 @@ export interface TurnInput {
    * answers the customer's next message.
    */
   late?: boolean;
+  /**
+   * Server only, with `late`: when the message was actually processed. A review shown in the
+   * reply is stamped with this time, so the customer's next on-time "confirm" finds it fresh.
+   */
+  receivedAt?: string;
   /** Server only: the public menu page URL when it is on, for menu replies and {menu_link}. */
   menuLink?: string;
   /** Server only: the app's own web host, always allowed in AI wording. */

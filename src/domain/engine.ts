@@ -1637,7 +1637,13 @@ export function processTurn(
   // is the review the cart awaits (not an answer, a staff message or a notice since), the review
   // reached the customer, and it is under an hour old.
   const reviewAnswered = isLatestReview(conversation.cart, conversation.messages.at(-1));
-  const reviewAge = cart.reviewedAt ? Date.parse(input.now) - Date.parse(cart.reviewedAt) : NaN;
+  // A review is timed by when it was really shown: a late message's reply goes out when it is
+  // processed (receivedAt), not at the time the message was sent.
+  const shownAt =
+    input.receivedAt && Number.isFinite(Date.parse(input.receivedAt))
+      ? input.receivedAt
+      : input.now;
+  const reviewAge = cart.reviewedAt ? Date.parse(shownAt) - Date.parse(cart.reviewedAt) : NaN;
   const reviewFresh = reviewAge >= 0 && reviewAge <= REVIEW_FRESH_MS;
   // The review text this turn shows, so finish() records which reply carried it.
   let shownReview: string | undefined;
@@ -1962,7 +1968,7 @@ export function processTurn(
     if (shownReview && cart.status === 'awaiting_confirmation') {
       if (reply.includes(shownReview)) {
         cart.reviewMessageId = `${input.messageId}:reply`;
-        cart.reviewedAt = input.now;
+        cart.reviewedAt = shownAt;
       } else unreview(cart);
     }
     if (reply)

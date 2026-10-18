@@ -1526,7 +1526,9 @@ export async function processJob(repo: Repository, id: string) {
             text: String(job.payload.text),
             action: job.payload.action as BotAction | undefined,
             now: job.createdAt,
-            ...(late && { late }),
+            // A review in a late reply is timed from now, when it is shown, so the customer's
+            // next "confirm" sent on time places the order.
+            ...(late && { late, receivedAt: new Date().toISOString() }),
           },
           // The last tries hand a database outage to staff instead of failing for good.
           { retryable: job.attempts < 4 },
