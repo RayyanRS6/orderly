@@ -15,6 +15,7 @@
     "deploy:backend": "npm run build:edge && supabase functions deploy orderly --use-api",
     "test:edge-runtime": "npm run build:edge && node scripts/test-edge-runtime.mjs",
     "test:pilot-load": "tsx scripts/rehearse-pilot.ts",
+    "backup:db": "node scripts/backup-db.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
