@@ -190,6 +190,36 @@ export function changeRequest(change: PeopleChange) {
     : { path, method: 'DELETE', body: undefined, success: 'Access removed.' };
 }
 
+/** The admin allowing, or stopping, new linked-phone pairings for one business. */
+export function linkedDeviceCopy(business: string, allowed: boolean): ChangeCopy {
+  return allowed
+    ? {
+        title: `Allow linked-phone pairing for ${business}?`,
+        description:
+          'Its owners can then link the restaurant’s WhatsApp phone to Orderly. This unofficial method is against WhatsApp’s terms: WhatsApp can ban the whole number, temporarily or permanently, including the restaurant’s own WhatsApp app. Allow it only for a restaurant that has accepted that risk. The official WhatsApp Business Platform needs no approval.',
+        confirmLabel: 'Allow pairing',
+        busyLabel: 'Saving…',
+        tone: 'danger',
+      }
+    : {
+        title: `Stop linked-phone pairing for ${business}?`,
+        description:
+          'Its owners can no longer switch to a linked phone. A business already using one keeps it, and can still reconnect or disconnect it.',
+        confirmLabel: 'Stop pairing',
+        busyLabel: 'Saving…',
+        tone: 'primary',
+      };
+}
+/** The request that carries out a confirmed linked-phone change. */
+export function linkedDeviceRequest(companyId: string, allowed: boolean) {
+  return {
+    path: `/admin/businesses/${encodeURIComponent(companyId)}/linked-device`,
+    method: 'PUT',
+    body: { allowed },
+    success: allowed ? 'Linked-phone pairing allowed.' : 'Linked-phone pairing stopped.',
+  };
+}
+
 export function describeTeamChange(change: TeamChange, business: string): ChangeCopy {
   const name = personName(change.member);
   return change.kind === 'role'

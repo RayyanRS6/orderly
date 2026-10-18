@@ -10,6 +10,8 @@ import {
   describeChange,
   groupPeople,
   lastSeen,
+  linkedDeviceCopy,
+  linkedDeviceRequest,
   personName,
   type PeopleChange,
 } from '../lib/people';
@@ -46,6 +48,11 @@ export function People() {
   const [change, setChange] = useState<PeopleChange>();
   const [confirming, setConfirming] = useState(false);
   const [changeError, setChangeError] = useState('');
+  // Allowing or stopping linked-phone pairing for one business, waiting for confirmation. Kept
+  // while the dialog closes, so its text doesn't vanish mid-animation.
+  const [linked, setLinked] = useState<{ companyId: string; name: string; allowed: boolean }>();
+  const [linkedOpen, setLinkedOpen] = useState(false);
+  const [linkedError, setLinkedError] = useState('');
   const emailInput = useRef<HTMLInputElement>(null);
   const groups = useMemo(() => directory && groupPeople(directory, search), [directory, search]);
   useEffect(() => {
@@ -103,6 +110,32 @@ export function People() {
         Delete account
       </button>
     );
+  // Whether this business may pair a linked phone. The saved setting comes with the workspace,
+  // where the admin sees every business; the box changes only once the admin confirms.
+  const linkedToggle = (business: PeopleDirectory['businesses'][number]) => {
+    const allowed = !!data.companies.find((c) => c.id === business.id)?.linkedDeviceAllowed;
+    return (
+      <label className="mt-3 flex cursor-pointer items-start gap-3 rounded-2xl border border-ink/[0.06] bg-paper px-4 py-3 text-sm leading-6 transition-colors has-[:checked]:border-brand-500/25 has-[:checked]:bg-brand-50">
+        <input
+          className="mt-1 size-4 shrink-0 accent-brand-500"
+          type="checkbox"
+          checked={allowed}
+          disabled={pending === 'linked'}
+          onChange={() => {
+            setLinkedError('');
+            setLinked({ companyId: business.id, name: business.name, allowed: !allowed });
+            setLinkedOpen(true);
+          }}
+        />
+        <span>
+          <span className="font-semibold text-ink">Allow linked-phone pairing</span>
+          <span className="block text-xs text-stone-500">
+            The unofficial WhatsApp route. WhatsApp can ban a number linked this way.
+          </span>
+        </span>
+      </label>
+    );
+  };
   const details = (person: PeopleAccount, memberRole?: 'owner' | 'staff') => (
     <div className="min-w-0">
       <p className="text-sm font-semibold text-ink break-all">{personName(person)}</p>
@@ -232,6 +265,7 @@ export function People() {
                     Open
                   </button>
                 </div>
+                {linkedToggle(business)}
                 {!members.length && (
                   <p className="mt-4 rounded-2xl border border-dashed border-ink/10 bg-paper/70 px-4 py-6 text-center text-sm text-stone-500">
                     Nobody has been added yet.
@@ -366,6 +400,35 @@ export function People() {
               setChangeError((e as Error).message);
             } finally {
               setLoads((n) => n + 1);
+            }
+          });
+        }}
+      />
+      <ConfirmDialog
+        open={linkedOpen}
+        onOpenChange={(open) => {
+          if (!open && pending === 'linked') return;
+          setLinkedOpen(open);
+        }}
+        {...(linked
+          ? linkedDeviceCopy(linked.name, linked.allowed)
+          : { title: '', description: '' })}
+        busy={pending === 'linked'}
+        error={linkedError}
+        onConfirm={() => {
+          if (!linked) return;
+          const request = linkedDeviceRequest(linked.companyId, linked.allowed);
+          setLinkedError('');
+          void run('linked', async () => {
+            try {
+              // The workspace reload brings the saved setting back.
+              await mutate(request.path, request.body, request.method, {
+                dialog: true,
+                success: request.success,
+              });
+              setLinkedOpen(false);
+            } catch (e) {
+              setLinkedError((e as Error).message);
             }
           });
         }}
