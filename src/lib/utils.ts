@@ -24,6 +24,10 @@ export const shortDate = (date?: string | number | Date | null) => {
   }
 };
 
+/** A tab title led by a count, such as "(2) Orders · Laziza — Orderly"; no count, no change. */
+export const titleWithCount = (title: string, count?: number) =>
+  count && count > 0 ? `(${count > 99 ? '99+' : count}) ${title}` : title;
+
 export const initials = (name?: string | null) => {
   if (!name) return 'O';
   // Only words with a letter or digit count, and their first one is taken whole, so

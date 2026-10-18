@@ -51,7 +51,7 @@ export const MODEL_TEXT_LABELS: Record<ModelTextOutcome, string> = {
 
 export const SKIP_LABELS: Record<ModelSkipReason, string> = {
   button: 'The customer tapped a button (or sent media), so no AI was needed.',
-  late: 'This message was processed more than 10 minutes late, so it was handed to staff instead of answered.',
+  late: 'This message reached Orderly more than 2 hours late, so staff were asked to look at it; the bot answers the customer’s next message.',
   local_rules: 'No AI model is selected, so built-in rules handled the message.',
   staff_mode: 'Staff are handling this chat, so the AI was not used.',
   paused: 'Automatic replies are paused, so the AI was not used.',
@@ -60,10 +60,11 @@ export const SKIP_LABELS: Record<ModelSkipReason, string> = {
 };
 
 export const NOTICE_LABELS: Record<StaffNoticeCause, string> = {
-  burst: 'Many messages arrived within a minute, so the chat was handed to staff.',
+  burst:
+    'Many messages arrived within a minute, so automatic replies to this customer paused for 15 minutes.',
   menu_sync: 'The menu Sheet could not be refreshed, so the chat was handed to staff.',
   ai_error:
-    'The AI model failed or timed out (check the key, quota and model access), so the chat was handed to staff.',
+    'The AI model could not answer, so the chat paused; the bot tries again after 10 minutes unless staff reply.',
   // Also describes older handoffs that stay with staff, so it promises no automatic return.
   ai_budget: 'The monthly AI spending limit was reached, so staff were asked to reply.',
   hourly_limit:
@@ -93,6 +94,9 @@ const STEP_LABELS: Record<string, string> = {
   human_mode_message_saved: 'Saved for staff',
   menu_page_order: 'Saved an order from the menu page',
   menu_code_refused: 'Could not use the menu page order code',
+  order_status: 'Told the customer where their order is',
+  allergy_question_guarded: 'Answered an allergy question safely',
+  allergy_assurance_ignored: 'Dropped an allergy promise',
 };
 
 const CORRECTION_LABELS: Record<string, string> = {
@@ -118,9 +122,49 @@ const CORRECTION_LABELS: Record<string, string> = {
   response_fallback: 'There was no usable reply text, so a built-in next question was sent.',
   invented_link_ignored:
     'The AI’s wording included a web link you didn’t provide, so it was dropped.',
+  allergy_question_guarded:
+    'The customer asked about allergies, so your approved allergy answer (or a fixed safety notice) was sent word for word and staff were asked to check.',
+  allergy_assurance_ignored:
+    'The AI’s wording promised something about allergies or ingredients, so it was dropped.',
+};
+
+/** Recorded events (Activity) whose code name says too little on its own. */
+const TRACE_ACTION_LABELS: Record<string, string> = {
+  staff_attention: 'Staff asked to look at a chat',
+  menu_sync_stale: 'Menu Sheet unreadable, last good menu still used',
+  order_followup: 'Customer told their order is still waiting',
+  'whatsapp.not_sent': 'WhatsApp reply not sent',
+  'budget.settle_failed': 'AI reply cost not recorded',
+};
+
+/** Why staff were asked to look at a chat (the code of a 'staff_attention' event). */
+export const ATTENTION_CODE_LABELS: Record<string, string> = {
+  ai_auth: 'the AI provider rejected the API key',
+  ai_quota: 'the AI account has no quota or credit left',
+  ai_rate_limited: 'the AI provider is limiting requests',
+  ai_overloaded: 'the AI provider is overloaded',
+  ai_timeout: 'the AI model did not answer in time',
+  ai_model_not_found: 'the AI model is not offered to this key',
+  ai_bad_output: 'the AI model’s reply could not be used',
+  ai_unreachable: 'the AI provider could not be reached',
+  ai_provider_error: 'the AI model could not answer',
+  ai_unavailable: 'the AI model could not answer',
+  store_unavailable: 'Orderly’s database was busy',
+  burst: 'many messages arrived at once',
+  late: 'the message reached Orderly hours late',
 };
 
 const humanize = (value: string) => value.replaceAll('_', ' ');
+
+/**
+ * A recorded event's heading in plain words, or undefined to show its code name. A staff alert
+ * with a known reason says why: “Staff asked to look at a chat: the AI provider is overloaded”.
+ */
+export function describeTrace(action: string, code?: string): string | undefined {
+  const heading = TRACE_ACTION_LABELS[action];
+  const reason = code ? ATTENTION_CODE_LABELS[code] : undefined;
+  return heading && reason && action === 'staff_attention' ? `${heading}: ${reason}` : heading;
+}
 
 export function describeStep(step: string): string {
   if (step.startsWith('behavior_rule:')) return 'Matched your rule';

@@ -2,10 +2,12 @@ import { useEffect, useState } from 'react';
 import { BlockedNumbers } from './BlockedNumbers';
 import { RetentionSettings } from './RetentionSettings';
 import type { AddMemberOutcome, TeamMember, Job } from '../shared/types';
-import { api } from '../lib/api';
+import { api, ApiError } from '../lib/api';
 import { useAction, useWorkspace } from '../lib/workspace';
 import { label, shortDate } from '../lib/utils';
 import { addedMessage, describeTeamChange, personName, type TeamChange } from '../lib/people';
+import { describeTrace } from '../shared/explain';
+import { supportEmail } from './Public';
 import {
   ActionButton,
   Badge,
@@ -27,6 +29,12 @@ export function download(name: string, value: unknown) {
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+/** What export and deletion say when no chat or order matches the number. */
+export const NO_CUSTOMER_RECORDS =
+  'No records found for this number. Copy the number exactly as shown in the Inbox.';
+/** The success note for a deletion, with what the server really removed. */
+export const erasedMessage = (conversations: number) =>
+  `Removed ${conversations} ${conversations === 1 ? 'conversation' : 'conversations'} and their orders from Orderly’s active database.`;
 /** Event and job codes as words: 'whatsapp.accepted' reads 'WhatsApp accepted'. */
 const codeLabel = (code: string) =>
   label(code.replaceAll('.', ' '))
@@ -39,6 +47,8 @@ export function Activity() {
   const [jobs, setJobs] = useState<Job[] | undefined>(data.jobs);
   const [error, setError] = useState('');
   useEffect(() => {
+    // The workspace's own refresh already brought them: asking again would only repeat it.
+    if (data.jobs) return;
     let active = true;
     api<{ jobs: Job[] }>('/activity', data.company.id)
       .then((r) => {
@@ -148,8 +158,9 @@ export function Activity() {
             return (
               <li key={t.id} className="py-4 text-sm">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <strong className="break-all font-semibold text-ink">
-                    {codeLabel(t.action)}
+                  {/* Wraps between words; only a long code or path breaks inside a word. */}
+                  <strong className="break-words font-semibold text-ink">
+                    {describeTrace(t.action, t.code) ?? codeLabel(t.action)}
                   </strong>
                   <time
                     dateTime={t.createdAt}
@@ -378,7 +389,8 @@ export function SecuritySettings() {
   const [code, setCode] = useState('');
   const [password, setPassword] = useState('');
   const owner = data.role !== 'staff';
-  const noMatch = 'No conversations found for this number.';
+  // The server's own words (404); older servers answered with empty results instead.
+  const noMatch = NO_CUSTOMER_RECORDS;
   // Changes here report success and failure once, bottom right. Work can answer with its
   // own note instead, such as when nothing matched.
   const run = (key: string, work: () => Promise<string | void>, success: string) =>
@@ -577,11 +589,18 @@ export function SecuritySettings() {
                 void run(
                   'export',
                   async () => {
-                    const found = await api<{ conversations: unknown[]; orders: unknown[] }>(
-                      `/privacy/customer?phone=${encodeURIComponent(phone.trim())}`,
-                      data.company.id,
-                    );
-                    // Matching is exact: an empty file would look like a finished export.
+                    let found: { conversations: unknown[]; orders: unknown[] };
+                    try {
+                      found = await api<typeof found>(
+                        `/privacy/customer?phone=${encodeURIComponent(phone.trim())}`,
+                        data.company.id,
+                      );
+                    } catch (e) {
+                      // Nothing matched: a note, like the empty answer from older servers.
+                      if (e instanceof ApiError && e.status === 404) return e.message;
+                      throw e;
+                    }
+                    // An empty file would look like a finished export.
                     if (!found.conversations.length && !found.orders.length) return noMatch;
                     download('orderly-customer-export.json', found);
                   },
@@ -647,9 +666,9 @@ export function SecuritySettings() {
               operator and privacy contact is{' '}
               <a
                 className="font-semibold break-all text-brand-700 underline decoration-brand-500/40 underline-offset-2 transition-colors hover:text-brand-800 hover:decoration-brand-500"
-                href="mailto:waytogalaxy999@gmail.com"
+                href={`mailto:${supportEmail}`}
               >
-                waytogalaxy999@gmail.com
+                {supportEmail}
               </a>
               .
             </p>
@@ -692,10 +711,11 @@ export function SecuritySettings() {
                 { dialog: true },
               );
               setErase(false);
-              // Matching is exact, so say so when nothing was there to remove.
-              if (r.deleted) notify('Customer data removed from Orderly’s active database.');
+              // Older servers answer 0 instead of 404 when nothing was there to remove.
+              if (r.deleted) notify(erasedMessage(r.deleted));
               else notify(noMatch, 'info');
             } catch (e) {
+              // Also "No records found…" (404): the dialog stays open, so the number can be fixed.
               setEraseError((e as Error).message);
             }
           });

@@ -28,8 +28,16 @@ import {
   X,
 } from 'lucide-react';
 import type { Bootstrap } from './shared/types';
-import { api, setAccessToken, setSessionRejectedHandler } from './lib/api';
-import { cn, initials, label } from './lib/utils';
+import {
+  api,
+  ApiError,
+  setAccessToken,
+  setAccessTokenSource,
+  setSessionRecovery,
+  setSessionRejectedHandler,
+} from './lib/api';
+import { sessionHooks } from './lib/session';
+import { cn, initials, label, titleWithCount } from './lib/utils';
 import {
   Workspace,
   dialogOpen,
@@ -85,7 +93,26 @@ function PeopleUnavailable() {
   return <ErrorNotice message="The People page couldn’t load. Reload the page and try again." />;
 }
 const peopleNav = { id: 'people', label: 'People', icon: Users } as const;
-type Configuration = { mode: 'demo' | 'live'; supabaseUrl?: string; supabaseAnonKey?: string };
+type Configuration = {
+  mode: 'demo' | 'live';
+  supabaseUrl?: string;
+  supabaseAnonKey?: string;
+  /** Orderly's emergency stop: no business gets automatic replies. Missing from older servers. */
+  automationPaused?: boolean;
+};
+
+/** Shown on every workspace page while Orderly's emergency stop is on. */
+export function AutomationPausedBanner() {
+  return (
+    <div
+      role="status"
+      className="border-b border-sun/50 bg-sun/15 px-4 py-2 text-xs font-medium text-ink sm:px-8 lg:px-10"
+    >
+      Automatic replies are paused for every business (emergency stop). The inbox and staff replies
+      still work.
+    </div>
+  );
+}
 
 function getStoredCompany(): string {
   try {
@@ -144,6 +171,10 @@ export default function App() {
   const drawerFocus = useReturnFocus();
   // Shown on the sign-in form when the server rejected this browser's saved session.
   const [sessionNotice, setSessionNotice] = useState('');
+  // Orderly's emergency stop, from /config (checked again when turning a bot on is refused).
+  const [automationPaused, setAutomationPaused] = useState(false);
+  // Real customer orders waiting for acceptance, from the staff alerts, for the tab title.
+  const [waitingOrders, setWaitingOrders] = useState<number>();
 
   useEffect(() => {
     let active = true;
@@ -152,6 +183,7 @@ export default function App() {
       .then(async (result) => {
         if (!active) return;
         setConfig(result);
+        setAutomationPaused(!!result.automationPaused);
         if (result.mode === 'demo') {
           setAuthenticated(true);
           return;
@@ -161,6 +193,12 @@ export default function App() {
         const { createClient } = await import('@supabase/supabase-js');
         const auth = createClient(result.supabaseUrl, result.supabaseAnonKey);
         setClient(auth);
+        // Every request reads the current session, which refreshes an expiring token even in a
+        // background tab. A 401 first tries a refresh; only a sign-in that is definitely gone
+        // signs this browser out (never being offline, or the sign-in service being busy).
+        const hooks = sessionHooks(auth.auth);
+        setAccessTokenSource(hooks.token);
+        setSessionRecovery(hooks.recover);
         // The server rejected the saved session (revoked, or ended elsewhere) while this
         // browser still holds it. Forget it here only, so the sign-in form appears instead
         // of an error screen that can't be left.
@@ -219,6 +257,8 @@ export default function App() {
       active = false;
       unsubscribe?.();
       setSessionRejectedHandler(undefined);
+      setAccessTokenSource(undefined);
+      setSessionRecovery(undefined);
     };
   }, []);
 
@@ -321,6 +361,12 @@ export default function App() {
         } catch (e) {
           const message = (e as Error).message;
           setActionError(message);
+          // Turning a bot on is refused during Orderly's emergency stop, which may have started
+          // after this page loaded: check, so the banner says why.
+          if (e instanceof ApiError && e.status === 409 && path.startsWith('/companies/'))
+            void api<Configuration>('/config')
+              .then((c) => setAutomationPaused(!!c.automationPaused))
+              .catch(() => undefined);
           // A dialog shows the failure only while it is open: closed early, the failure
           // would otherwise appear nowhere.
           if (!options.quiet && !(options.dialog && dialogOpen())) notify(message, 'error');
@@ -344,14 +390,16 @@ export default function App() {
   );
 
   // Each page gets its own tab title, so open tabs can be told apart and screen readers
-  // hear the page change.
+  // hear the page change. Orders waiting for acceptance lead it, as "(2) …", so a tab in the
+  // background shows them.
   useEffect(() => {
     if (!data) return;
     const name = [...navigation, ...manage, peopleNav].find((n) => n.id === page)?.label;
-    document.title = name
-      ? `${name} · ${data.company.name} — Orderly`
-      : 'Orderly — Conversations to orders';
-  }, [page, data?.company.name]);
+    document.title = titleWithCount(
+      name ? `${name} · ${data.company.name} — Orderly` : 'Orderly — Conversations to orders',
+      waitingOrders,
+    );
+  }, [page, data?.company.name, waitingOrders]);
   // On short screens the links scroll: keep the current page's link in view after each page
   // change (the phone drawer does the same when it opens).
   useEffect(() => {
@@ -362,6 +410,7 @@ export default function App() {
 
   function switchCompany(id: string) {
     if (id === data?.company.id) return;
+    setWaitingOrders(undefined);
     setData(null);
     setError('');
     setActionError('');
@@ -627,7 +676,7 @@ export default function App() {
         {client && (
           <button
             className="mt-2.5 flex min-h-9.5 w-full items-center justify-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.04] px-4 py-2 text-xs font-semibold text-cream/65 transition-[background-color,color,translate,scale] duration-200 hover:bg-white/[0.08] hover:text-red-300 active:scale-[0.97]"
-            onClick={() => void client.auth.signOut()}
+            onClick={() => void signOutHere(client)}
           >
             <LogOut className="size-3.5" />
             Sign out
@@ -652,6 +701,7 @@ export default function App() {
         mutate,
         detailId: route.id,
         auth: client ?? undefined,
+        automationPaused,
       }}
     >
       <div className="min-h-dvh canvas-glow">
@@ -720,7 +770,7 @@ export default function App() {
               </span>
             </div>
             <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-              <StaffAlerts />
+              <StaffAlerts onWaitingOrders={setWaitingOrders} />
               <button
                 type="button"
                 className="btn hidden md:inline-flex"
@@ -761,7 +811,7 @@ export default function App() {
                   <button
                     className="icon-btn-glass"
                     aria-label="Sign out"
-                    onClick={() => void client.auth.signOut()}
+                    onClick={() => void signOutHere(client)}
                   >
                     <LogOut className="size-4" />
                   </button>
@@ -769,6 +819,7 @@ export default function App() {
               </div>
             </div>
           </header>
+          {automationPaused && <AutomationPausedBanner />}
           {data.mode === 'demo' && (
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.06] bg-ink glow-dark px-4 py-2 text-xs text-cream/60 sm:px-8 lg:px-10">
               <span>
@@ -890,6 +941,14 @@ export default function App() {
       <Toaster toasts={toasts} onDismiss={dismissToast} />
     </Workspace.Provider>
   );
+}
+
+/**
+ * Sign out on this device only. Supabase's default ends every session of the account, which
+ * would also sign out the kitchen phone sharing it; Security & privacy has "Sign out all sessions".
+ */
+function signOutHere(client: SupabaseClient) {
+  return client.auth.signOut({ scope: 'local' });
 }
 
 function Brand({ dark = true }: { dark?: boolean }) {
@@ -1131,7 +1190,7 @@ function AccountChallenge({
         >
           Continue
         </ActionButton>
-        <button type="button" className="btn w-full" onClick={() => void client.auth.signOut()}>
+        <button type="button" className="btn w-full" onClick={() => void signOutHere(client)}>
           Sign out
         </button>
         {factorId && (

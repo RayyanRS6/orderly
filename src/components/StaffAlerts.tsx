@@ -2,17 +2,19 @@ import { useEffect, useRef, useState } from 'react';
 import { Bell, X } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
 import { api } from '../lib/api';
+import { playChime, unlockChime } from '../lib/chime';
 import { useWorkspace, type Page } from '../lib/workspace';
 import type { StaffAttention } from '../shared/types';
 import { shortDate } from '../lib/utils';
 import { EmailAlerts } from './EmailAlerts';
 import { clockTime, ErrorNotice, keepOpenForToasts } from './ui';
 
+type Alert = StaffAttention['items'][number];
 /**
  * What one alert says and where it leads. A kind this dashboard does not know yet (from a
  * newer server) still shows, and opens Activity.
  */
-export function describeAlert(alert: StaffAttention['items'][number]): {
+export function describeAlert(alert: Alert): {
   label: string;
   page: Page;
   id?: string;
@@ -26,8 +28,13 @@ export function describeAlert(alert: StaffAttention['items'][number]): {
       return { label: 'Delivery or processing job failed', page: 'activity' };
     case 'budget':
       return { label: 'AI budget at 80% or more', page: 'bot' };
+    case 'whatsapp':
+      return { label: 'Linked phone is offline', page: 'integrations' };
     case 'limit': {
       if (alert.scope === 'monthly') return { label: 'Monthly AI limit reached', page: 'bot' };
+      // A warning only: the bot still answers, and it is not counted as a reached limit.
+      if (alert.scope === 'hourly_near')
+        return { label: 'AI replies at 80% of this hour’s limit', page: 'bot' };
       const back = clockTime(alert.resetsAt);
       return {
         label:
@@ -42,46 +49,105 @@ export function describeAlert(alert: StaffAttention['items'][number]): {
   }
 }
 
+/** How often the alerts refresh. */
+export const ALERT_POLL_MS = 60000;
+/**
+ * Whether to ask the server now. A tab in the background asks only when browser alerts are on,
+ * since those exist for exactly that case; otherwise it waits until the tab is shown again.
+ */
+export function shouldPollAlerts(hidden: boolean, browserAlertsOn: boolean) {
+  return !hidden || browserAlertsOn;
+}
+/**
+ * Which alerts are new since the last check. The first check after opening (or switching
+ * business, or turning alerts on) only learns what is already there, so a reload never raises
+ * a notification or a chime for old work.
+ */
+export function newAlerts(seen: ReadonlySet<string> | undefined, items: Alert[]) {
+  const fresh = seen ? items.filter((a) => !seen.has(a.id)) : [];
+  return {
+    fresh,
+    orders: fresh.filter((a) => a.kind === 'order'),
+    seen: new Set(items.map((a) => a.id)),
+  };
+}
+
 const preferenceKey = 'orderly-browser-alerts';
-function enabledHere() {
+const soundKey = 'orderly-alert-sound';
+function enabledHere(key = preferenceKey) {
   try {
-    return localStorage.getItem(preferenceKey) === 'on';
+    return localStorage.getItem(key) === 'on';
   } catch {
     return false;
   }
 }
-export function StaffAlerts() {
+function remember(key: string, on: boolean) {
+  try {
+    if (on) localStorage.setItem(key, 'on');
+    else localStorage.removeItem(key);
+  } catch {}
+}
+const browserAlertsOn = (enabled: boolean) =>
+  enabled && 'Notification' in window && Notification.permission === 'granted';
+export function StaffAlerts({
+  onWaitingOrders,
+}: {
+  /** Real customer orders waiting for acceptance (undefined until known), for the tab title. */
+  onWaitingOrders?: (count: number | undefined) => void;
+} = {}) {
   const { data, navigate } = useWorkspace();
   const [attention, setAttention] = useState<StaffAttention>();
   const [error, setError] = useState('');
   const [expanded, setExpanded] = useState(false);
-  const [enabled, setEnabled] = useState(enabledHere);
+  const [enabled, setEnabled] = useState(() => enabledHere());
+  const [sound, setSound] = useState(() => enabledHere(soundKey));
   const [permission, setPermission] = useState('');
-  const seen = useRef(new Set<string>());
+  const seen = useRef<Set<string> | undefined>(undefined);
+  const soundOn = useRef(sound);
+  soundOn.current = sound;
+  const reportOrders = useRef(onWaitingOrders);
+  reportOrders.current = onWaitingOrders;
+  // A sound chosen on an earlier visit can play once this page has been tapped or typed in.
+  useEffect(() => {
+    if (!sound) return;
+    const unlock = () => unlockChime();
+    window.addEventListener('pointerdown', unlock, { once: true, capture: true });
+    window.addEventListener('keydown', unlock, { once: true, capture: true });
+    return () => {
+      window.removeEventListener('pointerdown', unlock, { capture: true });
+      window.removeEventListener('keydown', unlock, { capture: true });
+    };
+  }, [sound]);
   useEffect(() => {
     let active = true;
     let timer: ReturnType<typeof setTimeout>;
-    seen.current = new Set();
+    // Set when a check was skipped in a background tab: the tab being shown again checks at once.
+    let waiting = false;
+    seen.current = undefined;
     setAttention(undefined);
     setError('');
+    reportOrders.current?.(undefined);
     async function poll() {
+      if (!shouldPollAlerts(document.hidden, browserAlertsOn(enabled))) {
+        waiting = true;
+        return;
+      }
       try {
         const result = await api<StaffAttention>('/attention', data.company.id);
         if (!active) return;
         setAttention(result);
         setError('');
-        const fresh = result.items.filter((a) => !seen.current.has(a.id));
-        seen.current = new Set(result.items.map((a) => a.id));
-        if (
-          fresh.length &&
-          enabled &&
-          'Notification' in window &&
-          Notification.permission === 'granted'
-        ) {
+        reportOrders.current?.(result.orders);
+        const { fresh, orders, seen: next } = newAlerts(seen.current, result.items);
+        seen.current = next;
+        // Only with browser alerts on: turning them on was the tap that allowed sound.
+        if (orders.length && soundOn.current && browserAlertsOn(enabled)) playChime();
+        if (fresh.length && browserAlertsOn(enabled)) {
           try {
             const note = new Notification('Orderly needs your attention', {
-              body: 'Open Orderly to review pending orders, staff handoffs, failed work or a reached AI limit.',
-              tag: `orderly-${data.company.id}`,
+              body: 'Open Orderly to review pending orders, staff handoffs, failed work, a reached AI limit or a linked phone that stopped.',
+              // A tag of its own, so a new alert never silently replaces one still on screen.
+              tag: `orderly-${data.company.id}-${fresh[0]!.id}`,
             });
             note.onclick = () => {
               window.focus();
@@ -97,35 +163,41 @@ export function StaffAlerts() {
       } catch (e) {
         if (active) setError((e as Error).message);
       } finally {
-        if (active) timer = setTimeout(() => void poll(), 20000);
+        if (active) timer = setTimeout(() => void poll(), ALERT_POLL_MS);
       }
     }
+    const shown = () => {
+      if (document.hidden || !waiting) return;
+      waiting = false;
+      clearTimeout(timer);
+      void poll();
+    };
+    document.addEventListener('visibilitychange', shown);
     void poll();
     return () => {
       active = false;
       clearTimeout(timer);
+      document.removeEventListener('visibilitychange', shown);
     };
   }, [data.company.id, enabled]);
   async function toggle() {
     if (enabled) {
       setEnabled(false);
-      try {
-        localStorage.removeItem(preferenceKey);
-      } catch {}
+      remember(preferenceKey, false);
       return;
     }
     if (!('Notification' in window)) {
       setPermission('Browser notifications are unavailable here. In-app alerts still work.');
       return;
     }
+    // This click is what lets the order sound play later, if it is turned on.
+    unlockChime();
     try {
       const p = await Notification.requestPermission();
       if (p === 'granted') {
         setEnabled(true);
         setPermission('');
-        try {
-          localStorage.setItem(preferenceKey, 'on');
-        } catch {}
+        remember(preferenceKey, true);
       } else {
         setPermission(
           'Notifications were not enabled. You can change this in your browser’s site settings.',
@@ -134,6 +206,21 @@ export function StaffAlerts() {
     } catch {
       setPermission('Your browser could not enable notifications. In-app alerts still work.');
     }
+  }
+  function toggleSound() {
+    if (sound) {
+      setSound(false);
+      remember(soundKey, false);
+      return;
+    }
+    // This click is what lets the browser play it later.
+    if (!unlockChime()) {
+      setPermission('This browser can’t play the order sound. Browser alerts still work.');
+      return;
+    }
+    setSound(true);
+    setPermission('');
+    remember(soundKey, true);
   }
   return (
     <Dialog.Root open={expanded} onOpenChange={setExpanded}>
@@ -163,7 +250,8 @@ export function StaffAlerts() {
           onInteractOutside={keepOpenForToasts}
           className="dialog-content fixed inset-x-3 top-[10dvh] z-50 mx-auto max-h-[80dvh] max-w-xl overflow-y-auto rounded-[22px] border border-white bg-cream bg-[radial-gradient(420px_circle_at_100%_0%,rgb(255_105_44/0.1),transparent_70%)] bg-no-repeat p-5 shadow-[0_40px_80px_-30px_rgb(14_6_4/0.5),0_10px_24px_-14px_rgb(14_6_4/0.15)] sm:p-6"
         >
-          <div className="mb-4 flex items-center justify-between gap-2">
+          {/* On phones a long list scrolls under this row, so Close stays in reach. */}
+          <div className="mb-4 flex items-center justify-between gap-2 max-sm:sticky max-sm:top-0 max-sm:z-10 max-sm:-mx-5 max-sm:-mt-5 max-sm:mb-2 max-sm:px-5 max-sm:pt-5 max-sm:pb-2 max-sm:[background:inherit]">
             <Dialog.Title className="panel-title">Staff alerts</Dialog.Title>
             <Dialog.Close className="icon-btn-glass" aria-label="Close staff alerts">
               <X className="size-4" />
@@ -184,12 +272,23 @@ export function StaffAlerts() {
                     : 'No unresolved staff alerts'
                   : 'Checking staff alerts…'}
             </p>
-            <button
-              className="min-h-9 rounded-full px-3.5 text-xs font-semibold text-brand-800 transition-colors hover:bg-brand-500/10 hover:text-brand-900"
-              onClick={() => void toggle()}
-            >
-              {enabled ? 'Turn off browser alerts' : 'Enable browser alerts'}
-            </button>
+            <div className="flex flex-wrap items-center gap-1">
+              {enabled && (
+                <button
+                  className="min-h-9 rounded-full px-3.5 text-xs font-semibold text-brand-800 transition-colors hover:bg-brand-500/10 hover:text-brand-900"
+                  aria-pressed={sound}
+                  onClick={toggleSound}
+                >
+                  {sound ? 'Turn off order sound' : 'Play a sound for new orders'}
+                </button>
+              )}
+              <button
+                className="min-h-9 rounded-full px-3.5 text-xs font-semibold text-brand-800 transition-colors hover:bg-brand-500/10 hover:text-brand-900"
+                onClick={() => void toggle()}
+              >
+                {enabled ? 'Turn off browser alerts' : 'Enable browser alerts'}
+              </button>
+            </div>
           </div>
           {permission && (
             <p role="status" className="mt-2 text-xs text-stone-600">
@@ -199,9 +298,10 @@ export function StaffAlerts() {
           {expanded && (
             <div className="mt-3 space-y-3 text-sm">
               <p className="text-xs leading-5 text-stone-500">
-                Live work only. Refreshes about every 20 seconds while this app is open. Browser
-                alerts depend on browser permissions and background limits; they are not a phone
-                push service. Configure email escalation below for alerts when the app is closed.
+                Live work only. Refreshes about once a minute while this page is on screen, and in a
+                background tab only with browser alerts on. Browser alerts depend on browser
+                permissions and background limits; they are not a phone push service. Configure
+                email escalation below for alerts when the app is closed.
               </p>
               {error && <ErrorNotice message={`${error} Retrying automatically.`} />}
               {attention && (
@@ -254,6 +354,18 @@ export function StaffAlerts() {
                       }}
                     >
                       AI limit reached
+                    </button>
+                  )}
+                  {/* Older servers do not count linked phones. */}
+                  {!!(attention.whatsapp ?? 0) && (
+                    <button
+                      className="btn border-sun/70 bg-sun/20 text-ink hover:border-sun hover:bg-sun/35"
+                      onClick={() => {
+                        setExpanded(false);
+                        navigate('integrations');
+                      }}
+                    >
+                      Linked phone offline
                     </button>
                   )}
                 </div>

@@ -7,7 +7,14 @@ import { pathToFileURL } from 'node:url';
 // own loading shell and authenticate in the browser and backend.
 await mkdir('.local', { recursive: true });
 await build({
-  entryPoints: ['src/public-render.tsx'],
+  // The support address comes from the Contact page, so security.txt names the same one.
+  stdin: {
+    contents:
+      "export { renderPublic } from './src/public-render.tsx';\nexport { supportEmail } from './src/components/Public.tsx';\n",
+    resolveDir: process.cwd(),
+    sourcefile: 'public-render-entry.ts',
+    loader: 'ts',
+  },
   outfile: '.local/public-render.mjs',
   bundle: true,
   platform: 'node',
@@ -15,7 +22,11 @@ await build({
   packages: 'external',
   jsx: 'automatic',
 });
-const { renderPublic } = await import(pathToFileURL(resolve('.local/public-render.mjs')).href);
+const { renderPublic, supportEmail } = await import(
+  pathToFileURL(resolve('.local/public-render.mjs')).href
+);
+if (!/^[^\s@<>]+@[^\s@<>]+\.[a-z]{2,}$/i.test(supportEmail ?? ''))
+  throw new Error('The support email (src/components/Public.tsx) is missing or invalid.');
 const shell = await readFile('dist/index.html', 'utf8');
 // The workspace is a separately loaded chunk (src/main.tsx), so public pages skip it.
 // App pages fetch it, the chunks it imports and the sign-in client alongside the entry
@@ -128,4 +139,15 @@ await writeFile(
 );
 await writeFile('dist/_redirects', '/login /app 200\n/app/* /app 200\n/m/* /menu 200\n');
 await writeFile('dist/robots.txt', 'User-agent: *\nDisallow: /app\nDisallow: /login\n');
-console.log('Generated public pages, app deep links, security headers and a public 404 page.');
+// Where to report a security problem (RFC 9116). It must be renewed before it expires, which
+// every build does.
+await mkdir('dist/.well-known', { recursive: true });
+const expires = new Date(Date.now() + 180 * 24 * 60 * 60 * 1000);
+expires.setUTCHours(0, 0, 0, 0);
+await writeFile(
+  'dist/.well-known/security.txt',
+  `Contact: mailto:${supportEmail}\nExpires: ${expires.toISOString()}\nPreferred-Languages: en\nPolicy: /privacy\n`,
+);
+console.log(
+  'Generated public pages, app deep links, security headers, security.txt and a public 404 page.',
+);

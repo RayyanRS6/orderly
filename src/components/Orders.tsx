@@ -15,9 +15,10 @@ import {
   Wallet,
   X,
 } from 'lucide-react';
-import type { Order, OrderStatus, PageResult } from '../shared/types';
+import type { Bootstrap, Order, OrderStatus, PageResult } from '../shared/types';
 import { money } from '../shared/types';
 import { api } from '../lib/api';
+import { ordersCsv } from '../lib/orders-csv';
 import { useAction, useWorkspace } from '../lib/workspace';
 import { cn, initials, label, shortDate } from '../lib/utils';
 import {
@@ -30,6 +31,7 @@ import {
   CustomSelect,
   Modal,
   PageHeading,
+  ReadinessLink,
   Status,
 } from './ui';
 
@@ -60,7 +62,8 @@ export function Overview() {
     return {
       date,
       count:
-        data.summary?.daily.find((d) => d.date === date.toISOString().slice(0, 10))?.count ??
+        // The server counts each day in the restaurant's time zone too, so look it up by `key`.
+        data.summary?.daily.find((d) => d.date === key)?.count ??
         orders.filter((o) => {
           if (!o.createdAt) return false;
           try {
@@ -127,6 +130,7 @@ export function Overview() {
                   {c.ready ? '✓' : '○'}
                 </span>{' '}
                 {c.label}
+                <ReadinessLink check={c} />
               </li>
             ))}
           </ul>
@@ -485,6 +489,18 @@ export function Overview() {
   );
 }
 
+/**
+ * Changes whenever an order or the order totals change, or anything new was recorded (a change
+ * to an older order, made here or elsewhere, records an event), and only then.
+ */
+export function ordersChangeKey(data: Pick<Bootstrap, 'orders' | 'summary' | 'traces'>) {
+  return JSON.stringify([
+    data.summary ?? null,
+    data.orders.map((o) => [o.id, o.status, o.updatedAt, o.syncStatus]),
+    (data.traces ?? []).map((t) => t.id),
+  ]);
+}
+
 export function Orders() {
   const { data, navigate, detailId } = useWorkspace();
   const [filter, setFilter] = useState('all');
@@ -508,6 +524,9 @@ export function Orders() {
   const filtered = orders;
   const listKey = [page, query, filter, sandbox].join('|');
   const loadedKey = useRef(listKey);
+  // The workspace refreshes every 15 seconds with new objects even when nothing changed: ask
+  // for the list (and an open order) again only when an order or the totals really changed.
+  const changes = ordersChangeKey(data);
   useEffect(() => {
     let active = true;
     // A new search, filter or page dims the old rows until it loads; the 15s refresh doesn't.
@@ -544,7 +563,7 @@ export function Orders() {
       active = false;
       clearTimeout(timer);
     };
-  }, [data.company.id, data.orders, data.summary, query, filter, page, sandbox]);
+  }, [data.company.id, changes, query, filter, page, sandbox]);
   const failedId = useRef<string | undefined>(undefined);
   useEffect(() => {
     let active = true;
@@ -573,7 +592,7 @@ export function Orders() {
     return () => {
       active = false;
     };
-  }, [detailId, data.company.id, data.orders]);
+  }, [detailId, data.company.id, changes]);
   async function exportCsv() {
     setExporting(true);
     setError('');
@@ -589,33 +608,7 @@ export function Orders() {
         if (page >= 1000)
           throw new Error('This export is too large. Contact support for a complete archive.');
       }
-      const fields = [
-        'reference',
-        'customer',
-        'phone',
-        'fulfillment',
-        'total_pkr',
-        'status',
-        'created_at',
-      ];
-      const escape = (value: unknown) => {
-        const str = String(value ?? '');
-        return `"${(/^[\s]*[=+@\-]/.test(str) ? "'" : '') + str.replaceAll('"', '""')}"`;
-      };
-      const csv = [
-        fields,
-        ...exportOrders.map((o) => [
-          o.reference,
-          o.customerName,
-          o.customerPhone,
-          o.fulfillment,
-          o.total / 100,
-          o.status,
-          o.createdAt,
-        ]),
-      ]
-        .map((row) => row.map(escape).join(','))
-        .join('\r\n');
+      const csv = ordersCsv(exportOrders, data.company.timezone);
       const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
       const link = document.createElement('a');
       link.href = url;

@@ -400,9 +400,9 @@ describe('explanation wording and flow path', () => {
     expect(explanationHeadline(explanation({ notice: 'ai_error', outcome: 'staff' }))).toBe(
       NOTICE_LABELS.ai_error,
     );
-    expect(NOTICE_LABELS.ai_error).toMatch(/^The AI model failed or timed out/);
+    expect(NOTICE_LABELS.ai_error).toMatch(/^The AI model could not answer, so the chat paused/);
     expect(explanationHeadline(explanation({ notice: 'burst', outcome: 'staff' }))).toBe(
-      'Many messages arrived within a minute, so the chat was handed to staff.',
+      'Many messages arrived within a minute, so automatic replies to this customer paused for 15 minutes.',
     );
     expect(explanationHeadline(explanation({ outcome: 'staff' }))).toBe(
       'The chat was handed to staff.',
