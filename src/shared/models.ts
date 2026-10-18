@@ -92,13 +92,20 @@ export const MODEL_LIMITS = {
 export const AI_LIMIT_DEFAULTS = {
   repliesPerHour: 300,
   repliesPerCustomerPerHour: 30,
+  /** Messages from one customer within a minute that pause the bot for them (code only, no SQL). */
+  messagesPerCustomerPerMinute: 25,
 } as const;
 export const AI_LIMIT_RANGES = {
   repliesPerHour: [20, 10000],
   repliesPerCustomerPerHour: [5, 1000],
+  messagesPerCustomerPerMinute: [5, 120],
 } as const;
 /** How long a customer who reached their own limit waits before the bot answers again. */
 export const CUSTOMER_LIMIT_PAUSE_MS = 60 * 60 * 1000;
+/** How long a customer who sent too many messages at once waits before the bot answers again. */
+export const BURST_PAUSE_MS = 15 * 60 * 1000;
+/** How long the bot waits after the AI model could not answer before it tries again. */
+export const AI_ERROR_PAUSE_MS = 10 * 60 * 1000;
 /** A customer is told about a limit at most once in this time. */
 export const LIMIT_NOTICE_INTERVAL_MS = 60 * 60 * 1000;
 
@@ -106,7 +113,12 @@ export const LIMIT_NOTICE_INTERVAL_MS = 60 * 60 * 1000;
 export function effectiveAiLimits(limits?: {
   repliesPerHour?: unknown;
   repliesPerCustomerPerHour?: unknown;
-}): { repliesPerHour: number; repliesPerCustomerPerHour: number } {
+  messagesPerCustomerPerMinute?: unknown;
+}): {
+  repliesPerHour: number;
+  repliesPerCustomerPerHour: number;
+  messagesPerCustomerPerMinute: number;
+} {
   const pick = (key: keyof typeof AI_LIMIT_DEFAULTS) => {
     const value = limits?.[key];
     const [min, max] = AI_LIMIT_RANGES[key];
@@ -117,6 +129,7 @@ export function effectiveAiLimits(limits?: {
   return {
     repliesPerHour: pick('repliesPerHour'),
     repliesPerCustomerPerHour: pick('repliesPerCustomerPerHour'),
+    messagesPerCustomerPerMinute: pick('messagesPerCustomerPerMinute'),
   };
 }
 

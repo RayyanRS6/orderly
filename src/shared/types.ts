@@ -162,6 +162,8 @@ export interface AiLimits {
   repliesPerHour?: number;
   /** AI replies one customer may receive within an hour. */
   repliesPerCustomerPerHour?: number;
+  /** Messages one customer may send within a minute before the bot pauses for them. */
+  messagesPerCustomerPerMinute?: number;
 }
 export type AiLimitKind = 'monthly' | 'hourly' | 'customer';
 export interface TurnExplanation {
@@ -213,7 +215,14 @@ export interface Conversation {
   botResumedAt?: string;
   // Set when an AI limit stopped the bot answering this chat. Staff see it under "Needs staff";
   // the bot takes the chat back after `until`, or once the limit is raised, unless staff wrote.
-  limitPause?: { reason: AiLimitKind; at: string; until: string; limit: number };
+  // 'burst' (too many messages at once), 'ai_error' (the AI could not answer) and 'late' (the
+  // message reached Orderly hours late) end only at `until`.
+  limitPause?: {
+    reason: AiLimitKind | 'burst' | 'ai_error' | 'late';
+    at: string;
+    until: string;
+    limit: number;
+  };
   // When this customer was last told about a limit: at most one such notice an hour.
   limitNoticeAt?: string;
   // When the bot last took the chat back after a per-customer pause. Replies counted toward the
@@ -536,7 +545,10 @@ export interface TurnInput {
   action?: BotAction;
   now: string;
   testTarget?: 'draft' | 'published';
-  /** Set when a queued message was processed too late and is handed to staff instead. */
+  /**
+   * Set when a queued message is processed more than 10 minutes late: a confirmation is asked
+   * again. One more than 2 hours late is left for staff, and the bot takes the next message.
+   */
   late?: boolean;
   /** Server only: the public menu page URL when it is on, for menu replies and {menu_link}. */
   menuLink?: string;
@@ -556,7 +568,7 @@ export interface TurnResult {
 export interface Job {
   id: string;
   companyId: string;
-  kind: 'incoming' | 'whatsapp_send' | 'sheet_sync' | 'staff_alert';
+  kind: 'incoming' | 'whatsapp_send' | 'sheet_sync' | 'staff_alert' | 'order_followup';
   payload: Record<string, unknown>;
   status: 'pending' | 'processing' | 'done' | 'failed';
   attempts: number;

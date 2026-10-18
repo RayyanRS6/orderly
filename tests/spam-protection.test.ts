@@ -13,6 +13,7 @@ import {
   limitPaused,
   resumesAfterLimit,
 } from '../src/domain/engine';
+import { disclosureLine } from '../src/domain/disclosure';
 import { defaultBot } from '../src/shared/bot';
 import { AI_LIMIT_DEFAULTS, effectiveAiLimits } from '../src/shared/models';
 import { seedCompanies } from '../src/shared/seed';
@@ -293,7 +294,8 @@ describe('hourly and monthly AI limits', () => {
     const customer = newCustomer();
     const paused = await message(customer);
     expect(generate).not.toHaveBeenCalled();
-    expect(paused.result.reply).toBe(NOTICE);
+    // The first reply of the chat starts with the automated-assistant notice.
+    expect(paused.result.reply).toBe(`${disclosureLine(company.name, 'en')}\n\n${NOTICE}`);
     expect(paused.saved.limitPause).toMatchObject({ reason: 'hourly', limit: 20 });
     const until = new Date(paused.saved.limitPause!.until);
     expect(until.getUTCMinutes()).toBe(0);
@@ -370,7 +372,7 @@ describe('hourly and monthly AI limits', () => {
     await repo.saveConversation({ ...customer, version: 1 }, 0);
     const paused = await message({ ...customer, version: 1 });
     expect(paused.result.reply).toBe(
-      'Aap ke message ka shukriya! Hamari team jald yahin jawab degi. Aap ke order par koi asar nahi para.',
+      `${disclosureLine(company.name, 'roman-ur')}\n\nAap ke message ka shukriya! Hamari team jald yahin jawab degi. Aap ke order par koi asar nahi para.`,
     );
   });
 });
@@ -715,6 +717,7 @@ describe('shared helpers', () => {
     expect(effectiveAiLimits({ repliesPerHour: 50, repliesPerCustomerPerHour: 10 })).toEqual({
       repliesPerHour: 50,
       repliesPerCustomerPerHour: 10,
+      messagesPerCustomerPerMinute: AI_LIMIT_DEFAULTS.messagesPerCustomerPerMinute,
     });
     expect(effectiveAiLimits({ repliesPerHour: '50', repliesPerCustomerPerHour: 2.5 })).toEqual(
       AI_LIMIT_DEFAULTS,

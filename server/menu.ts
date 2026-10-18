@@ -26,13 +26,14 @@ import {
   type WebCart,
 } from '../src/shared/menu.js';
 import { connectionMatches, customerKeys } from '../src/shared/whatsapp.js';
-import { botConfig, configuredCompany } from '../src/shared/bot.js';
+import { botConfig, configuredCompany, offeredFulfillment } from '../src/shared/bot.js';
 import { closedText, createConversation, isOpen, noticeLanguage } from '../src/domain/engine.js';
+import { withDisclosure } from '../src/domain/disclosure.js';
 import { buildWebOrder, MenuOrderError, quoteWebCart } from '../src/domain/web-order.js';
-import { env } from './config.js';
+import { automationPaused, env } from './config.js';
 import { hmacHex, hmacKey22, PublicError } from './security.js';
 import { describeTurn } from './explanations.js';
-import { integrationAdapter, refreshCatalog } from './service.js';
+import { integrationAdapter, refreshSheetMenu } from './service.js';
 import { signMenuToken, verifyMenuToken, type MenuTokenClaims } from './menu-token.js';
 import { clientKey } from './client-key.js';
 import { dispatchJob, makeJob } from './jobs.js';
@@ -50,6 +51,13 @@ export class MenuError extends PublicError {
   }
 }
 const NOT_AVAILABLE = "This menu isn't available right now.";
+// The platform-wide stop (ORDERLY_PAUSE_AUTOMATION): the page is view-only for every business.
+const PAUSED = 'Ordering is paused. Please message the restaurant on WhatsApp.';
+const withPause = (company: Company): Company =>
+  automationPaused() ? { ...company, botEnabled: false } : company;
+function refuseWhilePaused() {
+  if (automationPaused()) throw new MenuError(PAUSED, 503, 'paused');
+}
 
 export const appUrl = () => (env('APP_URL') ?? '').trim().replace(/\/+$/, '');
 export function appHost(): string | undefined {
@@ -151,20 +159,10 @@ export async function publicMenu(repo: Repository, slug: string, now: string): P
   if (!link?.enabled) throw new MenuError(NOT_AVAILABLE, 404, 'not_found');
   const stored = await repo.getCompany(link.companyId);
   if (!stored) throw new MenuError(NOT_AVAILABLE, 404, 'not_found');
-  const company = configuredCompany(stored);
+  const company = withPause(configuredCompany(stored));
   const products = (await repo.listProducts(company.id)).filter((p) => p.companyId === company.id);
-  const offered = botConfig(company).fulfillment;
-  const delivers = company.deliveryZones.length > 0;
-  const fulfillment =
-    offered === 'pickup'
-      ? 'pickup'
-      : offered === 'delivery'
-        ? delivers
-          ? 'delivery'
-          : undefined
-        : delivers
-          ? 'both'
-          : 'pickup';
+  // The same choice the chat offers: delivery needs a delivery area.
+  const fulfillment = offeredFulfillment(company);
   const open = isOpen(company, now);
   const whatsappNumber = await whatsappNumberFor(repo, company.id).catch(() => undefined);
   const reason =
@@ -296,7 +294,7 @@ async function menuCompany(repo: Repository, slug: string) {
   if (!link?.enabled) throw new MenuError(NOT_AVAILABLE, 404, 'not_found');
   const stored = await repo.getCompany(link.companyId);
   if (!stored) throw new MenuError(NOT_AVAILABLE, 404, 'not_found');
-  const company = configuredCompany(stored);
+  const company = withPause(configuredCompany(stored));
   const number = await whatsappNumberFor(repo, company.id).catch(() => undefined);
   return { company, whatsappUrl: number ? waMeUrl(number) : undefined };
 }
@@ -399,6 +397,7 @@ export async function placeLinkOrder(
   repo: Repository,
   request: { slug: string; token: string; cart: WebCart; expectedTotal: number; headers: Headers },
 ): Promise<MenuOrderResult> {
+  refuseWhilePaused();
   const ip = clientKey(request.headers);
   await limit(repo, ip && `menu:order:${ip}`, 30);
   let check = await checkLink(repo, request.slug, request.token);
@@ -419,21 +418,21 @@ export async function placeLinkOrder(
   )
     throw new MenuError('Your order is already being placed. Please wait a moment.', 409, 'busy');
   try {
-    // A Sheets menu is refreshed at most once a minute, as for chat orders.
+    // A Sheets menu is refreshed at most once a minute, as for chat orders. While the Sheet
+    // cannot be read, the menu last read from it is used for up to 12 hours; the database
+    // checks every price against that stored menu.
     const synced = check.company.catalogSyncedAt;
     if (
       check.company.catalogSource === 'sheets' &&
       (!synced || Date.now() - Date.parse(synced) > 60000)
     ) {
-      try {
-        await refreshCatalog(repo, check.company);
-      } catch {
+      const refresh = await refreshSheetMenu(repo, check.company);
+      if (!refresh.ok && !refresh.usable)
         throw new MenuError(
           'The menu is being updated. Please order in WhatsApp for now.',
           409,
           'menu_sync',
         );
-      }
     }
     // Read everything again under the lock: a message or staff may have changed the chat.
     check = await checkLink(repo, request.slug, request.token);
@@ -546,6 +545,7 @@ export async function createMenuDraftFor(
   repo: Repository,
   request: { slug: string; phone: string; cart: WebCart; expectedTotal: number; headers: Headers },
 ): Promise<MenuDraftCreated> {
+  refuseWhilePaused();
   const ip = clientKey(request.headers);
   await limit(repo, ip && `menu:draft:${ip}`, 20);
   const { company } = await menuCompany(repo, request.slug);
@@ -646,6 +646,17 @@ export async function createMenuDraftFor(
 
 const say = (lang: Language, en: string, ur: string, roman: string) =>
   lang === 'ur' ? ur : lang === 'roman-ur' ? roman : en;
+// The automated-assistant notice that starts every chat session (stored with the reply).
+const disclosed = (company: Company, conversation: Conversation, input: TurnInput, text: string) =>
+  conversation.channel === 'whatsapp'
+    ? withDisclosure(
+        company.name,
+        conversation,
+        text,
+        noticeLanguage(company, conversation, input.text),
+        input.now,
+      )
+    : text;
 const CODE_ENDED = (lang: Language) =>
   say(
     lang,
@@ -659,9 +670,10 @@ async function saveCodeReply(
   company: Company,
   conversation: Conversation,
   input: TurnInput,
-  reply: string,
+  text: string,
   reason: string,
 ): Promise<TurnResult> {
+  const reply = disclosed(company, conversation, input, text);
   const c = structuredClone(conversation);
   c.version++;
   c.updatedAt = input.now;
@@ -796,7 +808,10 @@ export async function redeemMenuDraft(
       `Order code refused: ${error.code}.`,
     );
   }
-  const { order, reply, replyId } = built;
+  const { order, replyId } = built;
+  const reply = disclosed(company, conversation, input, built.reply);
+  const stored = built.conversation.messages.find((m) => m.id === replyId);
+  if (stored) stored.text = reply;
   const sheets = (await repo.getIntegrations(company.id)).some(
     (i) => i.kind === 'sheets' && i.configured,
   );

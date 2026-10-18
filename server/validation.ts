@@ -136,6 +136,13 @@ export const companySchema = z
           .int()
           .min(AI_LIMIT_RANGES.repliesPerCustomerPerHour[0])
           .max(AI_LIMIT_RANGES.repliesPerCustomerPerHour[1]),
+        // Optional: a dashboard from before this setting leaves it out, and the default applies.
+        messagesPerCustomerPerMinute: z
+          .number()
+          .int()
+          .min(AI_LIMIT_RANGES.messagesPerCustomerPerMinute[0])
+          .max(AI_LIMIT_RANGES.messagesPerCustomerPerMinute[1])
+          .optional(),
       })
       .strict()
       .optional(),

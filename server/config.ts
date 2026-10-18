@@ -24,3 +24,11 @@ export function requiredEnv(name: string): string {
   if (!value) throw new Error(`${name} must be configured on the server.`);
   return value;
 }
+/**
+ * The platform-wide stop: ORDERLY_PAUSE_AUTOMATION=on makes every business behave as if its bot
+ * were switched off. Messages are still saved and staff can still reply; nothing automatic goes
+ * out and no AI is called. Never throws, so it cannot break a webhook.
+ */
+export function automationPaused(): boolean {
+  return ['on', 'true', '1'].includes((env('ORDERLY_PAUSE_AUTOMATION') ?? '').trim().toLowerCase());
+}
