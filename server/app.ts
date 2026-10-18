@@ -770,7 +770,10 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
         ({ displayPhoneNumber } =
           (await (await integrationAdapter(repo, company.id, 'whatsapp')).test()) ?? {});
       else if (kind === 'sheets')
-        await (await integrationAdapter(repo, company.id, kind as 'sheets')).test();
+        // With the menu read from the Sheet, the test also reads and checks the menu tab.
+        await (
+          await integrationAdapter(repo, company.id, 'sheets')
+        ).test(company.catalogSource === 'sheets' ? { menuFor: company.id } : {});
       else await verifyProviderKey(kind, await providerKey(repo, company, kind));
       const checkedAt = new Date().toISOString();
       const updated = {
