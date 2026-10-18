@@ -526,8 +526,13 @@ describe('blocking a number', () => {
     };
     await repo.insertJob(stuck);
     await processJob(repo, stuck.id).catch(() => undefined);
-    expect((await repo.getJob(stuck.id))!.status).toBe('failed');
+    // It no longer holds back the number's later messages, but the blocked chat stays as it is.
+    expect((await repo.getJob(stuck.id))!).toMatchObject({
+      status: 'done',
+      payload: { failedPermanently: true },
+    });
     const saved = (await repo.getConversation(company.id, chat.id))!;
+    expect(saved.messages.some((m) => m.id === 'stuck-1')).toBe(false);
     expect(saved.mode).toBe('bot');
     expect(saved.blocked).toBeDefined();
     expect((await repo.staffAttention(company.id)).handoffs).toBe(0);

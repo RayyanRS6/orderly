@@ -54,7 +54,7 @@ import { decryptSecret, PublicError } from './security.js';
 import { sanitizeError } from './security.js';
 import { botConfig, configuredCompany } from '../src/shared/bot.js';
 import { dispatchJob, makeJob } from './jobs.js';
-import { automationPaused } from './config.js';
+import { automationPaused, workerLeaseMs } from './config.js';
 import { sendStaffAlert } from './integrations/alerts.js';
 import { LinkedWhatsAppAdapter } from './integrations/linked-whatsapp';
 import { assertCurrentAddress, jobAddress, requireMeta } from './whatsapp/connections';
@@ -69,10 +69,6 @@ const LATE_AFTER_MS = 10 * 60 * 1000;
 const STALE_AFTER_MS = 2 * 60 * 60 * 1000;
 // While the menu Sheet cannot be read, the menu last read from it is used for this long.
 export const MENU_STALE_LIMIT_MS = 12 * 60 * 60 * 1000;
-
-// Paid Supabase workers have a 400s maximum lifetime. Include an 80s margin;
-// bounded upstream requests and database requests cannot survive this lease.
-export const WORKER_LEASE_MS = 480000;
 
 export async function integrationAdapter(
   repo: Repository,
@@ -218,7 +214,7 @@ export async function handleTurn(
       company.id,
       conversation.id,
       lockId,
-      new Date(Date.now() + WORKER_LEASE_MS).toISOString(),
+      new Date(Date.now() + workerLeaseMs()).toISOString(),
     ))
   )
     throw new PublicError(
@@ -1023,15 +1019,16 @@ export async function queueReply(
 // minute's recovery pass and let later replies overtake earlier ones.
 const CONNECTION_LOCK_WAIT_MS = 30000;
 // A send finishes well within this (the gateway call times out after 20 s), so a worker
-// killed mid-send blocks the business's other sends for 90 s, not the full worker lease.
-const SEND_LOCK_LEASE_MS = 90000;
+// killed mid-send blocks the business's other sends for 90 s at most, never the full worker
+// lease: half of it when the lease is short (Supabase Free).
+const sendLockLeaseMs = () => Math.min(90000, Math.floor(workerLeaseMs() / 2));
 async function acquireConnectionLock(
   repo: Repository,
   companyId: string,
   owner: string,
   {
     ready = async () => true,
-    leaseMs = WORKER_LEASE_MS,
+    leaseMs = workerLeaseMs(),
     waitMs = CONNECTION_LOCK_WAIT_MS,
   }: { ready?: () => Promise<boolean>; leaseMs?: number; waitMs?: number } = {},
 ) {
@@ -1084,14 +1081,78 @@ export function droppedReplyReason(
     return 'Not sent: staff took over this chat before the reply went out.';
   return undefined;
 }
+const PREVIOUS_CONNECTION = 'Not sent: queued for a previous WhatsApp connection.';
+// The address a job or chat uses, when it is still the business's current WhatsApp connection.
+async function currentAddress(
+  repo: Repository,
+  companyId: string,
+  value: unknown,
+): Promise<{ current: true; address?: WhatsAppAddress } | { current: false }> {
+  try {
+    return { current: true, address: await assertCurrentAddress(repo, companyId, value) };
+  } catch (error) {
+    if (error instanceof PublicError && error.status === 422) return { current: false };
+    throw error;
+  }
+}
+// A reply that can never go out (queued before the WhatsApp connection changed) ends as done,
+// with the reason on the message, instead of failing again on every retry.
+async function finishNotSent(repo: Repository, job: Job, reason: string) {
+  await recordNotSent(repo, job, reason).catch(() => undefined);
+  await repo
+    .addTrace({
+      id: randomUUID(),
+      companyId: job.companyId,
+      ...(typeof job.payload.conversationId === 'string' && {
+        conversationId: job.payload.conversationId,
+      }),
+      action: 'whatsapp.not_sent',
+      detail: reason,
+      createdAt: new Date().toISOString(),
+    })
+    .catch(() => undefined);
+  await repo.saveJob({ ...job, status: 'done', leaseUntil: undefined, error: undefined });
+}
+// One line per failed job for the function logs: what failed, never payloads, numbers or text.
+function logJobFailure(job: Job, permanent: boolean, error: unknown) {
+  const name = error instanceof Error ? error.name : typeof error;
+  const code = (error as { code?: unknown } | undefined)?.code;
+  const status = error instanceof PublicError ? error.status : undefined;
+  const message = (error instanceof Error ? error.message : String(error))
+    .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
+    .replace(/\b(?:sk-[\w-]{8,}|eyJ[\w-]+\.[\w-]+\.[\w-]+)\b/g, '[redacted]')
+    .replace(/\+?\d[\d\s-]{6,}\d/g, '[number]');
+  console.error(
+    JSON.stringify({
+      event: 'job_failed',
+      jobId: job.id,
+      kind: job.kind,
+      companyId: job.companyId,
+      attempts: job.attempts,
+      permanent,
+      error:
+        `${[name, typeof code === 'string' ? code : undefined, status].filter(Boolean).join('/')}: ${message}`.slice(
+          0,
+          300,
+        ),
+    }),
+  );
+}
 export async function processJob(repo: Repository, id: string) {
+  const lease = workerLeaseMs();
   const job = await repo.claimJob(
     id,
     new Date().toISOString(),
-    new Date(Date.now() + WORKER_LEASE_MS).toISOString(),
+    new Date(Date.now() + lease).toISOString(),
   );
   if (!job) return;
   let connectionLocked = false;
+  // The connection is free for the business's next send as soon as WhatsApp has this one.
+  const releaseConnection = async () => {
+    if (!connectionLocked) return;
+    connectionLocked = false;
+    await repo.releaseConversationLock(job.companyId, 'whatsapp-connection', job.id);
+  };
   try {
     // Only sending talks to WhatsApp. A customer's messages are already processed in
     // order per customer and under the conversation lock, so they must not hold the
@@ -1099,17 +1160,18 @@ export async function processJob(repo: Repository, id: string) {
     if (job.kind === 'whatsapp_send') {
       // Replies to one customer leave in the order they were written. An earlier send
       // still 'processing' counts only if claimed recently: a worker killed mid-send must
-      // not hold back the customer's later replies until its 8-minute lease runs out.
+      // not hold back the customer's later replies until its worker lease runs out.
       const conversationId = String(job.payload.conversationId);
+      const sendLease = sendLockLeaseMs();
       let waitingForEarlier = false;
       connectionLocked = await acquireConnectionLock(repo, job.companyId, job.id, {
-        leaseMs: SEND_LOCK_LEASE_MS,
+        leaseMs: sendLease,
         ready: async () => {
           waitingForEarlier = await repo.hasEarlierSend(
             job.companyId,
             conversationId,
             job,
-            new Date(Date.now() + WORKER_LEASE_MS - SEND_LOCK_LEASE_MS).toISOString(),
+            new Date(Date.now() + lease - sendLease).toISOString(),
           );
           return !waitingForEarlier;
         },
@@ -1127,8 +1189,10 @@ export async function processJob(repo: Repository, id: string) {
         return;
       }
       if (!connectionLocked) throw new PublicError('WhatsApp connection is busy.', 409);
+      if (!(await currentAddress(repo, job.companyId, job.payload.whatsappAddress)).current)
+        return await finishNotSent(repo, job, PREVIOUS_CONNECTION);
     }
-    if (job.kind === 'incoming' || job.kind === 'whatsapp_send')
+    if (job.kind === 'incoming')
       await assertCurrentAddress(repo, job.companyId, job.payload.whatsappAddress);
     if (job.attempts > 5)
       throw new PublicError('Repeated worker interruptions require staff review.', 503);
@@ -1174,7 +1238,7 @@ export async function processJob(repo: Repository, id: string) {
             company.id,
             conversation.id,
             job.id,
-            new Date(Date.now() + WORKER_LEASE_MS).toISOString(),
+            new Date(Date.now() + lease).toISOString(),
           ))
         )
           throw new PublicError('Conversation is busy.', 409);
@@ -1240,7 +1304,7 @@ export async function processJob(repo: Repository, id: string) {
           company.id,
           sheetLock,
           job.id,
-          new Date(Date.now() + WORKER_LEASE_MS).toISOString(),
+          new Date(Date.now() + lease).toISOString(),
         ))
       )
         throw new PublicError('Another spreadsheet write is running.', 409);
@@ -1274,7 +1338,9 @@ export async function processJob(repo: Repository, id: string) {
       }
       if (conversation.channel !== 'whatsapp')
         throw new PublicError('Sandbox cannot send WhatsApp messages.', 422);
-      const address = await assertCurrentAddress(repo, company.id, conversation.whatsappAddress);
+      const target = await currentAddress(repo, company.id, conversation.whatsappAddress);
+      if (!target.current) return await finishNotSent(repo, job, PREVIOUS_CONNECTION);
+      const address = target.address;
       if (address && !sameAddress(address, job.payload.whatsappAddress as typeof address))
         throw new PublicError('Queued message destination changed. Staff review required.', 422);
       const adapter =
@@ -1302,8 +1368,12 @@ export async function processJob(repo: Repository, id: string) {
         );
       else {
         const snapshot = structuredClone(conversation);
-        // Never attach a new cart's confirmation to an older queued response.
-        if (job.payload.cartRevision !== conversation.cart.revision)
+        // Never attach a new cart's confirmation to an older queued response: the Confirm
+        // button goes only with the message that showed the review the cart awaits.
+        if (
+          job.payload.cartRevision !== conversation.cart.revision ||
+          job.payload.messageId !== conversation.cart.reviewMessageId
+        )
           snapshot.cart.status = 'building';
         // The menu page link becomes this customer's own one-tap link, only in what is sent.
         const text =
@@ -1316,6 +1386,8 @@ export async function processJob(repo: Repository, id: string) {
       // reuses the receipt instead of sending the same message again.
       job.payload.externalId = messageId;
       await repo.saveJob(job);
+      // WhatsApp has the message: the business's next send need not wait for the bookkeeping.
+      await releaseConnection();
       await repo.recordDelivery(
         company.id,
         messageId,
@@ -1335,9 +1407,23 @@ export async function processJob(repo: Repository, id: string) {
     await repo.saveJob({ ...job, status: 'done', leaseUntil: undefined, error: undefined });
   } catch (error) {
     const permanent = job.attempts >= 5 || (error instanceof PublicError && error.status === 422);
+    logJobFailure(job, permanent, error);
+    // A customer's message that can never be processed is put in the chat for staff instead,
+    // so it no longer holds back the customer's later messages.
+    const recorded =
+      permanent && job.kind === 'incoming'
+        ? await recordFailedMessage(
+            repo,
+            job,
+            // A message for a previous connection never starts a chat of its own.
+            !(error instanceof PublicError && error.status === 422),
+          ).catch(() => undefined)
+        : undefined;
+    const released = !!recorded?.released;
     await repo.saveJob({
       ...job,
-      status: permanent ? 'failed' : 'pending',
+      status: released ? 'done' : permanent ? 'failed' : 'pending',
+      ...(released && { payload: { ...job.payload, failedPermanently: true } }),
       leaseUntil: undefined,
       nextRunAt: new Date(Date.now() + Math.min(3600000, 2 ** job.attempts * 5000)).toISOString(),
       error:
@@ -1356,12 +1442,12 @@ export async function processJob(repo: Repository, id: string) {
           ? error.message
           : 'Sending failed. Check the WhatsApp connection.',
       ).catch(() => undefined);
-    // A failed incoming message remains a FIFO barrier until recovery. Mark its
-    // conversation for staff too, so retrying the stream cannot resume ordering silently.
-    let failedConversationId: string | undefined;
-    if (permanent && job.kind === 'incoming') {
-      const address = job.payload.whatsappAddress as
-        import('../src/shared/whatsapp').WhatsAppAddress | undefined;
+    // An incoming message that could not be recorded remains a FIFO barrier until recovery.
+    // Mark its conversation for staff too, so retrying the stream cannot resume ordering
+    // silently.
+    let failedConversationId = recorded?.conversationId;
+    if (permanent && job.kind === 'incoming' && !released) {
+      const address = job.payload.whatsappAddress as WhatsAppAddress | undefined;
       const current = address
         ? await repo.findWhatsAppConversation(job.companyId, address)
         : await repo.findConversation(job.companyId, String(job.payload.phone), 'whatsapp');
@@ -1396,7 +1482,68 @@ export async function processJob(repo: Repository, id: string) {
     });
     if (!permanent) throw new PublicError('Background job is waiting to retry.', 503);
   } finally {
-    if (connectionLocked)
-      await repo.releaseConversationLock(job.companyId, 'whatsapp-connection', job.id);
+    await releaseConnection();
   }
+}
+/**
+ * A message that failed for good goes into its chat as it arrived, and the chat goes to staff,
+ * as for any message the bot cannot answer. Its job can then end, so the customer's later
+ * messages are recorded too. A blocked number's chat is left alone. `released` is false when
+ * the chat could not be saved: the job then stays failed and holds those messages back.
+ */
+async function recordFailedMessage(
+  repo: Repository,
+  job: Job,
+  create: boolean,
+): Promise<{ conversationId?: string; released: boolean }> {
+  const address = job.payload.whatsappAddress as WhatsAppAddress | undefined;
+  const phone = String(job.payload.phone ?? '');
+  const messageId = String(job.payload.messageId);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const found = address
+      ? await repo.findWhatsAppConversation(job.companyId, address)
+      : await repo.findConversation(job.companyId, phone, 'whatsapp');
+    if (found?.blocked) return { conversationId: found.id, released: true };
+    if (!found && !create) return { released: false };
+    const current: Conversation = found ?? {
+      ...createConversation(
+        job.companyId,
+        address ? `${address.connectionId}:${address.generation}:${address.peer}` : phone,
+        'whatsapp',
+        '1970-01-01T00:00:00.000Z',
+      ),
+      customerPhone: phone,
+      ...(address ? { whatsappAddress: address } : {}),
+      updatedAt: job.createdAt,
+      lastInboundAt: job.createdAt,
+    };
+    const fromCustomer = !job.payload.echo;
+    const next: Conversation = {
+      ...current,
+      mode: 'human',
+      botPausedAt: undefined,
+      limitPause: undefined,
+      version: current.version + 1,
+      updatedAt: new Date().toISOString(),
+      ...(fromCustomer && {
+        lastInboundAt: new Date(
+          Math.max(Date.parse(current.lastInboundAt), Date.parse(job.createdAt)),
+        ).toISOString(),
+      }),
+      messages: current.messages.some((m) => m.id === messageId)
+        ? current.messages
+        : [
+            ...current.messages,
+            {
+              id: messageId,
+              role: fromCustomer ? 'customer' : 'staff',
+              text: String(job.payload.text ?? '').slice(0, 4000),
+              createdAt: job.createdAt,
+            },
+          ],
+    };
+    if (await repo.saveConversation(next, current.version))
+      return { conversationId: current.id, released: true };
+  }
+  return { released: false };
 }
