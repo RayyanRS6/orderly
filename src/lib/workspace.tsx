@@ -51,6 +51,8 @@ export interface WorkspaceContext {
   navigate: (page: Page, id?: string, options?: { keepScroll?: boolean }) => void;
   detailId?: string;
   auth?: SupabaseClient;
+  /** Orderly's emergency stop is on: no business gets automatic replies, and none can turn them on. */
+  automationPaused?: boolean;
   switchCompany: (id: string) => void;
   refresh: () => Promise<void>;
   notify: (message: string, tone?: ToastTone) => void;

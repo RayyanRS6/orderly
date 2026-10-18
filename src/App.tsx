@@ -30,13 +30,14 @@ import {
 import type { Bootstrap } from './shared/types';
 import {
   api,
+  ApiError,
   setAccessToken,
   setAccessTokenSource,
   setSessionRecovery,
   setSessionRejectedHandler,
 } from './lib/api';
 import { sessionHooks } from './lib/session';
-import { cn, initials, label } from './lib/utils';
+import { cn, initials, label, titleWithCount } from './lib/utils';
 import {
   Workspace,
   dialogOpen,
@@ -92,7 +93,26 @@ function PeopleUnavailable() {
   return <ErrorNotice message="The People page couldn’t load. Reload the page and try again." />;
 }
 const peopleNav = { id: 'people', label: 'People', icon: Users } as const;
-type Configuration = { mode: 'demo' | 'live'; supabaseUrl?: string; supabaseAnonKey?: string };
+type Configuration = {
+  mode: 'demo' | 'live';
+  supabaseUrl?: string;
+  supabaseAnonKey?: string;
+  /** Orderly's emergency stop: no business gets automatic replies. Missing from older servers. */
+  automationPaused?: boolean;
+};
+
+/** Shown on every workspace page while Orderly's emergency stop is on. */
+export function AutomationPausedBanner() {
+  return (
+    <div
+      role="status"
+      className="border-b border-sun/50 bg-sun/15 px-4 py-2 text-xs font-medium text-ink sm:px-8 lg:px-10"
+    >
+      Automatic replies are paused for every business (emergency stop). The inbox and staff replies
+      still work.
+    </div>
+  );
+}
 
 function getStoredCompany(): string {
   try {
@@ -151,6 +171,10 @@ export default function App() {
   const drawerFocus = useReturnFocus();
   // Shown on the sign-in form when the server rejected this browser's saved session.
   const [sessionNotice, setSessionNotice] = useState('');
+  // Orderly's emergency stop, from /config (checked again when turning a bot on is refused).
+  const [automationPaused, setAutomationPaused] = useState(false);
+  // Real customer orders waiting for acceptance, from the staff alerts, for the tab title.
+  const [waitingOrders, setWaitingOrders] = useState<number>();
 
   useEffect(() => {
     let active = true;
@@ -159,6 +183,7 @@ export default function App() {
       .then(async (result) => {
         if (!active) return;
         setConfig(result);
+        setAutomationPaused(!!result.automationPaused);
         if (result.mode === 'demo') {
           setAuthenticated(true);
           return;
@@ -336,6 +361,12 @@ export default function App() {
         } catch (e) {
           const message = (e as Error).message;
           setActionError(message);
+          // Turning a bot on is refused during Orderly's emergency stop, which may have started
+          // after this page loaded: check, so the banner says why.
+          if (e instanceof ApiError && e.status === 409 && path.startsWith('/companies/'))
+            void api<Configuration>('/config')
+              .then((c) => setAutomationPaused(!!c.automationPaused))
+              .catch(() => undefined);
           // A dialog shows the failure only while it is open: closed early, the failure
           // would otherwise appear nowhere.
           if (!options.quiet && !(options.dialog && dialogOpen())) notify(message, 'error');
@@ -359,14 +390,16 @@ export default function App() {
   );
 
   // Each page gets its own tab title, so open tabs can be told apart and screen readers
-  // hear the page change.
+  // hear the page change. Orders waiting for acceptance lead it, as "(2) …", so a tab in the
+  // background shows them.
   useEffect(() => {
     if (!data) return;
     const name = [...navigation, ...manage, peopleNav].find((n) => n.id === page)?.label;
-    document.title = name
-      ? `${name} · ${data.company.name} — Orderly`
-      : 'Orderly — Conversations to orders';
-  }, [page, data?.company.name]);
+    document.title = titleWithCount(
+      name ? `${name} · ${data.company.name} — Orderly` : 'Orderly — Conversations to orders',
+      waitingOrders,
+    );
+  }, [page, data?.company.name, waitingOrders]);
   // On short screens the links scroll: keep the current page's link in view after each page
   // change (the phone drawer does the same when it opens).
   useEffect(() => {
@@ -377,6 +410,7 @@ export default function App() {
 
   function switchCompany(id: string) {
     if (id === data?.company.id) return;
+    setWaitingOrders(undefined);
     setData(null);
     setError('');
     setActionError('');
@@ -667,6 +701,7 @@ export default function App() {
         mutate,
         detailId: route.id,
         auth: client ?? undefined,
+        automationPaused,
       }}
     >
       <div className="min-h-dvh canvas-glow">
@@ -735,7 +770,7 @@ export default function App() {
               </span>
             </div>
             <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-              <StaffAlerts />
+              <StaffAlerts onWaitingOrders={setWaitingOrders} />
               <button
                 type="button"
                 className="btn hidden md:inline-flex"
@@ -784,6 +819,7 @@ export default function App() {
               </div>
             </div>
           </header>
+          {automationPaused && <AutomationPausedBanner />}
           {data.mode === 'demo' && (
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.06] bg-ink glow-dark px-4 py-2 text-xs text-cream/60 sm:px-8 lg:px-10">
               <span>
