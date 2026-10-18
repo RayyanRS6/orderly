@@ -72,8 +72,9 @@ To change model or key later, use the same card: pick or paste the new one and c
 
 1. The Railway service is already running. For a new installation, follow [`gateway/RAILWAY.md`](../gateway/RAILWAY.md) exactly: service settings, the two secrets, the variables, the `/data` volume, the domain and the health check. The gateway migration (`202609200001_whatsapp_gateway.sql`) is already applied in production.
 2. **With the restaurant owner present:** Orderly → **Integrations → WhatsApp**, go through the risk notice with them, tick the consent box and pair by QR code or pairing code.
-3. **Check:** Agent flow → **WhatsApp (linked phone)** is green with a heartbeat under 90 seconds. "Server connections" shows the gateway as set.
-4. Plan the move to Option A with coexistence for that restaurant.
+3. **The owner, on the phone:** turn off the WhatsApp Business app's greeting and away messages (Business tools → Greeting message / Away message) and use Orderly's greeting instead. With a linked phone those automatic messages reach Orderly like a reply staff typed, so each one pauses the bot for that customer.
+4. **Check:** Agent flow → **WhatsApp (linked phone)** is green. Its last heartbeat is updated about once a minute; over 3 minutes means Orderly treats WhatsApp as offline. "Server connections" shows the gateway as set. If the phone stops working while the bot is on, staff see a WhatsApp alert in the bell (and an email, for those who opted in).
+5. Plan the move to Option A with coexistence for that restaurant.
 
 ## 5. Per business (repeat for each client)
 
