@@ -13,6 +13,7 @@ import { z } from 'zod';
 import { PublicError } from '../security';
 import { workerLeaseMs } from '../config';
 import { gatewayAvailable, gatewayRequest, gatewaySnapshotSchema } from './client';
+import { MEDIA_HANDOFF_TEXT } from './inbound';
 import { dispatchJob, makeJob } from '../jobs';
 
 /** The linked-phone risk notice an owner accepts before pairing. Raise it when the text changes. */
@@ -315,6 +316,17 @@ export async function selectMeta(repo: Repository, companyId: string) {
     return next;
   });
 }
+// The gateway's notice for a customer message whose content never reached the linked device:
+// its message ID is the original's with this suffix (see gateway/src/inbound.ts), so the real
+// message still gets through if it arrives later.
+const UNREAD_SUFFIX = ':unread';
+function eventText(event: GatewayEvent): string {
+  if (event.text) return event.text;
+  if (event.fromMe) return 'Staff sent a media message in WhatsApp.';
+  if (event.unsupported && event.messageId?.endsWith(UNREAD_SUFFIX))
+    return 'Customer sent a message Orderly could not read on the linked phone. Check the restaurant phone. Staff assistance requested.';
+  return MEDIA_HANDOFF_TEXT;
+}
 export async function receiveGatewayEvent(repo: Repository, event: GatewayEvent) {
   if (Date.parse(event.timestamp) > Date.now() + 60000)
     throw new PublicError('Gateway timestamp is in the future.', 400);
@@ -383,11 +395,7 @@ export async function receiveGatewayEvent(repo: Repository, event: GatewayEvent)
       phone,
       whatsappAddress: address,
       messageId: event.messageId,
-      text:
-        event.text ||
-        (event.fromMe
-          ? 'Staff sent a media message in WhatsApp.'
-          : 'Customer sent a media message. Staff assistance requested.'),
+      text: eventText(event),
       echo: event.fromMe ?? false,
       ...(!event.fromMe && event.unsupported ? { action: { type: 'handoff' } } : {}),
     },

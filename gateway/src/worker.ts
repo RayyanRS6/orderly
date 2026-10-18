@@ -22,12 +22,12 @@ import { endSocket } from './shutdown.js';
 import { chatContent, messageText, receiptStatus, upsertedMessages } from './upserts.js';
 import { mapIdentity, messageIdentity } from './routing.js';
 import {
-  awaitsContent,
   expiredPlaceholders,
-  holdPlaceholder,
   inboundTarget,
   isSeen,
   queueMessage,
+  releasePlaceholder,
+  withoutContent,
 } from './inbound.js';
 import { signedHeaders } from '../../server/whatsapp/signing.js';
 import {
@@ -204,8 +204,7 @@ function incoming(message: WAMessage) {
   const content = chatContent(message.message);
   if (!content) {
     // Held until its content arrives; staff are told if it never does (see the tick below).
-    if (awaitsContent(message) && !isSeen(store, native, id, fromMe))
-      holdPlaceholder(store, id, native, timestamp, Date.now());
+    withoutContent(store, message, target, timestamp, Date.now());
     return;
   }
   if (isSeen(store, native, id, fromMe)) {
@@ -218,22 +217,26 @@ function incoming(message: WAMessage) {
   if (identity) linkIdentity(identity.lid, identity.pn);
   enqueue(native, id, timestamp, messageText(content), fromMe);
 }
+const queueFull = () => store.count('events') >= 10000;
 function enqueue(native: string, id: string, timestamp: number, text: string, fromMe: boolean) {
-  if (store.count('events') >= 10000) {
+  if (queueFull()) {
     fail('INBOUND_QUEUE_FULL');
     return;
   }
   queueMessage(store, { connectionId, generation, native, id, timestamp, text, fromMe });
   void drain().catch(() => fail('EVENT_STORAGE_FAILURE'));
 }
-// A customer message whose content never reached this device goes to staff (as unsupported
-// media does) instead of vanishing. Copies that arrived meanwhile were already taken.
+// A customer message whose content never reached this device goes to staff instead of
+// vanishing. Copies that arrived meanwhile were already taken; one that comes later still is.
 function releasePlaceholders() {
   const now = Date.now();
   for (const { id, value } of expiredPlaceholders(store, now)) {
-    if (value.timestamp >= now - 86400000 && !isSeen(store, value.native, id, false))
-      enqueue(value.native, id, value.timestamp, '', false);
-    else store.delete('placeholder', id);
+    if (queueFull()) {
+      fail('INBOUND_QUEUE_FULL');
+      return;
+    }
+    releasePlaceholder(store, { connectionId, generation, id, placeholder: value }, now);
+    void drain().catch(() => fail('EVENT_STORAGE_FAILURE'));
   }
 }
 function fail(code: string) {

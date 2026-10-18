@@ -23,8 +23,10 @@ the only business-logic authority. Official Meta connections remain supported.
   status broadcasts, protocol events and reactions are excluded, and messages older than 24
   hours are not replayed as new orders. A customer message that arrives here without content
   (WhatsApp's "unavailable" placeholder, or a decryption failure) is held: the phone's resend or
-  the sender's retry is filed under the same chat, and if nothing comes within 45 seconds staff
-  get a handoff to read it on the phone. Verify staff-phone echoes in the live pilot; protocol
+  the sender's retry is filed under the same chat, and a copy that turns out to be a reaction,
+  an edit or a deletion just ends the hold. If nothing comes within 45 seconds staff get a
+  handoff saying Orderly could not read a message (check the phone); a copy that still arrives
+  later reaches Orderly under its own ID. Verify staff-phone echoes in the live pilot; protocol
   behavior may change.
 - Native LIDs remain identities, not phone numbers. Mapping uses the `sender_pn`/`sender_lid`
   WhatsApp attaches to customer messages, plus authenticated contact and phone-number-share
