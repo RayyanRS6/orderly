@@ -10,12 +10,21 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const say = (lang: Language, en: string, ur: string, roman: string) =>
   lang === 'ur' ? ur : lang === 'roman-ur' ? roman : en;
 
+// Unicode bidi controls for Latin text inside an Urdu (right-to-left) line. WhatsApp sets a
+// line's direction from its first letter, so a Latin name first would lay the Urdu out
+// left-to-right, and "+92 300 000 0001" would show its groups in reverse order.
+const RLM = '\u200F';
+/** A phone number or other left-to-right text kept in order inside Urdu (LRI … PDI). */
+export const leftToRight = (text: string) => `\u2066${text}\u2069`;
+/** A name in either script kept apart from the Urdu around it (FSI … PDI). */
+export const isolated = (text: string) => `\u2068${text}\u2069`;
+
 export function disclosureLine(businessName: string, lang: Language): string {
   const name = businessName.trim() || say(lang, 'This restaurant', 'اس ریسٹورنٹ', 'Is restaurant');
   return say(
     lang,
     `${name}’s automated assistant. Type “staff” anytime to talk to a person.`,
-    `${name} کا خودکار اسسٹنٹ۔ کسی انسان سے بات کرنے کے لیے کسی بھی وقت “عملہ” یا “staff” لکھیں۔`,
+    `${RLM}${isolated(name)} کا خودکار اسسٹنٹ۔ کسی انسان سے بات کرنے کے لیے کسی بھی وقت “عملہ” یا “staff” لکھیں۔`,
     `${name} ka automated assistant. Kisi insaan se baat karne ke liye kabhi bhi “staff” likhein.`,
   );
 }

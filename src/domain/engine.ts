@@ -21,10 +21,12 @@ import { money } from '../shared/types';
 import { effectiveAiLimits, MODEL_LIMITS } from '../shared/models';
 import {
   mentionsQuantity,
-  quantityBefore,
+  quantityNear,
+  quantityOfMention,
   resolveItemMention,
   resolvePendingItemChoice,
 } from './menu-resolver';
+import { leftToRight } from './disclosure';
 import { normalizeText as normalize, quoteCart, type CartQuote } from './pricing';
 export { quoteCart, type CartQuote } from './pricing';
 
@@ -149,6 +151,10 @@ export function aiErrorNotice(lang: Language, cart: Cart): string {
 }
 export const asksForPerson = (text: string) =>
   /\b(human|staff|manager|person|insaan)\b|عملہ|انسان|مینیجر/u.test(normalize(text));
+// "do it" after "confirm" or "cancel", in the forms customers type: "kar do", "kar dein",
+// "karein" (the bot's own "confirm karein"), "kren", "krden", "kijiye", "کریں", "کر دیجیے".
+const DO_IT =
+  'kar ?do|kar ?dein|kar ?dain|kar ?den|kar ?de|karo|karein|karain|karen|kariye|kariyega|krein|kren|kro|kr ?do|kr ?dein|kr ?dain|kr ?den|kar ?dijiye|kar ?dijiyega|kar ?dijye|kar ?dijie|kr ?dijiye|kijiye|kijiyega|kijie|kijye|kar ?lein|kar ?len|kr ?lein|kr ?len|کر دیں|کریں|کر دو|کرو|کردیں|کر دیجیے|کر دیجئے|کیجیے|کیجئے|کر لیں';
 // A whole message asking to cancel the order: "Cancel.", "please cancel my order", "order cancel
 // kar dein please", "آرڈر منسوخ کر دیں". A cancelled pending order cannot be restored, so only
 // this closed set counts: "don't cancel", "cancel mat karo" or "cancel the raita" never do.
@@ -160,7 +166,7 @@ const CANCEL_REQUEST = new RegExp(
     '|(?:(?:my|the|this|mera|meri|mere) )?order cancel',
     '|(?:(?:میرا|یہ) )?(?:آرڈر )?(?:منسوخ|کینسل)',
     ')',
-    '(?: (?:karo|kar ?do|kar ?dein|kar ?dain|kar ?den|kr ?do|kr ?dein|kar ?dijiye|kar ?dijye|kar ?de|کر دیں|کریں|کر دو|کرو|کردیں|کر دیجیے|کر دیجئے))?',
+    `(?: (?:${DO_IT}))?`,
     '(?: (?:please|pls|plz|ji|bhai|sir|پلیز|جی))*$',
   ].join(''),
   'u',
@@ -199,9 +205,10 @@ function unreview(cart: Cart) {
   delete cart.reviewedAt;
 }
 
-export function isOpen(company: Company, now: string): boolean {
+// The restaurant's local weekday (0 = Sunday) and minute of the day, or undefined.
+function localClock(company: Company, now: string): { day: number; minute: number } | undefined {
   const date = new Date(now);
-  if (!Number.isFinite(date.getTime())) return false;
+  if (!Number.isFinite(date.getTime())) return undefined;
   try {
     const parts = new Intl.DateTimeFormat('en-US', {
       timeZone: company.timezone,
@@ -213,11 +220,21 @@ export function isOpen(company: Company, now: string): boolean {
     const part = (key: string) => parts.find((p) => p.type === key)?.value ?? '';
     const day = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(part('weekday'));
     const minute = Number(part('hour')) * 60 + Number(part('minute'));
-    const toMinute = (time: string) => {
-      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) return NaN;
-      const [h, m] = time.split(':').map(Number);
-      return h! * 60 + m!;
-    };
+    return day < 0 || !Number.isFinite(minute) ? undefined : { day, minute };
+  } catch {
+    return undefined;
+  }
+}
+const toMinute = (time: string) => {
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) return NaN;
+  const [h, m] = time.split(':').map(Number);
+  return h! * 60 + m!;
+};
+export function isOpen(company: Company, now: string): boolean {
+  try {
+    const clock = localClock(company, now);
+    if (!clock) return false;
+    const { day, minute } = clock;
     const start = toMinute(company.openingHours.start),
       end = toMinute(company.openingHours.end);
     if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
@@ -231,6 +248,24 @@ export function isOpen(company: Company, now: string): boolean {
   } catch {
     return false;
   }
+}
+// When a closed restaurant next opens: in how many days (0 = today), on which weekday.
+function nextOpening(company: Company, now: string): { inDays: number; day: number } | undefined {
+  try {
+    const clock = localClock(company, now);
+    const start = toMinute(company.openingHours.start);
+    if (!clock || !Number.isFinite(start) || !Number.isFinite(toMinute(company.openingHours.end)))
+      return undefined;
+    for (let inDays = 0; inDays <= 7; inDays++) {
+      const day = (clock.day + inDays) % 7;
+      if (!company.openingHours.days.includes(day) || (inDays === 0 && clock.minute >= start))
+        continue;
+      return { inDays, day };
+    }
+  } catch {
+    // Hours not set: no opening time to give.
+  }
+  return undefined;
 }
 export const orderIdFor = (submissionKey: string) => idFor(submissionKey);
 /** The pending order a confirmed cart becomes. Chat and menu-page orders share it. */
@@ -286,21 +321,41 @@ export function orderReceivedText(lang: Language, order: Order): string {
     );
   return reply;
 }
-export function closedText(company: Company, lang: Language): string {
-  return say(
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const URDU_WEEKDAYS = ['اتوار', 'پیر', 'منگل', 'بدھ', 'جمعرات', 'جمعہ', 'ہفتہ'];
+// The first words of closedText, which mark a reply that already said the restaurant is closed.
+const CLOSED_LEADS = ['We are currently closed.', 'ہم اس وقت بند ہیں۔', 'Hum is waqt band hain.'];
+// A closed restaurant's early notice is not repeated within this time.
+const CLOSED_NOTICE_MS = 12 * 60 * 60 * 1000;
+/**
+ * What a customer is told while the restaurant is closed: its ordering hours and, given the
+ * time now, when it opens again ("We open again tomorrow at 12:00.").
+ */
+export function closedText(company: Company, lang: Language, now?: string): string {
+  const { start, end } = company.openingHours;
+  const hours = say(
     lang,
-    `We are currently closed. Ordering hours are ${company.openingHours.start}–${company.openingHours.end} (${company.timezone}).`,
-    `ہم اس وقت بند ہیں۔ آرڈر کا وقت ${company.openingHours.start}–${company.openingHours.end} ہے۔`,
-    `Hum is waqt band hain. Order ka waqt ${company.openingHours.start}–${company.openingHours.end} hai.`,
+    `We are currently closed. Ordering hours are ${start}–${end}.`,
+    `ہم اس وقت بند ہیں۔ آرڈر کا وقت ${start}–${end} ہے۔`,
+    `Hum is waqt band hain. Order ka waqt ${start}–${end} hai.`,
   );
+  const opening = now ? nextOpening(company, now) : undefined;
+  if (!opening) return hours;
+  const { inDays, day } = opening;
+  return `${hours} ${say(
+    lang,
+    `We open again ${inDays === 0 ? 'today' : inDays === 1 ? 'tomorrow' : `on ${WEEKDAYS[day]}`} at ${start}.`,
+    `ہم ${inDays === 0 ? 'آج' : inDays === 1 ? 'کل' : `${URDU_WEEKDAYS[day]} کو`} ${start} بجے دوبارہ کھلیں گے۔`,
+    `Hum ${inDays === 0 ? 'aaj' : inDays === 1 ? 'kal' : `${WEEKDAYS[day]} ko`} ${start} baje dobara khulenge.`,
+  )}`;
 }
 
 const noChatOrdering = (lang: Language) =>
   say(
     lang,
-    'Ordering in this chat is not available right now. Please ask our staff for help.',
-    'ابھی اس چیٹ میں آرڈر دستیاب نہیں ہے۔ براہ کرم عملے سے رابطہ کریں۔',
-    'Abhi is chat mein order available nahi hai. Meherbani karke staff se baat karein.',
+    'Ordering in this chat is not available right now. Type “staff” to talk to a person.',
+    'ابھی اس چیٹ میں آرڈر دستیاب نہیں ہے۔ کسی انسان سے بات کرنے کے لیے “عملہ” لکھیں۔',
+    'Abhi is chat mein order available nahi hai. Kisi insaan se baat karne ke liye “staff” likhein.',
   );
 // The engine's own refusal of a pickup/delivery choice the restaurant does not offer.
 function fulfillmentRefusal(company: Company, chosen: 'pickup' | 'delivery'): string | undefined {
@@ -308,7 +363,7 @@ function fulfillmentRefusal(company: Company, chosen: 'pickup' | 'delivery'): st
   if (offered === 'both' || offered === chosen) return undefined;
   return offered
     ? `This restaurant currently offers ${offered} only.`
-    : 'Ordering in this chat is not available right now. Please ask our staff for help.';
+    : 'Ordering in this chat is not available right now. Type “staff” to talk to a person.';
 }
 
 function missingDetails(company: Company, cart: Cart, lang: Language): string | undefined {
@@ -448,7 +503,7 @@ function review(
           '\nریسٹورنٹ کی منظوری کے لیے آرڈر بھیجنے کو “تصدیق” لکھیں۔',
           '\nRestaurant ki manzoori ke liye “confirm” ya “haan” likhein.',
         )
-      : `\n${closedText(company, lang)}${say(
+      : `\n${closedText(company, lang, now)}${say(
           lang,
           ' Your cart is saved. Send “review” when we are open.',
           ' آپ کی ٹوکری محفوظ ہے۔ ہمارے کھلنے پر “جائزہ” لکھیں۔',
@@ -570,9 +625,9 @@ function menu(
   if (!all.length)
     return say(
       lang,
-      'Our menu is not available right now. Please ask our staff for help.',
-      'ابھی مینو دستیاب نہیں ہے۔ براہ کرم عملے سے رابطہ کریں۔',
-      'Abhi menu available nahi hai. Meherbani karke staff se baat karein.',
+      'Our menu is not available right now. Type “staff” to talk to a person.',
+      'ابھی مینو دستیاب نہیں ہے۔ کسی انسان سے بات کرنے کے لیے “عملہ” لکھیں۔',
+      'Abhi menu available nahi hai. Kisi insaan se baat karne ke liye “staff” likhein.',
     );
   const words = dishWords(query);
   const textOf = (p: Product) => normalize(`${p.name} ${p.category} ${p.aliases.join(' ')}`);
@@ -766,7 +821,7 @@ const YES_WORDS =
   'yes|yess+|yeah|yep|yup|ok|okay|okey|okk+|sure|haan|han|haan ji|han ji|ji haan|ji han|ji|jee|g|theek hai|thik hai|theek|thik|bilkul|جی|ہاں|جی ہاں|ہاں جی|ٹھیک ہے|ٹھیک|اوکے';
 const FILLERS = 'please|pls|plz|ji|jee|g|bhai|sir|پلیز|جی';
 const EXPLICIT_CONSENT = new RegExp(
-  `^(?:(?:${YES_WORDS}|${FILLERS}|abhi) ){0,3}(?:confirm(?:ed)?(?: (?:my |the |this )?order| it)?|order confirm(?:ed)?|(?:place|submit) (?:my |the |this )?order|order place|submit|tasdeeq|کنفرم|تصدیق|آرڈر کنفرم|آرڈر کی تصدیق)(?: (?:kar ?do|kar ?dein|kar ?dain|kar ?den|karo|kr ?do|kr ?dein|kar ?dijiye|kar ?dijye|kar ?de|کر دیں|کریں|کر دو|کرو|کردیں|کر دیجیے|کر دیجئے|کیجیے|کیجئے))?(?: (?:${FILLERS}|now))*$`,
+  `^(?:(?:${YES_WORDS}|${FILLERS}|abhi) ){0,3}(?:confirm(?:ed)?(?: (?:my |the |this )?order| it)?|order confirm(?:ed)?|(?:place|submit) (?:my |the |this )?order|order place|submit|tasdeeq|کنفرم|تصدیق|آرڈر کنفرم|آرڈر کی تصدیق)(?: (?:${DO_IT}))?(?: (?:${FILLERS}|now))*$`,
   'u',
 );
 const BARE_CONSENT = new RegExp(
@@ -818,38 +873,37 @@ function contains(text: string, phrase: string): boolean {
 // Roman Urdu, Urdu and English are tied to the order (or payment) as their subject, so "aap ka
 // naam save ho gaya hai" or "ہم کل ۱۲ بجے کھلیں گے" (کل is also tomorrow) pass. Prices need a
 // currency next to the digits ("450/-", "450 rupay", "۴۵۰ روپے", "500 PKR"). After an order is
-// submitted, saying it was received is true, so that one claim is allowed then.
-const OUTCOME_VERBS =
-  'confirm|place|book|submit|accept|approve|receive|deliver|dispatch|rawana|complete';
-const RECEIVED_VERBS = 'receive';
+// submitted, saying it was placed, submitted or received is true, so those claims are allowed
+// then; confirmed, booked, accepted or delivered never are. A polite request ("کنفرم کر دیں",
+// "تصدیق کر دیجیے", "confirm kar di jiye") is not a claim.
 const outcomeClaim = (verbs: string) =>
   new RegExp(
-    `\\b(?:order|payment|adaigi)\\b[^.!?\\n]{0,30}?\\b(?:${verbs})\\w*\\s*(?:ho|hu|kar|kr)\\s*(?:gaya|gayi|gya|gyi|gai|gaye|ge|diya|diye|dia|di|liya|liye|lia|li|chuka|chuki|chuke)\\b`,
+    `\\b(?:order|payment|adaigi)\\b[^.!?\\n]{0,30}?\\b(?:${verbs})\\w*\\s*(?:ho|hu|kar|kr)\\s*(?:gaya|gayi|gya|gyi|gai|gaye|ge|diya|diye|dia|di|liya|liye|lia|li|chuka|chuki|chuke)\\b(?!\\s*(?:jiye|jiyega|jiyen|jie|jiey|jye|jiay)\\b)`,
     'u',
   );
-const ROMAN_OUTCOME = outcomeClaim(OUTCOME_VERBS.replace(`|${RECEIVED_VERBS}`, ''));
-const ROMAN_RECEIVED = outcomeClaim(RECEIVED_VERBS);
-const URDU_DONE = '(?:ہو|کر)\\s?(?:گیا|گئی|گئے|دیا|دی|دیے|لیا|لی|چکا|چکی|چکے)';
+const ROMAN_OUTCOME = outcomeClaim('confirm|book|accept|approve|deliver|dispatch|rawana|complete');
+const ROMAN_PLACED = outcomeClaim('place|submit|receive');
+// Past forms only: "کر دیا", "ہو گیا", not "کر دیں", "کر دیجیے" or "کر لیں".
+const URDU_DONE = '(?:ہو|کر)\\s?(?:گیا|گئی|گئے|دیا|دی|دیے|لیا|لی|چکا|چکی|چکے)(?![\\p{L}\\p{M}])';
 const URDU_OUTCOME = new RegExp(
   `(?:آرڈر|ادائیگی)[^۔.!?؟\\n]{0,30}?(?:کنفرم|بک|منظور|روانہ|تصدیق|ڈیلیور|قبول)[^۔.!?؟\\n]{0,10}?${URDU_DONE}`,
   'u',
 );
-const URDU_RECEIVED = new RegExp(
-  `(?:آرڈر|ادائیگی)[^۔.!?؟\\n]{0,30}?(?:موصول|وصول)[^۔.!?؟\\n]{0,10}?${URDU_DONE}`,
+const URDU_PLACED = new RegExp(
+  `(?:آرڈر|ادائیگی)[^۔.!?؟\\n]{0,30}?(?:موصول|وصول|پلیس|سبمٹ)[^۔.!?؟\\n]{0,10}?${URDU_DONE}`,
   'u',
 );
 const ENGLISH_STATUS =
   /\b(?:order|payment)\b[^.!?\n]{0,30}?\b(?:on (?:its|the) way|being prepared|out for delivery)\b/u;
 const ENGLISH_RECEIVED = /\b(?:order|payment)\b[^.!?\n]{0,30}?\breceived\b/u;
+const ENGLISH_PRICE =
+  /\b(?:rs\.?|pkr)\s*[\d۰-۹٠-٩]|\b(?:total|price|cost)\s*(?:(?:is|of|:|=)\s*)?[\d۰-۹٠-٩]/iu;
+const ENGLISH_OUTCOME = /\b(?:accepted|approved|confirmed|delivered|dispatched|completed)\b/iu;
+const ENGLISH_PLACED = /\b(?:submitted|placed)\b/iu;
 const RUPEE_PRICE =
   /\d[\d,]*(?:\.\d+)?\s*(?:\/-|(?:rupees?|rupay|rupaye|rupaiye|rupe|rupiya|rs|pkr)\b|روپے|روپیہ|روپئے|روپیے)|(?:\b(?:rupees?|rupay|rupaye)|روپے)\s*\d|(?:\b(?:qeemat|keemat|kimat)\b|قیمت|ٹوٹل)\s*(?:[:=]\s*)?\d/u;
 function unsafeModelText(text: string, submitted = false): boolean {
-  if (
-    /(?:\b(?:rs\.?|pkr)\s*[\d۰-۹٠-٩]|\b(?:total|price|cost)\s*(?:(?:is|of|:|=)\s*)?[\d۰-۹٠-٩]|\b(?:order\s+)?(?:accepted|approved|submitted|placed|confirmed|delivered|dispatched|completed)\b)/iu.test(
-      text,
-    )
-  )
-    return true;
+  if (ENGLISH_PRICE.test(text) || ENGLISH_OUTCOME.test(text)) return true;
   const value = normalize(text);
   return (
     RUPEE_PRICE.test(value) ||
@@ -857,35 +911,71 @@ function unsafeModelText(text: string, submitted = false): boolean {
     URDU_OUTCOME.test(value) ||
     ENGLISH_STATUS.test(value) ||
     (!submitted &&
-      (ROMAN_RECEIVED.test(value) || URDU_RECEIVED.test(value) || ENGLISH_RECEIVED.test(value)))
+      (ENGLISH_PLACED.test(text) ||
+        ROMAN_PLACED.test(value) ||
+        URDU_PLACED.test(value) ||
+        ENGLISH_RECEIVED.test(value)))
   );
 }
 
 // Allergens in English, Roman Urdu and Urdu. A dish named after one ("doodh patti", "anda
 // paratha", "peanut shake", "til naan") is not a question, so they count only in a question
-// about what a dish contains or whether it is safe.
-const ALLERGENS =
-  '(?:tree )?nuts?|peanuts?|almonds?|cashews?|pistachios?|walnuts?|gluten|wheat|dairy|lactose|milk|eggs?|shellfish|prawns?|shrimps?|crabs?|lobsters?|fish|sesame|soy|soya|mustard|moong ?phali|mung ?phali|mong ?phali|badam|kaju|pista|akhrot|meva|mewa|anda|anday|ande|andey|doodh|dudh|til|jheenga|jhinga|gandum|machli|machhli';
-const URDU_ALLERGENS =
-  'مونگ پھلی|مونگپھلی|گری|گریاں|میوہ|میوے|بادام|کاجو|پستہ|پستے|اخروٹ|انڈا|انڈے|دودھ|گلوٹین|گندم|تل|جھینگا|جھینگے|مچھلی|سویا';
+// about what a dish contains or whether it is safe. Fish, prawns, eggs and milk are also sold as
+// dishes, so "fish hai kya?", "is there any fish?" or "eggs in stock?" ask what is on the menu;
+// only the other (ingredient) allergens count in a bare question ("nuts?", "peanuts hain kya").
+const FOOD_ALLERGENS =
+  'milk|eggs?|prawns?|shrimps?|crabs?|lobsters?|fish|anda|anday|ande|andey|doodh|dudh|jheenga|jhinga|machli|machhli';
+const INGREDIENT_ALLERGENS =
+  '(?:tree )?nuts?|peanuts?|almonds?|cashews?|pistachios?|walnuts?|gluten|wheat|dairy|lactose|shellfish|sesame|soy|soya|mustard|moong ?phali|mung ?phali|mong ?phali|badam|kaju|pista|akhrot|meva|mewa|til|gandum';
+const ALLERGENS = `${INGREDIENT_ALLERGENS}|${FOOD_ALLERGENS}`;
+const URDU_INGREDIENTS =
+  'مونگ پھلی|مونگپھلی|گری|گریاں|میوہ|میوے|بادام|کاجو|پستہ|پستے|اخروٹ|گلوٹین|گندم|تل|سویا';
+const URDU_ALLERGENS = `${URDU_INGREDIENTS}|انڈا|انڈے|دودھ|جھینگا|جھینگے|مچھلی`;
+// A whole Urdu word: "تل" is not the end of "قتل".
+const urduWord = (words: string) => `(?<![\\p{L}\\p{M}])(?:${words})(?![\\p{L}\\p{M}])`;
 const ALLERGY_WORDS = /\bal+erg|\bal+erj|\bintoleran|\bc(?:o)?eliac\b|\banaphyla|الرج|حساسیت/u;
+// "in it", "isme", "is mein", "biryani mein", "ismein", "usme": the dish the question is about.
+const ROMAN_IN =
+  '(?:mein|me|main|mai|mei|men|andar|(?:is|us|iss|uss|isi|usi|in|un)(?:me|mein|main|mai|men|mei|mn|my))';
+const ROMAN_HAS =
+  '(?:hai|hain|he|hy|h|hota|hoti|hote|dala|daala|dali|dalta|dalte|dalti|parta|padta|parti|padti|hoga|hogi|honge)';
+// "in the biryani", "in it": not "in stock", "in the menu", "in garlic sauce" (a dish's name).
+const EN_IN =
+  '\\bin (?:it|this|that|them|these|those|(?:the|your|ur|this|that|my|our) (?!(?:menu|stock|evening|morning|night|afternoon|weekend|winter|summer)\\b)\\p{L}+)\\b';
+const NOT_MENU = '(?!\\s+(?:in|on) (?:the |our |your |ur )?(?:menu|stock)\\b)';
 const ALLERGEN_QUESTION = new RegExp(
   [
     `\\b(?:${ALLERGENS})[- ]?free\\b`,
     `\\bfree (?:of|from) (?:any )?(?:${ALLERGENS})\\b`,
     `\\bcontain(?:s|ing)?\\b[^.!?]{0,40}\\b(?:${ALLERGENS})\\b`,
-    `\\b(?:is|are) there (?:any |some )?(?:${ALLERGENS})\\b`,
-    `\\bany (?:${ALLERGENS}) (?:in|on)\\b`,
+    // "is there any dairy in the korma?", "are there nuts?"; "is there fish in the biryani?".
+    `\\b(?:is|are) there (?:any |some )?(?:${INGREDIENT_ALLERGENS})\\b${NOT_MENU}(?=\\s*(?:[?.!؟]|$|in\\b|inside\\b|added\\b|used\\b))`,
+    `\\b(?:${ALLERGENS})(?: (?:used|added|put|mixed|cooked))? ${EN_IN}[^.!]*\\?`,
+    // "any peanuts in the karahi?", "any nuts?"
+    `\\bany (?:${INGREDIENT_ALLERGENS})\\b${NOT_MENU}(?=\\s*(?:[?.!؟]|$|in\\b|on\\b|inside\\b|added\\b|used\\b))`,
     `\\b(?:does|do|did|will)\\s+(?!you\\b|u\\b|we\\b|i\\b)(?:\\S+\\s+){0,3}(?:have|has|use|contain)\\s+(?:any\\s+|some\\s+)?(?:${ALLERGENS})\\b`,
     `\\b(?:have|has)\\s+(?:any\\s+)?(?:${ALLERGENS}) in (?:it|them|this|that)\\b`,
     `\\b(?:made|cooked|fried|prepared)\\s+(?:with|in|using)\\s+(?:any\\s+)?(?:\\S+\\s+)?(?:${ALLERGENS})\\b`,
     `\\b(?:${ALLERGENS})\\b[^.!?]{0,30}\\bsafe\\b|\\bsafe\\b[^.!?]{0,30}\\b(?:${ALLERGENS})\\b`,
-    `\\b(?:${ALLERGENS}) in [^.!]*\\?`,
-    `(?<!menu )\\b(?:mein|me|main|mai|andar) (?:koi |kuch |bhi )?(?:${ALLERGENS}) (?:to |bhi )?(?:nahi |nahin |nai )?(?:hai|hain|he|hy|h|hota|hoti|hote|dala|daala|dali|dalta|dalte|dalti|parta|padta|parti|padti|hoga|hogi|honge)\\b`,
-    `\\b(?:${ALLERGENS}) (?:to )?(?:nahi |nahin )?(?:hai|hain|hota|hoti|dala|daala|dalte) (?:na|kya)\\b`,
-    `(?<!مینو )میں (?:کوئی |کچھ )?(?:${URDU_ALLERGENS}) (?:تو )?(?:نہیں )?(?:ہے|ہیں|ہوتا|ہوتی|ہوتے|ڈالا|ڈالتے|ڈالی|پڑتا|پڑتی|ہوگا|ہوگی)`,
-    `(?:${URDU_ALLERGENS}) (?:تو )?(?:نہیں )?(?:ہے|ہیں) کیا`,
-    `(?:${URDU_ALLERGENS}) سے پاک`,
+    `\\b(?:${INGREDIENT_ALLERGENS}) in (?!(?:the |our |your |ur )?(?:menu|stock)\\b|today\\b)[^.!]*\\?`,
+    // "isme nuts hain?", "kya ismein anda hai?", "biryani mein nuts?", "biryani me koi nuts to nahi?"
+    `(?<!menu |\\b(?:give|send|get|bring|show|tell|for|to|let) )\\b${ROMAN_IN} (?:koi |kuch |bhi )?(?:${ALLERGENS})(?: (?:to |bhi )?(?:nahi |nahin |nai )?${ROMAN_HAS}\\b|(?: (?:to |bhi )?(?:nahi|nahin|nai))?\\s*(?:[?؟]|$))`,
+    // "nuts hain is mein?", "nuts hai isme?", "nuts isme hain?"
+    `\\b(?:${ALLERGENS}) (?:(?:hai|hain|h|he|hy) )?(?:to |bhi )?(?:is|us|iss|uss) ?(?:me|mein|main|mai|men|mei)\\b`,
+    // "anda dala hai?", "doodh parta hai?", "peanut oil use hota hai?": put into the dish.
+    `\\b(?:${ALLERGENS}) (?:to |bhi )?(?:nahi |nahin )?(?:dala|daala|dali|dalta|dalte|dalti|parta|padta|parti|padti)\\b`,
+    `\\b(?:${ALLERGENS})(?: oil| ka tel| ki| ka)? (?:use|istemal|istemaal) (?:hota|hoti|hote|karte|karti|kiya|ki)\\b`,
+    `\\b(?:${INGREDIENT_ALLERGENS}) (?:to )?(?:nahi |nahin )?(?:hai|hain|hota|hoti) (?:na|kya)\\b`,
+    // "nuts?", "any nuts?", "gluten hai?", "koi nuts hain?", "nuts to nahi?"; "koi anda to nahi?"
+    // (not "koi fish nahi?", which asks about the menu).
+    `^(?:(?:any|koi|kya) )?(?:${INGREDIENT_ALLERGENS})(?: (?:hai|hain|h|he|hy))?(?: (?:to )?(?:nahi|nahin|nai))?(?: (?:kya|na))?\\s*[?؟]+$`,
+    `\\bkoi (?:${INGREDIENT_ALLERGENS}) (?:to )?(?:nahi|nahin|hai|hain)\\b|\\bkoi (?:${ALLERGENS}) to (?:nahi|nahin)\\b`,
+    `(?<!مینو )میں (?:کوئی |کچھ )?${urduWord(URDU_ALLERGENS)}(?: (?:تو )?(?:نہیں )?(?:ہے|ہیں|ہوتا|ہوتی|ہوتے|ڈالا|ڈالتے|ڈالی|پڑتا|پڑتی|ہوگا|ہوگی)|(?: تو)?(?: نہیں)?\\s*[?؟]+$)`,
+    `${urduWord(URDU_INGREDIENTS)} (?:تو )?(?:نہیں )?(?:ہے|ہیں) کیا`,
+    `^(?:کیا )?(?:کوئی )?${urduWord(URDU_INGREDIENTS)}(?: (?:ہے|ہیں))?(?: کیا)?\\s*[?؟]+$`,
+    `${urduWord(URDU_ALLERGENS)} (?:تو )?(?:نہیں )?(?:ڈالا|ڈالتے|ڈالی|پڑتا|پڑتی)`,
+    `${urduWord(URDU_ALLERGENS)}(?: کا تیل| کا| کی)? استعمال (?:ہوتا|ہوتی|ہوتے|کرتے|کیا)`,
+    `${urduWord(URDU_ALLERGENS)} سے پاک`,
   ].join('|'),
   'u',
 );
@@ -894,6 +984,28 @@ export const asksAboutAllergens = (text: string) => {
   const value = normalize(text);
   return ALLERGY_WORDS.test(value) || ALLERGEN_QUESTION.test(value);
 };
+// A message that names an allergen at all, as a question, a dish or a request.
+const ALLERGEN_MENTION = new RegExp(`\\b(?:${ALLERGENS})\\b|${urduWord(URDU_ALLERGENS)}`, 'u');
+const mentionsAllergen = (text: string) => {
+  const value = normalize(text);
+  return ALLERGY_WORDS.test(value) || ALLERGEN_MENTION.test(value);
+};
+// AI wording that vouches for a dish to someone who named an allergen, beyond the general
+// assurances below: "Bilkul, aap kha sakte hain", "Yes, totally fine for you", "It only has
+// chicken, rice and spices", "Nahi ji, isme nahi hota".
+const ALLERGEN_CONTEXT_ASSURANCE = new RegExp(
+  [
+    `\\b(?:kha|khaa) ?(?:sakte|sakti|sakta|saktay|skte|skti|lein|len)\\b`,
+    `\\b(?:fine|okay|ok|suitable|alright) (?:for|to) (?:you|your|eat|kids|children|everyone|anyone)\\b`,
+    `\\b(?:can|could|may) safely (?:eat|have|enjoy|order)\\b|\\b(?:eat|have|enjoy|order) (?:it|this|that|them) (?:safely|without (?:any )?(?:worr(?:y|ies)|problems?|issues?|risk|fear))\\b`,
+    `\\bonly (?:has|contains?|uses?|includes?)\\b|\\b(?:contains?|has|includes?|uses) only\\b|\\bmade (?:with|from|of|using) only\\b|\\bnothing but\\b`,
+    `\\b(?:nahi|nahin|nai|nhi) (?:dala|daala|dali|dalta|dalte|dalti|parta|padta|parti|padti)\\b`,
+    `(?<!menu )\\b${ROMAN_IN} (?:\\p{L}+ ){0,2}(?:nahi|nahin|nai|nhi) (?:hota|hoti|hote|hai|hain)\\b`,
+    `\\b(?:sirf|bas) [^.!?\\n]{0,40}\\b(?:dala|daala|dalta|dalte|parta|padta|use)\\b`,
+    `کھا سکت|کھا لیں|نہیں (?:ڈالا|ڈالتے|ڈالی|پڑتا|پڑتی)|اس میں (?:\\S+ ){0,2}نہیں (?:ہوتا|ہوتی|ہوتے|ہے|ہیں)|صرف [^۔.!?؟\\n]{0,40}(?:ڈالا|ڈالتے|ڈالی|پڑتا|پڑتی)`,
+  ].join('|'),
+  'u',
+);
 // "No fish today" or "we don't have doodh patti" is about the menu, so "no …" and "don't …"
 // count only for the allergens people ask to avoid.
 const AVOIDED =
@@ -986,10 +1098,10 @@ export function parseActions(
         ...conversation.pendingItemChoice.requestedOptionNames,
         ...requestedOptions([selected], text),
       ];
-      // Only a count written right before the chosen dish changes the one asked about: "3 naan"
-      // or "house 12" in the same message is not this dish's count.
+      // Only a count written next to the chosen dish, in its own part of the message, changes
+      // the one asked about: "3 naan", "naan 3, chicken wali" or "house 12" is not its count.
       const explicitQuantity = !/^option\b/u.test(value)
-        ? quantityBefore(selected, text)
+        ? quantityNear(selected, text, products)
         : undefined;
       return [
         {
@@ -1120,7 +1232,13 @@ export function parseActions(
       {
         type: 'clarify_item',
         candidateProductIds: sameMention.slice(0, 12).map((match) => match.product.id),
-        quantity: resolveItemMention(products, company.id, text).quantity,
+        quantity: Math.max(
+          1,
+          Math.min(
+            50,
+            quantityOfMention(sameMention[0]!.product, sameMention[0]!.alias, text, products) ?? 1,
+          ),
+        ),
         requestedOptionNames: requestedOptions(
           sameMention.map((match) => match.product),
           text,
@@ -1143,31 +1261,6 @@ export function parseActions(
   for (const { product, alias } of matches) {
     const at = value.indexOf(normalize(alias));
     const prefix = value.slice(Math.max(0, at - 24), at);
-    const number = prefix.match(/(\d+)\s*(?:x|×)?\s*$/u)?.[1];
-    const word = prefix.match(
-      /\b(one|two|three|four|five|a|an|ek|aik|do|teen|char|panch)\s*$/u,
-    )?.[1];
-    const urduWord = prefix.match(/(ایک|دو|تین|چار|پانچ)\s*$/u)?.[1];
-    const quantityWords: Record<string, number> = {
-      one: 1,
-      two: 2,
-      three: 3,
-      four: 4,
-      five: 5,
-      a: 1,
-      an: 1,
-      ek: 1,
-      aik: 1,
-      do: 2,
-      teen: 3,
-      char: 4,
-      panch: 5,
-      ایک: 1,
-      دو: 2,
-      تین: 3,
-      چار: 4,
-      پانچ: 5,
-    };
     if (/\b(remove|delete|hatao)\b|نکال|ہٹا/u.test(prefix)) {
       actions.push({ type: 'remove_item', productId: product.id });
       continue;
@@ -1186,7 +1279,9 @@ export function parseActions(
     actions.push({
       type: 'add_item',
       productId: product.id,
-      quantity: number ? Number(number) : (quantityWords[word ?? urduWord ?? ''] ?? 1),
+      // The count next to this mention, in its own part of the message: "naan 3, chicken
+      // biryani" and "naan 3 chicken biryani" give the biryani 1 and the naan 3.
+      quantity: quantityOfMention(product, alias, text, products) ?? 1,
       variantId: variant?.id,
       modifierIds: modifiers.map((m) => m.id),
     });
@@ -1249,14 +1344,53 @@ const allergyNotice = (company: Company, lang: Language) =>
   say(
     lang,
     `We can’t confirm allergens or ingredients in this chat. A staff member will reply here to help you.${company.phone ? ` You can also call us on ${company.phone}.` : ''}`,
-    `ہم اس چیٹ میں الرجی یا اجزا کی تصدیق نہیں کر سکتے۔ عملے کا ایک رکن یہیں آپ کو جواب دے گا۔${company.phone ? ` آپ ہمیں ${company.phone} پر کال بھی کر سکتے ہیں۔` : ''}`,
+    `ہم اس چیٹ میں الرجی یا اجزا کی تصدیق نہیں کر سکتے۔ عملے کا ایک رکن یہیں آپ کو جواب دے گا۔${company.phone ? ` آپ ہمیں ${leftToRight(company.phone)} پر کال بھی کر سکتے ہیں۔` : ''}`,
     `Hum is chat mein allergy ya ingredients confirm nahi kar sakte. Staff ka koi member yahin aap ko jawab dega.${company.phone ? ` Aap hamein ${company.phone} par call bhi kar sakte hain.` : ''}`,
   );
 
-// A question about the order this chat placed: "where is my order?", "kitni der?", "آرڈر کہاں ہے؟".
+// A question about the order this chat placed. Wording that names the order ("where is my
+// order?", "order kahan hai?", "آرڈر کہاں ہے؟", "order status") is always about it, and so is a
+// bare "kitni der?" or "any update?".
 const ORDER_STATUS_QUESTION =
-  /\bwhere(?:'s| is)? (?:is )?(?:my |the |our )?(?:order|food|rider|delivery)\b|\border status\b|^status\b|\bstatus of (?:my |the )?order\b|\btrack(?:ing)? (?:my |the )?order\b|\bhow (?:much )?long(?:er)?\b|\bwhen will (?:it|my order|the order|the food) (?:come|arrive|be ready|reach|be delivered)\b|\bis (?:it|my order|the order) (?:ready|coming|on the way|confirmed|accepted)\b|\bany update\b|\beta\b|\b(?:order|khana|rider)\s+(?:abhi tak\s+)?(?:kahan|kidhar|kab)\b|\bkahan (?:hai|reh gaya|pohncha)\b|\bkitni der\b|\bkitna (?:time|waqt)\b|\bkab (?:tak )?(?:aaye?ga|aayega|ayega|milega|pohnche?ga|ready hoga|aaega)\b|\border ka (?:kya )?status\b|\bstatus (?:kya hai|batao|bata dein|batayein)\b|(?:آرڈر|کھانا|رائیڈر)\s(?:\S+\s){0,3}?کہاں|کہاں (?:ہے|رہ گیا|پہنچا)|کتنی دیر|کب (?:تک )?(?:آئے گا|ملے گا|پہنچے گا)|آرڈر کی (?:صورتحال|حالت)|اسٹیٹس|سٹیٹس/u;
-export const asksOrderStatus = (text: string) => ORDER_STATUS_QUESTION.test(normalize(text));
+  /\bwhere(?:'s| is)? (?:is )?(?:my |the |our )?(?:order|food|rider|delivery)\b|\border status\b|^status\b|\bstatus of (?:my |the )?order\b|\btrack(?:ing)? (?:my |the )?order\b|\bwhen will (?:my order|the order|the food) (?:come|arrive|be ready|reach|be delivered)\b|\bis (?:my order|the order) (?:ready|coming|on the way|confirmed|accepted)\b|\b(?:order|rider)\s+(?:abhi tak\s+)?(?:kahan|kidhar|kab)\b|\border ka (?:kya )?status\b|\bstatus (?:kya hai|batao|bata dein|batayein)\b|(?:آرڈر|رائیڈر)\s(?:\S+\s){0,3}?کہاں|آرڈر کی (?:صورتحال|حالت)|اسٹیٹس|سٹیٹس/u;
+// "How long?" wording that may also be asked before ordering ("kitni der mein delivery hoti
+// hai?", "how long does delivery take?"): about the order only while it is current.
+const GENERAL_STATUS =
+  /\bhow (?:much )?long(?:er)?\b(?! (?:is|are|was|were) (?!it\b)\p{L}| (?:are|r|do|does) (?:you|u) (?:stay )?open)|\bwhen will it (?:come|arrive|be ready|reach|be delivered)\b|\bis it (?:ready|coming|on the way|confirmed|accepted)\b|\bany updates?\b(?! (?:on|to|in|about) (?:the |your |ur )?(?:menu|prices?|rates?|deals?|timings?|hours)\b)|\beta\b|\bkhana\s+(?:abhi tak\s+)?(?:kahan|kidhar|kab)\b|\bkahan (?:hai|reh gaya|pohncha)\b|\bkitni der\b|\bkitna (?:time|waqt)\b|\bkab (?:tak )?(?:aaye?ga|aayega|ayega|milega|pohnche?ga|ready hoga|aaega)\b|کھانا\s(?:\S+\s){0,3}?کہاں|کہاں (?:ہے|رہ گیا|پہنچا)|کتنی دیر|کب (?:تک )?(?:آئے گا|ملے گا|پہنچے گا)/u;
+// The whole message is such a question ("kitni der?", "any update?", "how much longer?").
+const BARE_STATUS =
+  /^(?:(?:bhai|bhaiya|sir|ji|yaar|yar|please|pls|aur|or|and|so|abhi|ab|بھائی|جی|اور) )*(?:how (?:much )?long(?:er)?(?: (?:will it take|now|more))?|any updates?|eta|kitni der(?: aur| or| hai| lagegi| lage gi| hogi| aur lagegi)?|kitna (?:time|waqt)(?: aur| lagega| or)?|kab (?:tak )?(?:aaye?ga|aayega|ayega|milega|aaega)|kahan (?:hai|reh gaya)|کتنی دیر(?: اور| ہے| لگے گی)?|کب (?:تک )?(?:آئے گا|ملے گا))(?: (?:bhai|bhaiya|sir|ji|yaar|yar|please|pls|بھائی|جی))*[\s.!?؟۔]*$/u;
+const FINISHED_STATUSES: OrderStatus[] = ['completed', 'rejected', 'cancelled'];
+/**
+ * Whether general wording ("kitni der?") can be about this order: it is still with the
+ * restaurant and changed in the last 24 hours, or it finished in the last 2 hours.
+ */
+export function orderStillCurrent(
+  order: Pick<Order, 'status' | 'updatedAt'>,
+  now: string,
+): boolean {
+  const age = Date.parse(now) - Date.parse(order.updatedAt);
+  if (!Number.isFinite(age)) return false;
+  return age <= (FINISHED_STATUSES.includes(order.status) ? 2 : 24) * 60 * 60 * 1000;
+}
+/**
+ * Whether the message asks about the order this chat placed. Without the order, only wording
+ * that is about an order whatever its age counts; with it, "how long" wording counts too while
+ * the order is current (see orderStillCurrent), so a returning customer's "kitni der mein
+ * delivery hoti hai?" is not answered with last week's order.
+ */
+export function asksOrderStatus(
+  text: string,
+  order?: Pick<Order, 'status' | 'updatedAt'>,
+  now?: string,
+): boolean {
+  const value = normalize(text);
+  return (
+    ORDER_STATUS_QUESTION.test(value) ||
+    BARE_STATUS.test(value) ||
+    (!!order && !!now && orderStillCurrent(order, now) && GENERAL_STATUS.test(value))
+  );
+}
 /** The engine's status line for a placed order: its status and how long since it last changed. */
 export function orderStatusText(
   lang: Language,
@@ -1326,16 +1460,33 @@ export function orderStatusText(
         `Order ${ref} cancel ho chuka hai.`,
       ) + again,
   };
+  // Minutes for the first hour, then about how many hours, then days.
   const minutes = Math.floor((Date.parse(now) - Date.parse(order.updatedAt)) / 60000);
+  const hours = Math.round(minutes / 60);
+  const days = Math.round(minutes / 1440);
   const updated =
     !Number.isFinite(minutes) || minutes < 1
       ? say(lang, 'Last update: just now.', 'آخری اپڈیٹ: ابھی ابھی۔', 'Aakhri update: abhi abhi.')
-      : say(
-          lang,
-          `Last update: ${minutes} minute${minutes === 1 ? '' : 's'} ago.`,
-          `آخری اپڈیٹ: ${minutes} منٹ پہلے۔`,
-          `Aakhri update: ${minutes} minute pehle.`,
-        );
+      : minutes < 60
+        ? say(
+            lang,
+            `Last update: ${minutes} minute${minutes === 1 ? '' : 's'} ago.`,
+            `آخری اپڈیٹ: ${minutes} منٹ پہلے۔`,
+            `Aakhri update: ${minutes} minute pehle.`,
+          )
+        : hours < 24
+          ? say(
+              lang,
+              `Last update: about ${hours === 1 ? 'an hour' : `${hours} hours`} ago.`,
+              `آخری اپڈیٹ: تقریباً ${hours === 1 ? 'ایک گھنٹہ' : `${hours} گھنٹے`} پہلے۔`,
+              `Aakhri update: taqreeban ${hours === 1 ? 'ek ghanta' : `${hours} ghante`} pehle.`,
+            )
+          : say(
+              lang,
+              `Last update: about ${days === 1 ? 'a day' : `${days} days`} ago.`,
+              `آخری اپڈیٹ: تقریباً ${days === 1 ? 'ایک' : days} دن پہلے۔`,
+              `Aakhri update: taqreeban ${days === 1 ? 'ek' : days} din pehle.`,
+            );
   return `${status[order.status] ?? say(lang, `Order ${ref} has been received.`, `آرڈر ${ref} موصول ہوا۔`, `Order ${ref} receive ho gaya.`)}\n${updated}`;
 }
 
@@ -1396,7 +1547,7 @@ export function processTurn(
   ].map((text) => normalize(text));
   const assures = (text: string) =>
     assuresSafety(text) &&
-    !ownerWording.some((owner) => !!text.trim() && owner.includes(normalize(text)));
+    !ownerWording.some((owner) => !!text.trim() && owner === normalize(text));
   const unsafe = (text: string) => claims(text) || assures(text) || invents(text);
   // The menu page link is filled in (or left out) where each text is chosen, before any
   // check reads it: a text left empty counts as missing, so the turn never goes silent.
@@ -1466,9 +1617,17 @@ export function processTurn(
     .slice(-4)
     .reverse()
     .find((m) => m.role === 'customer');
+  // An AI answer that vouches for a dish to a customer who named an allergen ("isme nuts?" →
+  // "Bilkul, aap kha sakte hain") makes it an allergy question too, however it was worded.
+  const aiWording = [
+    modelResponse?.text ?? '',
+    ...(actions ?? []).map((action) => (action.type === 'answer' ? action.text : '')),
+  ];
   const allergyQuestion =
     !input.action &&
     (asksAboutAllergens(input.text) ||
+      (mentionsAllergen(input.text) &&
+        aiWording.some((text) => ALLERGEN_CONTEXT_ASSURANCE.test(normalize(text)))) ||
       (!!lastAsked &&
         asksAboutAllergens(lastAsked.text) &&
         /[?؟]/u.test(input.text) &&
@@ -1726,6 +1885,35 @@ export function processTurn(
       reply = `${reply}\n\n${menuLinkLine(lang, input.menuLink)}`;
       if (!parts.includes('engine')) parts.push('engine');
     }
+    // A closed restaurant says so early, in its first reply while closed, not only once the
+    // customer reaches the review. The owner's exact wording and an allergy answer stay as they
+    // are, and a customer asking about a placed order needs no notice.
+    if (
+      reply &&
+      next.mode === 'bot' &&
+      !allergyQuestion &&
+      !parts.includes('exact_rule') &&
+      !parts.includes('approved_answer') &&
+      !traces.includes('order_status') &&
+      cart.status !== 'submitted' &&
+      !isOpen(company, input.now) &&
+      !CLOSED_LEADS.some((lead) => reply.includes(lead)) &&
+      !conversation.messages.some(
+        (m) =>
+          m.role === 'assistant' &&
+          Date.parse(input.now) - Date.parse(m.createdAt) < CLOSED_NOTICE_MS &&
+          CLOSED_LEADS.some((lead) => m.text.includes(lead)),
+      )
+    ) {
+      reply = `${closedText(company, lang, input.now)} ${say(
+        lang,
+        'You can still look at the menu and add items; your cart will be saved.',
+        'آپ پھر بھی مینو دیکھ کر چیزیں شامل کر سکتے ہیں، آپ کی ٹوکری محفوظ رہے گی۔',
+        'Aap phir bhi menu dekh kar items add kar sakte hain, cart save rahega.',
+      )}\n\n${reply}`;
+      if (!parts.includes('engine')) parts.unshift('engine');
+      traces.push('closed_notice');
+    }
     if (modelText === 'used' && !parts.includes('model')) modelText = 'replaced';
     // Confirmation counts only against the reply that showed the review. A review the final
     // reply does not carry (replaced by a handoff or an error) was never seen: not confirmable.
@@ -1780,13 +1968,13 @@ export function processTurn(
     return finish();
   }
   // "Where is my order?" about the order this chat placed: the engine states its real status,
-  // never the AI, whatever the AI proposed.
+  // never the AI, whatever the AI proposed. "How long" wording only while the order is current.
   if (
     !input.action &&
     input.latestOrder &&
     cart.orderId &&
     (cart.status === 'submitted' || cart.status === 'cancelled') &&
-    asksOrderStatus(input.text)
+    asksOrderStatus(input.text, input.latestOrder, input.now)
   ) {
     traces.push('order_status');
     reply = orderStatusText(lang, input.latestOrder, input.now);
@@ -1825,14 +2013,15 @@ export function processTurn(
       (requested.some((action) => action.type === 'clarify_item') || next.pendingItemChoice)
     ) {
       // A specific name/ordinal resolves the outstanding choice; keep its options and quantity.
-      // The count: one written right before the dish (the parser's); else the AI's when the
-      // customer wrote that number ("chicken biryani, make it 3"); else the pending choice's,
-      // so an AI that forgot "2 chicken" still adds 2, and "aur 3 naan" stays the naan's.
+      // The count: one written next to the dish in its own part (the parser's); else the AI's
+      // when the customer wrote that number ("chicken biryani, make it 3"); else the pending
+      // choice's, so an AI that forgot "2 chicken" still adds 2, and "aur 3 naan" or "naan 3,
+      // chicken wali" stays the naan's.
       const pending = next.pendingItemChoice?.candidateProductIds.includes(first.productId)
         ? next.pendingItemChoice
         : undefined;
       const product = products.find((p) => p.id === first.productId);
-      const explicit = !!product && quantityBefore(product, input.text) !== undefined;
+      const explicit = !!product && quantityNear(product, input.text, products) !== undefined;
       const quantityFor = (proposed: number) =>
         !pending || explicit
           ? first.quantity
@@ -1994,9 +2183,9 @@ export function processTurn(
       if (cart.status === 'submitted') {
         reply = say(
           lang,
-          'This cart has already been submitted. Check the order status with staff, or send “new order” to start another.',
-          'یہ آرڈر پہلے بھیجا جا چکا ہے۔ حالت کے لیے عملے سے پوچھیں، یا “نیا آرڈر” لکھیں۔',
-          'Yeh cart pehle submit ho chuka hai. Status staff se poochein, ya “new order” likhein.',
+          'This order has already been submitted. Ask “where is my order?” for its status, or send “new order” to start another.',
+          'یہ آرڈر پہلے بھیجا جا چکا ہے۔ اس کی حالت جاننے کے لیے “میرا آرڈر کہاں ہے؟” لکھیں، یا نیا آرڈر شروع کرنے کے لیے “نیا آرڈر” لکھیں۔',
+          'Yeh order pehle submit ho chuka hai. Status ke liye “mera order kahan hai?” likhein, ya “new order” likhein.',
         );
         traces.push('duplicate_submission_prevented');
         continue;
@@ -2155,19 +2344,19 @@ export function processTurn(
             'آرڈر دیکھ کر بھیجنے کے لیے واضح طور پر “تصدیق” لکھیں۔',
             'Order review kar ke wazeh taur par “confirm” likhein.',
           );
-          // The review again right below, so the next "confirm" places this order. While closed,
-          // the review itself says so instead.
+          // The review again right below, so the next "confirm" places this order: it says how,
+          // so the lead only says nothing was placed. While closed, the review itself says so.
           reply = !cart.items.length
             ? prompt
             : isOpen(company, input.now)
-              ? `${prompt}\n\n${showReview()}`
+              ? `${orderSafetyLine(lang, cart)}\n\n${showReview()}`
               : showReview();
           traces.push('unconfirmed_model_action_rejected');
           continue;
         }
         if (!isOpen(company, input.now)) {
           reply =
-            closedText(company, lang) +
+            closedText(company, lang, input.now) +
             say(lang, ' Your cart is saved.', ' آپ کی ٹوکری محفوظ ہے۔', ' Cart save hai.');
           // Nothing stays confirmable while closed; once open, "confirm" shows a fresh review.
           if (cart.status === 'awaiting_confirmation') unreview(cart);

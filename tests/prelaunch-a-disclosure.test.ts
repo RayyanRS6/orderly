@@ -24,8 +24,9 @@ describe('F12: every chat session starts with the automated-assistant notice', (
     expect(disclosureLine('Dastarkhwan', 'roman-ur')).toBe(
       'Dastarkhwan ka automated assistant. Kisi insaan se baat karne ke liye kabhi bhi “staff” likhein.',
     );
+    // Right-to-left from its first character, with the name in its own isolate.
     expect(disclosureLine('دسترخوان', 'ur')).toBe(
-      'دسترخوان کا خودکار اسسٹنٹ۔ کسی انسان سے بات کرنے کے لیے کسی بھی وقت “عملہ” یا “staff” لکھیں۔',
+      '\u200F\u2068دسترخوان\u2069 کا خودکار اسسٹنٹ۔ کسی انسان سے بات کرنے کے لیے کسی بھی وقت “عملہ” یا “staff” لکھیں۔',
     );
   });
 

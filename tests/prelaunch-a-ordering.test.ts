@@ -320,7 +320,7 @@ describe('G7.5: a review while closed is not confirmable', () => {
     const reply = c.messages.at(-1)!.text;
     expect(reply).toContain('Please review your order:');
     expect(reply).toContain(
-      'We are currently closed. Ordering hours are 09:00–10:00 (Asia/Karachi). Your cart is saved. Send “review” when we are open.',
+      'We are currently closed. Ordering hours are 09:00–10:00. Your cart is saved. Send “review” when we are open.',
     );
     expect(reply).not.toContain('Reply “confirm”');
     expect(c.cart.status).toBe('building');
@@ -363,7 +363,7 @@ describe('G7.5: a review while closed is not confirmable', () => {
     const c = reviewed();
     const refused = turn(c, 'confirm', { restaurant: closed });
     expect(refused.reply).toBe(
-      'We are currently closed. Ordering hours are 09:00–10:00 (Asia/Karachi). Your cart is saved.',
+      'We are currently closed. Ordering hours are 09:00–10:00. Your cart is saved.',
     );
     expect(refused.conversation.cart.status).toBe('building');
     const next = turn(refused.conversation, 'haan', { actions: [{ type: 'confirm' }] });

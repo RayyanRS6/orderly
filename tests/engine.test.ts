@@ -610,10 +610,10 @@ describe('order builder and sentences shared with the menu page', () => {
       openingHours: { start: '09:00', end: '10:00', days: [] },
     };
     expect(turn(reviewed(), 'confirm', undefined, products, closed).reply).toBe(
-      'We are currently closed. Ordering hours are 09:00–10:00 (Asia/Karachi). Your cart is saved.',
+      'We are currently closed. Ordering hours are 09:00–10:00. Your cart is saved.',
     );
     expect(closedText(closed, 'en')).toBe(
-      'We are currently closed. Ordering hours are 09:00–10:00 (Asia/Karachi).',
+      'We are currently closed. Ordering hours are 09:00–10:00.',
     );
     expect(closedText(closed, 'roman-ur')).toBe(
       'Hum is waqt band hain. Order ka waqt 09:00–10:00 hai.',
