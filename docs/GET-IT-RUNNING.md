@@ -33,9 +33,9 @@ Only the gateway needs Railway. It is the one part that must stay running all th
 
 ## 2. Ship an update
 
-Follow the release order in [DEPLOYMENT.md](DEPLOYMENT.md) §7: backup, any SQL marked "before", backend push, dashboard deploy, any SQL marked "after", then the gateway at a quiet hour.
+Follow the release order in [DEPLOYMENT.md](DEPLOYMENT.md) §7: backup, any SQL marked "before", the legal placeholders filled in, the backend push, then the gateway push, the dashboard deploy and any SQL marked "after", all at a quiet hour.
 
-1. **You:** review and approve the commit, then push to `main` at a quiet time. GitHub Actions (`Deploy Supabase backend`) first runs the type check and every test, and deploys only if they pass. Wait in GitHub → Actions until both `verify` and `deploy` are green; `deploy` also checks the live `/api/health`. Pushes that change only docs, Markdown or `gateway/` do not redeploy the backend.
+1. **You:** review and approve the commit, then push to `main` at a quiet time. GitHub Actions (`Deploy Supabase backend`) first runs the type check and every test, and deploys only if they pass. Wait in GitHub → Actions until both `verify` and `deploy` are green; `deploy` also checks the live `/api/health`. Pushes that change only docs, Markdown or `gateway/` do not redeploy the backend. A push with a commit that changes `gateway/` (other than Markdown), `src/shared/whatsapp.ts`, `server/whatsapp/signing.ts` or `.dockerignore` rebuilds the gateway on Railway at once, so when a release changes both, push the backend part first (DEPLOYMENT.md §7, steps 5 and 6).
 2. **You:** deploy the dashboard from this folder, signed in to the Cloudflare account that serves `orderly.meerurayyan.workers.dev` (`npx wrangler whoami` shows which account):
 
    ```powershell
@@ -66,7 +66,7 @@ To change model or key later, use the same card: pick or paste the new one and c
 
 **Option A: official Meta Cloud API, with coexistence (the supported route).** Follow [`ORDERLY-LAUNCH-STEPS-2026-09-18.md`](ORDERLY-LAUNCH-STEPS-2026-09-18.md) sections 9–10. If the restaurant already uses the WhatsApp Business app on its number, tick **Keep using the WhatsApp Business mobile app** during signup: Meta's coexistence onboarding keeps the app working alongside Orderly (Meta decides eligibility).
 
-**Option B: linked phone through Railway (unofficial).** Use it only when Option A is not possible for that restaurant, and only after you, the platform admin, have enabled linked-phone pairing for that business.
+**Option B: linked phone through Railway (unofficial).** Use it only when Option A is not possible for that restaurant, and only after you, the platform admin, have enabled linked-phone pairing for that business ([DEPLOYMENT.md](DEPLOYMENT.md) §4 says how).
 
 - **The risk, in plain words:** this method is against WhatsApp's terms. WhatsApp can ban the whole number, temporarily or permanently, and the restaurant's own WhatsApp app on that number stops working too. Customer messages are decrypted and processed on Orderly's gateway server on Railway. Tell the owner this before pairing; the dashboard records their consent. A banned number may not be able to move to the official route afterwards.
 
@@ -111,4 +111,4 @@ The Agent flow checklist shows these steps in order. Each one has a button to th
 
 - A backup restore has not been rehearsed yet ([BACKUP-AND-RESTORE.md](BACKUP-AND-RESTORE.md) §5).
 - The emergency stop has not been tried on the live project; try it once on the test restaurant.
-- The legal pages still contain `[OWNER TO CONFIRM: …]` placeholders and have not had a lawyer's review ([COMPLIANCE-NOTES-2026-10-18.md](COMPLIANCE-NOTES-2026-10-18.md)).
+- The legal pages still contain `[OWNER TO CONFIRM: …]` placeholders, to be filled in before the next dashboard deploy ([DEPLOYMENT.md](DEPLOYMENT.md) §7, step 4), and have not had a lawyer's review ([COMPLIANCE-NOTES-2026-10-18.md](COMPLIANCE-NOTES-2026-10-18.md)).
