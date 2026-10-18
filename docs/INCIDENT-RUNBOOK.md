@@ -24,7 +24,7 @@ npx supabase secrets set ORDERLY_PAUSE_AUTOMATION=on --project-ref zygsuxgqkeedg
 
 - **What it does:** every business behaves as if its bot were switched off. No AI calls and no automatic replies; queued bot replies and order reminders are not sent, and test chats are refused. Incoming messages are still saved and appear in the inbox under **Needs staff**, so staff can answer from the dashboard. Public menu-page orders are paused. It lives in the function's secrets, not the database, so it still works if the database or the service-role key is compromised, and owners cannot switch it back on from the dashboard: saving settings with automation switched on is refused while it is set (a bot already on keeps its setting, and works again once the stop is lifted). `/api/config` reports `automationPaused: true` meanwhile. Only the values `on`, `true` and `1` count.
 - **What it does not stop:** replies staff type themselves, order-status updates staff trigger, and confirmations of orders already placed.
-- **Check:** send a message to the test restaurant from your own phone. It appears in the inbox with no bot reply. Supabase can take a short while to give running workers a changed secret; if bot replies continue after about 5 minutes, redeploy the function (re-run the latest **Deploy Supabase backend** run in GitHub Actions, or `npm run deploy:backend`).
+- **Check:** send a message to the test restaurant from your own phone. It appears in the inbox with no bot reply. Supabase can take a short while to give running workers a changed secret; if bot replies continue after about 5 minutes, redeploy the function: re-run the newest **Deploy Supabase backend** run in GitHub Actions (never an older one: it would deploy that older code over the current one), or use the break-glass commands in [DEPLOYMENT.md](DEPLOYMENT.md) §2 (`npm run test:edge-runtime`, then `npx supabase functions deploy orderly --project-ref zygsuxgqkeedgcbjhfzx --use-api`).
 - **Resume:** `npx supabase secrets unset ORDERLY_PAUSE_AUTOMATION --project-ref zygsuxgqkeedgcbjhfzx`. Each chat goes back to the bot on the customer's next message.
 
 ### Other stops
@@ -52,7 +52,7 @@ Each restaurant is the controller of its customers' data; Orderly processes it f
 
 **Restaurant notice (email):** "On <date> we found <what happened> affecting Orderly. It may have exposed <kinds of data, e.g. customer names, WhatsApp numbers, addresses, order details> for <your restaurant / all restaurants> between <start> and <end>. We have <what was done: stopped automation, changed keys, …>. What you should do: <e.g. connect a new AI key, re-run WhatsApp signup>. We will send an update by <time>. We can help you tell your customers; a draft is below."
 
-**Customer notice (for the restaurant to send):** "Assalam o Alaikum. <Restaurant> uses Orderly to take WhatsApp orders. On <date> a security problem at Orderly may have exposed your <name, number, address, order details>. Payments are not affected: Orderly never holds card, bank or CNIC details. We have fixed the problem. If you have questions, reply here."
+**Customer notice (for the restaurant to send):** "Assalam o Alaikum. <Restaurant> uses Orderly to take WhatsApp orders. On <date> a security problem at Orderly may have exposed your <name, number, address, order details, chat messages>. Orderly does not take payments or ask for card, bank or CNIC details, but anything typed in the chat <was / was not> affected. We have fixed the problem. If you have questions, reply here."
 
 ## 3. Secrets: what a leak allows and how to change each one
 
@@ -87,7 +87,7 @@ Rotate in this order for a broad compromise (for example a lost laptop or a leak
 ## 4. Suspected breach: steps
 
 1. **Contain:** emergency stop, then rotate as above.
-2. **Preserve:** take a backup; save the Supabase function and API logs now (the Free plan keeps them only briefly); note times. Do not delete anything. Audit rows cannot be deleted, which helps.
+2. **Preserve:** take a backup; save the Supabase function and API logs now (the Free plan keeps them only briefly); note times. Do not delete anything. The app's service-role key cannot delete audit rows, which helps; the database owner (the SQL editor, or anyone holding the access token or database password) still can.
 3. **Scope:** which businesses (a service-role or access-token leak means all of them), which kinds of data, which time window. Read-only queries in the SQL editor (inside `begin; set transaction read only; … rollback;`):
 
    ```sql
@@ -115,3 +115,56 @@ Rotate in this order for a broad compromise (for example a lost laptop or a leak
 | Lawyer                    | [OWNER TO CONFIRM]                              |
 | Restaurants               | Admin **People** page and each business's phone |
 | Supabase / Railway / Meta | Their support pages, from the account dashboard |
+
+## 6. Delete a workspace on request
+
+The Terms and the deletion page promise that Orderly deletes a whole workspace on request, by hand: there is no dashboard button. Do every step in this order, signed in as the platform admin, and note each one with its time (business name only, no customer data).
+
+1. **Confirm the request.** It must come from the account email of one of that business's owners (People page). Reply to that address to confirm it and agree a date. Note the business's id and slug (`select id, slug, data->>'name' from public.companies;`, read-only); every step below names both, so a typo cannot reach another business.
+2. **Pause the bot and the menu page:** that business's **Bot settings → Pause automation**, and **Your menu → Menu page** off.
+3. **Disconnect everything, in Orderly first.** Deleting the rows while a linked phone is still paired leaves it paired on the Railway gateway, still receiving and decrypting the restaurant's chats.
+   - **Integrations → WhatsApp → Disconnect.** On a linked phone this logs the device out and wipes its session on the gateway, but only while both are online, so ask the owner to check WhatsApp → **Linked devices** and remove Orderly. On the official route the owner also removes Orderly's app in Meta Business settings.
+   - **Integrations → Google Sheets → Disconnect**, and the owner removes the service account from the spreadsheet's sharing (the Sheet itself stays theirs).
+   - **Bot settings → AI model → Remove saved key**, and the owner revokes the key in the provider's console.
+4. **Export, then back up.** The owner downloads what they need: **Orders → Export all matching orders** (all statuses and dates) and, per customer, **Security & privacy → Export customer data**. There is no one-click export of every chat. Then take a backup ([BACKUP-AND-RESTORE.md](BACKUP-AND-RESTORE.md) §3); it expires with the others, as the privacy policy says.
+5. **Check nothing is running and list the accounts** (read-only). The first must return 0 (otherwise wait a few minutes); note from the second each account that is in no other business and is not a platform admin:
+
+   ```sql
+   select count(*) from public.jobs where company_id = '<id>' and status = 'processing' and lease_until > now();
+   select m.user_id, u.email, m.role,
+     (select count(*) from public.company_memberships o where o.user_id = m.user_id and o.company_id <> m.company_id) other_businesses,
+     exists(select 1 from public.platform_admins a where a.user_id = m.user_id) platform_admin
+   from public.company_memberships m join auth.users u on u.id = m.user_id where m.company_id = '<id>';
+   ```
+
+6. **Delete the workspace** in one transaction. Traces and orders point at chats without a cascade, so they go first; deleting the `companies` row then removes everything else of that business (chats and their messages, receipts, jobs, menu, menu page, integrations and their encrypted secrets, the WhatsApp connection, usage, limits, blocks, alert settings, retention policy and memberships). If the id and slug do not name one business, it stops and nothing is deleted. The last line records who did it, in the audit table, which keeps no message text:
+
+   ```sql
+   begin;
+   do $$
+   declare n integer;
+   begin
+     delete from public.traces where company_id = (select id from public.companies where id = '<id>' and slug = '<slug>');
+     delete from public.orders where company_id = (select id from public.companies where id = '<id>' and slug = '<slug>');
+     delete from public.companies where id = '<id>' and slug = '<slug>';
+     get diagnostics n = row_count;
+     if n <> 1 then raise exception 'No business with this id and slug; nothing was deleted'; end if;
+   end $$;
+   select public.audit_event('<id>', '<your auth user id>', 'admin.workspace_deleted');
+   commit;
+   ```
+
+7. **Delete the accounts** noted in step 5 in Supabase → Authentication → Users. Leave anyone who is in another business or a platform admin.
+8. **Verify** (read-only): every count is 0.
+
+   ```sql
+   select (select count(*) from public.companies where id = '<id>') companies,
+     (select count(*) from public.conversations where company_id = '<id>') conversations,
+     (select count(*) from public.orders where company_id = '<id>') orders,
+     (select count(*) from public.jobs where company_id = '<id>') jobs,
+     (select count(*) from public.integrations where company_id = '<id>') integrations,
+     (select count(*) from public.whatsapp_connections where company_id = '<id>') whatsapp,
+     (select count(*) from public.company_memberships where company_id = '<id>') members;
+   ```
+
+9. **Tell the owner** it is done, and what stays: the audit records (no message text), Orderly's backups until they expire, Railway volume backups of a linked phone ([gateway/RAILWAY.md](../gateway/RAILWAY.md) §8), and copies Orderly does not control (the Google Sheet, WhatsApp on the phone, the AI provider's own retention, downloaded exports).
