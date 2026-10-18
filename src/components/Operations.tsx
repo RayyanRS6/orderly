@@ -32,9 +32,14 @@ export function download(name: string, value: unknown) {
 /** What export and deletion say when no chat or order matches the number. */
 export const NO_CUSTOMER_RECORDS =
   'No records found for this number. Copy the number exactly as shown in the Inbox.';
+/** What export and deletion from a chat say when that chat is gone (the server's words). */
+export const NO_CHAT_RECORDS = 'No records found for this chat. It may have been deleted already.';
 /** The success note for a deletion, with what the server really removed. */
 export const erasedMessage = (conversations: number) =>
   `Removed ${conversations} ${conversations === 1 ? 'conversation' : 'conversations'} and their orders from Orderly’s active database.`;
+/** The success note for an export, with what the file really holds. */
+export const exportedMessage = (conversations: number, orders: number) =>
+  `Customer export downloaded: ${conversations} ${conversations === 1 ? 'conversation' : 'conversations'} and ${orders} ${orders === 1 ? 'order' : 'orders'}.`;
 /** Event and job codes as words: 'whatsapp.accepted' reads 'WhatsApp accepted'. */
 const codeLabel = (code: string) =>
   label(code.replaceAll('.', ' '))

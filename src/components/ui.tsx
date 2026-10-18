@@ -292,6 +292,9 @@ export function ConfirmDialog({
   error,
   confirmLabel = 'Remove item',
   tone = 'danger',
+  children,
+  confirmDisabled,
+  confirmTitle,
 }: {
   open: boolean;
   onOpenChange: (value: boolean) => void;
@@ -306,6 +309,11 @@ export function ConfirmDialog({
   confirmLabel?: string;
   /** 'primary' for a change that is not a removal, such as a new role. */
   tone?: 'danger' | 'primary';
+  /** Shown below the description, such as a confirmation the action needs ticked first. */
+  children?: ReactNode;
+  /** The action can't run yet (with confirmTitle saying why). */
+  confirmDisabled?: boolean;
+  confirmTitle?: string;
 }) {
   const returnFocus = useReturnFocus();
   return (
@@ -323,6 +331,7 @@ export function ConfirmDialog({
           <AlertDialog.Description className="mt-3 text-[13.5px] text-stone-500 leading-relaxed">
             {description}
           </AlertDialog.Description>
+          {children && <div className="mt-4">{children}</div>}
           {error && (
             <div className="mt-4">
               <ErrorNotice message={error} />
@@ -338,6 +347,8 @@ export function ConfirmDialog({
               }
               loading={busy}
               loadingLabel={busyLabel}
+              disabled={confirmDisabled}
+              title={confirmDisabled ? confirmTitle : undefined}
               onClick={onConfirm}
             >
               {confirmLabel}
