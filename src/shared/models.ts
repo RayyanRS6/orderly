@@ -84,8 +84,8 @@ export const MODEL_LIMITS = {
  * ai_limit_settings repeats these numbers; a test keeps the two equal.
  */
 export const AI_LIMIT_DEFAULTS = {
-  repliesPerHour: 300,
-  repliesPerCustomerPerHour: 30,
+  repliesPerHour: 1500,
+  repliesPerCustomerPerHour: 100,
 } as const;
 export const AI_LIMIT_RANGES = {
   repliesPerHour: [20, 10000],

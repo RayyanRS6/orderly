@@ -30,7 +30,7 @@ import type {
   WebOrderClaim,
   WebOrderOutcome,
 } from '../../src/shared/menu';
-import type { Repository } from '../repository';
+import type { PipelineHealth, Repository } from '../repository';
 import { LAST_OWNER_MESSAGE, PublicError } from '../security';
 import { env } from '../config';
 
@@ -197,6 +197,15 @@ export class SupabaseRepository implements Repository {
     return this.rpc<import('../../src/shared/types').StaffAttention>('staff_attention', {
       p_company_id: companyId,
     });
+  }
+  async pipelineHealth() {
+    const result = await this.client.rpc('orderly_pipeline_health');
+    if (migrationMissing(result.error))
+      throw new PublicError(
+        'Apply the 202610200001_prelaunch_fixes.sql database migration first.',
+        503,
+      );
+    return unwrap(result) as PipelineHealth;
   }
   retentionStatus(companyId: string, previewDays: number) {
     return this.rpc<import('../../src/shared/types').RetentionStatus>('retention_status', {

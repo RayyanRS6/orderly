@@ -91,6 +91,7 @@ const chain = [
   '202610190001_menu_page.sql',
   '202610190002_menu_ordering.sql',
   '202610190003_menu_purge_schedule.sql',
+  '202610200001_prelaunch_fixes.sql',
 ];
 // PGlite cannot install pg_cron, pg_net or Vault: their schemas are stubbed and the extension
 // lines skipped, as in scheduler.test.ts.
@@ -1269,7 +1270,7 @@ describe('spam protection', () => {
       AI_LIMIT_DEFAULTS.repliesPerHour,
       AI_LIMIT_DEFAULTS.repliesPerCustomerPerHour,
     );
-    expect(defaults).toEqual(expected(300, 30));
+    expect(defaults).toEqual(expected(1500, 100));
     expect(await settings(null)).toEqual(defaults);
     expect(await settings('null')).toEqual(defaults);
     expect(await settings(JSON.stringify(company))).toEqual(defaults);
@@ -1279,8 +1280,8 @@ describe('spam protection', () => {
       [{ repliesPerHour: 120, repliesPerCustomerPerHour: 12 }, expected(120, 12)],
       [{ repliesPerHour: hourMin, repliesPerCustomerPerHour: customerMax }, expected(20, 1000)],
       [{ repliesPerHour: hourMax, repliesPerCustomerPerHour: customerMin }, expected(10000, 5)],
-      [{ repliesPerHour: 120 }, expected(120, 30)],
-      [{ repliesPerCustomerPerHour: 12 }, expected(300, 12)],
+      [{ repliesPerHour: 120 }, expected(120, 100)],
+      [{ repliesPerCustomerPerHour: 12 }, expected(1500, 12)],
     ];
     for (const bad of [
       '120',
@@ -1295,7 +1296,7 @@ describe('spam protection', () => {
       [120],
       {},
     ])
-      cases.push([{ repliesPerHour: bad, repliesPerCustomerPerHour: 12 }, expected(300, 12)]);
+      cases.push([{ repliesPerHour: bad, repliesPerCustomerPerHour: 12 }, expected(1500, 12)]);
     for (const bad of [
       '12',
       false,
@@ -1308,7 +1309,7 @@ describe('spam protection', () => {
       null,
       [12],
     ])
-      cases.push([{ repliesPerHour: 120, repliesPerCustomerPerHour: bad }, expected(120, 30)]);
+      cases.push([{ repliesPerHour: 120, repliesPerCustomerPerHour: bad }, expected(120, 100)]);
     for (const bad of ['fast', 120, true, [120, 12], null]) cases.push([bad, defaults]);
     for (const [aiLimits, want] of cases) {
       expect(await settings(JSON.stringify({ aiLimits })), JSON.stringify(aiLimits)).toEqual(want);
@@ -1325,8 +1326,8 @@ describe('spam protection', () => {
     expect(await reserve('call', { conversationId: 'chat-1' })).toEqual({ ok: true });
     expect(await attention()).toMatchObject({ total: 0, limits: 0 });
     expect(await rpc('ai_limit_status', [company.id])).toMatchObject({
-      repliesPerHour: 300,
-      repliesPerCustomerPerHour: 30,
+      repliesPerHour: 1500,
+      repliesPerCustomerPerHour: 100,
     });
     await setLimits('lots');
     expect(await reserve('call-2', { conversationId: 'chat-1' })).toEqual({ ok: true });
@@ -1637,7 +1638,7 @@ describe('spam protection', () => {
     expect(await attention(other.id)).toMatchObject({ total: 0, limits: 0, items: [] });
     await setLimits({ repliesPerHour: 21 });
     expect(await attention()).toMatchObject({ total: 0, limits: 0, items: [] });
-    // Lowering it back shows the limit reached again; an unreadable setting means the default 300.
+    // Lowering it back shows the limit reached again; an unreadable setting means the default 1,500.
     await setLimits({ repliesPerHour: 20 });
     expect(await attention()).toMatchObject({ total: 1, limits: 1 });
     await setLimits({ repliesPerHour: '20' });
@@ -2036,7 +2037,7 @@ describe('spam protection', () => {
     try {
       expect(
         await scalar("select replies_per_hour as value from public.ai_limit_settings('{}')"),
-      ).toBe(300);
+      ).toBe(1500);
       expect(await reserve('server', { conversationId: chat.id })).toEqual({ ok: true });
       expect(await block(chat.id, 'block-1', ['pn:923001234567'])).toMatchObject({
         blocked: { blockId: 'block-1' },
@@ -2102,7 +2103,7 @@ describe('spam protection', () => {
     expect(await rpc('has_overdue_attention', [company.id, 10])).toBe(false);
   });
 
-  it('can be applied again without losing limits or blocks', async () => {
+  it('refuses to be applied again once superseded, without losing limits or blocks', async () => {
     const chat = await whatsappChat('+923001234567');
     await block(chat.id, 'block-1', ['pn:923001234567']);
     await hit(['pn:923001234567', 'lid:100000001']);
@@ -2118,7 +2119,10 @@ describe('spam protection', () => {
     });
     const before = await snapshot();
     expect(before.hits).toHaveLength(1);
-    await db.exec(readFileSync('supabase/migrations/202610180001_spam_protection.sql', 'utf8'));
+    // 202610200001 replaced its attention functions and defaults: a rerun would put them back.
+    await expect(
+      db.exec(readFileSync('supabase/migrations/202610180001_spam_protection.sql', 'utf8')),
+    ).rejects.toThrow('superseded by 202610200001_prelaunch_fixes.sql');
     expect(await snapshot()).toEqual(before);
     expect(await hit(['lid:100000001'])).toBe('block-1');
     await db.exec('set role authenticated');

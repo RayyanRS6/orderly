@@ -1,7 +1,15 @@
 -- Spam protection: AI replies per hour for the restaurant and per customer, alerts when an AI
 -- limit is reached, and blocked numbers. Apply after 202610170001_business_keys_only.sql and
 -- before deploying the code that calls reserve_ai_call. reserve_budget stays as it is for the
--- code still running until then. Safe to rerun.
+-- code still running until then. Safe to rerun only until 202610200001_prelaunch_fixes.sql is
+-- applied: that file replaced its attention functions and limit defaults, so after it this file
+-- refuses to run rather than put back the older versions.
+do $$
+begin
+  if to_regprocedure('public.orderly_pipeline_health()') is not null then
+    raise exception '202610180001_spam_protection.sql is superseded by 202610200001_prelaunch_fixes.sql; do not re-run it';
+  end if;
+end $$;
 set lock_timeout = '5s';
 
 -- One limit value from a business's settings. Anything that is not a whole number in range

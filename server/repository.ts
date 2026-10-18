@@ -33,6 +33,21 @@ import { DemoFileRepository, MemoryRepository } from './storage/memory';
 import { SupabaseRepository } from './storage/supabase';
 import { appMode } from './config';
 
+/** Whether saved work is being processed (SQL orderly_pipeline_health). Server-only. */
+export interface PipelineHealth {
+  /** 'unconfigured': the worker or the minute's recovery is not set up, so nothing is sent. */
+  status: 'ok' | 'stalled' | 'unconfigured';
+  /** Jobs due over 3 minutes ago that recovery would still send. */
+  stalledJobs: number;
+  oldestDueAt: string | null;
+  schedulerConfigured: boolean;
+  recoveryScheduled: boolean;
+  lastRecoverRun: { status: string; at: string } | null;
+  /** Worker calls in the last 15 minutes that failed or were refused; null when unknown. */
+  recentWorkerErrors: number | null;
+  dbSizeBytes: number;
+}
+
 export interface Repository {
   consumeGatewayNonce(nonce: string): Promise<boolean>;
   getWhatsAppConnection(
@@ -62,6 +77,8 @@ export interface Repository {
   alertRecipient(companyId: string, userId: string): Promise<string | null>;
   hasOverdueAttention(companyId: string, minutes: number): Promise<boolean>;
   staffAttention(companyId: string): Promise<import('../src/shared/types').StaffAttention>;
+  // For an outside monitor, across all businesses. Fails with 503 before its migration.
+  pipelineHealth(): Promise<PipelineHealth>;
   retentionStatus(
     companyId: string,
     previewDays: number,

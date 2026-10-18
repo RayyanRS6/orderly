@@ -34,7 +34,7 @@ import {
   seedProducts,
   seedTraces,
 } from '../../src/shared/seed';
-import type { Repository } from '../repository';
+import type { PipelineHealth, Repository } from '../repository';
 import { transitionOrder } from '../../src/domain/engine';
 import { LAST_OWNER_MESSAGE, PublicError } from '../security';
 import { PLATFORM_AUDIT_ID } from '../config';
@@ -76,6 +76,7 @@ interface BlockedKey {
   blockedCount: number;
   lastBlockedAt?: string;
 }
+type AttentionScope = import('../../src/shared/types').StaffAttention['items'][number]['scope'];
 const BLOCK_KEY = /^(pn|lid):[0-9]{5,20}$/;
 // Usage that counts as an AI reply toward the spam limits: a live chat's call that cost something.
 const countedReply = (u: Usage, companyId: string, since: number) =>
@@ -96,6 +97,30 @@ const repliesThisHour = (state: State, companyId: string, now: number) => {
     ).length
   );
 };
+// Mirrors SQL ai_hourly_warning: 80% of this hour's AI replies used, and the hourly limit not
+// reached in this hour yet.
+const hourlyWarning = (state: State, company: Company | undefined, now: number) =>
+  !!company &&
+  repliesThisHour(state, company.id, now) >=
+    Math.ceil(effectiveAiLimits(company.aiLimits).repliesPerHour * 0.8) &&
+  !(state.aiLimitHits ?? []).some(
+    (h) =>
+      h.companyId === company.id &&
+      h.scope === 'hourly' &&
+      h.windowKey === new Date(hourStart(now)).toISOString().slice(0, 13),
+  );
+// Mirrors SQL awaits_staff_reply: automatic notices (marked, or order-status notices saved before
+// they were marked) are not a staff reply.
+const STATUS_NOTICE =
+  /^Order [^ ]+ is now (pending|accepted|preparing|ready|out for delivery|completed|rejected|cancelled)\.$/;
+const automaticNotice = (m: Message) =>
+  m.notice === true || (m.role === 'staff' && STATUS_NOTICE.test(m.text ?? ''));
+const awaitsStaffReply = (messages: Message[]) =>
+  messages.filter((m) => !automaticNotice(m)).at(-1)?.role !== 'staff';
+// Mirrors SQL erase_customer: only a whole international number is compared by its digits.
+const phoneDigits = (value: string) => value.replace(/\D/g, '');
+const wholeNumber = (digits: string) => /^[1-9]\d{9,14}$/.test(digits);
+const streamOf = (a: WhatsAppAddress) => `${a.connectionId}:${a.generation}:${a.peer}`;
 interface State {
   /** Stands in for Supabase Auth users. */
   accounts?: Account[];
@@ -346,9 +371,16 @@ export class MemoryRepository implements Repository {
         (h) => h.companyId === companyId && Date.parse(h.lastHitAt) > Date.now() - 3600000,
       ),
     );
+    // Mirrors SQL: an order waiting 15 minutes counts whatever the alert delay, and the 80%
+    // warning counts at once.
     return (
       recentLimit ||
-      alerts.items.some((a) => Date.parse(a.createdAt) < Date.now() - minutes * 60000)
+      alerts.items.some(
+        (a) =>
+          (a.kind === 'limit' && a.id.startsWith('limit:hourly_near:')) ||
+          Date.parse(a.createdAt) <
+            Date.now() - (a.kind === 'order' ? Math.min(minutes, 15) : minutes) * 60000,
+      )
     );
   }
   staffAttention(companyId: string) {
@@ -368,7 +400,7 @@ export class MemoryRepository implements Repository {
               c.companyId === companyId &&
               c.channel === 'whatsapp' &&
               c.mode === 'human' &&
-              c.messages.at(-1)?.role !== 'staff' &&
+              awaitsStaffReply(c.messages) &&
               !c.blocked,
           )
           .map((c) => ({
@@ -426,16 +458,66 @@ export class MemoryRepository implements Repository {
           scope: h.scope,
           resetsAt: h.resetsAt,
         });
+      const hour = hourStart(Date.now());
+      if (hourlyWarning(s, company, Date.now()))
+        items.push({
+          id: `limit:hourly_near:${new Date(hour).toISOString().slice(0, 13)}`,
+          kind: 'limit',
+          entityId: companyId,
+          createdAt: new Date(hour).toISOString(),
+          // Newer than the shared type; dashboards that do not know it show "AI limit reached".
+          scope: 'hourly_near' as unknown as AttentionScope,
+          resetsAt: new Date(hour + 3600000).toISOString(),
+        });
       return {
         total: items.length,
         orders: items.filter((a) => a.kind === 'order').length,
         handoffs: items.filter((a) => a.kind === 'handoff').length,
         failures: items.filter((a) => a.kind === 'job').length,
         budgets: items.filter((a) => a.kind === 'budget').length,
-        limits: items.filter((a) => a.kind === 'limit').length,
+        // Limits reached; the 80% warning is not one.
+        limits: items.filter((a) => a.kind === 'limit' && !a.id.startsWith('limit:hourly_near:'))
+          .length,
         items: items
           .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id))
           .slice(0, 30),
+      };
+    });
+  }
+  // Mirrors SQL orderly_pipeline_health. This store processes its own jobs, so its scheduler is
+  // always set up; there is no recovery history or worker log to read.
+  pipelineHealth() {
+    return this.read((s): PipelineHealth => {
+      const cutoff = Date.now() - 3 * 60000;
+      // Behind a customer's failed message: already shown as a failed job.
+      const held = (j: Job) =>
+        j.kind === 'incoming' &&
+        s.jobs
+          .slice(0, s.jobs.indexOf(j))
+          .some(
+            (e) =>
+              e.kind === 'incoming' &&
+              e.status === 'failed' &&
+              e.companyId === j.companyId &&
+              (e.payload.streamKey ?? e.payload.phone) === (j.payload.streamKey ?? j.payload.phone),
+          );
+      const stalled = s.jobs.filter(
+        (j) =>
+          j.attempts < 5 &&
+          ((j.status === 'pending' && Date.parse(j.nextRunAt) < cutoff) ||
+            (j.status === 'processing' && Date.parse(j.leaseUntil ?? j.nextRunAt) < cutoff)) &&
+          !held(j),
+      );
+      const oldest = stalled.map((j) => j.nextRunAt).sort()[0];
+      return {
+        status: stalled.length ? 'stalled' : 'ok',
+        stalledJobs: stalled.length,
+        oldestDueAt: oldest ? new Date(oldest).toISOString() : null,
+        schedulerConfigured: true,
+        recoveryScheduled: true,
+        lastRecoverRun: null,
+        recentWorkerErrors: null,
+        dbSizeBytes: new TextEncoder().encode(JSON.stringify(s)).length,
       };
     });
   }
@@ -811,25 +893,50 @@ export class MemoryRepository implements Repository {
           'Pause automation and wait for running work before deleting customer data.',
           409,
         );
-      const ids = new Set(
-        s.conversations
-          .filter((c) => c.companyId === companyId && c.customerPhone === phone)
-          .map((c) => c.id),
+      if (!phone.trim()) throw new Error('Customer phone number required');
+      // Mirrors SQL erase_customer: every format of a whole number, and the chats' own jobs.
+      const digits = phoneDigits(phone);
+      const samePhone = (value: unknown, whatsapp: boolean) =>
+        typeof value === 'string' &&
+        (value === phone || (whatsapp && wholeNumber(digits) && phoneDigits(value) === digits));
+      const erased = s.conversations.filter(
+        (c) => c.companyId === companyId && samePhone(c.customerPhone, c.channel === 'whatsapp'),
       );
+      const ids = new Set(erased.map((c) => c.id));
       const orderIds = new Set(
         s.orders
           .filter((o) => o.companyId === companyId && ids.has(o.conversationId))
           .map((o) => o.id),
       );
+      const addresses = erased.flatMap((c) => (c.whatsappAddress ? [c.whatsappAddress] : []));
+      const streams = new Set(addresses.map(streamOf));
+      const blockIds = new Set(erased.flatMap((c) => (c.blocked ? [c.blocked.blockId] : [])));
+      for (const b of s.blockedCustomers ?? [])
+        if (
+          b.companyId === companyId &&
+          ((b.conversationId && ids.has(b.conversationId)) ||
+            (wholeNumber(digits) && b.key === `pn:${digits}`))
+        )
+          blockIds.add(b.blockId);
       s.jobs = s.jobs.filter(
         (j) =>
           j.companyId !== companyId ||
           !(
-            j.payload.phone === phone ||
+            samePhone(j.payload.phone, true) ||
             ids.has(String(j.payload.conversationId)) ||
-            orderIds.has(String(j.payload.orderId))
+            orderIds.has(String(j.payload.orderId)) ||
+            streams.has(String(j.payload.streamKey)) ||
+            addresses.some((a) => sameAddress(a, j.payload.whatsappAddress as WhatsAppAddress))
           ),
       );
+      // The block still applies (its keys stay) but no longer names the customer or their chat.
+      for (const b of s.blockedCustomers ?? [])
+        if (b.companyId === companyId && blockIds.has(b.blockId)) {
+          b.label = 'Erased customer';
+          delete b.conversationId;
+        }
+      for (const [key, receipt] of this.receipts)
+        if (key.startsWith(`${companyId}:`) && !receipt.conversationId) this.receipts.delete(key);
       s.traces = s.traces.filter(
         (t) => t.companyId !== companyId || !ids.has(t.conversationId ?? ''),
       );
