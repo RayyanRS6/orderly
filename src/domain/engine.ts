@@ -2136,7 +2136,7 @@ export function processTurn(
           notes: action.notes ?? '',
           originalText: action.originalText ?? input.text,
         };
-        reply = `Which one would you like?\n${candidates
+        reply = `${say(lang, 'Which one would you like?', 'آپ کون سا لینا چاہیں گے؟', 'Aap kaun sa lena chahenge?')}\n${candidates
           .map(
             (product, index) =>
               `${index + 1}. ${product.name}${product.available ? '' : ' · Unavailable'}`,
