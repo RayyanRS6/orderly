@@ -150,6 +150,10 @@ export function aiErrorNotice(lang: Language, cart: Cart): string {
 }
 export const asksForPerson = (text: string) =>
   /\b(human|staff|manager|person|insaan)\b|عملہ|انسان|مینیجر/u.test(normalize(text));
+// "do it" after "confirm" or "cancel", in the forms customers type: "kar do", "kar dein",
+// "karein" (the bot's own "confirm karein"), "kren", "krden", "kijiye", "کریں", "کر دیجیے".
+const DO_IT =
+  'kar ?do|kar ?dein|kar ?dain|kar ?den|kar ?de|karo|karein|karain|karen|kariye|kariyega|krein|kren|kro|kr ?do|kr ?dein|kr ?dain|kr ?den|kar ?dijiye|kar ?dijiyega|kar ?dijye|kar ?dijie|kr ?dijiye|kijiye|kijiyega|kijie|kijye|kar ?lein|kar ?len|kr ?lein|kr ?len|کر دیں|کریں|کر دو|کرو|کردیں|کر دیجیے|کر دیجئے|کیجیے|کیجئے|کر لیں';
 // A whole message asking to cancel the order: "Cancel.", "please cancel my order", "order cancel
 // kar dein please", "آرڈر منسوخ کر دیں". A cancelled pending order cannot be restored, so only
 // this closed set counts: "don't cancel", "cancel mat karo" or "cancel the raita" never do.
@@ -161,7 +165,7 @@ const CANCEL_REQUEST = new RegExp(
     '|(?:(?:my|the|this|mera|meri|mere) )?order cancel',
     '|(?:(?:میرا|یہ) )?(?:آرڈر )?(?:منسوخ|کینسل)',
     ')',
-    '(?: (?:karo|kar ?do|kar ?dein|kar ?dain|kar ?den|kr ?do|kr ?dein|kar ?dijiye|kar ?dijye|kar ?de|کر دیں|کریں|کر دو|کرو|کردیں|کر دیجیے|کر دیجئے))?',
+    `(?: (?:${DO_IT}))?`,
     '(?: (?:please|pls|plz|ji|bhai|sir|پلیز|جی))*$',
   ].join(''),
   'u',
@@ -767,7 +771,7 @@ const YES_WORDS =
   'yes|yess+|yeah|yep|yup|ok|okay|okey|okk+|sure|haan|han|haan ji|han ji|ji haan|ji han|ji|jee|g|theek hai|thik hai|theek|thik|bilkul|جی|ہاں|جی ہاں|ہاں جی|ٹھیک ہے|ٹھیک|اوکے';
 const FILLERS = 'please|pls|plz|ji|jee|g|bhai|sir|پلیز|جی';
 const EXPLICIT_CONSENT = new RegExp(
-  `^(?:(?:${YES_WORDS}|${FILLERS}|abhi) ){0,3}(?:confirm(?:ed)?(?: (?:my |the |this )?order| it)?|order confirm(?:ed)?|(?:place|submit) (?:my |the |this )?order|order place|submit|tasdeeq|کنفرم|تصدیق|آرڈر کنفرم|آرڈر کی تصدیق)(?: (?:kar ?do|kar ?dein|kar ?dain|kar ?den|karo|kr ?do|kr ?dein|kar ?dijiye|kar ?dijye|kar ?de|کر دیں|کریں|کر دو|کرو|کردیں|کر دیجیے|کر دیجئے|کیجیے|کیجئے))?(?: (?:${FILLERS}|now))*$`,
+  `^(?:(?:${YES_WORDS}|${FILLERS}|abhi) ){0,3}(?:confirm(?:ed)?(?: (?:my |the |this )?order| it)?|order confirm(?:ed)?|(?:place|submit) (?:my |the |this )?order|order place|submit|tasdeeq|کنفرم|تصدیق|آرڈر کنفرم|آرڈر کی تصدیق)(?: (?:${DO_IT}))?(?: (?:${FILLERS}|now))*$`,
   'u',
 );
 const BARE_CONSENT = new RegExp(
