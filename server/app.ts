@@ -47,6 +47,7 @@ import { whatsappRoutes } from './whatsapp/routes';
 import { gatewaySecret } from './whatsapp/client';
 import { verifySigned } from './whatsapp/signing';
 import { customerKeys, gatewayEventSchema } from '../src/shared/whatsapp';
+import { metaEchoText, metaInboundContent } from './whatsapp/inbound';
 import {
   receiveGatewayEvent,
   jobAddress,
@@ -231,14 +232,9 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
         if (change.field === 'smb_message_echoes') {
           for (const echo of value.message_echoes ?? []) {
             if (typeof echo.id !== 'string' || typeof echo.to !== 'string') continue;
-            const text = String(
-              echo.text?.body ??
-                (echo.type === 'edit'
-                  ? `Staff edited a message: ${echo.edit?.message?.text?.body ?? '[media]'}`
-                  : echo.type === 'revoke'
-                    ? 'Staff deleted a message in WhatsApp.'
-                    : `Staff sent a ${echo.type || 'media'} message in WhatsApp.`),
-            ).slice(0, 2000);
+            // A staff reaction is not a takeover: it must not pause the bot for this customer.
+            const text = metaEchoText(echo);
+            if (text === undefined) continue;
             const job = makeJob(company.id, 'incoming', {
               ...bindMeta(echo.to),
               phone: echo.to,
@@ -255,30 +251,23 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
           // A blocked number's message is dropped before anything is saved; Meta still gets 200.
           if (await repo.findBlockedCustomer(company.id, customerKeys({ phone: message.from })))
             continue;
-          let text = String(
-            message.text?.body ??
-              message.interactive?.button_reply?.title ??
-              message.interactive?.list_reply?.title ??
-              '',
-          ).slice(0, 2000);
-          const button = String(
-            message.interactive?.button_reply?.id ?? message.interactive?.list_reply?.id ?? '',
-          );
-          let action: BotAction | undefined;
-          if (/^confirm:\d+$/.test(button))
-            action = { type: 'confirm', revision: Number(button.split(':')[1]) };
-          if (['menu', 'review', 'handoff', 'new_order'].includes(button))
-            action = { type: button } as BotAction;
-          if (!text && !action) {
-            text = 'Customer sent a media message. Staff assistance requested.';
-            action = { type: 'handoff' };
+          const content = metaInboundContent(message);
+          if ('ignore' in content) {
+            // Nothing to answer, so no job: the chat and its 24-hour window stay as they are.
+            await repo.addTrace({
+              id: randomUUID(),
+              companyId: company.id,
+              ...content.trace,
+              createdAt: new Date().toISOString(),
+            });
+            continue;
           }
           const job = makeJob(company.id, 'incoming', {
             ...bindMeta(message.from),
             phone: message.from,
             messageId: message.id,
-            text,
-            action,
+            text: content.text,
+            action: content.action,
           });
           // Preserve the original message timestamp for WhatsApp's 24-hour window.
           if (/^\d+$/.test(String(message.timestamp)))
