@@ -425,7 +425,7 @@ export async function handleTurn(
       conversation.mode === 'bot' &&
       company.botEnabled &&
       !cancelling &&
-      !(asksOrderStatus(input.text) && !input.action)
+      !(asksOrderStatus(input.text, placed, input.now) && !input.action)
     ) {
       conversation = structuredClone(conversation);
       // A new revision, so the next order can never reuse an earlier submission key.
@@ -452,8 +452,10 @@ export async function handleTurn(
     // "staff" (as the automated-assistant notice offers) reaches a person without any AI.
     if (!input.action && isStaffRequest(input.text)) actions = [{ type: 'handoff' }];
     // "Where is my order?" about the order loaded above: the engine states its real status and
-    // drops any AI text, so no AI is paid for.
-    const statusQuestion = !input.action && !!latestOrder && asksOrderStatus(input.text);
+    // drops any AI text, so no AI is paid for. Read as the engine reads it, so "how long" wording
+    // counts only while that order is current.
+    const statusQuestion =
+      !input.action && !!latestOrder && asksOrderStatus(input.text, latestOrder, input.now);
     const skipped: ModelSkipReason | undefined = stale
       ? 'late'
       : input.action
