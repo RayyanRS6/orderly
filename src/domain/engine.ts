@@ -204,9 +204,10 @@ function unreview(cart: Cart) {
   delete cart.reviewedAt;
 }
 
-export function isOpen(company: Company, now: string): boolean {
+// The restaurant's local weekday (0 = Sunday) and minute of the day, or undefined.
+function localClock(company: Company, now: string): { day: number; minute: number } | undefined {
   const date = new Date(now);
-  if (!Number.isFinite(date.getTime())) return false;
+  if (!Number.isFinite(date.getTime())) return undefined;
   try {
     const parts = new Intl.DateTimeFormat('en-US', {
       timeZone: company.timezone,
@@ -218,11 +219,21 @@ export function isOpen(company: Company, now: string): boolean {
     const part = (key: string) => parts.find((p) => p.type === key)?.value ?? '';
     const day = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(part('weekday'));
     const minute = Number(part('hour')) * 60 + Number(part('minute'));
-    const toMinute = (time: string) => {
-      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) return NaN;
-      const [h, m] = time.split(':').map(Number);
-      return h! * 60 + m!;
-    };
+    return day < 0 || !Number.isFinite(minute) ? undefined : { day, minute };
+  } catch {
+    return undefined;
+  }
+}
+const toMinute = (time: string) => {
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) return NaN;
+  const [h, m] = time.split(':').map(Number);
+  return h! * 60 + m!;
+};
+export function isOpen(company: Company, now: string): boolean {
+  try {
+    const clock = localClock(company, now);
+    if (!clock) return false;
+    const { day, minute } = clock;
     const start = toMinute(company.openingHours.start),
       end = toMinute(company.openingHours.end);
     if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
@@ -236,6 +247,24 @@ export function isOpen(company: Company, now: string): boolean {
   } catch {
     return false;
   }
+}
+// When a closed restaurant next opens: in how many days (0 = today), on which weekday.
+function nextOpening(company: Company, now: string): { inDays: number; day: number } | undefined {
+  try {
+    const clock = localClock(company, now);
+    const start = toMinute(company.openingHours.start);
+    if (!clock || !Number.isFinite(start) || !Number.isFinite(toMinute(company.openingHours.end)))
+      return undefined;
+    for (let inDays = 0; inDays <= 7; inDays++) {
+      const day = (clock.day + inDays) % 7;
+      if (!company.openingHours.days.includes(day) || (inDays === 0 && clock.minute >= start))
+        continue;
+      return { inDays, day };
+    }
+  } catch {
+    // Hours not set: no opening time to give.
+  }
+  return undefined;
 }
 export const orderIdFor = (submissionKey: string) => idFor(submissionKey);
 /** The pending order a confirmed cart becomes. Chat and menu-page orders share it. */
@@ -291,13 +320,33 @@ export function orderReceivedText(lang: Language, order: Order): string {
     );
   return reply;
 }
-export function closedText(company: Company, lang: Language): string {
-  return say(
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+const URDU_WEEKDAYS = ['اتوار', 'پیر', 'منگل', 'بدھ', 'جمعرات', 'جمعہ', 'ہفتہ'];
+// The first words of closedText, which mark a reply that already said the restaurant is closed.
+const CLOSED_LEADS = ['We are currently closed.', 'ہم اس وقت بند ہیں۔', 'Hum is waqt band hain.'];
+// A closed restaurant's early notice is not repeated within this time.
+const CLOSED_NOTICE_MS = 12 * 60 * 60 * 1000;
+/**
+ * What a customer is told while the restaurant is closed: its ordering hours and, given the
+ * time now, when it opens again ("We open again tomorrow at 12:00.").
+ */
+export function closedText(company: Company, lang: Language, now?: string): string {
+  const { start, end } = company.openingHours;
+  const hours = say(
     lang,
-    `We are currently closed. Ordering hours are ${company.openingHours.start}–${company.openingHours.end} (${company.timezone}).`,
-    `ہم اس وقت بند ہیں۔ آرڈر کا وقت ${company.openingHours.start}–${company.openingHours.end} ہے۔`,
-    `Hum is waqt band hain. Order ka waqt ${company.openingHours.start}–${company.openingHours.end} hai.`,
+    `We are currently closed. Ordering hours are ${start}–${end}.`,
+    `ہم اس وقت بند ہیں۔ آرڈر کا وقت ${start}–${end} ہے۔`,
+    `Hum is waqt band hain. Order ka waqt ${start}–${end} hai.`,
   );
+  const opening = now ? nextOpening(company, now) : undefined;
+  if (!opening) return hours;
+  const { inDays, day } = opening;
+  return `${hours} ${say(
+    lang,
+    `We open again ${inDays === 0 ? 'today' : inDays === 1 ? 'tomorrow' : `on ${WEEKDAYS[day]}`} at ${start}.`,
+    `ہم ${inDays === 0 ? 'آج' : inDays === 1 ? 'کل' : `${URDU_WEEKDAYS[day]} کو`} ${start} بجے دوبارہ کھلیں گے۔`,
+    `Hum ${inDays === 0 ? 'aaj' : inDays === 1 ? 'kal' : `${WEEKDAYS[day]} ko`} ${start} baje dobara khulenge.`,
+  )}`;
 }
 
 const noChatOrdering = (lang: Language) =>
@@ -453,7 +502,7 @@ function review(
           '\nریسٹورنٹ کی منظوری کے لیے آرڈر بھیجنے کو “تصدیق” لکھیں۔',
           '\nRestaurant ki manzoori ke liye “confirm” ya “haan” likhein.',
         )
-      : `\n${closedText(company, lang)}${say(
+      : `\n${closedText(company, lang, now)}${say(
           lang,
           ' Your cart is saved. Send “review” when we are open.',
           ' آپ کی ٹوکری محفوظ ہے۔ ہمارے کھلنے پر “جائزہ” لکھیں۔',
@@ -1779,6 +1828,35 @@ export function processTurn(
       reply = `${reply}\n\n${menuLinkLine(lang, input.menuLink)}`;
       if (!parts.includes('engine')) parts.push('engine');
     }
+    // A closed restaurant says so early, in its first reply while closed, not only once the
+    // customer reaches the review. The owner's exact wording and an allergy answer stay as they
+    // are, and a customer asking about a placed order needs no notice.
+    if (
+      reply &&
+      next.mode === 'bot' &&
+      !allergyQuestion &&
+      !parts.includes('exact_rule') &&
+      !parts.includes('approved_answer') &&
+      !traces.includes('order_status') &&
+      cart.status !== 'submitted' &&
+      !isOpen(company, input.now) &&
+      !CLOSED_LEADS.some((lead) => reply.includes(lead)) &&
+      !conversation.messages.some(
+        (m) =>
+          m.role === 'assistant' &&
+          Date.parse(input.now) - Date.parse(m.createdAt) < CLOSED_NOTICE_MS &&
+          CLOSED_LEADS.some((lead) => m.text.includes(lead)),
+      )
+    ) {
+      reply = `${closedText(company, lang, input.now)} ${say(
+        lang,
+        'You can still look at the menu and add items; your cart will be saved.',
+        'آپ پھر بھی مینو دیکھ کر چیزیں شامل کر سکتے ہیں، آپ کی ٹوکری محفوظ رہے گی۔',
+        'Aap phir bhi menu dekh kar items add kar sakte hain, cart save rahega.',
+      )}\n\n${reply}`;
+      if (!parts.includes('engine')) parts.unshift('engine');
+      traces.push('closed_notice');
+    }
     if (modelText === 'used' && !parts.includes('model')) modelText = 'replaced';
     // Confirmation counts only against the reply that showed the review. A review the final
     // reply does not carry (replaced by a handoff or an error) was never seen: not confirmable.
@@ -2221,7 +2299,7 @@ export function processTurn(
         }
         if (!isOpen(company, input.now)) {
           reply =
-            closedText(company, lang) +
+            closedText(company, lang, input.now) +
             say(lang, ' Your cart is saved.', ' آپ کی ٹوکری محفوظ ہے۔', ' Cart save hai.');
           // Nothing stays confirmable while closed; once open, "confirm" shows a fresh review.
           if (cart.status === 'awaiting_confirmation') unreview(cart);
