@@ -119,9 +119,14 @@ describe('privacy policy matches the code', () => {
   it('words payment as the bot and the menu page do', () => {
     // What customers are told today: cash at pickup or on delivery.
     expect(read('src/domain/engine.ts')).toContain('Payment is cash ${order.fulfillment');
+    // The menu page words payment through src/lib/payments.ts: cash only keeps 'pay in cash'
+    // and 'Pay cash on delivery/at pickup'; transfers appear only when the restaurant takes them.
     const menu = read('src/components/MenuPage.tsx');
-    expect(menu).toContain('pay in cash');
-    expect(menu).toContain('Pay cash {fulfillment');
+    expect(menu).toContain('paymentSentence(paymentMethodsOf(restaurant)');
+    expect(menu).toContain('paymentShort(paymentMethodsOf(restaurant))');
+    const payments = read('src/lib/payments.ts');
+    expect(payments).toContain("return 'pay in cash'");
+    expect(payments).toContain('The restaurant will share the payment details.');
     expect(privacy).toContain('usually cash on delivery or at pickup');
     expect(privacy).toContain(
       'A JazzCash, Easypaisa or bank transfer is possible only if the restaurant offers it',

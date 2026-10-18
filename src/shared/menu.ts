@@ -1,4 +1,4 @@
-import type { CartItem, DeliveryZone, Order } from './types';
+import type { CartItem, DeliveryZone, Order, PaymentMethod } from './types';
 
 // The public menu page (/m/<slug>): shapes shared by the server and the page, and small
 // helpers with no dependencies, so the page's own chunk stays light.
@@ -46,6 +46,8 @@ export interface PublicMenu {
     deliveryZones: DeliveryZone[];
     fulfillment: 'both' | 'pickup' | 'delivery';
     currency: 'PKR';
+    /** Sent only when the restaurant takes more than cash; missing means cash only. */
+    paymentMethods?: PaymentMethod[];
   };
   categories: { name: string; items: PublicMenuItem[] }[];
   ordering: {

@@ -2,11 +2,10 @@
 // account numbers: for a transfer the customer is told the restaurant shares the payment
 // details and confirms the transfer itself.
 
-export type PaymentMethod = 'cash' | 'jazzcash' | 'easypaisa' | 'bank_transfer';
-/**
- * A company's payment methods, typed here until the shared Company type declares
- * `paymentMethods`. Missing or empty means cash only, as before the setting existed.
- */
+import type { PaymentMethod } from '../shared/types';
+
+export type { PaymentMethod };
+/** A company's payment methods. Missing or empty means cash only, as before the setting existed. */
 export type WithPaymentMethods = { paymentMethods?: PaymentMethod[] };
 export const PAYMENT_METHODS: { id: PaymentMethod; label: string }[] = [
   { id: 'cash', label: 'Cash' },
@@ -21,6 +20,37 @@ export function paymentMethodsOf(company: WithPaymentMethods): PaymentMethod[] {
   const saved = Array.isArray(company.paymentMethods) ? company.paymentMethods : [];
   const known = PAYMENT_METHODS.map((m) => m.id).filter((id) => saved.includes(id));
   return known.length ? known : ['cash'];
+}
+const TRANSFER_NAMES: Record<Exclude<PaymentMethod, 'cash'>, string> = {
+  jazzcash: 'JazzCash',
+  easypaisa: 'Easypaisa',
+  bank_transfer: 'bank transfer',
+};
+const orList = (names: string[]) =>
+  names.length > 1 ? `${names.slice(0, -1).join(', ')} or ${names[names.length - 1]}` : names[0]!;
+const transfersOf = (methods: PaymentMethod[]) =>
+  methods.filter((m): m is Exclude<PaymentMethod, 'cash'> => m !== 'cash');
+/**
+ * How the customer pays, for the menu page. Cash only keeps the sentence the page always had;
+ * for transfers the restaurant shares its own details, so no account number is ever shown.
+ */
+export function paymentSentence(methods: PaymentMethod[], delivery: boolean): string {
+  const cash = `cash ${delivery ? 'on delivery' : 'at pickup'}`;
+  const transfers = transfersOf(methods).map((m) => TRANSFER_NAMES[m]);
+  if (!transfers.length) return `Pay ${cash}.`;
+  const by = `by ${orList(transfers)}`;
+  return `Pay ${methods.includes('cash') ? `${cash}, or ${by}` : by}. The restaurant will share the payment details.`;
+}
+/** The short form after an order is placed: 'pay in cash' as before, or the transfer choice. */
+export function paymentShort(methods: PaymentMethod[]): string {
+  if (!transfersOf(methods).length) return 'pay in cash';
+  return methods.includes('cash') ? 'pay in cash or by transfer' : 'pay by transfer';
+}
+/** Staff wording next to an order total: 'cash on delivery' as before, or with transfers. */
+export function staffPaymentNote(methods: PaymentMethod[], delivery: boolean): string {
+  const when = delivery ? 'on delivery' : 'at pickup';
+  if (!transfersOf(methods).length) return `cash ${when}`;
+  return `${methods.includes('cash') ? 'cash or transfer' : 'transfer'} ${when}`;
 }
 /** The methods after ticking or unticking one, in the order above. The last one stays. */
 export function togglePaymentMethod(

@@ -19,6 +19,7 @@ import type { Bootstrap, Order, OrderStatus, PageResult } from '../shared/types'
 import { money } from '../shared/types';
 import { api } from '../lib/api';
 import { ordersCsv } from '../lib/orders-csv';
+import { paymentMethodsOf, staffPaymentNote } from '../lib/payments';
 import { useAction, useWorkspace } from '../lib/workspace';
 import { cn, initials, label, shortDate } from '../lib/utils';
 import {
@@ -863,7 +864,7 @@ function OrderTable({
 }
 
 function OrderDetails({ order, onClose }: { order: Order | null; onClose: () => void }) {
-  const { mutate, notify, clearError } = useWorkspace();
+  const { data, mutate, notify, clearError } = useWorkspace();
   const { pending, run } = useAction();
   // Stopping an order: rejected while it is pending, cancelled after it was accepted.
   // The status is kept apart from `open` so the dialog's text holds while it closes.
@@ -954,7 +955,8 @@ function OrderDetails({ order, onClose }: { order: Order | null; onClose: () => 
               </div>
               <div className="flex items-baseline justify-between gap-3 border-t border-dashed border-ink/15 pt-3 font-semibold text-ink">
                 <dt>
-                  Total · cash {order.fulfillment === 'delivery' ? 'on delivery' : 'at pickup'}
+                  Total ·{' '}
+                  {staffPaymentNote(paymentMethodsOf(data.company), order.fulfillment === 'delivery')}
                 </dt>
                 <dd className="font-serif text-[28px] leading-none font-normal whitespace-nowrap tabular-nums">
                   {money(order.total)}

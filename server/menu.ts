@@ -28,7 +28,13 @@ import {
   type WebCart,
 } from '../src/shared/menu.js';
 import { connectionMatches, customerKeys } from '../src/shared/whatsapp.js';
-import { botConfig, configuredCompany, offeredFulfillment } from '../src/shared/bot.js';
+import {
+  botConfig,
+  cashOnly,
+  configuredCompany,
+  offeredFulfillment,
+  paymentMethods,
+} from '../src/shared/bot.js';
 import { closedText, createConversation, isOpen, noticeLanguage } from '../src/domain/engine.js';
 import { withDisclosure } from '../src/domain/disclosure.js';
 import { buildWebOrder, MenuOrderError, quoteWebCart } from '../src/domain/web-order.js';
@@ -195,6 +201,8 @@ export async function publicMenu(repo: Repository, slug: string, now: string): P
           : company.deliveryZones.map(({ name, fee }) => ({ name, fee })),
       fulfillment: fulfillment ?? 'pickup',
       currency: 'PKR',
+      // Cash-only restaurants keep the menu data they always had.
+      ...(!cashOnly(company) && { paymentMethods: paymentMethods(company) }),
     },
     categories: sortMenuCategories(products).map(({ name, items }) => ({
       name,

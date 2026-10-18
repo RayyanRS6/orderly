@@ -42,6 +42,7 @@ import {
 } from '../lib/menu-cart';
 import { ActionButton, Badge, CustomSelect, ErrorNotice, Field, Spinner } from './ui-basic';
 import { cn } from '../lib/utils';
+import { paymentMethodsOf, paymentSentence, paymentShort } from '../lib/payments';
 
 // The public menu page (/m/<slug>). Its own small chunk: no dialog library, no workspace,
 // no looping motion, and photos load only when scrolled to. Old phones and WhatsApp's
@@ -776,7 +777,7 @@ export function MenuPage({ slug }: { slug: string }) {
             The restaurant will confirm soon.
           </p>
           <p className="mt-1 text-[13px] text-stone-500">
-            Total {money(placed.total)} · pay in cash
+            Total {money(placed.total)} · {paymentShort(paymentMethodsOf(restaurant))}
           </p>
           {(placed.whatsappUrl ?? whatsapp) && (
             <a
@@ -967,7 +968,7 @@ export function MenuPage({ slug }: { slug: string }) {
             cart.length > 0 && <p className="text-stone-500">{priced.error}</p>
           )}
           <p className="pt-1 text-xs text-stone-500">
-            Pay cash {fulfillment === 'delivery' ? 'on delivery' : 'at pickup'}.
+            {paymentSentence(paymentMethodsOf(restaurant), fulfillment === 'delivery')}
           </p>
         </section>
         {error && (
