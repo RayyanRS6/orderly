@@ -35,8 +35,13 @@ export function automationPaused(): boolean {
 /**
  * How long a worker may hold a job or a chat before another one may take over. Supabase's
  * Free plan stops a function after 150 s, so the default is 180 s; 480 suits the paid plan.
+ * Anything shorter than 160 s (or not a whole number up to 900) is ignored: a lease ending
+ * while its worker still runs would let a second worker answer the same message again.
  */
+export const MIN_WORKER_LEASE_SECONDS = 160;
 export function workerLeaseMs(): number {
   const seconds = Number(env('WORKER_LEASE_SECONDS'));
-  return Number.isInteger(seconds) && seconds >= 60 && seconds <= 900 ? seconds * 1000 : 180_000;
+  return Number.isInteger(seconds) && seconds >= MIN_WORKER_LEASE_SECONDS && seconds <= 900
+    ? seconds * 1000
+    : 180_000;
 }

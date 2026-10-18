@@ -119,8 +119,9 @@ async function fromStore<T>(work: () => Promise<T>): Promise<T> {
 const REFUSED_STATUSES = new Set([400, 401, 403, 404, 413, 422, 429, 503, 529]);
 // Refusals worth trying again a moment later: busy or overloaded.
 const BUSY_STATUSES = new Set([429, 503, 529]);
-// A retry is made only with at least this long left before the reply's deadline.
-const REFUSED_RETRY_MIN_MS = 5000;
+// A retry is made only with at least this long left before the reply's deadline: less is too
+// short for a model to answer, and the timeout would then be charged at the reserved amount.
+export const REFUSED_RETRY_MIN_MS = 10000;
 // Network failures that happen before the request reaches the provider, so nothing was billed.
 const NOT_CONNECTED = new Set([
   'ECONNREFUSED',
@@ -570,6 +571,14 @@ ${JSON.stringify({ name: config.name, personality: config.personality, language:
       result.usage.inputTokens === undefined || result.usage.outputTokens === undefined;
     // The answer is paid for: a database hiccup in the bookkeeping must not throw it away.
     await this.settle(company, reservationId, usage);
+    // Checked before the success trace, so a reply that could not be used is never logged as
+    // validated (a reply cut off at its token limit has no output at all).
+    let parsed: z.infer<typeof modelOutputSchema>;
+    try {
+      parsed = modelOutputSchema.parse(result.output);
+    } catch (error) {
+      throw new AiCallError('bad_output', undefined, error);
+    }
     await this.repo
       .addTrace({
         id: randomUUID(),
@@ -582,12 +591,6 @@ ${JSON.stringify({ name: config.name, personality: config.personality, language:
         createdAt: new Date().toISOString(),
       })
       .catch(() => undefined);
-    let parsed: z.infer<typeof modelOutputSchema>;
-    try {
-      parsed = modelOutputSchema.parse(result.output);
-    } catch (error) {
-      throw new AiCallError('bad_output', undefined, error);
-    }
     return {
       actions: parsed.actions as BotAction[],
       response: parsed.response,

@@ -70,6 +70,10 @@ const LATE_AFTER_MS = 10 * 60 * 1000;
 const STALE_AFTER_MS = 2 * 60 * 60 * 1000;
 // While the menu Sheet cannot be read, the menu last read from it is used for this long.
 export const MENU_STALE_LIMIT_MS = 12 * 60 * 60 * 1000;
+// How long a chat waits for another chat's Sheet refresh to finish (the two Sheets calls time
+// out after 10 s and 12 s), checking this often.
+const SHEET_REFRESH_WAIT_MS = 25000;
+const SHEET_REFRESH_POLL_MS = 1000;
 
 export async function integrationAdapter(
   repo: Repository,
@@ -140,8 +144,16 @@ export async function refreshSheetMenu(
       (await repo.listProducts(company.id)).some((p) => p.companyId === company.id)
     );
   };
-  if (!(await repo.consumeRateLimit(`catalog-refresh:${company.id}`, 1).catch(() => true)))
-    return { ok: false, usable: await usable() };
+  if (!(await repo.consumeRateLimit(`catalog-refresh:${company.id}`, 1).catch(() => true))) {
+    // Another chat refreshed this minute. When the menu last read is too old, that refresh may
+    // still be running (reading a Sheet can take ~20 s): wait for it before handing this chat
+    // to staff, so a healthy Sheet after a quiet night never sends a customer away.
+    for (let waited = 0; ; waited += SHEET_REFRESH_POLL_MS) {
+      if (await usable()) return { ok: false, usable: true };
+      if (waited >= SHEET_REFRESH_WAIT_MS) return { ok: false, usable: false };
+      await new Promise((resolve) => setTimeout(resolve, SHEET_REFRESH_POLL_MS));
+    }
+  }
   try {
     await refreshCatalog(repo, company);
   } catch (error) {
@@ -1233,6 +1245,8 @@ export async function queueReply(
 // a second or two. Waiting here is far faster than a retry, which runs only on the next
 // minute's recovery pass and let later replies overtake earlier ones.
 const CONNECTION_LOCK_WAIT_MS = 30000;
+// A reply younger than this keeps its tries while the connection is busy (ai-pipeline-7).
+const BUSY_SEND_GRACE_MS = 15 * 60 * 1000;
 // A send finishes well within this (the gateway call times out after 20 s), so a worker
 // killed mid-send blocks the business's other sends for 90 s at most, never the full worker
 // lease: half of it when the lease is short (Supabase Free).
@@ -1391,15 +1405,21 @@ export async function processJob(repo: Repository, id: string) {
           return !waitingForEarlier;
         },
       });
-      if (!connectionLocked && waitingForEarlier) {
-        // Waiting for an earlier reply is not this reply failing: keep its retries.
+      // Waiting for an earlier reply, or for a connection busy with other sends or a pairing,
+      // is not this reply failing: it keeps its retries for real failures. A busy connection
+      // only while the reply is young, so a connection that stays busy still ends the reply.
+      const busyGrace =
+        !connectionLocked && Date.now() - Date.parse(job.createdAt) < BUSY_SEND_GRACE_MS;
+      if (!connectionLocked && (waitingForEarlier || busyGrace)) {
         await repo.saveJob({
           ...job,
           status: 'pending',
           attempts: job.attempts - 1,
           leaseUntil: undefined,
           nextRunAt: new Date(Date.now() + 10000).toISOString(),
-          error: 'Waiting for an earlier reply to this customer to be sent.',
+          error: waitingForEarlier
+            ? 'Waiting for an earlier reply to this customer to be sent.'
+            : 'Waiting for the WhatsApp connection, which is busy.',
         });
         return;
       }
