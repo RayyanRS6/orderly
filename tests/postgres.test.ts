@@ -92,6 +92,7 @@ const chain = [
   '202610190002_menu_ordering.sql',
   '202610190003_menu_purge_schedule.sql',
   '202610200001_prelaunch_fixes.sql',
+  '202610200002_order_followups.sql',
 ];
 // PGlite cannot install pg_cron, pg_net or Vault: their schemas are stubbed and the extension
 // lines skipped, as in scheduler.test.ts.

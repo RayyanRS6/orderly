@@ -753,7 +753,8 @@ export class MemoryRepository implements Repository {
         (j) =>
           j.companyId === companyId &&
           ((kind === 'sheets' && j.kind === 'sheet_sync') ||
-            (kind === 'whatsapp' && ['incoming', 'whatsapp_send'].includes(j.kind))),
+            (kind === 'whatsapp' &&
+              ['incoming', 'whatsapp_send', 'order_followup'].includes(j.kind))),
       )) {
         j.status = 'done';
         j.payload = {};

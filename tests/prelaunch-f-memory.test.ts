@@ -233,4 +233,12 @@ describe('pipeline health, in memory (F02)', () => {
     expect(Date.parse(health.oldestDueAt!)).toBeLessThan(Date.now() - 4 * 60000);
     expect(health.dbSizeBytes).toBeGreaterThan(0);
   });
+
+  it('ends waiting order reminders when WhatsApp is disconnected', async () => {
+    // The job kind is added to the shared type with its worker (another change).
+    const reminder = job('reminder', {}, 'order_followup' as unknown as Job['kind']);
+    await repo.insertJob(reminder);
+    await repo.disconnectIntegration(company.id, 'whatsapp');
+    expect(await repo.getJob('reminder')).toMatchObject({ status: 'done', payload: {} });
+  });
 });

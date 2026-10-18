@@ -1,5 +1,5 @@
-// Pre-launch database fixes (202610200001_prelaunch_fixes.sql), on the whole migration chain in
-// PGlite with pg_cron, pg_net and Vault stubbed.
+// Pre-launch database fixes (202610200001_prelaunch_fixes.sql, 202610200002_order_followups.sql),
+// on the whole migration chain in PGlite with pg_cron, pg_net and Vault stubbed.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { PGlite } from '@electric-sql/pglite';
 import { readdirSync, readFileSync } from 'node:fs';
@@ -716,6 +716,114 @@ describe('daily purge of operational rows (F62)', () => {
   });
 });
 
+describe('order follow-ups (G7.1)', () => {
+  const followups = async () =>
+    (
+      await db.query<{ data: Job; dedupe_key: string }>(
+        "select data,dedupe_key from jobs where data->>'kind'='order_followup' order by created_at",
+      )
+    ).rows;
+
+  it('queues one reminder per live order still waiting after 15 minutes, once', async () => {
+    const waiting = await placedOrder();
+    await ageOrder(waiting.order.id, '20 minutes');
+    const fresh = await placedOrder();
+    await ageOrder(fresh.order.id, '10 minutes');
+    const stale = await placedOrder();
+    await ageOrder(stale.order.id, '25 hours');
+    const accepted = await placedOrder();
+    await ageOrder(accepted.order.id, '20 minutes');
+    await db.query(`update orders set data=jsonb_set(data,'{status}','"accepted"') where id=$1`, [
+      accepted.order.id,
+    ]);
+    const blocked = await placedOrder();
+    await ageOrder(blocked.order.id, '20 minutes');
+    await block(blocked.conversation.id, 'block-1', [
+      `pn:${blocked.conversation.customerPhone.slice(1)}`,
+    ]);
+    const sandbox = await placedOrder(nextPhone(), 'demo');
+    await ageOrder(sandbox.order.id, '20 minutes');
+
+    // Nothing could send it before the worker is set up.
+    expect(await rpc('queue_order_followups')).toBe(0);
+    await configure();
+    expect(await rpc('queue_order_followups')).toBe(1);
+    const [queued] = await followups();
+    expect(queued!.dedupe_key).toBe(`order-followup:${waiting.order.id}`);
+    expect(queued!.data).toEqual({
+      id: expect.any(String),
+      companyId: company.id,
+      kind: 'order_followup',
+      payload: { orderId: waiting.order.id, conversationId: waiting.conversation.id },
+      status: 'pending',
+      attempts: 0,
+      nextRunAt: expect.stringMatching(ISO),
+      createdAt: expect.stringMatching(ISO),
+    });
+    expect(await rpc('queue_order_followups')).toBe(0);
+    expect(await followups()).toHaveLength(1);
+    // Staff accepting it later does not queue another.
+    await db.query(`update orders set data=jsonb_set(data,'{status}','"accepted"') where id=$1`, [
+      waiting.order.id,
+    ]);
+    expect(await rpc('queue_order_followups')).toBe(0);
+  });
+
+  it('is sent, retried and given up on by the existing job functions', async () => {
+    await configure();
+    const { order, conversation } = await placedOrder();
+    await ageOrder(order.id, '20 minutes');
+    expect(await rpc('queue_order_followups')).toBe(1);
+    const queued = (await followups())[0]!.data;
+    expect(await rpc('recover_orderly_jobs')).toBe(1);
+    expect(
+      (await db.query("select body->>'jobId' as id from net.http_request_queue")).rows,
+    ).toEqual([{ id: queued.id }]);
+    expect(
+      await rpc('claim_job', [queued.id, now(), new Date(Date.now() + 90000).toISOString()]),
+    ).toMatchObject({ id: queued.id, status: 'processing', attempts: 1 });
+    await db.query(
+      `update jobs set attempts=5,lease_until=now()-interval '1 minute',data=data||'{"attempts":5}'::jsonb where id=$1`,
+      [queued.id],
+    );
+    const before = await scalar('select data as value from conversations where id=$1', [
+      conversation.id,
+    ]);
+    expect(await rpc('fail_exhausted_orderly_jobs', [20])).toBe(1);
+    expect(await scalar('select status as value from jobs where id=$1', [queued.id])).toBe(
+      'failed',
+    );
+    expect(
+      await scalar('select data as value from conversations where id=$1', [conversation.id]),
+    ).toEqual(before);
+    expect(await attention()).toMatchObject({ failures: 1 });
+  });
+
+  it('stops waiting reminders when WhatsApp is disconnected or the customer is erased', async () => {
+    await configure();
+    const first = await placedOrder();
+    const second = await placedOrder();
+    for (const { order } of [first, second]) await ageOrder(order.id, '20 minutes');
+    expect(await rpc('queue_order_followups')).toBe(2);
+    await pause();
+    expect(await rpc('erase_customer', [company.id, first.conversation.customerPhone])).toBe(1);
+    await rpc('disconnect_integration', [company.id, 'whatsapp']);
+    for (const { data } of await followups())
+      expect(data).toMatchObject({ status: 'done', payload: {} });
+    expect(await followups()).toHaveLength(2);
+  });
+
+  it('runs every 5 minutes', async () => {
+    expect(
+      (
+        await db.query(
+          "select schedule,command from cron.job where jobname='orderly-order-followups'",
+        )
+      ).rows,
+    ).toEqual([{ schedule: '*/5 * * * *', command: 'select public.queue_order_followups()' }]);
+  });
+});
+
 describe('server-only access and the migrations ledger (F57)', () => {
   it('records each migration from 202610200001 on, once', async () => {
     const ledger = async () =>
@@ -731,6 +839,8 @@ describe('server-only access and the migrations ledger (F57)', () => {
       'public.orderly_pipeline_health()',
       'public.purge_orderly_operations(integer)',
       'public.prune_orderly_cron_history()',
+      'public.queue_order_followups()',
+      'public.disconnect_integration(text,text)',
       'public.awaits_staff_reply(jsonb)',
       'public.ai_hourly_warning(text)',
       'public.ai_limit_settings(jsonb)',
