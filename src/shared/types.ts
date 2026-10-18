@@ -542,6 +542,8 @@ export interface TurnInput {
   menuLink?: string;
   /** Server only: the app's own web host, always allowed in AI wording. */
   appHost?: string;
+  /** Server only: the order this chat placed, for a status question. */
+  latestOrder?: Pick<Order, 'reference' | 'status' | 'fulfillment' | 'createdAt' | 'updatedAt'>;
 }
 export interface TurnResult {
   conversation: Conversation;

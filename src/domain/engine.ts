@@ -113,7 +113,14 @@ export function limitNotice(lang: Language, cart: Cart): string {
     'آپ کے پیغام کا شکریہ! ہماری ٹیم جلد یہیں جواب دے گی۔',
     'Aap ke message ka shukriya! Hamari team jald yahin jawab degi.',
   );
-  const order = cart.orderId
+  const order = orderSafetyLine(lang, cart);
+  return order ? `${base} ${order}` : base;
+}
+// Whether the customer's order is safe, for any notice that hands the chat to staff: a placed
+// order is not affected, an unplaced cart is not placed yet, and an empty cart needs no line.
+// A submitted cart keeps its items, so the order is checked first.
+export function orderSafetyLine(lang: Language, cart: Cart): string {
+  return cart.orderId
     ? say(
         lang,
         'Your order is not affected.',
@@ -128,10 +135,43 @@ export function limitNotice(lang: Language, cart: Cart): string {
           'Aap ka order abhi place nahi hua.',
         )
       : '';
+}
+// What a customer is told when the AI model could not be reached.
+export function aiErrorNotice(lang: Language, cart: Cart): string {
+  const base = say(
+    lang,
+    'I’m having trouble connecting right now. A staff member will reply here soon.',
+    'ابھی رابطے میں مسئلہ ہے۔ عملے کا ایک رکن جلد یہیں جواب دے گا۔',
+    'Abhi connection mein masla hai. Staff ka koi member jald yahin jawab dega.',
+  );
+  const order = orderSafetyLine(lang, cart);
   return order ? `${base} ${order}` : base;
 }
 export const asksForPerson = (text: string) =>
   /\b(human|staff|manager|person|insaan)\b|عملہ|انسان|مینیجر/u.test(normalize(text));
+// A whole message asking to cancel the order: "Cancel.", "please cancel my order", "order cancel
+// kar dein please", "آرڈر منسوخ کر دیں". A cancelled pending order cannot be restored, so only
+// this closed set counts: "don't cancel", "cancel mat karo" or "cancel the raita" never do.
+const CANCEL_REQUEST = new RegExp(
+  [
+    '^(?:(?:please|pls|plz|ji|bhai|sir|براہ کرم|پلیز|جی) )*',
+    '(?:',
+    'cancel(?: (?:my|the|this))?(?: order)?',
+    '|(?:(?:my|the|this|mera|meri|mere) )?order cancel',
+    '|(?:(?:میرا|یہ) )?(?:آرڈر )?(?:منسوخ|کینسل)',
+    ')',
+    '(?: (?:karo|kar ?do|kar ?dein|kar ?dain|kar ?den|kr ?do|kr ?dein|kar ?dijiye|kar ?dijye|kar ?de|کر دیں|کریں|کر دو|کرو|کردیں|کر دیجیے|کر دیجئے))?',
+    '(?: (?:please|pls|plz|ji|bhai|sir|پلیز|جی))*$',
+  ].join(''),
+  'u',
+);
+export const asksToCancelOrder = (text: string) =>
+  CANCEL_REQUEST.test(
+    normalize(text)
+      .replace(/[.!?؟،۔,]+/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim(),
+  );
 
 function languageOf(text: string, previous: Language): Language {
   if (/[\u0600-\u06ff]/u.test(text)) return 'ur';
@@ -904,8 +944,7 @@ export function parseActions(
   // Interruptions and browsing are not answers to an outstanding item choice.
   if (/^(new order|start over|restart|naya order|نیا آرڈر)[.!،۔\s]*$/u.test(value))
     return [{ type: 'new_order' }];
-  if (/^(cancel(?: order)?|cancel karo|cancel kardo|منسوخ|آرڈر منسوخ)[.!،۔\s]*$/u.test(value))
-    return [{ type: 'cancel' }];
+  if (asksToCancelOrder(text)) return [{ type: 'cancel' }];
   if (asksForPerson(text)) return [{ type: 'handoff' }];
   if (/\b(?:do not|don't|dont|not|no)\s+(?:want|add|need)|نہیں چاہیے|nahi chahiye/u.test(value))
     return [{ type: 'answer', text: '' }];
@@ -1214,6 +1253,92 @@ const allergyNotice = (company: Company, lang: Language) =>
     `Hum is chat mein allergy ya ingredients confirm nahi kar sakte. Staff ka koi member yahin aap ko jawab dega.${company.phone ? ` Aap hamein ${company.phone} par call bhi kar sakte hain.` : ''}`,
   );
 
+// A question about the order this chat placed: "where is my order?", "kitni der?", "آرڈر کہاں ہے؟".
+const ORDER_STATUS_QUESTION =
+  /\bwhere(?:'s| is)? (?:is )?(?:my |the |our )?(?:order|food|rider|delivery)\b|\border status\b|^status\b|\bstatus of (?:my |the )?order\b|\btrack(?:ing)? (?:my |the )?order\b|\bhow (?:much )?long(?:er)?\b|\bwhen will (?:it|my order|the order|the food) (?:come|arrive|be ready|reach|be delivered)\b|\bis (?:it|my order|the order) (?:ready|coming|on the way|confirmed|accepted)\b|\bany update\b|\beta\b|\b(?:order|khana|rider)\s+(?:abhi tak\s+)?(?:kahan|kidhar|kab)\b|\bkahan (?:hai|reh gaya|pohncha)\b|\bkitni der\b|\bkitna (?:time|waqt)\b|\bkab (?:tak )?(?:aaye?ga|aayega|ayega|milega|pohnche?ga|ready hoga|aaega)\b|\border ka (?:kya )?status\b|\bstatus (?:kya hai|batao|bata dein|batayein)\b|(?:آرڈر|کھانا|رائیڈر)\s(?:\S+\s){0,3}?کہاں|کہاں (?:ہے|رہ گیا|پہنچا)|کتنی دیر|کب (?:تک )?(?:آئے گا|ملے گا|پہنچے گا)|آرڈر کی (?:صورتحال|حالت)|اسٹیٹس|سٹیٹس/u;
+export const asksOrderStatus = (text: string) => ORDER_STATUS_QUESTION.test(normalize(text));
+/** The engine's status line for a placed order: its status and how long since it last changed. */
+export function orderStatusText(
+  lang: Language,
+  order: NonNullable<TurnInput['latestOrder']>,
+  now: string,
+): string {
+  const ref = order.reference;
+  const pickup = order.fulfillment === 'pickup';
+  const again = say(
+    lang,
+    ' Send “new order” to order again.',
+    ' دوبارہ آرڈر کے لیے “نیا آرڈر” لکھیں۔',
+    ' Dobara order ke liye “new order” likhein.',
+  );
+  const status: Record<OrderStatus, string> = {
+    pending: say(
+      lang,
+      `Order ${ref} is waiting for the restaurant to accept it.`,
+      `آرڈر ${ref} ریسٹورنٹ کی منظوری کا انتظار کر رہا ہے۔`,
+      `Order ${ref} restaurant ki manzoori ka intezar kar raha hai.`,
+    ),
+    accepted: say(
+      lang,
+      `The restaurant has accepted order ${ref}.`,
+      `ریسٹورنٹ نے آرڈر ${ref} منظور کر لیا ہے۔`,
+      `Restaurant ne order ${ref} accept kar liya hai.`,
+    ),
+    preparing: say(
+      lang,
+      `Order ${ref} is being prepared.`,
+      `آرڈر ${ref} تیار ہو رہا ہے۔`,
+      `Order ${ref} tayyar ho raha hai.`,
+    ),
+    ready: pickup
+      ? say(
+          lang,
+          `Order ${ref} is ready for pickup.`,
+          `آرڈر ${ref} پک اپ کے لیے تیار ہے۔`,
+          `Order ${ref} pickup ke liye tayyar hai.`,
+        )
+      : say(lang, `Order ${ref} is ready.`, `آرڈر ${ref} تیار ہے۔`, `Order ${ref} tayyar hai.`),
+    out_for_delivery: say(
+      lang,
+      `Order ${ref} is out for delivery.`,
+      `آرڈر ${ref} ڈیلیوری کے لیے روانہ ہو چکا ہے۔`,
+      `Order ${ref} delivery ke liye nikal chuka hai.`,
+    ),
+    completed:
+      say(
+        lang,
+        `Order ${ref} is completed.`,
+        `آرڈر ${ref} مکمل ہو چکا ہے۔`,
+        `Order ${ref} mukammal ho chuka hai.`,
+      ) + again,
+    rejected:
+      say(
+        lang,
+        `The restaurant could not accept order ${ref}.`,
+        `ریسٹورنٹ آرڈر ${ref} قبول نہیں کر سکا۔`,
+        `Restaurant order ${ref} accept nahi kar saka.`,
+      ) + again,
+    cancelled:
+      say(
+        lang,
+        `Order ${ref} was cancelled.`,
+        `آرڈر ${ref} منسوخ ہو چکا ہے۔`,
+        `Order ${ref} cancel ho chuka hai.`,
+      ) + again,
+  };
+  const minutes = Math.floor((Date.parse(now) - Date.parse(order.updatedAt)) / 60000);
+  const updated =
+    !Number.isFinite(minutes) || minutes < 1
+      ? say(lang, 'Last update: just now.', 'آخری اپڈیٹ: ابھی ابھی۔', 'Aakhri update: abhi abhi.')
+      : say(
+          lang,
+          `Last update: ${minutes} minute${minutes === 1 ? '' : 's'} ago.`,
+          `آخری اپڈیٹ: ${minutes} منٹ پہلے۔`,
+          `Aakhri update: ${minutes} minute pehle.`,
+        );
+  return `${status[order.status] ?? say(lang, `Order ${ref} has been received.`, `آرڈر ${ref} موصول ہوا۔`, `Order ${ref} receive ho gaya.`)}\n${updated}`;
+}
+
 export function processTurn(
   company: Company,
   products: Product[],
@@ -1433,6 +1558,7 @@ export function processTurn(
             'unconfirmed_model_action_rejected',
             'fresh_confirmation_required',
             'confirm',
+            'order_status',
           ].includes(trace),
       ) ||
       (traces.includes('review') && !incompleteReviewQuestion) ||
@@ -1651,6 +1777,19 @@ export function processTurn(
       delete next.limitPause;
     }
     traces.push('human_mode_message_saved');
+    return finish();
+  }
+  // "Where is my order?" about the order this chat placed: the engine states its real status,
+  // never the AI, whatever the AI proposed.
+  if (
+    !input.action &&
+    input.latestOrder &&
+    cart.orderId &&
+    (cart.status === 'submitted' || cart.status === 'cancelled') &&
+    asksOrderStatus(input.text)
+  ) {
+    traces.push('order_status');
+    reply = orderStatusText(lang, input.latestOrder, input.now);
     return finish();
   }
   let requested = input.action
