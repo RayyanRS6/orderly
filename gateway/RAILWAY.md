@@ -189,9 +189,16 @@ sessions disconnected since. Keep backup retention short.
 
 ## 10. Pair the restaurant number
 
-In Orderly → **Integrations**, accept the risk notice and start QR or phone-code pairing with
-the restaurant owner. On the phone: WhatsApp → **Linked devices** → **Link a device**. Keep
-automatic replies paused until the live acceptance checklist in [README.md](README.md) passes.
+Only a business the Orderly admin has enabled for linked-phone pairing can pair (`PUT
+/api/admin/businesses/:companyId/linked-device` with `{"allowed": true}`; a business already on
+a linked phone keeps it). In Orderly → **Integrations**, go through the risk notice with the
+restaurant owner: this unofficial method is against WhatsApp's terms, WhatsApp can ban the
+whole number temporarily or permanently, including the restaurant's own WhatsApp app, and
+messages are decrypted on Orderly's gateway on Railway. The owner ticks the consent box, and
+Orderly records who accepted which version of the notice, and when. Then start QR or
+phone-code pairing. On the phone: WhatsApp → **Linked devices** → **Link a device**. Keep
+automatic replies paused until the live acceptance checklist in [README.md](README.md) passes,
+and ask the owner to turn off the Business app's greeting and away messages.
 
 Afterwards, Orderly's **Agent flow** page shows **Last heartbeat** for the connection. The gateway
 reports once a minute, so it should stay under about 75 seconds; over 3 minutes means Orderly
@@ -214,9 +221,12 @@ treats WhatsApp as offline.
 - **Reduced container hardening.** Railway cannot apply the Compose file's read-only root
   filesystem, dropped capabilities or process limits. The gateway still runs as `node` and
   writes only to `/data`.
-- **Unofficial linked device.** This is not Meta's official API. WhatsApp may restrict or ban
-  the number (Railway uses shared datacenter IPs), and the protocol can change. Keep the
-  official Meta connection available as a fallback.
+- **Unofficial linked device.** This is not Meta's official API and is against WhatsApp's
+  terms. WhatsApp can ban the whole number, temporarily or permanently, including the
+  restaurant's own WhatsApp app on it (Railway's shared datacenter IPs add to the risk), and
+  the protocol can change. Messages are decrypted on this gateway, and sent replies are kept
+  here, encrypted, for up to 3 days. Move each restaurant to the official Cloud API with
+  coexistence as soon as it can.
 - **Cost (estimate, not measured):** Hobby is $5/month including $5 of usage. One number should
   use roughly $3-5/month of RAM/CPU/volume, so about **$5-6/month in total**. Each extra number
   adds a worker process. Check Railway's pricing page and set a usage alert/limit.

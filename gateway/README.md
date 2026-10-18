@@ -31,8 +31,16 @@ the only business-logic authority. Official Meta connections remain supported.
   as unavailable.
 - Unofficial automatic replies are limited by Orderly to 24 hours after a customer message.
   This is our conservative policy, not a claim that Meta's template API exists here.
-- No claim of WhatsApp approval, unlimited capacity, ban prevention, or guaranteed delivery.
-  Meta may change the protocol or restrict accounts. Keep the official route available.
+- **The risk, as the dashboard states it to the owner:** this unofficial method is against
+  WhatsApp's terms. WhatsApp can ban the whole number, temporarily or permanently, and the
+  restaurant's own WhatsApp app on that number stops working too. Messages are decrypted and
+  processed on Orderly's gateway on Railway, and sent replies are kept there, encrypted, for up
+  to 3 days. No claim of WhatsApp approval, unlimited capacity, ban prevention or guaranteed
+  delivery; Meta may change the protocol at any time. Move each restaurant to the official
+  Cloud API with coexistence (the WhatsApp Business app keeps working) as soon as it can.
+- A new pairing is possible only for a business the Orderly admin has enabled for linked-phone
+  pairing, and only after the owner accepts the risk notice; Orderly records who accepted which
+  version of it, and when.
 
 ## Deployment prerequisites
 
