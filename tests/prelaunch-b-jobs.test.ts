@@ -263,3 +263,176 @@ describe('WhatsApp sends on the linked device', () => {
     expect((await repo.getJob(job.id))!.status).toBe('done');
   });
 });
+
+describe('G7.1: a customer whose order is still waiting is told so once', () => {
+  const step = (c: Conversation, action: BotAction) =>
+    processTurn(company, products, c, {
+      messageId: randomUUID(),
+      text: action.type === 'confirm' ? 'confirm' : 'step',
+      action,
+      now: new Date().toISOString(),
+    });
+  async function waitingOrder(change: Partial<Conversation> = {}) {
+    let c: Conversation = {
+      ...createConversation(
+        company.id,
+        `92300660${randomUUID().slice(0, 4).replace(/\D/g, '1')}`,
+        'whatsapp',
+        new Date().toISOString(),
+      ),
+      version: 0,
+    };
+    for (const action of [
+      { type: 'add_item', productId: products[0]!.id, quantity: 1 },
+      { type: 'set_details', customerName: 'Ali Raza', fulfillment: 'pickup' },
+      { type: 'review' },
+    ] as BotAction[])
+      c = step(c, action).conversation;
+    const placed = step(c, { type: 'confirm' });
+    const saved = { ...placed.conversation, ...change, version: 1 };
+    await repo.commitTurn(company.id, saved, 0, placed.order);
+    return { conversation: saved, order: placed.order! };
+  }
+  const followup = (order: Order) =>
+    makeJob(company.id, 'order_followup', {
+      orderId: order.id,
+      conversationId: order.conversationId,
+    });
+  const run = async (job: Job) => {
+    await repo.insertJob(job);
+    await processJob(repo, job.id);
+    expect((await repo.getJob(job.id))!.status).toBe('done');
+  };
+  const sends = async () =>
+    (await repo.listCompanyJobs(company.id)).filter((j) => j.kind === 'whatsapp_send');
+  const reminders = async (c: Conversation) =>
+    (await repo.getConversation(company.id, c.id))!.messages.filter((m) =>
+      m.id.startsWith('order-followup:'),
+    );
+
+  it('sends one reminder through the normal send path, never by itself', async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+    const { conversation, order } = await waitingOrder();
+    const before = (await sends()).length;
+    await run(followup(order));
+    expect(fetch).not.toHaveBeenCalled();
+    const [reminder] = await reminders(conversation);
+    expect(reminder).toMatchObject({
+      id: `order-followup:${order.id}`,
+      role: 'assistant',
+      text: `Your order ${order.reference} is still waiting for the restaurant to confirm. We have reminded the team. Reply “cancel” if you want to cancel.`,
+      // Automatic: it never makes a chat staff answered look unanswered.
+      notice: true,
+    });
+    const queued = (await sends()).slice(0, (await sends()).length - before);
+    expect(queued).toHaveLength(1);
+    expect(queued[0]!.payload).toMatchObject({
+      conversationId: conversation.id,
+      messageId: reminder!.id,
+      text: reminder!.text,
+      orderId: order.id,
+      status: 'pending',
+      source: 'notice',
+    });
+    expect(queued[0]!.payload.reference).toBeUndefined();
+    expect((await repo.listTraces(company.id)).some((t) => t.action === 'order_followup')).toBe(
+      true,
+    );
+    // Running it again changes nothing.
+    await run(followup(order));
+    expect(await reminders(conversation)).toHaveLength(1);
+    expect((await sends()).length).toBe(before + 1);
+  });
+
+  it('never treats a kind of job it does not know as a WhatsApp message', async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const { conversation } = await waitingOrder();
+    const unknown = {
+      ...makeJob(company.id, 'order_followup', { conversationId: conversation.id, text: 'x' }),
+      kind: 'from_a_newer_version' as Job['kind'],
+    };
+    await repo.insertJob(unknown);
+    await processJob(repo, unknown.id);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(await sends()).toHaveLength(0);
+    expect((await repo.getJob(unknown.id))!).toMatchObject({
+      status: 'failed',
+      error: 'This version of Orderly cannot run this kind of job.',
+    });
+  });
+
+  it('says nothing for an order already accepted, a test order or a chat past 24 hours', async () => {
+    const accepted = await waitingOrder();
+    await repo.saveOrder({ ...accepted.order, status: 'accepted' });
+    await run(followup(accepted.order));
+    expect(await reminders(accepted.conversation)).toHaveLength(0);
+
+    const test = await waitingOrder();
+    await repo.saveOrder({ ...test.order, sandbox: true });
+    await run(followup(test.order));
+    expect(await reminders(test.conversation)).toHaveLength(0);
+
+    const old = await waitingOrder({
+      lastInboundAt: new Date(Date.now() - 25 * 3600000).toISOString(),
+    });
+    await run(followup(old.order));
+    expect(await reminders(old.conversation)).toHaveLength(0);
+  });
+
+  it('says nothing once staff spoke to the customer about the order on the phone', async () => {
+    const call = (outcome: NonNullable<Order['phoneConfirmation']>['outcome']) => ({
+      outcome,
+      addressVerified: false,
+      note: '',
+      at: new Date().toISOString(),
+      actorId: 'staff-1',
+    });
+    for (const outcome of ['confirmed', 'declined'] as const) {
+      const called = await waitingOrder();
+      await repo.saveOrder({ ...called.order, phoneConfirmation: call(outcome) });
+      await run(followup(called.order));
+      expect(await reminders(called.conversation)).toHaveLength(0);
+    }
+    // Staff could not reach them: the customer still hears that the order is waiting.
+    const unreachable = await waitingOrder();
+    await repo.saveOrder({ ...unreachable.order, phoneConfirmation: call('unreachable') });
+    await run(followup(unreachable.order));
+    expect(await reminders(unreachable.conversation)).toHaveLength(1);
+  });
+
+  it('leaves out “cancel” when the bot would not handle it, and speaks the customer’s language', async () => {
+    const staff = await waitingOrder({ mode: 'human' });
+    await run(followup(staff.order));
+    const [reminder] = await reminders(staff.conversation);
+    expect(reminder!.text).toBe(
+      `Your order ${staff.order.reference} is still waiting for the restaurant to confirm. We have reminded the team.`,
+    );
+    const roman = await waitingOrder({ language: 'roman-ur' });
+    await run(followup(roman.order));
+    expect((await reminders(roman.conversation))[0]!.text).toContain(
+      `Aap ka order ${roman.order.reference} abhi restaurant ki confirmation ka intezar kar raha hai.`,
+    );
+  });
+
+  it('drops the queued reminder if staff accepted the order first', async () => {
+    await repo.saveIntegration(
+      company.id,
+      { kind: 'whatsapp', configured: true, status: 'connected', config: { phoneNumberId: '1' } },
+      encryptSecret('meta-token'),
+    );
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+    const { order } = await waitingOrder();
+    await run(followup(order));
+    const reminder = (await sends()).find(
+      (j) => j.payload.messageId === `order-followup:${order.id}`,
+    )!;
+    await repo.saveOrder({ ...order, status: 'accepted' });
+    await processJob(repo, reminder.id);
+    expect(fetch).not.toHaveBeenCalled();
+    expect((await repo.getJob(reminder.id))!.status).toBe('done');
+  });
+});

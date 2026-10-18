@@ -998,6 +998,87 @@ export async function changeOrderStatus(
   for (const job of jobs) await dispatchJob(repo, job);
   return updated;
 }
+// A customer's order is still waiting for the restaurant (the database queues this job 15
+// minutes after it was placed, once per order). They are told once, in their language, while
+// WhatsApp still lets the business write to them; otherwise nothing is sent. Telling them how
+// to cancel only where "cancel" is handled by itself.
+const FOLLOWUP_WINDOW_MS = 24 * 60 * 60 * 1000 - 5 * 60 * 1000;
+async function sendOrderFollowup(repo: Repository, stored: Company, job: Job) {
+  const company = configuredCompany(stored);
+  const order = await repo.getOrder(company.id, String(job.payload.orderId));
+  const conversation =
+    order && order.conversationId === String(job.payload.conversationId)
+      ? await repo.getConversation(company.id, order.conversationId)
+      : undefined;
+  const messageId = `order-followup:${order?.id}`;
+  if (
+    !order ||
+    order.status !== 'pending' ||
+    order.sandbox ||
+    // Staff already spoke to the customer about this order on the phone.
+    order.phoneConfirmation?.outcome === 'confirmed' ||
+    order.phoneConfirmation?.outcome === 'declined' ||
+    automationPaused() ||
+    conversation?.channel !== 'whatsapp' ||
+    conversation.blocked ||
+    Date.now() - Date.parse(conversation.lastInboundAt) >= FOLLOWUP_WINDOW_MS ||
+    conversation.messages.some((m) => m.id === messageId)
+  )
+    return;
+  const lang = noticeLanguage(company, conversation, '');
+  const cancels = conversation.mode === 'bot' && company.botEnabled;
+  const text = [
+    pick(
+      lang,
+      `Your order ${order.reference} is still waiting for the restaurant to confirm. We have reminded the team.`,
+      `آپ کا آرڈر ${order.reference} ابھی ریسٹورنٹ کی تصدیق کا منتظر ہے۔ ہم نے ٹیم کو یاد دہانی کرا دی ہے۔`,
+      `Aap ka order ${order.reference} abhi restaurant ki confirmation ka intezar kar raha hai. Humne team ko yaad dila diya hai.`,
+    ),
+    ...(cancels
+      ? [
+          pick(
+            lang,
+            'Reply “cancel” if you want to cancel.',
+            'اگر آپ آرڈر منسوخ کرنا چاہتے ہیں تو “cancel” لکھیں۔',
+            'Order cancel karna ho to “cancel” likhein.',
+          ),
+        ]
+      : []),
+  ].join(' ');
+  const next: Conversation = {
+    ...conversation,
+    version: conversation.version + 1,
+    updatedAt: new Date().toISOString(),
+    messages: [
+      ...conversation.messages,
+      // Automatic, so a chat staff answered last does not look as if it waits for them again.
+      { id: messageId, role: 'assistant', text, createdAt: new Date().toISOString(), notice: true },
+    ],
+  };
+  // The order and status let the send drop the reminder if staff act on the order first.
+  const send = makeJob(company.id, 'whatsapp_send', {
+    ...jobAddress(conversation),
+    conversationId: conversation.id,
+    messageId,
+    text,
+    orderId: order.id,
+    status: 'pending',
+    source: 'notice',
+  });
+  if (!(await repo.commitTurn(company.id, next, conversation.version, undefined, [send])))
+    throw new PublicError('The conversation changed while processing. Retrying.', 409);
+  await repo
+    .addTrace({
+      id: randomUUID(),
+      companyId: company.id,
+      conversationId: conversation.id,
+      action: 'order_followup',
+      detail: `Told the customer that order ${order.reference} is still waiting for the restaurant.`,
+      createdAt: new Date().toISOString(),
+    })
+    .catch(() => undefined);
+  await dispatchJob(repo, send);
+}
 export async function queueReply(
   repo: Repository,
   conversation: Conversation,
@@ -1297,6 +1378,9 @@ export async function processJob(repo: Repository, id: string) {
       }
     } else if (job.kind === 'staff_alert') {
       await sendStaffAlert(repo, job);
+    } else if (job.kind === 'order_followup') {
+      // Never a WhatsApp send of its own: it decides whether to queue one.
+      await sendOrderFollowup(repo, company, job);
     } else if (job.kind === 'sheet_sync') {
       const sheetLock = `sheet:${company.id}`;
       if (
@@ -1323,7 +1407,7 @@ export async function processJob(repo: Repository, id: string) {
       } finally {
         await repo.releaseConversationLock(company.id, sheetLock, job.id);
       }
-    } else {
+    } else if (job.kind === 'whatsapp_send') {
       const conversation = await repo.getConversation(
         company.id,
         String(job.payload.conversationId),
@@ -1403,7 +1487,7 @@ export async function processJob(repo: Repository, id: string) {
         detail: `Message accepted by WhatsApp transport: ${messageId}`,
         createdAt: new Date().toISOString(),
       });
-    }
+    } else throw new PublicError('This version of Orderly cannot run this kind of job.', 422);
     await repo.saveJob({ ...job, status: 'done', leaseUntil: undefined, error: undefined });
   } catch (error) {
     const permanent = job.attempts >= 5 || (error instanceof PublicError && error.status === 422);
