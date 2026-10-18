@@ -489,14 +489,16 @@ export function managementRoutes(repo: Repository) {
     const { raw, stored } = phoneForms(z.string().min(4).max(80).parse(c.req.query('phone')));
     const forms = [...new Set([...stored, raw])];
     const companyId = c.get('company').id;
+    // Every chat erasing this number would remove (not only the newest per channel), and
+    // their orders.
     const found = new Map<string, Conversation>();
-    for (const phone of forms)
-      for (const channel of ['whatsapp', 'demo'] as const) {
-        const conversation = await repo.findConversation(companyId, phone, channel);
-        if (conversation) found.set(conversation.id, conversation);
-      }
-    const conversations = [...found.values()];
     const matched = new Map<string, Order>();
+    for (const phone of forms) {
+      const records = await repo.customerRecords(companyId, phone);
+      for (const conversation of records.conversations) found.set(conversation.id, conversation);
+      for (const order of records.orders) matched.set(order.id, order);
+    }
+    const conversations = [...found.values()];
     for (const phone of forms)
       for (let page = 1; ; page++) {
         const result = await repo.queryOrders(companyId, { search: phone, page, pageSize: 100 });

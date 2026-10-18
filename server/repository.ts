@@ -127,6 +127,13 @@ export interface Repository {
   listAllMemberships(): Promise<Membership[]>;
   listAdminIds(): Promise<string[]>;
   eraseCustomer(companyId: string, phone: string): Promise<number>;
+  // What eraseCustomer would remove for this number, for a complete export: every chat it
+  // matches (by the same rule) and the orders placed in them, newest first. Messages are the
+  // chat's recent ones; conversationHistory has them all. Fails with 503 before its migration.
+  customerRecords(
+    companyId: string,
+    phone: string,
+  ): Promise<{ conversations: Conversation[]; orders: Order[] }>;
   consumeRateLimit(key: string, limit: number): Promise<boolean>;
   listCompanies(): Promise<Company[]>;
   getCompany(id: string): Promise<Company | undefined>;

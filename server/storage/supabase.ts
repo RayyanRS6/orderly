@@ -499,6 +499,19 @@ export class SupabaseRepository implements Repository {
   eraseCustomer(companyId: string, phone: string) {
     return this.rpc<number>('erase_customer', { p_company_id: companyId, p_phone: phone });
   }
+  async customerRecords(companyId: string, phone: string) {
+    const result = await this.client.rpc('customer_records', {
+      p_company_id: companyId,
+      p_phone: phone,
+    });
+    // An export that silently missed chats would look complete: refuse until the SQL is there.
+    if (migrationMissing(result.error))
+      throw new PublicError(
+        'Apply the 202610200001_prelaunch_fixes.sql database migration first.',
+        503,
+      );
+    return unwrap(result) as { conversations: Conversation[]; orders: Order[] };
+  }
   consumeRateLimit(key: string, limit: number) {
     return this.rpc<boolean>('consume_rate_limit', { p_key: key, p_limit: limit });
   }

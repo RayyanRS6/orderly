@@ -1,14 +1,14 @@
 -- Pre-launch fixes: staff email alerts reach the person who asked for them, erasing a customer
--- finds every format of their number and clears their blocked-number label, automatic order
--- notices no longer hide a customer waiting for staff, a linked phone that stopped working alerts
--- staff, a message that failed for good goes into its chat instead of holding back the
--- customer's later ones, the spam safety net is 1,500 AI replies an hour (100 per customer) with
--- a warning at 80%, a pipeline health check, a daily purge of old operational rows, and a ledger
--- of applied migrations.
+-- finds every format of their number and clears their blocked-number label, a customer export
+-- finds every chat erasing would remove, automatic order notices no longer hide a customer waiting
+-- for staff, a linked phone that stopped working alerts staff, a message that failed for good goes
+-- into its chat instead of holding back the customer's later ones, the spam safety net is 1,500
+-- AI replies an hour (100 per customer) with a warning at 80%, a pipeline health check, a daily
+-- purge of old operational rows, and a ledger of applied migrations.
 -- Apply after 202610190003_menu_purge_schedule.sql and before deploying the backend that calls
--- orderly_pipeline_health. The backend and dashboard running now keep working: every function
--- keeps its signature and result shape (staff_attention only adds a 'whatsapp' count and items),
--- and the only new column has a default.
+-- orderly_pipeline_health and customer_records. The backend and dashboard running now keep
+-- working: every function keeps its signature and result shape (staff_attention only adds a
+-- 'whatsapp' count and items), and the only new column has a default.
 -- Safe to rerun while no later file redefines these functions. It replaces, starting from their
 -- latest bodies: alert_recipient (202609180001), erase_customer and run_retention (202609170001),
 -- prune_orderly_cron_history (202609110001), and ai_limit_settings, has_overdue_attention,
@@ -230,6 +230,25 @@ language sql stable security definer set search_path=public as $$
     'limits',(select count(*) from alerts where kind='limit' and scope<>'hourly_near'),
     'whatsapp',(select count(*) from alerts where kind='whatsapp'),
     'items',coalesce((select jsonb_agg(jsonb_strip_nulls(to_jsonb(a))) from (select * from alerts order by "createdAt" desc,id limit 30) a),'[]'::jsonb));
+$$;
+
+-- What erase_customer would remove for this number, for a complete customer export: every chat
+-- it matches (the same rule: the exact text in any chat, and every WhatsApp format of a whole
+-- international number) and the orders placed in them. Newest first, at most 200 chats.
+create or replace function public.customer_records(p_company_id text,p_phone text) returns jsonb
+language sql stable security definer set search_path=public as $$
+  with matched as (
+    select c.id, c.data, c.updated_at from conversations c,
+      (select regexp_replace(coalesce(p_phone,''),'[^0-9]','','g') digits) p
+    where c.company_id=p_company_id and btrim(coalesce(p_phone,''))<>''
+      and (c.customer_phone=p_phone or (p.digits ~ '^[1-9][0-9]{9,14}$' and c.channel='whatsapp'
+        and regexp_replace(c.customer_phone,'[^0-9]','','g')=p.digits))
+    order by c.updated_at desc, c.id limit 200
+  )
+  select jsonb_build_object(
+    'conversations',coalesce((select jsonb_agg(data order by updated_at desc, id) from matched),'[]'::jsonb),
+    'orders',coalesce((select jsonb_agg(o.data order by o.created_at desc, o.id) from orders o
+      where o.company_id=p_company_id and o.conversation_id in (select id from matched)),'[]'::jsonb));
 $$;
 
 -- Latest body from 202610180001_spam_protection.sql. Changed, as the worker does since these
@@ -454,7 +473,7 @@ $$;
 do $$ declare f record; begin
   for f in select oid::regprocedure signature from pg_proc where pronamespace='public'::regnamespace
     and proname=any(array['alert_recipient','erase_customer','run_retention','awaits_staff_reply','ai_limit_settings',
-      'ai_hourly_warning','whatsapp_down','has_overdue_attention','staff_attention',
+      'ai_hourly_warning','whatsapp_down','has_overdue_attention','staff_attention','customer_records',
       'fail_exhausted_orderly_jobs','orderly_pipeline_health','purge_orderly_operations',
       'prune_orderly_cron_history']) loop
     execute format('revoke all on function %s from public,anon,authenticated',f.signature);

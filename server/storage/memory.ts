@@ -142,6 +142,16 @@ const whatsappDown = (state: State, companyId: string, minutes: number, now = Da
 // Mirrors SQL erase_customer: only a whole international number is compared by its digits.
 const phoneDigits = (value: string) => value.replace(/\D/g, '');
 const wholeNumber = (digits: string) => /^[1-9]\d{9,14}$/.test(digits);
+// Mirrors SQL erase_customer and customer_records: the exact text in any chat, and on WhatsApp
+// every format of a whole number.
+const matchesCustomer = (c: Conversation, phone: string) => {
+  const digits = phoneDigits(phone);
+  return (
+    !!phone.trim() &&
+    (c.customerPhone === phone ||
+      (c.channel === 'whatsapp' && wholeNumber(digits) && phoneDigits(c.customerPhone) === digits))
+  );
+};
 const streamOf = (a: WhatsAppAddress) => `${a.connectionId}:${a.generation}:${a.peer}`;
 interface State {
   /** Stands in for Supabase Auth users. */
@@ -983,6 +993,20 @@ export class MemoryRepository implements Repository {
       s.orders = s.orders.filter((o) => !orderIds.has(o.id));
       s.conversations = s.conversations.filter((c) => !ids.has(c.id));
       return ids.size;
+    });
+  }
+  // Mirrors SQL customer_records.
+  customerRecords(companyId: string, phone: string) {
+    return this.read((s) => {
+      const conversations = s.conversations
+        .filter((c) => c.companyId === companyId && matchesCustomer(c, phone))
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id))
+        .slice(0, 200);
+      const ids = new Set(conversations.map((c) => c.id));
+      const orders = s.orders
+        .filter((o) => o.companyId === companyId && ids.has(o.conversationId))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id));
+      return { conversations, orders };
     });
   }
   async consumeRateLimit(key: string, limit: number) {
