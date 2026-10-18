@@ -137,8 +137,21 @@ retained credentials. 408/428/503 retry without limit, backing off from 1 second
 and then every 5 minutes; 500, 0 and unknown codes do the same from a 5-second start. A connect
 that neither opens nor fails within 45 seconds is abandoned and retried. The status stays
 `reconnecting` with `DISCONNECT_<code>` meanwhile. A healthy socket resets network retries after
-two minutes. A gateway restart also revives sessions an older version parked in `error` with a
-passing failure code (`RECONNECT_EXHAUSTED`, `SESSION_CRASH`, `DISCONNECT_0/408/428/500/503/515`).
+two minutes.
+
+These retries are for numbers that finished pairing. A pairing nobody finishes ends as
+`PAIRING_EXPIRED` and its worker exits, freeing the place: when its QR codes run out (408), on
+a second failure (the first, if a pairing code was already shown) or after 5 minutes. The owner
+starts a new pairing.
+
+A gateway restart brings back sessions that finished pairing and were `connected`, `connecting`
+or `reconnecting`, or that an older version parked in `error` with a passing failure code:
+`RECONNECT_EXHAUSTED`, `SESSION_CRASH`, `EVENT_STORAGE_FAILURE`, `SESSION_HANDLER_FAILURE`,
+`SEND_HANDLER_FAILURE`, `UNCAUGHT_EXCEPTION`, `UNHANDLED_REJECTION`, `INBOUND_QUEUE_FULL`,
+`SESSION_CAPACITY_REACHED`, or any `DISCONNECT_<code>` that is retried (all but 401, 403, 405,
+411 and 440). A pairing that never finished, including the abandoned ones older versions kept
+retrying, becomes `PAIRING_EXPIRED` instead. At most `GATEWAY_MAX_SESSIONS` start, numbers that
+were connected first; the rest wait as `SESSION_CAPACITY_REACHED` and start once a place frees.
 
 Heartbeats reach Orderly once a minute (the 15-second tick still retries undelivered events); a
 heartbeat older than 3 minutes is not ready to send. The gateway must also report a verified
@@ -157,11 +170,11 @@ phone. Do not delete receipt records to force a resend. Exactly-once delivery ca
 guaranteed across an external messaging service, but duplicate blind retries are prevented.
 
 Disconnect and new pairing first log the linked device out of WhatsApp (best effort, at most
-3.5 seconds, only while the socket is connected), then wipe credentials and jobs, so leftover
-credentials and later backups stop working. Redeploys, restarts and a lost lease only close the
-socket and keep the pairing. If the session was offline at the time, the logout cannot happen:
-the owner should still check WhatsApp → Linked devices and remove the old session. Orders and
-Orderly chat history remain.
+3.5 seconds, only while the socket is connected and only for a finished pairing), then wipe
+credentials and jobs, so leftover credentials and later backups stop working. Redeploys,
+restarts and a lost lease only close the socket and keep the pairing. If the session was offline
+at the time, the logout cannot happen: the owner should still check WhatsApp → Linked devices
+and remove the old session. Orders and Orderly chat history remain.
 
 ## Protocol updates and rollback
 

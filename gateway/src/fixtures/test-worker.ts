@@ -23,6 +23,13 @@ process.on('message', (message: any) => {
       );
       return;
     }
+    // A pairing nobody finished ends, as the real worker's fail('PAIRING_EXPIRED') does.
+    if (message.body.text === 'simulate-pairing-expired') {
+      process.send?.({ type: 'fatal', errorCode: 'PAIRING_EXPIRED' }, undefined, {}, () =>
+        process.exit(1),
+      );
+      return;
+    }
     process.send?.({
       type: 'result',
       requestId: message.requestId,

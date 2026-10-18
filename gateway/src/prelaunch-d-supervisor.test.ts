@@ -35,6 +35,13 @@ type Stored = {
   errorCode?: string;
   crashes: number;
 };
+// The signed account a finished pairing leaves in the session's credentials; restore() only
+// revives sessions that have it (or were connected).
+function paired(dataDir: string, key: Buffer, connectionId: string) {
+  const store = new Store(join(dataDir, `${connectionId}.sqlite`), key);
+  store.set('auth', 'creds', { account: { details: 'signed' } });
+  store.close();
+}
 
 // F04: sessions an older gateway parked in 'error' after a passing failure come back on the
 // next deploy by themselves; refused or logged-out ones wait for the owner.
@@ -54,6 +61,7 @@ test('restore revives sessions stuck after passing failures and leaves refused o
   ] as const) {
     const session = { connectionId: randomUUID(), generation: 1, status, errorCode, crashes };
     sessions[errorCode] = session;
+    paired(dataDir, config.key, session.connectionId);
   }
   let supervisor = new Supervisor(config, worker);
   for (const session of Object.values(sessions))
@@ -93,6 +101,7 @@ test('a session that stays connected has its crash count forgiven, so restarts s
   const supervisor = new Supervisor(config, worker, 0);
   try {
     supervisor.store.set('sessions', session.connectionId, session);
+    paired(dataDir, config.key, session.connectionId);
     supervisor.restore();
     await eventually(
       () => supervisor.store.get<Stored>('sessions', session.connectionId)?.status === 'connected',

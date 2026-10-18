@@ -1,4 +1,5 @@
 import { fork, type ChildProcess } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
@@ -69,6 +70,7 @@ export class Supervisor {
         void this.close();
         return;
       }
+      this.admitWaiting();
       void this.flushEvents().catch(() => this.log('EVENT_RETRY_FAILED'));
     }, 15000);
     this.timer.unref();
@@ -84,11 +86,57 @@ export class Supervisor {
     );
   }
   restore() {
-    for (const { value: session } of this.store.list<Session>('sessions')) {
-      // Also revives sessions an earlier gateway parked in 'error' after a passing failure.
-      if (restorable(session.status, session.errorCode)) this.spawn(session);
-      else if (session.status === 'awaiting_pairing')
-        this.update({ ...session, status: 'error', errorCode: 'PAIRING_EXPIRED' });
+    const sessions = this.store.list<Session>('sessions').map(({ value }) => value);
+    // Numbers that were connected start first, so a gateway with fewer places keeps them.
+    sessions.sort((a, b) => Number(b.status === 'connected') - Number(a.status === 'connected'));
+    for (const session of sessions) {
+      if (session.status === 'awaiting_pairing') this.park(session, 'PAIRING_EXPIRED');
+      // Also revives sessions an earlier gateway parked in 'error' after a passing failure,
+      // but never a pairing nobody finished: an older gateway kept retrying those for ever.
+      else if (!restorable(session.status, session.errorCode)) continue;
+      else if (!this.paired(session)) this.park(session, 'PAIRING_EXPIRED');
+      else if (this.children.size >= this.config.maxSessions)
+        this.park(session, 'SESSION_CAPACITY_REACHED');
+      else this.spawn(session);
+    }
+  }
+  // Whether a session finished pairing: it was connected, or its stored credentials hold the
+  // account WhatsApp signs on pairing (also for sessions an older gateway saved).
+  private paired(session: Session): boolean {
+    if (session.status === 'connected') return true;
+    const path = join(this.config.dataDir, `${session.connectionId}.sqlite`);
+    if (!existsSync(path)) return false;
+    let sessionStore: Store | undefined;
+    try {
+      sessionStore = new Store(path, this.config.key);
+      return !!sessionStore.get<{ account?: unknown }>('auth', 'creds')?.account;
+    } catch {
+      return false;
+    } finally {
+      sessionStore?.close();
+    }
+  }
+  // Leaves a session stopped for the given reason, and tells Orderly.
+  private park(session: Session, errorCode: string) {
+    const next: Session = { ...session, status: 'error', errorCode };
+    this.update(next);
+    this.queueError(next);
+    this.log(errorCode, session.connectionId);
+  }
+  // A paired number a full gateway left stopped starts as soon as a place is free.
+  private admitWaiting() {
+    try {
+      for (const { value: session } of this.store.list<Session>('sessions')) {
+        if (this.stopping || this.children.size >= this.config.maxSessions) return;
+        if (
+          session.status === 'error' &&
+          session.errorCode === 'SESSION_CAPACITY_REACHED' &&
+          !this.operations.has(session.connectionId)
+        )
+          this.spawn(session);
+      }
+    } catch {
+      this.log('SESSION_ADMIT_FAILED');
     }
   }
   private update(session: Session) {
@@ -341,6 +389,7 @@ export class Supervisor {
       return this.status(body);
     } finally {
       this.operations.delete(body.connectionId);
+      if (body.action === 'disconnect') this.admitWaiting();
     }
   }
   status(input: unknown): Snapshot {

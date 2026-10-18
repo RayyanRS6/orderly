@@ -15,10 +15,18 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { loadConfig } from './config.js';
 import { Store } from './store.js';
-import { canonicalJid, phoneFromJid, heartbeatDue, reconnectDecision, TICK_MS } from './policy.js';
+import {
+  canonicalJid,
+  phoneFromJid,
+  heartbeatDue,
+  reconnectDecision,
+  retryPairing,
+  PAIRING_TIMEOUT_MS,
+  TICK_MS,
+} from './policy.js';
 import { sendOnce, recoverUncertainSends } from './sender.js';
 import { drainOnce, EVENT_BATCH, retryDeadEvents } from './drain.js';
-import { endSocket } from './shutdown.js';
+import { endSocket, logsOut } from './shutdown.js';
 import { chatContent, messageText, receiptStatus, upsertedMessages } from './upserts.js';
 import { mapIdentity, messageIdentity } from './routing.js';
 import {
@@ -50,6 +58,8 @@ let phone: string | undefined;
 let stopped = false;
 // Set once fail() has reported a fatal code; the close it causes must not overwrite it.
 let failed = false;
+// Whether a pairing nobody finished has had its one retry (see retryPairing).
+let pairingRetried = false;
 let retries = 0;
 let restarts = 0;
 let openedAt = 0;
@@ -396,6 +406,15 @@ async function connect() {
           setStatus('error', `DISCONNECT_${code}`);
           return;
         }
+        // A pairing nobody finished ends instead of opening new registrations for ever; the
+        // worker exits, so the place is free again. 515 right after pairing has an account.
+        if (decision.action === 'retry' && !auth.creds.account) {
+          if (!retryPairing(code, pairingRetried, !!auth.creds.me)) {
+            fail('PAIRING_EXPIRED');
+            return;
+          }
+          pairingRetried = true;
+        }
         // A requested restart is not a failure; everything else counts towards the backoff.
         if (decision.action === 'restart') restarts++;
         else retries++;
@@ -461,6 +480,14 @@ process.on('message', (message: any) => {
       recoverUncertainSends(store);
       setStatus('connecting');
       await connect();
+      if (!auth.creds.account)
+        setTimeout(
+          () =>
+            guard(() => {
+              if (!auth.creds.account) fail('PAIRING_EXPIRED');
+            }),
+          PAIRING_TIMEOUT_MS,
+        );
     });
   if (message.type === 'send') {
     sendChain = sendChain
@@ -499,8 +526,9 @@ process.on('message', (message: any) => {
     stopped = true;
     clearTimeout(reconnectTimer);
     pairing = {};
-    // Only the supervisor's disconnect and new-pairing commands ask for a logout (see shutdown.ts).
-    void endSocket(socket, message.logout === true)
+    // Only the supervisor's disconnect and new-pairing commands ask for a logout, and only a
+    // finished pairing can be logged out (see shutdown.ts).
+    void endSocket(socket, logsOut(message.logout === true, auth?.creds))
       .catch(() => false)
       .then(() => setImmediate(() => process.exit(0)));
   }
