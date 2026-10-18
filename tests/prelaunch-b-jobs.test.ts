@@ -321,7 +321,7 @@ describe('G7.1: a customer whose order is still waiting is told so once', () => 
     expect(reminder).toMatchObject({
       id: `order-followup:${order.id}`,
       role: 'assistant',
-      text: `Your order ${order.reference} is still waiting for the restaurant to confirm. We have reminded the team. Reply “cancel” if you want to cancel.`,
+      text: `Your order ${order.reference} hasn't been confirmed by the restaurant yet. We've flagged it to the restaurant. Reply “cancel” if you want to cancel.`,
       // Automatic: it never makes a chat staff answered look unanswered.
       notice: true,
     });
@@ -408,13 +408,21 @@ describe('G7.1: a customer whose order is still waiting is told so once', () => 
     await run(followup(staff.order));
     const [reminder] = await reminders(staff.conversation);
     expect(reminder!.text).toBe(
-      `Your order ${staff.order.reference} is still waiting for the restaurant to confirm. We have reminded the team.`,
+      `Your order ${staff.order.reference} hasn't been confirmed by the restaurant yet. We've flagged it to the restaurant.`,
     );
     const roman = await waitingOrder({ language: 'roman-ur' });
     await run(followup(roman.order));
-    expect((await reminders(roman.conversation))[0]!.text).toContain(
-      `Aap ka order ${roman.order.reference} abhi restaurant ki confirmation ka intezar kar raha hai.`,
+    expect((await reminders(roman.conversation))[0]!.text).toBe(
+      `Aap ke order ${roman.order.reference} ko abhi restaurant ne confirm nahi kiya. Humne restaurant ko iski ittela de di hai. Order cancel karna ho to “cancel” likhein.`,
     );
+    const urdu = await waitingOrder({ language: 'ur' });
+    await run(followup(urdu.order));
+    expect((await reminders(urdu.conversation))[0]!.text).toBe(
+      `آپ کے آرڈر ${urdu.order.reference} کی ابھی ریسٹورنٹ نے تصدیق نہیں کی۔ ہم نے ریسٹورنٹ کو اس کی اطلاع دے دی ہے۔ اگر آپ آرڈر منسوخ کرنا چاہتے ہیں تو “cancel” لکھیں۔`,
+    );
+    // Nothing in any language claims staff were reminded.
+    for (const c of [staff, roman, urdu])
+      expect((await reminders(c.conversation))[0]!.text).not.toMatch(/remind|yaad|یاد/i);
   });
 
   it('drops the queued reminder if staff accepted the order first', async () => {

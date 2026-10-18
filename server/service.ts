@@ -1034,9 +1034,9 @@ async function sendOrderFollowup(repo: Repository, stored: Company, job: Job) {
   const text = [
     pick(
       lang,
-      `Your order ${order.reference} is still waiting for the restaurant to confirm. We have reminded the team.`,
-      `آپ کا آرڈر ${order.reference} ابھی ریسٹورنٹ کی تصدیق کا منتظر ہے۔ ہم نے ٹیم کو یاد دہانی کرا دی ہے۔`,
-      `Aap ka order ${order.reference} abhi restaurant ki confirmation ka intezar kar raha hai. Humne team ko yaad dila diya hai.`,
+      `Your order ${order.reference} hasn't been confirmed by the restaurant yet. We've flagged it to the restaurant.`,
+      `آپ کے آرڈر ${order.reference} کی ابھی ریسٹورنٹ نے تصدیق نہیں کی۔ ہم نے ریسٹورنٹ کو اس کی اطلاع دے دی ہے۔`,
+      `Aap ke order ${order.reference} ko abhi restaurant ne confirm nahi kiya. Humne restaurant ko iski ittela de di hai.`,
     ),
     ...(cancels
       ? [

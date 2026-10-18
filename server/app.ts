@@ -669,25 +669,28 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
       throw new PublicError(error instanceof Error ? error.message : 'Invalid order transition.');
     }
     const updated = await changeOrderStatus(repo, order, status);
-    const conversation = await repo.getConversation(order.companyId, order.conversationId);
-    if (conversation) {
-      const text = `Order ${order.reference} is now ${status.replaceAll('_', ' ')}.`;
+    // The order already had this status: nothing was sent, so the chat gets no notice either.
+    if (updated.status === order.status) return c.json(updated);
+    // The chat's copy of the status message the customer is sent. Marked as a notice, so a
+    // customer still waiting for a staff reply stays under "Needs staff" and in staff alerts. A
+    // chat that changed meanwhile is read again.
+    const text = `Order ${order.reference} is now ${status.replaceAll('_', ' ')}.`;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const conversation = await repo.getConversation(order.companyId, order.conversationId);
+      if (!conversation) break;
+      const at = new Date().toISOString();
       const next = {
         ...conversation,
         version: conversation.version + 1,
-        updatedAt: new Date().toISOString(),
+        updatedAt: at,
         messages: [
           ...conversation.messages,
-          {
-            id: randomUUID(),
-            role: 'staff' as const,
-            text,
-            createdAt: new Date().toISOString(),
-            notice: true,
-          },
+          { id: randomUUID(), role: 'staff' as const, text, createdAt: at, notice: true },
         ],
       };
-      await repo.saveConversation(next, conversation.version);
+      if (await repo.saveConversation(next, conversation.version)) break;
+      if (attempt === 3)
+        console.warn('Orderly: an order status notice could not be added to its chat.');
     }
     return c.json(updated);
   });
