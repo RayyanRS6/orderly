@@ -6,6 +6,7 @@ import { api, ApiError } from '../lib/api';
 import { useAction, useWorkspace } from '../lib/workspace';
 import { label, shortDate } from '../lib/utils';
 import { addedMessage, describeTeamChange, personName, type TeamChange } from '../lib/people';
+import { describeTrace } from '../shared/explain';
 import { supportEmail } from './Public';
 import {
   ActionButton,
@@ -46,6 +47,8 @@ export function Activity() {
   const [jobs, setJobs] = useState<Job[] | undefined>(data.jobs);
   const [error, setError] = useState('');
   useEffect(() => {
+    // The workspace's own refresh already brought them: asking again would only repeat it.
+    if (data.jobs) return;
     let active = true;
     api<{ jobs: Job[] }>('/activity', data.company.id)
       .then((r) => {
@@ -155,8 +158,9 @@ export function Activity() {
             return (
               <li key={t.id} className="py-4 text-sm">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <strong className="break-all font-semibold text-ink">
-                    {codeLabel(t.action)}
+                  {/* Wraps between words; only a long code or path breaks inside a word. */}
+                  <strong className="break-words font-semibold text-ink">
+                    {describeTrace(t.action, t.code) ?? codeLabel(t.action)}
                   </strong>
                   <time
                     dateTime={t.createdAt}

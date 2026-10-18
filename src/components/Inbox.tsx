@@ -77,6 +77,11 @@ export function limitNote(
     return 'AI paused: the monthly AI limit was reached. The bot answers again once the limit is raised or a new month starts.';
   if (pause.reason === 'customer')
     return `AI paused: this customer reached their AI replies for the hour. The bot answers them again${back ? ` from about ${back}` : ' within the hour'}.`;
+  // A late message pauses only until its own time, so the note above already applies to it.
+  if (pause.reason === 'burst')
+    return `AI paused: this customer sent many messages at once. The bot answers them again${back ? ` from about ${back}` : ' shortly'}.`;
+  if (pause.reason === 'ai_error')
+    return `AI paused: the AI model could not answer. The bot tries again${back ? ` from about ${back}` : ' shortly'}.`;
   return `AI paused: this hour’s AI replies were used up. The bot answers again${back ? ` from about ${back}` : ' next hour'}, or sooner if you raise the limit.`;
 }
 
