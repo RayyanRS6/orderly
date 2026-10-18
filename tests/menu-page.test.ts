@@ -1215,11 +1215,11 @@ describe('order code sent from WhatsApp', () => {
   }
   const chatOf = async (phone = '923001234567') =>
     (await repo.findConversation(company.id, phone, 'whatsapp'))!;
-  // A chat's first reply starts with the automated-assistant notice (checked below); the
+  // A chat's first reply starts with the AI-assistant notice (checked below); the
   // replies are compared after it.
   const lastReply = async (phone?: string) => {
     const last = (await chatOf(phone)).messages.at(-1)!;
-    return { ...last, text: last.text.replace(/^.+automated assistant.+\n\n/u, '') };
+    return { ...last, text: last.text.replace(/^.+AI assistant.+\n\n/u, '') };
   };
   const message = (code: string) => `Hi! Please place my menu order. Code: ${code}`;
 

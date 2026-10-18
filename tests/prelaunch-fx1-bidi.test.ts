@@ -55,7 +55,7 @@ function turn(
 describe('Urdu notices keep Latin names and phone numbers in order', () => {
   it('starts the Urdu notice right-to-left and isolates a Latin business name', () => {
     const line = disclosureLine('Laziza', 'ur');
-    expect(line.startsWith('\u200F\u2068Laziza\u2069 کا خودکار اسسٹنٹ۔')).toBe(true);
+    expect(line.startsWith('\u200F\u2068Laziza\u2069 کا اے آئی اسسٹنٹ۔')).toBe(true);
     const sent = withDisclosure('Laziza', { messages: [] }, 'مینو یہ ہے۔', 'ur', now);
     expect(sent).toBe(`${line}\n\nمینو یہ ہے۔`);
     expect(
@@ -65,7 +65,7 @@ describe('Urdu notices keep Latin names and phone numbers in order', () => {
       ),
     ).toBe(false);
     expect(disclosureLine('Laziza', 'en')).toBe(
-      'Laziza’s automated assistant. Type “staff” anytime to talk to a person.',
+      'Laziza’s AI assistant. Type “staff” anytime to talk to a person.',
     );
   });
 

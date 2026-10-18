@@ -154,7 +154,11 @@ describe('compliance notes', () => {
     expect(notes).toContain('A number a customer types anyway is kept with the chat');
     expect(notes).not.toContain('no customer data appears in server or gateway logs');
     expect(notes).toContain('still to be confirmed in the live function and Railway logs');
-    expect(notes).toContain('does not use the word AI');
+    // The notice now says "AI assistant", in the words of the disclosure rule.
+    expect(notes).not.toContain('does not use the word AI');
+    expect(notes).toContain(
+      `The notice itself uses the rule's word: "<Restaurant>'s AI assistant"`,
+    );
   });
 
   it('state the operational purge as the policy does', () => {

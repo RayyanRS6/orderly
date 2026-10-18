@@ -31,7 +31,7 @@ Certainty: **high** = read in the primary source; **medium** = secondary sources
 - **Rule:** automated experiences need "prompt, clear, and direct escalation paths" to a person; businesses must not ask people to share full payment card numbers, financial account numbers or national ID card numbers.
 - **Source:** <https://whatsappbusiness.com/policy/>, last updated 23 September 2026. Checked 2026-10-18.
 - **Certainty:** high.
-- **Orderly today:** customers are told at the start of a chat that replies are automated and that typing "staff" reaches a person; staff can take over any chat; the Cloud API review message has a "Talk to staff" button. Orderly never asks for card, bank or CNIC numbers, and the Terms forbid businesses from asking for them in chat. A number a customer types anyway is kept with the chat until it is deleted; the privacy policy asks customers not to send them.
+- **Orderly today:** customers are told at the start of a chat that they are talking to the restaurant's AI assistant and that typing "staff" reaches a person; staff can take over any chat; the Cloud API review message has a "Talk to staff" button. Orderly never asks for card, bank or CNIC numbers, and the Terms forbid businesses from asking for them in chat. A number a customer types anyway is kept with the chat until it is deleted; the privacy policy asks customers not to send them.
 - **Open:** a fixed instruction in the AI prompt never to ask for card, bank or CNIC numbers (owner-written instructions are free text today).
 
 ### 1.4 Meta Commerce Policies
@@ -57,8 +57,8 @@ Certainty: **high** = read in the primary source; **medium** = secondary sources
 - **Rule:** consumer-facing chatbots "must disclose to users that they are interacting with AI rather than a human", "at a minimum at the beginning of each chat session".
 - **Source:** <https://www.anthropic.com/legal/archive/22742366-2ef0-4c7a-a833-6523f10d3944> (effective 15 September 2025); the version effective 12 November 2026 keeps it: <https://www.anthropic.com/legal/aup>. Checked 2026-10-18.
 - **Certainty:** high.
-- **Orderly today:** a fixed, localised notice that the owner cannot remove opens each chat session, and the privacy policy says replies are written by an automated assistant that uses AI. The notice itself says "<Restaurant>'s automated assistant" (Urdu "خودکار اسسٹنٹ", Roman Urdu "automated assistant") and does not use the word AI.
-- **Open:** consider wording the notice "AI assistant" to match the rule's words (`src/domain/disclosure.ts`). OpenAI's and Google's own disclosure rules were not verified; Orderly shows the notice for every provider anyway.
+- **Orderly today:** a fixed, localised notice that the owner cannot remove opens each chat session, and the privacy policy says replies are written by an automated assistant that uses AI. The notice itself uses the rule's word: "<Restaurant>'s AI assistant", then says to type "staff" anytime to talk to a person (Urdu "اے آئی اسسٹنٹ", Roman Urdu "AI assistant"; `src/domain/disclosure.ts`). A chat told in the earlier "automated assistant" wording within the last day is not told again.
+- **Open:** OpenAI's and Google's own disclosure rules were not verified; Orderly shows the notice for every provider anyway.
 
 ### 2.2 Anthropic and OpenAI API data use
 

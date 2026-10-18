@@ -18,15 +18,13 @@ describe('F12: every chat session starts with the automated-assistant notice', (
   const line = disclosureLine('Dastarkhwan', 'en');
 
   it('has fixed wording in each language', () => {
-    expect(line).toBe(
-      'Dastarkhwan’s automated assistant. Type “staff” anytime to talk to a person.',
-    );
+    expect(line).toBe('Dastarkhwan’s AI assistant. Type “staff” anytime to talk to a person.');
     expect(disclosureLine('Dastarkhwan', 'roman-ur')).toBe(
-      'Dastarkhwan ka automated assistant. Kisi insaan se baat karne ke liye kabhi bhi “staff” likhein.',
+      'Dastarkhwan ka AI assistant. Kisi insaan se baat karne ke liye kabhi bhi “staff” likhein.',
     );
     // Right-to-left from its first character, with the name in its own isolate.
     expect(disclosureLine('دسترخوان', 'ur')).toBe(
-      '\u200F\u2068دسترخوان\u2069 کا خودکار اسسٹنٹ۔ کسی انسان سے بات کرنے کے لیے کسی بھی وقت “عملہ” یا “staff” لکھیں۔',
+      '\u200F\u2068دسترخوان\u2069 کا اے آئی اسسٹنٹ۔ کسی انسان سے بات کرنے کے لیے کسی بھی وقت “عملہ” یا “staff” لکھیں۔',
     );
   });
 

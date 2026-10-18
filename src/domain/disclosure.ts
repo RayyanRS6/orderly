@@ -2,7 +2,7 @@ import type { Conversation, Language } from '../shared/types';
 import { normalizeText as normalize } from './pricing';
 
 /**
- * The automated-assistant notice every chat session starts with. Fixed wording that owner
+ * The AI-assistant notice every chat session starts with. Fixed wording that owner
  * settings cannot remove: only the business name changes. A session is a chat whose last
  * notice is more than a day old, or that staff handed back to the bot since.
  */
@@ -23,13 +23,17 @@ export function disclosureLine(businessName: string, lang: Language): string {
   const name = businessName.trim() || say(lang, 'This restaurant', 'اس ریسٹورنٹ', 'Is restaurant');
   return say(
     lang,
-    `${name}’s automated assistant. Type “staff” anytime to talk to a person.`,
-    `${RLM}${isolated(name)} کا خودکار اسسٹنٹ۔ کسی انسان سے بات کرنے کے لیے کسی بھی وقت “عملہ” یا “staff” لکھیں۔`,
-    `${name} ka automated assistant. Kisi insaan se baat karne ke liye kabhi bhi “staff” likhein.`,
+    `${name}’s AI assistant. Type “staff” anytime to talk to a person.`,
+    `${RLM}${isolated(name)} کا اے آئی اسسٹنٹ۔ کسی انسان سے بات کرنے کے لیے کسی بھی وقت “عملہ” یا “staff” لکھیں۔`,
+    `${name} ka AI assistant. Kisi insaan se baat karne ke liye kabhi bhi “staff” likhein.`,
   );
 }
-// The part of the notice that is the same for every business, in each language.
+// The part of the notice that is the same for every business, in each language. The earlier
+// "automated assistant" wording still counts, so a chat told within the last day is not told again.
 const MARKERS = [
+  'AI assistant. Type “staff” anytime to talk to a person.',
+  'کا اے آئی اسسٹنٹ۔ کسی انسان سے بات کرنے کے لیے',
+  'ka AI assistant. Kisi insaan se baat karne ke liye',
   'automated assistant. Type “staff” anytime to talk to a person.',
   'کا خودکار اسسٹنٹ۔ کسی انسان سے بات کرنے کے لیے',
   'ka automated assistant. Kisi insaan se baat karne ke liye',
