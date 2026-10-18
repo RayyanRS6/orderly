@@ -1010,84 +1010,111 @@ export async function changeOrderStatus(
 }
 // A customer's order is still waiting for the restaurant (the database queues this job 15
 // minutes after it was placed, once per order). They are told once, in their language, while
-// WhatsApp still lets the business write to them; otherwise nothing is sent. Telling them how
-// to cancel only where "cancel" is handled by itself.
+// WhatsApp still lets the business write to them; otherwise nothing is sent. It claims nothing
+// about staff (no one is reminded by it), and says how to cancel only where "cancel" would
+// cancel exactly this order: the bot handles the chat and its current order is this one.
 const FOLLOWUP_WINDOW_MS = 24 * 60 * 60 * 1000 - 5 * 60 * 1000;
 async function sendOrderFollowup(repo: Repository, stored: Company, job: Job) {
   const company = configuredCompany(stored);
-  const order = await repo.getOrder(company.id, String(job.payload.orderId));
-  const conversation =
-    order && order.conversationId === String(job.payload.conversationId)
-      ? await repo.getConversation(company.id, order.conversationId)
-      : undefined;
-  const messageId = `order-followup:${order?.id}`;
+  const due = await repo.getOrder(company.id, String(job.payload.orderId));
+  if (!due || due.conversationId !== String(job.payload.conversationId)) return;
+  // Under the chat's lock like any turn, so it never lands in the middle of one (which would
+  // make that turn start again and pay for its AI call twice). A busy chat is tried later.
+  const lockId = randomUUID();
   if (
-    !order ||
-    order.status !== 'pending' ||
-    order.sandbox ||
-    // Staff already spoke to the customer about this order on the phone.
-    order.phoneConfirmation?.outcome === 'confirmed' ||
-    order.phoneConfirmation?.outcome === 'declined' ||
-    automationPaused() ||
-    conversation?.channel !== 'whatsapp' ||
-    conversation.blocked ||
-    Date.now() - Date.parse(conversation.lastInboundAt) >= FOLLOWUP_WINDOW_MS ||
-    conversation.messages.some((m) => m.id === messageId)
+    !(await repo.acquireConversationLock(
+      company.id,
+      due.conversationId,
+      lockId,
+      new Date(Date.now() + workerLeaseMs()).toISOString(),
+    ))
   )
-    return;
-  const lang = noticeLanguage(company, conversation, '');
-  const cancels = conversation.mode === 'bot' && company.botEnabled;
-  const text = [
-    pick(
-      lang,
-      `Your order ${order.reference} hasn't been confirmed by the restaurant yet. We've flagged it to the restaurant.`,
-      `آپ کے آرڈر ${order.reference} کی ابھی ریسٹورنٹ نے تصدیق نہیں کی۔ ہم نے ریسٹورنٹ کو اس کی اطلاع دے دی ہے۔`,
-      `Aap ke order ${order.reference} ko abhi restaurant ne confirm nahi kiya. Humne restaurant ko iski ittela de di hai.`,
-    ),
-    ...(cancels
-      ? [
-          pick(
-            lang,
-            'Reply “cancel” if you want to cancel.',
-            'اگر آپ آرڈر منسوخ کرنا چاہتے ہیں تو “cancel” لکھیں۔',
-            'Order cancel karna ho to “cancel” likhein.',
-          ),
-        ]
-      : []),
-  ].join(' ');
-  const next: Conversation = {
-    ...conversation,
-    version: conversation.version + 1,
-    updatedAt: new Date().toISOString(),
-    messages: [
-      ...conversation.messages,
-      // Automatic, so a chat staff answered last does not look as if it waits for them again.
-      { id: messageId, role: 'assistant', text, createdAt: new Date().toISOString(), notice: true },
-    ],
-  };
-  // The order and status let the send drop the reminder if staff act on the order first.
-  const send = makeJob(company.id, 'whatsapp_send', {
-    ...jobAddress(conversation),
-    conversationId: conversation.id,
-    messageId,
-    text,
-    orderId: order.id,
-    status: 'pending',
-    source: 'notice',
-  });
-  if (!(await repo.commitTurn(company.id, next, conversation.version, undefined, [send])))
-    throw new PublicError('The conversation changed while processing. Retrying.', 409);
-  await repo
-    .addTrace({
-      id: randomUUID(),
-      companyId: company.id,
+    throw new PublicError('The conversation is busy. The reminder is tried again later.', 409);
+  try {
+    const order = await repo.getOrder(company.id, due.id);
+    const conversation = await repo.getConversation(company.id, due.conversationId);
+    const messageId = `order-followup:${due.id}`;
+    if (
+      !order ||
+      order.status !== 'pending' ||
+      order.sandbox ||
+      // Staff already spoke to the customer about this order on the phone.
+      order.phoneConfirmation?.outcome === 'confirmed' ||
+      order.phoneConfirmation?.outcome === 'declined' ||
+      automationPaused() ||
+      conversation?.channel !== 'whatsapp' ||
+      conversation.blocked ||
+      Date.now() - Date.parse(conversation.lastInboundAt) >= FOLLOWUP_WINDOW_MS ||
+      conversation.messages.some((m) => m.id === messageId)
+    )
+      return;
+    const lang = noticeLanguage(company, conversation, '');
+    const ref = order.reference;
+    const cancels =
+      conversation.mode === 'bot' &&
+      company.botEnabled &&
+      conversation.cart.orderId === order.id &&
+      conversation.cart.status === 'submitted';
+    const text = [
+      pick(
+        lang,
+        `Your order ${ref} is still waiting for the restaurant to accept it. You’ll get a message here when they accept or decline it.`,
+        `آپ کا آرڈر ${ref} ابھی ریسٹورنٹ کی منظوری کا منتظر ہے۔ ریسٹورنٹ کے منظور یا مسترد کرنے پر آپ کو یہیں پیغام مل جائے گا۔`,
+        `Aap ka order ${ref} abhi restaurant ki manzoori ka intezar kar raha hai. Restaurant ke accept ya decline karne par aap ko yahin message mil jayega.`,
+      ),
+      ...(cancels
+        ? [
+            pick(
+              lang,
+              `Reply “cancel” to cancel order ${ref}.`,
+              `آرڈر ${ref} منسوخ کرنا ہو تو “منسوخ” یا “cancel” لکھیں۔`,
+              `Order ${ref} cancel karna ho to “cancel” likhein.`,
+            ),
+          ]
+        : []),
+    ].join(' ');
+    const next: Conversation = {
+      ...conversation,
+      version: conversation.version + 1,
+      updatedAt: new Date().toISOString(),
+      messages: [
+        ...conversation.messages,
+        // Automatic, so a chat staff answered last does not look as if it waits for them again.
+        {
+          id: messageId,
+          role: 'assistant',
+          text,
+          createdAt: new Date().toISOString(),
+          notice: true,
+        },
+      ],
+    };
+    // The order and status let the send drop the reminder if staff act on the order first.
+    const send = makeJob(company.id, 'whatsapp_send', {
+      ...jobAddress(conversation),
       conversationId: conversation.id,
-      action: 'order_followup',
-      detail: `Told the customer that order ${order.reference} is still waiting for the restaurant.`,
-      createdAt: new Date().toISOString(),
-    })
-    .catch(() => undefined);
-  await dispatchJob(repo, send);
+      messageId,
+      text,
+      orderId: order.id,
+      status: 'pending',
+      source: 'notice',
+    });
+    if (!(await repo.commitTurn(company.id, next, conversation.version, undefined, [send])))
+      throw new PublicError('The conversation changed while processing. Retrying.', 409);
+    await repo
+      .addTrace({
+        id: randomUUID(),
+        companyId: company.id,
+        conversationId: conversation.id,
+        action: 'order_followup',
+        detail: `Told the customer that order ${ref} is still waiting for the restaurant.`,
+        createdAt: new Date().toISOString(),
+      })
+      .catch(() => undefined);
+    await dispatchJob(repo, send);
+  } finally {
+    await repo.releaseConversationLock(company.id, due.conversationId, lockId);
+  }
 }
 export async function queueReply(
   repo: Repository,
