@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { Page } from './workspace';
+import { SLUG_RE } from '../shared/slug';
 export const pages = [
   'overview',
   'orders',
@@ -28,7 +29,7 @@ export function parseRoute(path: string): {
     return { page: 'overview', valid: false };
   const page = (pieces[2] ?? 'overview') as Page;
   const valid =
-    /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(pieces[1]) &&
+    SLUG_RE.test(pieces[1]) &&
     pages.includes(page) &&
     (!pieces[3] || (['orders', 'inbox'].includes(page) && /^[a-z0-9-]+$/i.test(pieces[3])));
   return { slug: pieces[1], page, id: pieces[3], valid };

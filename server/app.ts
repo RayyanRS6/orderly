@@ -15,6 +15,7 @@ import type {
   OrderStatus,
 } from '../src/shared/types.js';
 import { createConversation } from '../src/domain/engine.js';
+import { slugify } from '../src/shared/slug.js';
 import { appMode, env } from './config.js';
 import {
   PublicError,
@@ -449,10 +450,7 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
     const company: Company = {
       ...body,
       id,
-      slug: `${body.name
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .slice(0, 70)}-${id.slice(0, 6)}`,
+      slug: `${slugify(body.name)}-${id.slice(0, 6)}`,
       timezone: 'Asia/Karachi',
       currency: 'PKR',
       botEnabled: false,
@@ -472,19 +470,36 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
   });
   app.put('/api/companies/:id', async (c) => {
     owner(c.get('role'));
-    if (c.req.param('id') !== c.get('company').id) throw new PublicError('Company not found.', 404);
-    const body = companySchema.parse(await c.req.json());
-    const company = {
-      ...c.get('company'),
+    const stored = c.get('company');
+    if (c.req.param('id') !== stored.id) throw new PublicError('Company not found.', 404);
+    const input = await c.req.json();
+    // Every save echoes the slug back. A business created before slugs were cleaned up may
+    // hold one the schema refuses, and its own slug must never block a save.
+    if (input && typeof input === 'object' && input.slug === stored.slug) delete input.slug;
+    const body = companySchema.parse(input);
+    // Fields the server manages keep their stored values whatever the body says: a stale or
+    // edited copy must not approve AI data sharing, stop Sheet refreshes (a future
+    // catalogSyncedAt), rename the workspace URL or allow linked-phone pairing.
+    const { id, slug, createdAt, catalogSyncedAt, privacy, linkedDeviceAllowed } = stored;
+    const company: Company = {
+      ...stored,
       ...body,
-      id: c.get('company').id,
-      createdAt: c.get('company').createdAt,
+      id,
+      slug,
+      createdAt,
+      catalogSyncedAt,
+      privacy,
+      linkedDeviceAllowed,
     };
     validateModelConfiguration(company);
+    // The AI data approval was given for one provider and model; another needs a new one,
+    // which only Connect and test records.
+    if (company.ai.provider !== stored.ai.provider || company.ai.model !== stored.ai.model)
+      company.privacy = { aiDataApproved: false, retentionDays: privacy?.retentionDays ?? 0 };
     // Only settings that change which model runs need a new test; a budget change does not.
     const tested = (ai: Company['ai']) =>
       JSON.stringify([ai.provider, ai.model, ai.pricing ?? null]);
-    if (tested(company.ai) !== tested(c.get('company').ai)) company.modelVerification = undefined;
+    if (tested(company.ai) !== tested(stored.ai)) company.modelVerification = undefined;
     if (appMode() === 'live' && company.botEnabled) {
       const missing = (await readiness(repo, company)).filter((check) => !check.ready);
       if (missing.length)
@@ -740,10 +755,10 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
         ...c.get('company'),
         botEnabled: false,
         modelVerification: undefined,
+        // A new key may belong to another account, so its terms are approved again.
         privacy:
           kind === c.get('company').ai.provider
             ? {
-                ...c.get('company').privacy,
                 aiDataApproved: false,
                 retentionDays: c.get('company').privacy?.retentionDays ?? 0,
               }

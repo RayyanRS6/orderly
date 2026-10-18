@@ -3,6 +3,7 @@ import type { Repository } from './repository';
 import { providerKey } from './integrations/models';
 import { modelFingerprint } from './integrations/model-catalog';
 import { gatewayAvailable } from './whatsapp/client';
+import { AI_TERMS_VERSION } from './validation';
 
 export async function readiness(repo: Repository, company: Company): Promise<ReadinessCheck[]> {
   const [products, integrations] = await Promise.all([
@@ -30,6 +31,14 @@ export async function readiness(repo: Repository, company: Company): Promise<Rea
       : (!connection || connection.status !== 'disconnected') &&
         whatsapp?.status === 'connected' &&
         !!whatsapp.config.ownershipVerifiedAt;
+  // An approval from before the provider-account confirmations existed still counts, so live
+  // bots keep answering, but the owner is asked to confirm them with Connect and test.
+  const approval = company.privacy?.aiApproval;
+  const confirmed =
+    approval?.version === AI_TERMS_VERSION &&
+    approval.provider === company.ai.provider &&
+    approval.noTrainingOptIn &&
+    (company.ai.provider !== 'gemini' || approval.paidTierAttested);
   return [
     { id: 'bot', label: 'Publish a bot configuration', ready: !!company.bot?.published },
     { id: 'menu', label: 'Add an available menu item', ready: products.some((p) => p.available) },
@@ -38,6 +47,14 @@ export async function readiness(repo: Repository, company: Company): Promise<Rea
       id: 'privacy',
       label: 'Accept the AI data agreement (part of Connect and test)',
       ready: !!company.privacy?.aiDataApproved,
+      ...(company.privacy?.aiDataApproved &&
+        company.ai.provider !== 'mock' &&
+        !confirmed && {
+          warning:
+            company.ai.provider === 'gemini'
+              ? 'Click Connect and test again to confirm the Gemini key is on a paid (billed) Google Cloud project and no data-sharing or training opt-in is on.'
+              : 'Click Connect and test again to confirm no data-sharing or training opt-in is on for the AI provider account.',
+        }),
     },
     {
       id: 'whatsapp',

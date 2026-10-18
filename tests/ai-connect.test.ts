@@ -60,6 +60,7 @@ const connect = (body: Record<string, unknown>) =>
     provider: 'anthropic',
     model: 'claude-haiku-5-5',
     approve: true,
+    attest: { noTrainingOptIn: true },
     ...body,
   });
 const stored = async () => (await repo.getCompany(company.id))!;
