@@ -27,6 +27,7 @@ import {
   limitPaused,
   noticeLanguage,
   orderSafetyLine,
+  orderStatusText,
   processTurn,
   resumesAfterLimit,
   resumesAfterPause,
@@ -379,7 +380,12 @@ export async function handleTurn(
           company,
           conversation,
           input,
-          'The menu connection needs attention. A staff member will help you complete your order.',
+          pick(
+            noticeLanguage(company, conversation, input.text),
+            'We can’t load our menu right now. A staff member will reply here to help with your order.',
+            'ابھی ہمارا مینو لوڈ نہیں ہو رہا۔ عملے کا ایک رکن یہیں آپ کے آرڈر میں مدد کرے گا۔',
+            'Abhi hamara menu load nahi ho raha. Staff ka koi member yahin aap ke order mein madad karega.',
+          ),
           'menu_sync',
           refresh.error,
         );
@@ -542,11 +548,17 @@ export async function handleTurn(
         c.lastInboundAt = new Date(
           Math.max(Date.parse(c.lastInboundAt), Date.parse(input.now)),
         ).toISOString();
+        const lang = noticeLanguage(company, conversation, input.text);
         const reply = disclosed(
           company,
           conversation,
-          `Order ${order.reference} has been cancelled.`,
-          noticeLanguage(company, conversation, input.text),
+          pick(
+            lang,
+            `Order ${order.reference} has been cancelled.`,
+            `آرڈر ${order.reference} منسوخ کر دیا گیا ہے۔`,
+            `Order ${order.reference} cancel kar diya gaya hai.`,
+          ),
+          lang,
           input.now,
         );
         const explanation = describeTurn({
@@ -587,9 +599,20 @@ export async function handleTurn(
       actions,
       modelResponse,
     );
+    const replyId = `${input.messageId}:reply`;
+    // A refused pickup or delivery choice in the customer's language, on the stored reply too.
+    if (result.reply && result.traces.some((trace) => trace.startsWith('validation_failed:'))) {
+      const localized = localizedRefusals(result.reply, result.conversation.language);
+      const stored = result.conversation.messages.find(
+        (m) => m.id === replyId && m.role === 'assistant',
+      );
+      if (localized !== result.reply && stored?.text === result.reply) {
+        stored.text = localized;
+        result.reply = localized;
+      }
+    }
     // The automated-assistant notice, on the stored reply too (the next turn reads it). A review
     // that would grow past WhatsApp's 1,024 characters for buttons gets it on the next reply.
-    const replyId = `${input.messageId}:reply`;
     const withNotice = result.reply
       ? disclosed(company, conversation, result.reply, result.conversation.language, input.now)
       : result.reply;
@@ -830,6 +853,80 @@ function lateNotice(lang: Language, cart: Cart): string {
 }
 const pick = (lang: Language, en: string, ur: string, roman: string) =>
   lang === 'ur' ? ur : lang === 'roman-ur' ? roman : en;
+/**
+ * The engine words a refused pickup or delivery choice in English only (fulfillmentRefusal in
+ * src/domain/engine.ts), behind the customer's own language. Those exact sentences are said in
+ * the customer's language here, with the same words the engine uses when it asks for the
+ * choice, and the English one loses its "fulfillment choice" jargon. Nothing else is changed.
+ */
+export function localizedRefusals(text: string, lang: Language): string {
+  return text
+    .replace(
+      /This restaurant currently offers (pickup|delivery) only\.( Please update your fulfillment choice\.)?/g,
+      (sentence, offered: 'pickup' | 'delivery', update?: string) =>
+        pick(
+          lang,
+          update
+            ? `This restaurant currently offers ${offered} only. Please choose ${offered}.`
+            : sentence,
+          offered === 'pickup'
+            ? 'ابھی صرف پک اپ دستیاب ہے۔ براہ کرم پک اپ منتخب کریں۔'
+            : 'ابھی صرف ڈیلیوری دستیاب ہے۔ براہ کرم ڈیلیوری منتخب کریں۔',
+          `Abhi sirf ${offered} available hai. Meherbani karke ${offered} chunein.`,
+        ),
+    )
+    .replace(
+      'Ordering in this chat is not available right now. Please ask our staff for help.',
+      pick(
+        lang,
+        'Ordering in this chat is not available right now. Please ask our staff for help.',
+        'ابھی اس چیٹ میں آرڈر دستیاب نہیں ہے۔ براہ کرم عملے سے رابطہ کریں۔',
+        'Abhi is chat mein order available nahi hai. Meherbani karke staff se baat karein.',
+      ),
+    )
+    .replace(
+      'We do not deliver right now.',
+      pick(
+        lang,
+        'We do not deliver right now.',
+        'ابھی ہم ڈیلیوری نہیں کر رہے۔',
+        'Abhi hum delivery nahi kar rahe.',
+      ),
+    )
+    .replace(/We deliver to: ([^\n]+)\./, (sentence, zones: string) =>
+      pick(
+        lang,
+        sentence,
+        `ہم ان علاقوں میں ڈیلیوری کرتے ہیں: ${zones}۔`,
+        `Hum in ilaqon mein delivery karte hain: ${zones}.`,
+      ),
+    );
+}
+/**
+ * The customer's notice for an order status change, in their language. English keeps the
+ * standard "Order X is now …" line; Urdu and Roman Urdu use the engine's own status wording.
+ */
+export function statusNoticeText(
+  company: Company,
+  conversation: Conversation | undefined,
+  order: Order,
+  status: Order['status'],
+  now = new Date().toISOString(),
+): string {
+  const lang = conversation ? noticeLanguage(company, conversation, '') : 'en';
+  if (lang === 'en') return `Order ${order.reference} is now ${status.replaceAll('_', ' ')}.`;
+  return orderStatusText(
+    lang,
+    {
+      reference: order.reference,
+      status,
+      fulfillment: order.fulfillment,
+      createdAt: order.createdAt,
+      updatedAt: now,
+    },
+    now,
+  ).split('\n')[0]!;
+}
 // The automated-assistant notice that starts every chat session, on WhatsApp chats only.
 function disclosed(
   company: Company,

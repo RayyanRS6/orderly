@@ -29,6 +29,7 @@ import {
   refreshCatalog,
   changeOrderStatus,
   processJob,
+  statusNoticeText,
 } from './service.js';
 import { dispatchJob, makeJob, recoverJobs } from './jobs.js';
 import { finishSignup, signupSchema } from './integrations/signup.js';
@@ -668,13 +669,19 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
     } catch (error) {
       throw new PublicError(error instanceof Error ? error.message : 'Invalid order transition.');
     }
-    const updated = await changeOrderStatus(repo, order, status);
+    // The customer is told in their language; the chat keeps a copy of exactly what was sent.
+    const text = statusNoticeText(
+      c.get('company'),
+      await repo.getConversation(order.companyId, order.conversationId),
+      order,
+      status,
+    );
+    const updated = await changeOrderStatus(repo, order, status, undefined, undefined, text);
     // The order already had this status: nothing was sent, so the chat gets no notice either.
     if (updated.status === order.status) return c.json(updated);
     // The chat's copy of the status message the customer is sent. Marked as a notice, so a
     // customer still waiting for a staff reply stays under "Needs staff" and in staff alerts. A
     // chat that changed meanwhile is read again.
-    const text = `Order ${order.reference} is now ${status.replaceAll('_', ' ')}.`;
     for (let attempt = 1; attempt <= 3; attempt++) {
       const conversation = await repo.getConversation(order.companyId, order.conversationId);
       if (!conversation) break;
