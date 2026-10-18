@@ -319,6 +319,8 @@ export class Supervisor {
           'identity',
           'route',
           'seen',
+          'seen-id',
+          'placeholder',
           'own',
           'receipts',
           'sent',

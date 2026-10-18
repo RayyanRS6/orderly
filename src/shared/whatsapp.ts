@@ -90,6 +90,34 @@ export const sendCommandSchema = z
     lastInboundAt: z.string().datetime(),
   })
   .strict();
+// How a caption or a shared location reaches the bot as customer text, worded the same on both
+// WhatsApp routes. The media itself is never downloaded; the marker tells the bot (and staff
+// reading the chat) that something came with the words. No maps link is built: links in replies
+// are checked against the restaurant's own.
+export function captionText(caption: string, media: 'photo' | 'video' | 'document'): string {
+  const marker = ` (sent with a ${media})`;
+  return `${caption.trim().slice(0, 4000 - marker.length)}${marker}`;
+}
+export function locationText(location: {
+  latitude?: number | null;
+  longitude?: number | null;
+  name?: string | null;
+  address?: string | null;
+}): string | undefined {
+  const { latitude, longitude } = location;
+  const parts = [location.name, location.address].map((part) => part?.replace(/\s+/g, ' ').trim());
+  const place = [...new Set(parts.filter(Boolean))].join(', ').slice(0, 300);
+  const valid =
+    typeof latitude === 'number' &&
+    typeof longitude === 'number' &&
+    Number.isFinite(latitude) &&
+    Number.isFinite(longitude) &&
+    Math.abs(latitude) <= 90 &&
+    Math.abs(longitude) <= 180;
+  if (!valid && !place) return;
+  const coordinates = valid ? `(${+latitude.toFixed(6)}, ${+longitude.toFixed(6)})` : '';
+  return ['Location shared:', place, coordinates].filter(Boolean).join(' ');
+}
 export function sameAddress(a?: WhatsAppAddress, b?: WhatsAppAddress): boolean {
   return (
     !!a &&

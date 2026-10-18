@@ -17,8 +17,17 @@ import { loadConfig } from './config.js';
 import { Store } from './store.js';
 import { canonicalJid, phoneFromJid, heartbeatDue, reconnectDecision, TICK_MS } from './policy.js';
 import { sendOnce, recoverUncertainSends } from './sender.js';
-import { drainOnce, EVENT_BATCH, retryDeadEvents, safeMessageId } from './drain.js';
-import { chatContent, receiptStatus, upsertedMessages } from './upserts.js';
+import { drainOnce, EVENT_BATCH, retryDeadEvents } from './drain.js';
+import { chatContent, messageText, receiptStatus, upsertedMessages } from './upserts.js';
+import { mapIdentity, messageIdentity } from './routing.js';
+import {
+  awaitsContent,
+  expiredPlaceholders,
+  holdPlaceholder,
+  inboundTarget,
+  isSeen,
+  queueMessage,
+} from './inbound.js';
 import { signedHeaders } from '../../server/whatsapp/signing.js';
 import {
   GATEWAY_HEARTBEAT_MS,
@@ -45,6 +54,7 @@ let restarts = 0;
 let openedAt = 0;
 let lastStatusAt = 0;
 let codeRequested = false;
+let conflictLogged = false;
 let draining = false;
 let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 let drainAgain = false;
@@ -169,23 +179,20 @@ function pruneSent() {
   for (const row of store.list<{ at: number }>('sent'))
     if (Date.now() - row.value.at > SENT_RETENTION_MS) store.delete('sent', row.id);
 }
-function mapIdentity(lidValue?: string, pnValue?: string) {
-  const lid = canonicalJid(lidValue);
-  const pn = canonicalJid(pnValue);
-  if (!lid?.endsWith('@lid') || !pn?.endsWith('@s.whatsapp.net')) return;
-  store.transaction(() => {
-    const route = store.get<string>('route', lid) ?? store.get<string>('route', pn) ?? lid;
-    store.set('identity', lid, pn);
-    store.set('route', lid, route);
-    store.set('route', pn, route);
-  });
+// The business's own JIDs, never mapped to a customer.
+const self = () => [canonicalJid(socket?.user?.id), canonicalJid(socket?.user?.lid)];
+function linkIdentity(lid?: string | null, pn?: string | null) {
+  if (mapIdentity(store, lid, pn, self()) === 'conflict' && !conflictLogged) {
+    conflictLogged = true;
+    // Code only: no JIDs or phone numbers in logs.
+    process.send?.({ type: 'warning', code: 'ROUTE_CONFLICT' });
+  }
 }
 function incoming(message: WAMessage) {
-  const native = canonicalJid(message.key.remoteJid);
-  const id = message.key.id;
-  const content = chatContent(message.message);
-  if (!native || !id || !content) return;
-  if (message.key.fromMe && store.get('own', id)) return;
+  const target = inboundTarget(store, message);
+  if (!target) return;
+  const { id, native, held, fromMe } = target;
+  if (fromMe && store.get('own', id)) return;
   const timestamp = Number(message.messageTimestamp) * 1000;
   if (
     !Number.isFinite(timestamp) ||
@@ -193,35 +200,40 @@ function incoming(message: WAMessage) {
     timestamp < Date.now() - 86400000
   )
     return;
-  const seenId = `${native}:${id}`;
-  if (store.get('seen', seenId)) return;
+  const content = chatContent(message.message);
+  if (!content) {
+    // Held until its content arrives; staff are told if it never does (see the tick below).
+    if (awaitsContent(message) && !isSeen(store, native, id, fromMe))
+      holdPlaceholder(store, id, native, timestamp, Date.now());
+    return;
+  }
+  if (isSeen(store, native, id, fromMe)) {
+    if (held) store.delete('placeholder', id);
+    return;
+  }
+  // Before choosing the chat: a LID message that names the customer's phone joins the chat
+  // already kept for that phone, and the other way round.
+  const identity = messageIdentity(native, message.key);
+  if (identity) linkIdentity(identity.lid, identity.pn);
+  enqueue(native, id, timestamp, messageText(content), fromMe);
+}
+function enqueue(native: string, id: string, timestamp: number, text: string, fromMe: boolean) {
   if (store.count('events') >= 10000) {
     fail('INBOUND_QUEUE_FULL');
     return;
   }
-  const peer = store.get<string>('route', native) ?? native;
-  store.set('route', native, peer);
-  const text = (content.conversation ?? content.extendedTextMessage?.text ?? '').slice(0, 4000);
-  const mapped = store.get<string>('identity', native);
-  store.transaction(() => {
-    // Durable dedupe and enqueue commit together, before the model can be called.
-    const value: GatewayEvent = {
-      eventId: randomUUID(),
-      connectionId,
-      generation,
-      type: 'message',
-      peer,
-      messageId: safeMessageId(id),
-      text,
-      fromMe: !!message.key.fromMe,
-      unsupported: !text,
-      phoneNumber: phoneFromJid(mapped ?? native),
-      timestamp: new Date(timestamp).toISOString(),
-    };
-    store.set('events', value.eventId, value);
-    store.set('seen', seenId, Date.now());
-  });
+  queueMessage(store, { connectionId, generation, native, id, timestamp, text, fromMe });
   void drain().catch(() => fail('EVENT_STORAGE_FAILURE'));
+}
+// A customer message whose content never reached this device goes to staff (as unsupported
+// media does) instead of vanishing. Copies that arrived meanwhile were already taken.
+function releasePlaceholders() {
+  const now = Date.now();
+  for (const { id, value } of expiredPlaceholders(store, now)) {
+    if (value.timestamp >= now - 86400000 && !isSeen(store, value.native, id, false))
+      enqueue(value.native, id, value.timestamp, '', false);
+    else store.delete('placeholder', id);
+  }
 }
 function fail(code: string) {
   if (stopped || failed) return;
@@ -292,13 +304,13 @@ async function connect() {
   }, 1000);
   currentSocket.ev.on('creds.update', () => guard(persistCreds));
   currentSocket.ev.on('chats.phoneNumberShare', ({ lid, jid }) =>
-    guard(() => mapIdentity(lid, jid)),
+    guard(() => linkIdentity(lid, jid)),
   );
   for (const name of ['contacts.upsert', 'contacts.update'] as const)
     currentSocket.ev.on(name, (contacts) =>
       guard(() => {
         for (const c of contacts)
-          mapIdentity(
+          linkIdentity(
             c.lid ?? (c.id?.endsWith('@lid') ? c.id : undefined),
             c.jid ?? (c.id?.endsWith('@s.whatsapp.net') ? c.id : undefined),
           );
@@ -310,7 +322,8 @@ async function connect() {
       // were batched behind our own reply or delivered after a reconnect. incoming()
       // skips our own replies, old and duplicate messages; history sync is disabled.
       if (currentSocket !== socket) return;
-      for (const message of upsertedMessages(update)) {
+      const held = (id: string) => !!store.get('placeholder', id);
+      for (const message of upsertedMessages(update, held)) {
         receipt(message.key, message.status);
         incoming(message);
       }
@@ -496,6 +509,7 @@ setInterval(
       if (status === 'connected' && heartbeatDue(lastStatusAt, Date.now(), GATEWAY_HEARTBEAT_MS))
         setStatus('connected');
       pruneSent();
+      releasePlaceholders();
       await drain();
       await retryDeadEvents(store, postEvent);
     }),

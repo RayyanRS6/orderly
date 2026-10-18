@@ -139,7 +139,15 @@ test('a crashed worker is restarted with its real failure code kept for Orderly'
 
 // F24: set-aside customer messages hold message text, so a disconnect or new pairing wipes
 // them like the rest of the session's queue.
-const SESSION_NAMESPACES = ['events', 'dead-events', 'route', 'identity', 'seen'];
+const SESSION_NAMESPACES = [
+  'events',
+  'dead-events',
+  'route',
+  'identity',
+  'seen',
+  'seen-id',
+  'placeholder',
+];
 test('disconnecting clears set-aside messages together with the queue', async () => {
   const { dataDir, config } = setup();
   const supervisor = new Supervisor(config, worker);
