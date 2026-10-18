@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { MemoryRepository } from '../server/repository';
 import { jobAddress, receiveGatewayEvent } from '../server/whatsapp/connections';
 import { makeJob } from '../server/jobs';
+import { workerLeaseMs } from '../server/config';
 import { handleTurn, processJob } from '../server/service';
 import { createConversation, processTurn } from '../src/domain/engine';
 import { seedCompanies, seedProducts } from '../src/shared/seed';
@@ -426,13 +427,14 @@ describe('WhatsApp delivery', () => {
       async () => new Response(JSON.stringify({ messageId: 'wa-ok' }), { status: 200 }),
     );
     vi.stubGlobal('fetch', fetch);
-    // A worker died mid-send 200 s ago: its job still says 'processing' with a long lease.
+    // A worker died mid-send 100 s ago: its job still says 'processing' for the rest of its
+    // worker lease (180 s by default), longer than a send may take.
     const abandoned = reply('abandoned', 300000);
     await repo.insertJob(abandoned);
     await repo.claimJob(
       abandoned.id,
       new Date().toISOString(),
-      new Date(Date.now() + 480000 - 200000).toISOString(),
+      new Date(Date.now() + workerLeaseMs() - 100000).toISOString(),
     );
     const next = reply('next', 1000);
     await repo.insertJob(next);

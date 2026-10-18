@@ -1,4 +1,4 @@
-import { botConfig } from '../shared/bot';
+import { botConfig, offeredFulfillment } from '../shared/bot';
 import type {
   BotAction,
   BotConfig,
@@ -19,7 +19,12 @@ import type {
 } from '../shared/types';
 import { money } from '../shared/types';
 import { effectiveAiLimits, MODEL_LIMITS } from '../shared/models';
-import { quantityFromText, resolveItemMention, resolvePendingItemChoice } from './menu-resolver';
+import {
+  mentionsQuantity,
+  quantityBefore,
+  resolveItemMention,
+  resolvePendingItemChoice,
+} from './menu-resolver';
 import { normalizeText as normalize, quoteCart, type CartQuote } from './pricing';
 export { quoteCart, type CartQuote } from './pricing';
 
@@ -108,7 +113,14 @@ export function limitNotice(lang: Language, cart: Cart): string {
     'آپ کے پیغام کا شکریہ! ہماری ٹیم جلد یہیں جواب دے گی۔',
     'Aap ke message ka shukriya! Hamari team jald yahin jawab degi.',
   );
-  const order = cart.orderId
+  const order = orderSafetyLine(lang, cart);
+  return order ? `${base} ${order}` : base;
+}
+// Whether the customer's order is safe, for any notice that hands the chat to staff: a placed
+// order is not affected, an unplaced cart is not placed yet, and an empty cart needs no line.
+// A submitted cart keeps its items, so the order is checked first.
+export function orderSafetyLine(lang: Language, cart: Cart): string {
+  return cart.orderId
     ? say(
         lang,
         'Your order is not affected.',
@@ -123,10 +135,43 @@ export function limitNotice(lang: Language, cart: Cart): string {
           'Aap ka order abhi place nahi hua.',
         )
       : '';
+}
+// What a customer is told when the AI model could not be reached.
+export function aiErrorNotice(lang: Language, cart: Cart): string {
+  const base = say(
+    lang,
+    'I’m having trouble connecting right now. A staff member will reply here soon.',
+    'ابھی رابطے میں مسئلہ ہے۔ عملے کا ایک رکن جلد یہیں جواب دے گا۔',
+    'Abhi connection mein masla hai. Staff ka koi member jald yahin jawab dega.',
+  );
+  const order = orderSafetyLine(lang, cart);
   return order ? `${base} ${order}` : base;
 }
 export const asksForPerson = (text: string) =>
   /\b(human|staff|manager|person|insaan)\b|عملہ|انسان|مینیجر/u.test(normalize(text));
+// A whole message asking to cancel the order: "Cancel.", "please cancel my order", "order cancel
+// kar dein please", "آرڈر منسوخ کر دیں". A cancelled pending order cannot be restored, so only
+// this closed set counts: "don't cancel", "cancel mat karo" or "cancel the raita" never do.
+const CANCEL_REQUEST = new RegExp(
+  [
+    '^(?:(?:please|pls|plz|ji|bhai|sir|براہ کرم|پلیز|جی) )*',
+    '(?:',
+    'cancel(?: (?:my|the|this))?(?: order)?',
+    '|(?:(?:my|the|this|mera|meri|mere) )?order cancel',
+    '|(?:(?:میرا|یہ) )?(?:آرڈر )?(?:منسوخ|کینسل)',
+    ')',
+    '(?: (?:karo|kar ?do|kar ?dein|kar ?dain|kar ?den|kr ?do|kr ?dein|kar ?dijiye|kar ?dijye|kar ?de|کر دیں|کریں|کر دو|کرو|کردیں|کر دیجیے|کر دیجئے))?',
+    '(?: (?:please|pls|plz|ji|bhai|sir|پلیز|جی))*$',
+  ].join(''),
+  'u',
+);
+export const asksToCancelOrder = (text: string) =>
+  CANCEL_REQUEST.test(
+    normalize(text)
+      .replace(/[.!?؟،۔,]+/gu, ' ')
+      .replace(/\s+/g, ' ')
+      .trim(),
+  );
 
 function languageOf(text: string, previous: Language): Language {
   if (/[\u0600-\u06ff]/u.test(text)) return 'ur';
@@ -142,10 +187,16 @@ const say = (lang: Language, en: string, ur: string, roman: string) =>
   lang === 'ur' ? ur : lang === 'roman-ur' ? roman : en;
 function invalidate(cart: Cart) {
   cart.revision += 1;
+  unreview(cart);
+}
+// Back to building without a cart change: nothing is confirmable until a review is shown again.
+function unreview(cart: Cart) {
   cart.status = 'building';
   delete cart.reviewedRevision;
   delete cart.quoteHash;
   delete cart.quotedTotal;
+  delete cart.reviewMessageId;
+  delete cart.reviewedAt;
 }
 
 export function isOpen(company: Company, now: string): boolean {
@@ -244,6 +295,22 @@ export function closedText(company: Company, lang: Language): string {
   );
 }
 
+const noChatOrdering = (lang: Language) =>
+  say(
+    lang,
+    'Ordering in this chat is not available right now. Please ask our staff for help.',
+    'ابھی اس چیٹ میں آرڈر دستیاب نہیں ہے۔ براہ کرم عملے سے رابطہ کریں۔',
+    'Abhi is chat mein order available nahi hai. Meherbani karke staff se baat karein.',
+  );
+// The engine's own refusal of a pickup/delivery choice the restaurant does not offer.
+function fulfillmentRefusal(company: Company, chosen: 'pickup' | 'delivery'): string | undefined {
+  const offered = offeredFulfillment(company);
+  if (offered === 'both' || offered === chosen) return undefined;
+  return offered
+    ? `This restaurant currently offers ${offered} only.`
+    : 'Ordering in this chat is not available right now. Please ask our staff for help.';
+}
+
 function missingDetails(company: Company, cart: Cart, lang: Language): string | undefined {
   if (!cart.items.length)
     return say(
@@ -252,7 +319,18 @@ function missingDetails(company: Company, cart: Cart, lang: Language): string | 
       'آپ کیا آرڈر کرنا چاہیں گے؟',
       'Aap kya order karna chahenge?',
     );
-  if (!cart.fulfillment)
+  const offered = offeredFulfillment(company);
+  if (!offered) return noChatOrdering(lang);
+  if (cart.fulfillment && offered !== 'both' && cart.fulfillment !== offered)
+    return say(
+      lang,
+      `We currently offer ${offered} only. Please choose ${offered}.`,
+      offered === 'pickup'
+        ? 'ابھی صرف پک اپ دستیاب ہے۔ براہ کرم پک اپ منتخب کریں۔'
+        : 'ابھی صرف ڈیلیوری دستیاب ہے۔ براہ کرم ڈیلیوری منتخب کریں۔',
+      `Abhi sirf ${offered} available hai. Meherbani karke ${offered} chunein.`,
+    );
+  if (!cart.fulfillment && offered === 'both')
     return say(
       lang,
       'Would you like pickup or delivery?',
@@ -266,14 +344,16 @@ function missingDetails(company: Company, cart: Cart, lang: Language): string | 
       'آرڈر کے لیے آپ کا نام کیا ہے؟',
       'Order ke liye aap ka naam kya hai?',
     );
-  if (cart.fulfillment === 'delivery' && !cart.zone)
+  // The only option on offer is the customer's, without asking.
+  const fulfillment = cart.fulfillment ?? offered;
+  if (fulfillment === 'delivery' && !cart.zone)
     return say(
       lang,
       `Which delivery area? ${company.deliveryZones.map((z) => z.name).join(', ')}.`,
       `ڈیلیوری کا علاقہ بتائیں: ${company.deliveryZones.map((z) => z.name).join('، ')}۔`,
       `Delivery ka ilaqa batayein: ${company.deliveryZones.map((z) => z.name).join(', ')}.`,
     );
-  if (cart.fulfillment === 'delivery' && !cart.address?.trim())
+  if (fulfillment === 'delivery' && !cart.address?.trim())
     return say(
       lang,
       'Please send your complete delivery address.',
@@ -336,9 +416,18 @@ export function isCartSummaryRequest(text: string): boolean {
   );
 }
 
-function review(company: Company, products: Product[], cart: Cart, lang: Language): string {
+// While closed, the review shows the order but is not confirmable: the cart stays 'building', so
+// no Confirm button is attached and a later "confirm" gets a fresh review.
+function review(
+  company: Company,
+  products: Product[],
+  cart: Cart,
+  lang: Language,
+  now: string,
+): string {
   const missing = missingDetails(company, cart, lang);
   if (missing) return `${cartSummary(company, products, cart, lang)}\n\n${missing}`;
+  const open = isOpen(company, now);
   const quote = quoteCart(company, products, cart);
   const lines = quote.items
     .map(
@@ -352,15 +441,26 @@ function review(company: Company, products: Product[], cart: Cart, lang: Languag
     `\n${cart.fulfillment === 'delivery' ? `Delivery: ${cart.address} (${cart.zone})` : 'Pickup'} · ${cart.customerName}`,
     `${say(lang, 'Delivery fee', 'ڈیلیوری فیس', 'Delivery fee')}: ${money(quote.deliveryFee)}`,
     `${say(lang, 'Total', 'کل رقم', 'Total')}: ${money(quote.total)}`,
-    say(
-      lang,
-      '\nReply “confirm” to submit this order for restaurant acceptance.',
-      '\nریسٹورنٹ کی منظوری کے لیے آرڈر بھیجنے کو “تصدیق” لکھیں۔',
-      '\nRestaurant ki manzoori ke liye “confirm” ya “haan” likhein.',
-    ),
+    open
+      ? say(
+          lang,
+          '\nReply “confirm” to submit this order for restaurant acceptance.',
+          '\nریسٹورنٹ کی منظوری کے لیے آرڈر بھیجنے کو “تصدیق” لکھیں۔',
+          '\nRestaurant ki manzoori ke liye “confirm” ya “haan” likhein.',
+        )
+      : `\n${closedText(company, lang)}${say(
+          lang,
+          ' Your cart is saved. Send “review” when we are open.',
+          ' آپ کی ٹوکری محفوظ ہے۔ ہمارے کھلنے پر “جائزہ” لکھیں۔',
+          ' Cart save hai. Jab hum khule hon to “review” likhein.',
+        )}`,
   ].join('\n');
   if (text.length > 3500)
     throw new Error('This order is too large for one message. Please ask staff to complete it.');
+  if (!open) {
+    unreview(cart);
+    return text;
+  }
   cart.status = 'awaiting_confirmation';
   cart.reviewedRevision = cart.revision;
   cart.quoteHash = quote.hash;
@@ -657,18 +757,170 @@ export function inventsLink(
   });
 }
 
-const affirmative = (text: string) =>
-  /^(confirm(?: order| it)?|yes(?: please)?|yes confirm|place (?:my |the )?order|submit(?: order)?|haan(?: ji)?|han(?: ji)?|ji(?: haan| han)?|tasdeeq|order confirm(?: kar do| kardo)?|تصدیق|ہاں(?: جی)?|جی(?: ہاں)?|آرڈر کنفرم|کنفرم|تصدیق کریں)[.!،۔\s]*$/u.test(
-    normalize(text),
-  );
+// Consent to place a reviewed order, read from the whole message. Explicit wording ("Yes,
+// confirm", "confirm kar dein ✅", "place order", "جی کنفرم") counts against the latest review; a
+// bare "yes", "ok", "haan" or "ٹھیک ہے" only straight after the review itself, since it may
+// answer any question. A question, a negation or any other word (an item, a detail) is never
+// consent: "confirm?", "confirm nahi", "yes, add raita", "2 more naan, confirm".
+const YES_WORDS =
+  'yes|yess+|yeah|yep|yup|ok|okay|okey|okk+|sure|haan|han|haan ji|han ji|ji haan|ji han|ji|jee|g|theek hai|thik hai|theek|thik|bilkul|جی|ہاں|جی ہاں|ہاں جی|ٹھیک ہے|ٹھیک|اوکے';
+const FILLERS = 'please|pls|plz|ji|jee|g|bhai|sir|پلیز|جی';
+const EXPLICIT_CONSENT = new RegExp(
+  `^(?:(?:${YES_WORDS}|${FILLERS}|abhi) ){0,3}(?:confirm(?:ed)?(?: (?:my |the |this )?order| it)?|order confirm(?:ed)?|(?:place|submit) (?:my |the |this )?order|order place|submit|tasdeeq|کنفرم|تصدیق|آرڈر کنفرم|آرڈر کی تصدیق)(?: (?:kar ?do|kar ?dein|kar ?dain|kar ?den|karo|kr ?do|kr ?dein|kar ?dijiye|kar ?dijye|kar ?de|کر دیں|کریں|کر دو|کرو|کردیں|کر دیجیے|کر دیجئے|کیجیے|کیجئے))?(?: (?:${FILLERS}|now))*$`,
+  'u',
+);
+const BARE_CONSENT = new RegExp(
+  `^(?:(?:${FILLERS}) )?(?:${YES_WORDS}|order kar ?do|order kar ?dein|order kar ?dain|آرڈر کر دیں)(?: (?:${FILLERS}|hai))*$`,
+  'u',
+);
+// ✅ ✔ ☑ 👍 👌 🙏 with skin tones and joiners. Any other emoji leaves a word that is not consent.
+const POSITIVE_MARK =
+  '[\\u2705\\u2714\\u2611\\u{1F44D}\\u{1F44C}\\u{1F64F}\\u{1F3FB}-\\u{1F3FF}\\uFE0F\\u200D]';
+function consent(text: string): 'explicit' | 'bare' | undefined {
+  const value = normalize(text);
+  if (
+    /[?؟❌✖\u{1F6AB}\u{1F44E}]|نہیں|مت(?:\s|$)/u.test(value) ||
+    /\b(?:no|not|nahi|nahin|nai|nhi|mat|dont|don['’]t|never|cancel)\b/u.test(value)
+  )
+    return undefined;
+  const words = value
+    .replace(new RegExp(POSITIVE_MARK, 'gu'), ' ')
+    .replace(/[.!,،۔]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (EXPLICIT_CONSENT.test(words)) return 'explicit';
+  if (BARE_CONSENT.test(words) || (!words && new RegExp(POSITIVE_MARK, 'u').test(value)))
+    return 'bare';
+  return undefined;
+}
+// The message a customer is answering: the one before theirs. parseActions also runs before the
+// message is saved (for the AI's hint), so a trailing copy of this very text is skipped.
+function answeredMessage(conversation: Conversation, text: string) {
+  const last = conversation.messages.at(-1);
+  return last?.role === 'customer' && last.text === text.slice(0, 4000)
+    ? conversation.messages.at(-2)
+    : last;
+}
+// Whether that message is the review this cart awaits confirmation against, and it was delivered.
+const isLatestReview = (cart: Cart, message?: Conversation['messages'][number]) =>
+  cart.status === 'awaiting_confirmation' &&
+  !!cart.reviewMessageId &&
+  message?.role === 'assistant' &&
+  message.id === cart.reviewMessageId &&
+  message.delivery !== 'failed';
+// A review older than this is shown again before an order is placed from it.
+const REVIEW_FRESH_MS = 60 * 60 * 1000;
 function contains(text: string, phrase: string): boolean {
   const p = normalize(phrase).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(`(^|[^\\p{L}\\p{N}])${p}(?=$|[^\\p{L}\\p{N}])`, 'u').test(normalize(text));
 }
-const unsafeModelText = (text: string) =>
-  /(?:\b(?:rs\.?|pkr)\s*[\d۰-۹٠-٩]|\b(?:total|price|cost)\s*(?:(?:is|of|:|=)\s*)?[\d۰-۹٠-٩]|\b(?:order\s+)?(?:accepted|approved|submitted|placed|confirmed|delivered|dispatched|completed)\b)/iu.test(
-    text,
+// AI wording that states a price or an order outcome: only the engine words those. Outcomes in
+// Roman Urdu, Urdu and English are tied to the order (or payment) as their subject, so "aap ka
+// naam save ho gaya hai" or "ہم کل ۱۲ بجے کھلیں گے" (کل is also tomorrow) pass. Prices need a
+// currency next to the digits ("450/-", "450 rupay", "۴۵۰ روپے", "500 PKR"). After an order is
+// submitted, saying it was received is true, so that one claim is allowed then.
+const OUTCOME_VERBS =
+  'confirm|place|book|submit|accept|approve|receive|deliver|dispatch|rawana|complete';
+const RECEIVED_VERBS = 'receive';
+const outcomeClaim = (verbs: string) =>
+  new RegExp(
+    `\\b(?:order|payment|adaigi)\\b[^.!?\\n]{0,30}?\\b(?:${verbs})\\w*\\s*(?:ho|hu|kar|kr)\\s*(?:gaya|gayi|gya|gyi|gai|gaye|ge|diya|diye|dia|di|liya|liye|lia|li|chuka|chuki|chuke)\\b`,
+    'u',
   );
+const ROMAN_OUTCOME = outcomeClaim(OUTCOME_VERBS.replace(`|${RECEIVED_VERBS}`, ''));
+const ROMAN_RECEIVED = outcomeClaim(RECEIVED_VERBS);
+const URDU_DONE = '(?:ہو|کر)\\s?(?:گیا|گئی|گئے|دیا|دی|دیے|لیا|لی|چکا|چکی|چکے)';
+const URDU_OUTCOME = new RegExp(
+  `(?:آرڈر|ادائیگی)[^۔.!?؟\\n]{0,30}?(?:کنفرم|بک|منظور|روانہ|تصدیق|ڈیلیور|قبول)[^۔.!?؟\\n]{0,10}?${URDU_DONE}`,
+  'u',
+);
+const URDU_RECEIVED = new RegExp(
+  `(?:آرڈر|ادائیگی)[^۔.!?؟\\n]{0,30}?(?:موصول|وصول)[^۔.!?؟\\n]{0,10}?${URDU_DONE}`,
+  'u',
+);
+const ENGLISH_STATUS =
+  /\b(?:order|payment)\b[^.!?\n]{0,30}?\b(?:on (?:its|the) way|being prepared|out for delivery)\b/u;
+const ENGLISH_RECEIVED = /\b(?:order|payment)\b[^.!?\n]{0,30}?\breceived\b/u;
+const RUPEE_PRICE =
+  /\d[\d,]*(?:\.\d+)?\s*(?:\/-|(?:rupees?|rupay|rupaye|rupaiye|rupe|rupiya|rs|pkr)\b|روپے|روپیہ|روپئے|روپیے)|(?:\b(?:rupees?|rupay|rupaye)|روپے)\s*\d|(?:\b(?:qeemat|keemat|kimat)\b|قیمت|ٹوٹل)\s*(?:[:=]\s*)?\d/u;
+function unsafeModelText(text: string, submitted = false): boolean {
+  if (
+    /(?:\b(?:rs\.?|pkr)\s*[\d۰-۹٠-٩]|\b(?:total|price|cost)\s*(?:(?:is|of|:|=)\s*)?[\d۰-۹٠-٩]|\b(?:order\s+)?(?:accepted|approved|submitted|placed|confirmed|delivered|dispatched|completed)\b)/iu.test(
+      text,
+    )
+  )
+    return true;
+  const value = normalize(text);
+  return (
+    RUPEE_PRICE.test(value) ||
+    ROMAN_OUTCOME.test(value) ||
+    URDU_OUTCOME.test(value) ||
+    ENGLISH_STATUS.test(value) ||
+    (!submitted &&
+      (ROMAN_RECEIVED.test(value) || URDU_RECEIVED.test(value) || ENGLISH_RECEIVED.test(value)))
+  );
+}
+
+// Allergens in English, Roman Urdu and Urdu. A dish named after one ("doodh patti", "anda
+// paratha", "peanut shake", "til naan") is not a question, so they count only in a question
+// about what a dish contains or whether it is safe.
+const ALLERGENS =
+  '(?:tree )?nuts?|peanuts?|almonds?|cashews?|pistachios?|walnuts?|gluten|wheat|dairy|lactose|milk|eggs?|shellfish|prawns?|shrimps?|crabs?|lobsters?|fish|sesame|soy|soya|mustard|moong ?phali|mung ?phali|mong ?phali|badam|kaju|pista|akhrot|meva|mewa|anda|anday|ande|andey|doodh|dudh|til|jheenga|jhinga|gandum|machli|machhli';
+const URDU_ALLERGENS =
+  'مونگ پھلی|مونگپھلی|گری|گریاں|میوہ|میوے|بادام|کاجو|پستہ|پستے|اخروٹ|انڈا|انڈے|دودھ|گلوٹین|گندم|تل|جھینگا|جھینگے|مچھلی|سویا';
+const ALLERGY_WORDS = /\bal+erg|\bal+erj|\bintoleran|\bc(?:o)?eliac\b|\banaphyla|الرج|حساسیت/u;
+const ALLERGEN_QUESTION = new RegExp(
+  [
+    `\\b(?:${ALLERGENS})[- ]?free\\b`,
+    `\\bfree (?:of|from) (?:any )?(?:${ALLERGENS})\\b`,
+    `\\bcontain(?:s|ing)?\\b[^.!?]{0,40}\\b(?:${ALLERGENS})\\b`,
+    `\\b(?:is|are) there (?:any |some )?(?:${ALLERGENS})\\b`,
+    `\\bany (?:${ALLERGENS}) (?:in|on)\\b`,
+    `\\b(?:does|do|did|will)\\s+(?!you\\b|u\\b|we\\b|i\\b)(?:\\S+\\s+){0,3}(?:have|has|use|contain)\\s+(?:any\\s+|some\\s+)?(?:${ALLERGENS})\\b`,
+    `\\b(?:have|has)\\s+(?:any\\s+)?(?:${ALLERGENS}) in (?:it|them|this|that)\\b`,
+    `\\b(?:made|cooked|fried|prepared)\\s+(?:with|in|using)\\s+(?:any\\s+)?(?:\\S+\\s+)?(?:${ALLERGENS})\\b`,
+    `\\b(?:${ALLERGENS})\\b[^.!?]{0,30}\\bsafe\\b|\\bsafe\\b[^.!?]{0,30}\\b(?:${ALLERGENS})\\b`,
+    `\\b(?:${ALLERGENS}) in [^.!]*\\?`,
+    `(?<!menu )\\b(?:mein|me|main|mai|andar) (?:koi |kuch |bhi )?(?:${ALLERGENS}) (?:to |bhi )?(?:nahi |nahin |nai )?(?:hai|hain|he|hy|h|hota|hoti|hote|dala|daala|dali|dalta|dalte|dalti|parta|padta|parti|padti|hoga|hogi|honge)\\b`,
+    `\\b(?:${ALLERGENS}) (?:to )?(?:nahi |nahin )?(?:hai|hain|hota|hoti|dala|daala|dalte) (?:na|kya)\\b`,
+    `(?<!مینو )میں (?:کوئی |کچھ )?(?:${URDU_ALLERGENS}) (?:تو )?(?:نہیں )?(?:ہے|ہیں|ہوتا|ہوتی|ہوتے|ڈالا|ڈالتے|ڈالی|پڑتا|پڑتی|ہوگا|ہوگی)`,
+    `(?:${URDU_ALLERGENS}) (?:تو )?(?:نہیں )?(?:ہے|ہیں) کیا`,
+    `(?:${URDU_ALLERGENS}) سے پاک`,
+  ].join('|'),
+  'u',
+);
+/** Whether the customer asks about allergies, or whether a dish contains or is safe from an allergen. */
+export const asksAboutAllergens = (text: string) => {
+  const value = normalize(text);
+  return ALLERGY_WORDS.test(value) || ALLERGEN_QUESTION.test(value);
+};
+// "No fish today" or "we don't have doodh patti" is about the menu, so "no …" and "don't …"
+// count only for the allergens people ask to avoid.
+const AVOIDED =
+  '(?:tree )?nuts?|peanuts?|almonds?|cashews?|gluten|dairy|lactose|eggs?|shellfish|sesame|soy|soya|allergens?|moong ?phali|mung ?phali|badam|kaju|meva|mewa';
+const SAFETY_ASSURANCE = new RegExp(
+  [
+    `\\b(?:${ALLERGENS}|allerg(?:y|en|ens|ies))[- ]?free\\b`,
+    `\\b(?:allerg(?:y|en)|nut|peanut)[- ]?(?:safe|friendly)\\b`,
+    `\\bsafe (?:for|to) (?:eat|you|your|people|someone|anyone|those|kids|children|everyone|allerg\\w*|nut\\w*|peanut\\w*|gluten|c(?:o)?eliac|dairy|lactose)\\b`,
+    `\\b(?:no|zero|free of|free from|contains no|without any) (?:${AVOIDED})\\b`,
+    `\\b(?:does ?n[o'’]?t|did ?n[o'’]?t|won['’]t|will not|never) (?:contain|have|include|use) (?:any )?(?:${ALLERGENS})\\b`,
+    `\\bdo ?n[o'’]?t (?:contain|include|use) (?:any )?(?:${ALLERGENS})\\b`,
+    `\\b(?:${ALLERGENS}) (?:(?:to|bhi|bilkul|koi) )?(?:nahi|nahin|nai|nhi)\\b`,
+    `\\bsafe (?:hai|hain|he|hy|h|hoga|rahega)\\b|\\bbilkul safe\\b`,
+    `\\ballerg\\w* (?:ka |ki |ke )?(?:koi )?(?:khatra|masla|problem|issue) nahi`,
+  ].join('|'),
+  'u',
+);
+const URDU_ASSURANCE = new RegExp(
+  `(?:${URDU_ALLERGENS}|الرج\\S*) (?:(?:تو|بھی|بالکل|کوئی) )?(?:نہیں|سے پاک)|(?:${URDU_ALLERGENS}|الرج)[^۔.!?؟]*محفوظ`,
+  'u',
+);
+/** Whether AI wording reassures a customer that a dish is safe from an allergen. */
+export const assuresSafety = (text: string) => {
+  const value = normalize(text);
+  return SAFETY_ASSURANCE.test(value) || URDU_ASSURANCE.test(value);
+};
 function requestedOptions(products: Product[], text: string): string[] {
   return [
     ...new Set(
@@ -692,8 +944,7 @@ export function parseActions(
   // Interruptions and browsing are not answers to an outstanding item choice.
   if (/^(new order|start over|restart|naya order|نیا آرڈر)[.!،۔\s]*$/u.test(value))
     return [{ type: 'new_order' }];
-  if (/^(cancel(?: order)?|cancel karo|cancel kardo|منسوخ|آرڈر منسوخ)[.!،۔\s]*$/u.test(value))
-    return [{ type: 'cancel' }];
+  if (asksToCancelOrder(text)) return [{ type: 'cancel' }];
   if (asksForPerson(text)) return [{ type: 'handoff' }];
   if (/\b(?:do not|don't|dont|not|no)\s+(?:want|add|need)|نہیں چاہیے|nahi chahiye/u.test(value))
     return [{ type: 'answer', text: '' }];
@@ -735,18 +986,16 @@ export function parseActions(
         ...conversation.pendingItemChoice.requestedOptionNames,
         ...requestedOptions([selected], text),
       ];
-      const explicitQuantity =
-        !/^option\b/u.test(value) &&
-        /(?:^|\s)(?:\d{1,2}|one|two|three|four|five|ek|aik|do|teen|char|panch|ایک|دو|تین|چار|پانچ)\s+\p{L}/u.test(
-          value,
-        );
+      // Only a count written right before the chosen dish changes the one asked about: "3 naan"
+      // or "house 12" in the same message is not this dish's count.
+      const explicitQuantity = !/^option\b/u.test(value)
+        ? quantityBefore(selected, text)
+        : undefined;
       return [
         {
           type: 'add_item',
           productId: selected.id,
-          quantity: explicitQuantity
-            ? quantityFromText(text)
-            : conversation.pendingItemChoice.quantity,
+          quantity: explicitQuantity ?? conversation.pendingItemChoice.quantity,
           variantId:
             selected.variants.find((option) => contains(text, option.name))?.id ??
             selected.variants.find((option) =>
@@ -771,7 +1020,15 @@ export function parseActions(
         },
       ];
   }
-  if (affirmative(value)) return [{ type: 'confirm' }];
+  // A bare "yes" may answer any question, so it means confirm only straight after the review.
+  // Otherwise it is an acknowledgement, never a dish ("haan" is one letter from "naan").
+  const agreed = consent(text);
+  if (
+    agreed === 'explicit' ||
+    (agreed === 'bare' && isLatestReview(conversation.cart, answeredMessage(conversation, text)))
+  )
+    return [{ type: 'confirm' }];
+  if (agreed === 'bare') return [{ type: 'answer', text: '' }];
   if (
     /^(menu|show menu|show me (?:the )?menu|مینو|menu dikhao|menu bhej(?: do)?|salam|salaam|hello|hi|السلام علیکم)[.!،۔\s]*$/u.test(
       value,
@@ -975,7 +1232,112 @@ const CORRECTION_TRACES = new Set([
   'invalid_model_prompt_ignored',
   'response_fallback',
   'invented_link_ignored',
+  'allergy_assurance_ignored',
+  'allergy_question_guarded',
 ]);
+
+// The owner's approved answer about allergies (an FAQ or knowledge entry), sent word for word.
+// One whose question is about allergies wins over one that only mentions them in its answer.
+function approvedAllergyAnswer(company: Company, menuLink?: string): string | undefined {
+  const about = (text: string) => ALLERGY_WORDS.test(normalize(text));
+  const faq =
+    company.faqs.find((f) => about(f.question) && f.answer.trim()) ??
+    company.faqs.find((f) => about(f.answer));
+  return faq ? fillMenuLink(faq.answer, menuLink).trim() || undefined : undefined;
+}
+const allergyNotice = (company: Company, lang: Language) =>
+  say(
+    lang,
+    `We can’t confirm allergens or ingredients in this chat. A staff member will reply here to help you.${company.phone ? ` You can also call us on ${company.phone}.` : ''}`,
+    `ہم اس چیٹ میں الرجی یا اجزا کی تصدیق نہیں کر سکتے۔ عملے کا ایک رکن یہیں آپ کو جواب دے گا۔${company.phone ? ` آپ ہمیں ${company.phone} پر کال بھی کر سکتے ہیں۔` : ''}`,
+    `Hum is chat mein allergy ya ingredients confirm nahi kar sakte. Staff ka koi member yahin aap ko jawab dega.${company.phone ? ` Aap hamein ${company.phone} par call bhi kar sakte hain.` : ''}`,
+  );
+
+// A question about the order this chat placed: "where is my order?", "kitni der?", "آرڈر کہاں ہے؟".
+const ORDER_STATUS_QUESTION =
+  /\bwhere(?:'s| is)? (?:is )?(?:my |the |our )?(?:order|food|rider|delivery)\b|\border status\b|^status\b|\bstatus of (?:my |the )?order\b|\btrack(?:ing)? (?:my |the )?order\b|\bhow (?:much )?long(?:er)?\b|\bwhen will (?:it|my order|the order|the food) (?:come|arrive|be ready|reach|be delivered)\b|\bis (?:it|my order|the order) (?:ready|coming|on the way|confirmed|accepted)\b|\bany update\b|\beta\b|\b(?:order|khana|rider)\s+(?:abhi tak\s+)?(?:kahan|kidhar|kab)\b|\bkahan (?:hai|reh gaya|pohncha)\b|\bkitni der\b|\bkitna (?:time|waqt)\b|\bkab (?:tak )?(?:aaye?ga|aayega|ayega|milega|pohnche?ga|ready hoga|aaega)\b|\border ka (?:kya )?status\b|\bstatus (?:kya hai|batao|bata dein|batayein)\b|(?:آرڈر|کھانا|رائیڈر)\s(?:\S+\s){0,3}?کہاں|کہاں (?:ہے|رہ گیا|پہنچا)|کتنی دیر|کب (?:تک )?(?:آئے گا|ملے گا|پہنچے گا)|آرڈر کی (?:صورتحال|حالت)|اسٹیٹس|سٹیٹس/u;
+export const asksOrderStatus = (text: string) => ORDER_STATUS_QUESTION.test(normalize(text));
+/** The engine's status line for a placed order: its status and how long since it last changed. */
+export function orderStatusText(
+  lang: Language,
+  order: NonNullable<TurnInput['latestOrder']>,
+  now: string,
+): string {
+  const ref = order.reference;
+  const pickup = order.fulfillment === 'pickup';
+  const again = say(
+    lang,
+    ' Send “new order” to order again.',
+    ' دوبارہ آرڈر کے لیے “نیا آرڈر” لکھیں۔',
+    ' Dobara order ke liye “new order” likhein.',
+  );
+  const status: Record<OrderStatus, string> = {
+    pending: say(
+      lang,
+      `Order ${ref} is waiting for the restaurant to accept it.`,
+      `آرڈر ${ref} ریسٹورنٹ کی منظوری کا انتظار کر رہا ہے۔`,
+      `Order ${ref} restaurant ki manzoori ka intezar kar raha hai.`,
+    ),
+    accepted: say(
+      lang,
+      `The restaurant has accepted order ${ref}.`,
+      `ریسٹورنٹ نے آرڈر ${ref} منظور کر لیا ہے۔`,
+      `Restaurant ne order ${ref} accept kar liya hai.`,
+    ),
+    preparing: say(
+      lang,
+      `Order ${ref} is being prepared.`,
+      `آرڈر ${ref} تیار ہو رہا ہے۔`,
+      `Order ${ref} tayyar ho raha hai.`,
+    ),
+    ready: pickup
+      ? say(
+          lang,
+          `Order ${ref} is ready for pickup.`,
+          `آرڈر ${ref} پک اپ کے لیے تیار ہے۔`,
+          `Order ${ref} pickup ke liye tayyar hai.`,
+        )
+      : say(lang, `Order ${ref} is ready.`, `آرڈر ${ref} تیار ہے۔`, `Order ${ref} tayyar hai.`),
+    out_for_delivery: say(
+      lang,
+      `Order ${ref} is out for delivery.`,
+      `آرڈر ${ref} ڈیلیوری کے لیے روانہ ہو چکا ہے۔`,
+      `Order ${ref} delivery ke liye nikal chuka hai.`,
+    ),
+    completed:
+      say(
+        lang,
+        `Order ${ref} is completed.`,
+        `آرڈر ${ref} مکمل ہو چکا ہے۔`,
+        `Order ${ref} mukammal ho chuka hai.`,
+      ) + again,
+    rejected:
+      say(
+        lang,
+        `The restaurant could not accept order ${ref}.`,
+        `ریسٹورنٹ آرڈر ${ref} قبول نہیں کر سکا۔`,
+        `Restaurant order ${ref} accept nahi kar saka.`,
+      ) + again,
+    cancelled:
+      say(
+        lang,
+        `Order ${ref} was cancelled.`,
+        `آرڈر ${ref} منسوخ ہو چکا ہے۔`,
+        `Order ${ref} cancel ho chuka hai.`,
+      ) + again,
+  };
+  const minutes = Math.floor((Date.parse(now) - Date.parse(order.updatedAt)) / 60000);
+  const updated =
+    !Number.isFinite(minutes) || minutes < 1
+      ? say(lang, 'Last update: just now.', 'آخری اپڈیٹ: ابھی ابھی۔', 'Aakhri update: abhi abhi.')
+      : say(
+          lang,
+          `Last update: ${minutes} minute${minutes === 1 ? '' : 's'} ago.`,
+          `آخری اپڈیٹ: ${minutes} منٹ پہلے۔`,
+          `Aakhri update: ${minutes} minute pehle.`,
+        );
+  return `${status[order.status] ?? say(lang, `Order ${ref} has been received.`, `آرڈر ${ref} موصول ہوا۔`, `Order ${ref} receive ho gaya.`)}\n${updated}`;
+}
 
 export function processTurn(
   company: Company,
@@ -1023,8 +1385,19 @@ export function processTurn(
   const invents = (text: string) => inventsLink(text, hosts, fromChat);
   // The menu page's own address is not an outcome claim, whatever words its slug holds.
   const claims = (text: string) =>
-    unsafeModelText(input.menuLink ? text.replaceAll(input.menuLink, '') : text);
-  const unsafe = (text: string) => claims(text) || invents(text);
+    unsafeModelText(
+      input.menuLink ? text.replaceAll(input.menuLink, '') : text,
+      conversation.cart.status === 'submitted',
+    );
+  // An allergy reassurance only in the owner's own approved words, quoted exactly.
+  const ownerWording = [
+    ...company.faqs.map((faq) => faq.answer),
+    ...configuration.behaviorRules.map((rule) => rule.response),
+  ].map((text) => normalize(text));
+  const assures = (text: string) =>
+    assuresSafety(text) &&
+    !ownerWording.some((owner) => !!text.trim() && owner.includes(normalize(text)));
+  const unsafe = (text: string) => claims(text) || assures(text) || invents(text);
   // The menu page link is filled in (or left out) where each text is chosen, before any
   // check reads it: a text left empty counts as missing, so the turn never goes silent.
   if (modelResponse?.text.includes('{menu_link}'))
@@ -1067,6 +1440,43 @@ export function processTurn(
     hash: cart.quoteHash,
     status: cart.status,
   };
+  // A typed confirmation answers the message just before it. It counts only when that message
+  // is the review the cart awaits (not an answer, a staff message or a notice since), the review
+  // reached the customer, and it is under an hour old.
+  const reviewAnswered = isLatestReview(conversation.cart, conversation.messages.at(-1));
+  const reviewAge = cart.reviewedAt ? Date.parse(input.now) - Date.parse(cart.reviewedAt) : NaN;
+  const reviewFresh = reviewAge >= 0 && reviewAge <= REVIEW_FRESH_MS;
+  // The review text this turn shows, so finish() records which reply carried it.
+  let shownReview: string | undefined;
+  const showReview = () => {
+    const text = review(company, products, cart, lang, input.now);
+    if (cart.status === 'awaiting_confirmation') shownReview = text;
+    return text;
+  };
+  // Only a choice the restaurant offers: with one option, it is the customer's without asking.
+  const offered = offeredFulfillment(company);
+  const settleFulfillment = () => {
+    if (!cart.fulfillment && (offered === 'pickup' || offered === 'delivery'))
+      cart.fulfillment = offered;
+  };
+  // Allergy questions get the owner's approved words, or a fixed notice and a person; never AI
+  // wording. A follow-up question straight after one about a dish or "it" ("and the karahi?",
+  // "so it's safe?") is guarded too; a menu request or another topic is not.
+  const lastAsked = conversation.messages
+    .slice(-4)
+    .reverse()
+    .find((m) => m.role === 'customer');
+  const allergyQuestion =
+    !input.action &&
+    (asksAboutAllergens(input.text) ||
+      (!!lastAsked &&
+        asksAboutAllergens(lastAsked.text) &&
+        /[?؟]/u.test(input.text) &&
+        !asksForMenu(input.text) &&
+        (/\b(?:safe|it|its|it's|that|this|them|these|those|bhi|yeh|ye|woh|wo)\b|محفوظ|یہ|وہ|بھی/u.test(
+          normalize(input.text),
+        ) ||
+          resolveItemMention(products, company.id, input.text).kind !== 'none')));
   let reply = '',
     order: Order | undefined;
   const cartFacts: string[] = [];
@@ -1148,6 +1558,7 @@ export function processTurn(
             'unconfirmed_model_action_rejected',
             'fresh_confirmation_required',
             'confirm',
+            'order_status',
           ].includes(trace),
       ) ||
       (traces.includes('review') && !incompleteReviewQuestion) ||
@@ -1169,7 +1580,32 @@ export function processTurn(
       modelWrote || answerByModel ? 'used' : answerUnsafe ? 'unsafe' : 'none';
     if (matchedRule?.action === 'handoff') next.mode = 'human';
     let configuredResponseUsed = false;
-    if (!protectedReply && exactResponse) {
+    if (allergyQuestion) {
+      // The engine's own lines (cart facts, a review, a refusal) stay. Then the owner's approved
+      // allergy answer word for word, or a fixed notice and a person: AI wording, and owner text
+      // written for something else, never vouch for what a dish contains.
+      const approved = approvedAllergyAnswer(company, input.menuLink);
+      const kept = transactional || protectedReply ? reply : '';
+      const answer = approved ?? allergyNotice(company, lang);
+      reply = [
+        kept,
+        kept.includes(answer) ? '' : answer,
+        approved ? incompleteReviewQuestion : undefined,
+      ]
+        .filter(Boolean)
+        .join('\n\n');
+      parts = [...(kept ? ['engine' as const] : []), approved ? 'approved_answer' : 'engine'];
+      if (approved && !traces.includes('approved_faq')) traces.push('approved_faq');
+      if (!approved) {
+        next.mode = 'human';
+        delete next.botPausedAt;
+        delete next.limitPause;
+        if (!traces.includes('handoff')) traces.push('handoff');
+      }
+      traces.push('allergy_question_guarded');
+      if (modelWrote || answerByModel) modelText = 'protected';
+      configuredResponseUsed = true;
+    } else if (!protectedReply && exactResponse) {
       parts = transactional && reply ? [...parts, 'exact_rule'] : ['exact_rule'];
       if (modelWrote) modelText = 'exact_rule';
       reply = transactional && reply ? `${reply}\n\n${exactResponse}` : exactResponse;
@@ -1220,6 +1656,8 @@ export function processTurn(
     if (modelResponse && !grounded) traces.push('invalid_model_grounding_ignored');
     if (modelResponse?.text && claims(modelResponse.text))
       traces.push('unsafe_model_response_ignored');
+    else if (modelResponse?.text && assures(modelResponse.text))
+      traces.push('allergy_assurance_ignored');
     else if (modelResponse?.text && invents(modelResponse.text))
       traces.push('invented_link_ignored');
     if (modelResponse?.askFor && !validAskFor && !parts.includes('model'))
@@ -1250,11 +1688,18 @@ export function processTurn(
       parts = ['fallback'];
     };
     if (!reply && next.mode === 'bot') fallback();
-    if (traces.includes('handoff') && handoffMessage && !exactResponse) {
+    if (traces.includes('handoff') && handoffMessage && !exactResponse && !allergyQuestion) {
       reply = handoffMessage;
       parts = ['handoff_message'];
     }
-    if (company.bot?.published && reply && !matchedRule && !protectedReply && next.mode === 'bot') {
+    if (
+      company.bot?.published &&
+      reply &&
+      !matchedRule &&
+      !protectedReply &&
+      !allergyQuestion &&
+      next.mode === 'bot'
+    ) {
       const greeting = fillMenuLink(configuration.greeting ?? '', input.menuLink);
       if (/^(hi|hello|salam|سلام|ہیلو)$/iu.test(input.text.trim()) && greeting) {
         reply = greeting;
@@ -1273,6 +1718,7 @@ export function processTurn(
       next.mode === 'bot' &&
       !parts.includes('exact_rule') &&
       !parts.includes('approved_answer') &&
+      !allergyQuestion &&
       asksForMenu(input.text) &&
       !hasMenuLink(reply, input.menuLink) &&
       products.some((product) => product.companyId === company.id)
@@ -1281,6 +1727,14 @@ export function processTurn(
       if (!parts.includes('engine')) parts.push('engine');
     }
     if (modelText === 'used' && !parts.includes('model')) modelText = 'replaced';
+    // Confirmation counts only against the reply that showed the review. A review the final
+    // reply does not carry (replaced by a handoff or an error) was never seen: not confirmable.
+    if (shownReview && cart.status === 'awaiting_confirmation') {
+      if (reply.includes(shownReview)) {
+        cart.reviewMessageId = `${input.messageId}:reply`;
+        cart.reviewedAt = input.now;
+      } else unreview(cart);
+    }
     if (reply)
       next.messages.push({
         id: `${input.messageId}:reply`,
@@ -1325,6 +1779,19 @@ export function processTurn(
     traces.push('human_mode_message_saved');
     return finish();
   }
+  // "Where is my order?" about the order this chat placed: the engine states its real status,
+  // never the AI, whatever the AI proposed.
+  if (
+    !input.action &&
+    input.latestOrder &&
+    cart.orderId &&
+    (cart.status === 'submitted' || cart.status === 'cancelled') &&
+    asksOrderStatus(input.text)
+  ) {
+    traces.push('order_status');
+    reply = orderStatusText(lang, input.latestOrder, input.now);
+    return finish();
+  }
   let requested = input.action
     ? [input.action]
     : (actions ?? parseActions(company, products, next, input.text));
@@ -1358,11 +1825,27 @@ export function processTurn(
       (requested.some((action) => action.type === 'clarify_item') || next.pendingItemChoice)
     ) {
       // A specific name/ordinal resolves the outstanding choice; keep its options and quantity.
+      // The count: one written right before the dish (the parser's); else the AI's when the
+      // customer wrote that number ("chicken biryani, make it 3"); else the pending choice's,
+      // so an AI that forgot "2 chicken" still adds 2, and "aur 3 naan" stays the naan's.
+      const pending = next.pendingItemChoice?.candidateProductIds.includes(first.productId)
+        ? next.pendingItemChoice
+        : undefined;
+      const product = products.find((p) => p.id === first.productId);
+      const explicit = !!product && quantityBefore(product, input.text) !== undefined;
+      const quantityFor = (proposed: number) =>
+        !pending || explicit
+          ? first.quantity
+          : proposed === pending.quantity || mentionsQuantity(input.text, proposed)
+            ? proposed
+            : first.quantity;
       requested = requested.map((action) => {
-        if (action.type === 'clarify_item') return first;
+        if (action.type === 'clarify_item')
+          return { ...first, quantity: quantityFor(action.quantity) };
         if (action.type === 'add_item' && action.productId === first.productId)
           return {
             ...first,
+            quantity: quantityFor(action.quantity),
             variantId: action.variantId ?? first.variantId,
             modifierIds: action.modifierIds?.length ? action.modifierIds : first.modifierIds,
             notes: action.notes?.trim() ? action.notes : first.notes,
@@ -1499,7 +1982,10 @@ export function processTurn(
         if (!faq && !modelResponse && actions && !input.action && proposed) {
           if (unsafeClaim) {
             answerUnsafe = true;
-            if (!claims(proposed)) answerUnsafeTrace = 'invented_link_ignored';
+            if (!claims(proposed))
+              answerUnsafeTrace = assures(proposed)
+                ? 'allergy_assurance_ignored'
+                : 'invented_link_ignored';
           } else modelAnswer = proposed;
         }
         traces.push(faq ? 'approved_faq' : 'grounded_model_answer');
@@ -1550,6 +2036,7 @@ export function processTurn(
         cart.items = trial.items;
         delete next.pendingItemChoice;
         invalidate(cart);
+        settleFulfillment();
         const product = products.find(
           (p) => p.id === action.productId && p.companyId === company.id,
         )!;
@@ -1596,12 +2083,8 @@ export function processTurn(
         ]);
         if (action.fulfillment && !['pickup', 'delivery'].includes(action.fulfillment))
           throw new Error('Choose pickup or delivery.');
-        if (
-          action.fulfillment &&
-          configuration.fulfillment !== 'both' &&
-          action.fulfillment !== configuration.fulfillment
-        )
-          throw new Error(`This restaurant currently offers ${configuration.fulfillment} only.`);
+        const refused = action.fulfillment && fulfillmentRefusal(company, action.fulfillment);
+        if (refused) throw new Error(refused);
         if (action.customerName !== undefined) {
           const name = action.customerName.trim();
           if (name.length < 2 || name.length > 80)
@@ -1620,7 +2103,9 @@ export function processTurn(
           );
           if (!zone)
             throw new Error(
-              `We deliver to: ${company.deliveryZones.map((z) => z.name).join(', ')}.`,
+              company.deliveryZones.length
+                ? `We deliver to: ${company.deliveryZones.map((z) => z.name).join(', ')}.`
+                : (fulfillmentRefusal(company, 'delivery') ?? 'We do not deliver right now.'),
             );
           details.zone = zone.name;
         }
@@ -1631,6 +2116,8 @@ export function processTurn(
             delete details.zone;
           }
         }
+        if (!details.fulfillment && (offered === 'pickup' || offered === 'delivery'))
+          details.fulfillment = offered;
         cart.customerName = details.customerName;
         cart.fulfillment = details.fulfillment;
         cart.address = details.address;
@@ -1640,41 +2127,41 @@ export function processTurn(
           JSON.stringify([details.fulfillment, details.customerName, details.address, details.zone])
         )
           invalidate(cart);
-        if (!modelResponse)
-          reply = missingDetails(company, cart, lang) ?? review(company, products, cart, lang);
+        if (!modelResponse) reply = missingDetails(company, cart, lang) ?? showReview();
         continue;
       }
       if (action.type === 'review') {
-        if (
-          cart.fulfillment &&
-          configuration.fulfillment !== 'both' &&
-          cart.fulfillment !== configuration.fulfillment
-        )
-          throw new Error(
-            `This restaurant currently offers ${configuration.fulfillment} only. Please update your fulfillment choice.`,
-          );
+        settleFulfillment();
+        const refused = cart.fulfillment && fulfillmentRefusal(company, cart.fulfillment);
+        if (refused)
+          throw new Error(offered ? `${refused} Please update your fulfillment choice.` : refused);
         incompleteReviewQuestion = modelResponse ? missingDetails(company, cart, lang) : undefined;
         reply = incompleteReviewQuestion
           ? cartSummary(company, products, cart, lang)
-          : review(company, products, cart, lang);
+          : showReview();
         continue;
       }
       if (action.type === 'confirm') {
-        if (
-          cart.fulfillment &&
-          configuration.fulfillment !== 'both' &&
-          cart.fulfillment !== configuration.fulfillment
-        )
-          throw new Error(
-            `This restaurant currently offers ${configuration.fulfillment} only. Please update your fulfillment choice.`,
-          );
-        if (!input.action && !affirmative(input.text)) {
-          reply = say(
+        settleFulfillment();
+        const refused = cart.fulfillment && fulfillmentRefusal(company, cart.fulfillment);
+        if (refused)
+          throw new Error(offered ? `${refused} Please update your fulfillment choice.` : refused);
+        // Typed words must be consent; a bare "yes" only straight after the review itself.
+        const agreed = input.action ? 'explicit' : consent(input.text);
+        if (!agreed || (agreed === 'bare' && !reviewAnswered)) {
+          const prompt = say(
             lang,
             'Please review your order and explicitly reply “confirm” to submit it.',
             'آرڈر دیکھ کر بھیجنے کے لیے واضح طور پر “تصدیق” لکھیں۔',
             'Order review kar ke wazeh taur par “confirm” likhein.',
           );
+          // The review again right below, so the next "confirm" places this order. While closed,
+          // the review itself says so instead.
+          reply = !cart.items.length
+            ? prompt
+            : isOpen(company, input.now)
+              ? `${prompt}\n\n${showReview()}`
+              : showReview();
           traces.push('unconfirmed_model_action_rejected');
           continue;
         }
@@ -1682,6 +2169,8 @@ export function processTurn(
           reply =
             closedText(company, lang) +
             say(lang, ' Your cart is saved.', ' آپ کی ٹوکری محفوظ ہے۔', ' Cart save hai.');
+          // Nothing stays confirmable while closed; once open, "confirm" shows a fresh review.
+          if (cart.status === 'awaiting_confirmation') unreview(cart);
           continue;
         }
         const missing = missingDetails(company, cart, lang);
@@ -1690,16 +2179,34 @@ export function processTurn(
           continue;
         }
         const quote = quoteCart(company, products, cart);
+        // Consent counts against the latest review only: typed words must answer the review
+        // message itself, and any confirmation must come within the hour and not arrive late.
         if (
           initialReview.status !== 'awaiting_confirmation' ||
           initialReview.revision !== cart.revision ||
           initialReview.hash !== quote.hash ||
           cart.reviewedRevision !== cart.revision ||
           cart.quoteHash !== quote.hash ||
-          (action.revision !== undefined && action.revision !== cart.revision)
+          (action.revision !== undefined && action.revision !== cart.revision) ||
+          (!input.action && !reviewAnswered) ||
+          !reviewFresh ||
+          input.late
         ) {
           traces.push('fresh_confirmation_required');
-          reply = `${say(lang, 'Please confirm the current details below.', 'نیچے دی گئی موجودہ تفصیل کی تصدیق کریں۔', 'Neeche di gayi maujooda details confirm karein.')}\n\n${review(company, products, cart, lang)}`;
+          const lead = input.late
+            ? say(
+                lang,
+                'Sorry for the delay. Please confirm your order again.',
+                'تاخیر کے لیے معذرت۔ براہ کرم اپنے آرڈر کی دوبارہ تصدیق کریں۔',
+                'Der ke liye maazrat. Meherbani karke apna order dobara confirm karein.',
+              )
+            : say(
+                lang,
+                'Please confirm the current details below.',
+                'نیچے دی گئی موجودہ تفصیل کی تصدیق کریں۔',
+                'Neeche di gayi maujooda details confirm karein.',
+              );
+          reply = `${lead}\n\n${showReview()}`;
           continue;
         }
         const submissionKey = `${company.id}:${next.id}:${cart.revision}`;

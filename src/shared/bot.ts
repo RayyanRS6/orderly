@@ -51,6 +51,18 @@ export function botConfig(company: Company, draft = false): BotConfig {
     normalizeBotConfig(draft ? company.bot?.draft : company.bot?.published?.config),
   );
 }
+// What a customer can actually choose. Delivery needs at least one delivery area, so "both"
+// with none is pickup only, and delivery only with none offers nothing (undefined).
+export function offeredFulfillment(
+  company: Company,
+  draft = false,
+): 'pickup' | 'delivery' | 'both' | undefined {
+  const offered = botConfig(company, draft).fulfillment;
+  const delivers = company.deliveryZones.length > 0;
+  if (offered === 'pickup') return 'pickup';
+  if (offered === 'delivery') return delivers ? 'delivery' : undefined;
+  return delivers ? 'both' : 'pickup';
+}
 export function configuredCompany(company: Company, draft = false): Company {
   const config = botConfig(company, draft);
   return { ...company, faqs: [...(company.faqs ?? []), ...config.knowledge] };

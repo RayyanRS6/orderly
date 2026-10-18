@@ -10,6 +10,7 @@ import { makeJob } from '../server/jobs';
 import { GoogleSheetsAdapter } from '../server/integrations/sheets';
 import { WhatsAppAdapter } from '../server/integrations/whatsapp';
 import { createConversation } from '../src/domain/engine';
+import { disclosureLine } from '../src/domain/disclosure';
 import { seedCompanies, seedProducts } from '../src/shared/seed';
 import {
   normalizeTypedPhone,
@@ -99,6 +100,46 @@ describe('public menu page', () => {
     expect(menu.slug).toBe('dastarkhwan');
     expect(menu.restaurant).toMatchObject({ name: company.name, fulfillment: 'both' });
     expect((await call('/companies')).status).toBe(401);
+  });
+
+  it('F37: offers what the chat offers: delivery needs a delivery area', async () => {
+    await turnOn();
+    const fulfilment = async (fulfillment: 'both' | 'delivery' | 'pickup', zones = false) => {
+      const config = { ...defaultBot, fulfillment };
+      await repo.saveCompany({ ...company, deliveryZones: zones ? company.deliveryZones : [] });
+      // Bot settings are saved on their own, as the dashboard's Publish does.
+      const revision = (await repo.getCompany(company.id))!.bot?.revision ?? 0;
+      await repo.saveBot(
+        company.id,
+        {
+          draft: config,
+          revision: revision + 1,
+          history: [],
+          published: {
+            version: 1,
+            config,
+            publishedAt: new Date().toISOString(),
+            publishedBy: 't',
+          },
+        },
+        revision,
+      );
+      return (await (await call('/public/menu/dastarkhwan')).json()) as PublicMenu;
+    };
+    expect((await fulfilment('both')).restaurant).toMatchObject({
+      fulfillment: 'pickup',
+      deliveryZones: [],
+    });
+    expect((await fulfilment('delivery')).ordering).toMatchObject({ reason: 'unavailable' });
+    expect((await fulfilment('delivery', true)).restaurant.fulfillment).toBe('delivery');
+    expect((await fulfilment('both', true)).restaurant.fulfillment).toBe('both');
+  });
+
+  it('G6.3: is view-only while automation is paused for every business', async () => {
+    await turnOn();
+    vi.stubEnv('ORDERLY_PAUSE_AUTOMATION', 'on');
+    const menu = (await (await call('/public/menu/dastarkhwan')).json()) as PublicMenu;
+    expect(menu.ordering).toMatchObject({ botOn: false, publicOrdering: false });
   });
 
   it('returns only public fields', async () => {
@@ -825,6 +866,43 @@ describe('one-tap order from a personal link', () => {
     ]);
   });
 
+  it('G1.1: orders from the menu last read when the Sheet cannot be read, for 12 hours', async () => {
+    const sheet = async (hoursAgo: number) => {
+      await repo.saveCompany({
+        ...company,
+        catalogSource: 'sheets',
+        catalogSyncedAt: new Date(Date.now() - hoursAgo * 3600000).toISOString(),
+      });
+      await repo.saveIntegration(
+        company.id,
+        { kind: 'sheets', configured: true, status: 'connected', config: { spreadsheetId: 'x' } },
+        encryptSecret('key'),
+      );
+    };
+    const read = vi
+      .spyOn(GoogleSheetsAdapter.prototype, 'readCatalog')
+      .mockRejectedValue(new Error('Google is unavailable'));
+    await sheet(2);
+    expect((await order(tokenFor(await customer()))).status).toBe(200);
+    expect(read).toHaveBeenCalledOnce();
+    await sheet(13);
+    // A new minute, so the Sheet is tried again.
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + 61000 });
+    const stale = await order(tokenFor(await customer('923001239876')));
+    expect([stale.status, (await stale.json()).code]).toEqual([409, 'menu_sync']);
+  });
+
+  it('G6.3: refuses orders while automation is paused for every business', async () => {
+    vi.stubEnv('ORDERLY_PAUSE_AUTOMATION', 'on');
+    const res = await order(tokenFor(await customer()));
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({
+      error: 'Ordering is paused. Please message the restaurant on WhatsApp.',
+      code: 'paused',
+    });
+    expect(await orders()).toHaveLength(0);
+  });
+
   it('turns away a bad cart with a friendly sentence', async () => {
     const token = tokenFor(await customer());
     const short = await order(token, { cart: { ...cart, customerName: 'A' } });
@@ -932,6 +1010,16 @@ describe('order codes for Instagram and QR customers', () => {
   beforeEach(async () => {
     await turnOn();
     await meta();
+  });
+
+  it('G6.3: gives no code while automation is paused for every business', async () => {
+    vi.stubEnv('ORDERLY_PAUSE_AUTOMATION', 'on');
+    const { status, data } = await draftFor();
+    expect(status).toBe(503);
+    expect(data).toEqual({
+      error: 'Ordering is paused. Please message the restaurant on WhatsApp.',
+      code: 'paused',
+    });
   });
 
   it('gives a code and a WhatsApp link, and saves nothing else', async () => {
@@ -1127,7 +1215,12 @@ describe('order code sent from WhatsApp', () => {
   }
   const chatOf = async (phone = '923001234567') =>
     (await repo.findConversation(company.id, phone, 'whatsapp'))!;
-  const lastReply = async (phone?: string) => (await chatOf(phone)).messages.at(-1)!;
+  // A chat's first reply starts with the automated-assistant notice (checked below); the
+  // replies are compared after it.
+  const lastReply = async (phone?: string) => {
+    const last = (await chatOf(phone)).messages.at(-1)!;
+    return { ...last, text: last.text.replace(/^.+automated assistant.+\n\n/u, '') };
+  };
   const message = (code: string) => `Hi! Please place my menu order. Code: ${code}`;
 
   it('places the order in the sender’s chat without any AI, once', async () => {
@@ -1139,6 +1232,10 @@ describe('order code sent from WhatsApp', () => {
     expect(chat.id).toBe(placed!.conversationId);
     expect(chat.messages.map((m) => m.role)).toEqual(['customer', 'assistant']);
     expect(chat.messages[1]!.text).toContain(`Order ${placed!.reference} received`);
+    // The chat's first reply says it comes from the automated assistant, as sent.
+    expect(chat.messages[1]!.text.startsWith(`${disclosureLine(company.name, 'en')}\n\n`)).toBe(
+      true,
+    );
     expect(chat.messages[1]!.explanation).toMatchObject({
       ai: { called: false, skipped: 'menu_page' },
       outcome: 'order',
@@ -1149,6 +1246,7 @@ describe('order code sent from WhatsApp', () => {
       (j) => j.kind === 'whatsapp_send',
     );
     expect(sends.map((j) => j.payload.source)).toEqual(['notice']);
+    expect(sends[0]!.payload.text).toBe(chat.messages[1]!.text);
 
     await incoming(`  om-${data.code.slice(3).toLowerCase()} please`);
     expect((await lastReply()).text).toBe(

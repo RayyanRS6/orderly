@@ -2,9 +2,11 @@ import { randomUUID } from 'node:crypto';
 import type { Repository } from './repository.js';
 import type {
   BotAction,
+  Cart,
   Company,
   Conversation,
   IntegrationKind,
+  Language,
   ModelInterpretation,
   ModelSkipReason,
   Job,
@@ -15,18 +17,36 @@ import type {
 } from '../src/shared/types.js';
 import { attachExplanation, describeTurn } from './explanations.js';
 import {
+  aiErrorNotice,
   asksForPerson,
+  asksOrderStatus,
+  asksToCancelOrder,
   createConversation,
+  emptyCart,
   limitNotice,
   limitPaused,
   noticeLanguage,
+  orderSafetyLine,
   processTurn,
   resumesAfterLimit,
   resumesAfterPause,
   transitionOrder,
 } from '../src/domain/engine.js';
-import { AiLimitError, AiModelAdapter, providerKey } from './integrations/models.js';
-import { CUSTOMER_LIMIT_PAUSE_MS, LIMIT_NOTICE_INTERVAL_MS } from '../src/shared/models.js';
+import { isStaffRequest, withDisclosure } from '../src/domain/disclosure.js';
+import {
+  AiCallError,
+  AiLimitError,
+  AiModelAdapter,
+  providerKey,
+  StoreUnavailableError,
+} from './integrations/models.js';
+import {
+  AI_ERROR_PAUSE_MS,
+  BURST_PAUSE_MS,
+  CUSTOMER_LIMIT_PAUSE_MS,
+  effectiveAiLimits,
+  LIMIT_NOTICE_INTERVAL_MS,
+} from '../src/shared/models.js';
 import { modelFingerprint } from './integrations/model-catalog.js';
 import { GoogleSheetsAdapter } from './integrations/sheets.js';
 import { WhatsAppAdapter } from './integrations/whatsapp.js';
@@ -34,16 +54,21 @@ import { decryptSecret, PublicError } from './security.js';
 import { sanitizeError } from './security.js';
 import { botConfig, configuredCompany } from '../src/shared/bot.js';
 import { dispatchJob, makeJob } from './jobs.js';
+import { automationPaused, workerLeaseMs } from './config.js';
 import { sendStaffAlert } from './integrations/alerts.js';
 import { LinkedWhatsAppAdapter } from './integrations/linked-whatsapp';
 import { assertCurrentAddress, jobAddress, requireMeta } from './whatsapp/connections';
-import { customerKeys, sameAddress } from '../src/shared/whatsapp';
+import { customerKeys, sameAddress, type WhatsAppAddress } from '../src/shared/whatsapp';
 import { appHost, menuPublicUrl, personalMenuText, redeemMenuDraft } from './menu.js';
 import { menuCodeIn } from '../src/shared/menu.js';
 
-// Paid Supabase workers have a 400s maximum lifetime. Include an 80s margin;
-// bounded upstream requests and database requests cannot survive this lease.
-export const WORKER_LEASE_MS = 480000;
+// A message handled more than this late is answered with care: a confirmation is asked again.
+const LATE_AFTER_MS = 10 * 60 * 1000;
+// A message this late is not answered by the bot at all: staff look at it, and the bot takes the
+// chat back on the customer's next message (unless staff wrote).
+const STALE_AFTER_MS = 2 * 60 * 60 * 1000;
+// While the menu Sheet cannot be read, the menu last read from it is used for this long.
+export const MENU_STALE_LIMIT_MS = 12 * 60 * 60 * 1000;
 
 export async function integrationAdapter(
   repo: Repository,
@@ -82,15 +107,83 @@ export async function refreshCatalog(repo: Repository, company: Company): Promis
   await repo.markCatalogSynced(company.id, new Date().toISOString()).catch(() => undefined);
   return products.length;
 }
+const MENU_SYNC_NOTE = 'Menu refresh failed: ';
+// The Sheets connection shows why the menu could not be refreshed, until a refresh works again.
+// Only the note changes, never the status: a failed refresh must not block saving settings.
+async function noteMenuSync(repo: Repository, companyId: string, error?: unknown) {
+  const sheets = (await repo.getIntegrations(companyId)).find((i) => i.kind === 'sheets');
+  if (!sheets) return;
+  const note = error === undefined ? undefined : `${MENU_SYNC_NOTE}${sanitizeError(error)}`;
+  if (note === undefined && !sheets.error?.startsWith(MENU_SYNC_NOTE)) return;
+  if (note !== undefined && sheets.error === note) return;
+  await repo.saveIntegration(companyId, {
+    ...sheets,
+    error: note,
+    ...(note && { checkedAt: new Date().toISOString() }),
+  });
+}
+/**
+ * Refreshes a Sheet menu, at most one attempt a minute for the business however many chats
+ * arrive. A failure never throws: the menu stored from the Sheet stays in use while its last
+ * good refresh is under 12 hours old (`usable`), and the problem is shown on the connection.
+ */
+export async function refreshSheetMenu(
+  repo: Repository,
+  company: Company,
+): Promise<{ ok: true } | { ok: false; usable: boolean; error?: unknown }> {
+  const usable = async () => {
+    const latest = (await repo.getCompany(company.id).catch(() => undefined)) ?? company;
+    const synced = latest.catalogSyncedAt ? Date.parse(latest.catalogSyncedAt) : NaN;
+    return (
+      Date.now() - synced <= MENU_STALE_LIMIT_MS &&
+      (await repo.listProducts(company.id)).some((p) => p.companyId === company.id)
+    );
+  };
+  if (!(await repo.consumeRateLimit(`catalog-refresh:${company.id}`, 1).catch(() => true)))
+    return { ok: false, usable: await usable() };
+  try {
+    await refreshCatalog(repo, company);
+  } catch (error) {
+    await noteMenuSync(repo, company.id, error).catch(() => undefined);
+    const stale = await usable();
+    if (stale)
+      await repo
+        .addTrace({
+          id: randomUUID(),
+          companyId: company.id,
+          action: 'menu_sync_stale',
+          detail: `${sanitizeError(error)} The menu last read from the Sheet is still in use.`,
+          createdAt: new Date().toISOString(),
+        })
+        .catch(() => undefined);
+    return { ok: false, usable: stale, error };
+  }
+  await noteMenuSync(repo, company.id).catch(() => undefined);
+  return { ok: true };
+}
+/**
+ * `retryable`: the message may be processed again (its job has tries left), so a database that
+ * could not be reached before the AI call fails the turn instead of pausing the chat.
+ */
 export async function handleTurn(
   repo: Repository,
   company: Company,
   conversation: Conversation,
   input: TurnInput,
+  options: { retryable?: boolean } = {},
 ): Promise<TurnResult> {
   const sandbox = conversation.channel === 'demo';
   const selectConfig = (value: Company): Company => {
-    if (!sandbox) return configuredCompany(value);
+    if (!sandbox) {
+      const configured = configuredCompany(value);
+      // The platform-wide stop: every business behaves as if its bot were switched off.
+      return automationPaused() ? { ...configured, botEnabled: false } : configured;
+    }
+    if (automationPaused())
+      throw new PublicError(
+        'Automatic replies are paused on Orderly right now. Try again later.',
+        503,
+      );
     if (input.testTarget === 'published' && !value.bot?.published)
       throw new PublicError(
         'Publish a bot configuration before testing the published version.',
@@ -121,7 +214,7 @@ export async function handleTurn(
       company.id,
       conversation.id,
       lockId,
-      new Date(Date.now() + WORKER_LEASE_MS).toISOString(),
+      new Date(Date.now() + workerLeaseMs()).toISOString(),
     ))
   )
     throw new PublicError(
@@ -168,9 +261,13 @@ export async function handleTurn(
         reply: conversation.messages.filter((m) => m.role === 'assistant').at(-1)?.text ?? '',
         traces: ['duplicate_message_ignored'],
       };
+    // Hours late (a backlog after an outage): no AI and no answer to an old message. Staff see
+    // it, and the bot takes the chat back on the customer's next message unless staff wrote.
+    // A backlog never takes a paused chat back either.
+    const stale = !!input.late && Date.now() - Date.parse(input.now) > STALE_AFTER_MS;
     // The bot is on again: a chat that went to staff only because it was off goes back.
     // Saved first, because order changes (a cancel) check the stored mode.
-    if (!sandbox && company.botEnabled && resumesAfterPause(conversation)) {
+    if (!sandbox && !stale && company.botEnabled && resumesAfterPause(conversation)) {
       const resumed: Conversation = {
         ...conversation,
         mode: 'bot',
@@ -191,6 +288,7 @@ export async function handleTurn(
     const resetOrRaised = resumesAfterLimit(conversation, company);
     if (
       !sandbox &&
+      !stale &&
       company.botEnabled &&
       limitPaused(conversation) &&
       (resetOrRaised ||
@@ -216,36 +314,60 @@ export async function handleTurn(
         );
       conversation = resumed;
     }
+    if (stale && company.botEnabled && conversation.mode === 'bot')
+      return await savePause(repo, company, conversation, input, {
+        reason: 'late',
+        until: { afterMs: 0 },
+        text: lateNotice,
+        skipped: 'late',
+        trace: {
+          action: 'staff_attention',
+          code: 'late',
+          detail:
+            'This message reached Orderly more than 2 hours late, so staff were asked to look at it. The bot answers the customer’s next message.',
+        },
+      });
+    // One customer sending many messages at once pauses the bot for them only, for a while.
+    const { messagesPerCustomerPerMinute } = effectiveAiLimits(company.aiLimits);
     if (
       company.botEnabled &&
       conversation.mode === 'bot' &&
       conversation.messages.filter(
         (m) => m.role === 'customer' && Date.now() - Date.parse(m.createdAt) < 60000,
-      ).length >= 15
+      ).length +
+        1 >=
+        messagesPerCustomerPerMinute
     )
-      return await saveHandoff(
-        repo,
-        company,
-        conversation,
-        input,
-        'There are several messages arriving at once. A staff member will help with your order.',
-        'burst',
-      );
-    // A sheet-backed catalog is refreshed before any potentially mutating bot turn.
+      return await savePause(repo, company, conversation, input, {
+        reason: 'burst',
+        until: { afterMs: BURST_PAUSE_MS },
+        text: burstNotice,
+        notice: 'burst',
+        trace: {
+          action: 'staff_attention',
+          code: 'burst',
+          detail: `${messagesPerCustomerPerMinute} messages arrived from this customer within a minute. The bot answers them again after ${BURST_PAUSE_MS / 60000} minutes.`,
+        },
+      });
+    // Cancelling an order needs no menu, so a Sheet that cannot be read never holds it up.
+    const cancelling =
+      input.action?.type === 'cancel' || cancelsSubmittedOrder(conversation, input.text);
+    // A sheet-backed catalog is refreshed before any potentially mutating bot turn. While the
+    // Sheet cannot be read, the menu last read from it is used for up to 12 hours.
     if (
       company.catalogSource === 'sheets' &&
       conversation.mode === 'bot' &&
       company.botEnabled &&
+      !cancelling &&
       (!company.catalogSyncedAt || Date.now() - Date.parse(company.catalogSyncedAt) > 60000)
     ) {
-      try {
-        await refreshCatalog(repo, company);
-      } catch (error) {
-        if (sandbox)
-          throw new PublicError(
-            `Could not refresh the connected menu Sheet: ${sanitizeError(error)}`,
-            503,
-          );
+      const refresh = await refreshSheetMenu(repo, company);
+      if (!refresh.ok && sandbox && refresh.error)
+        throw new PublicError(
+          `Could not refresh the connected menu Sheet: ${sanitizeError(refresh.error)}`,
+          503,
+        );
+      if (!refresh.ok && !refresh.usable && !sandbox)
         return await saveHandoff(
           repo,
           company,
@@ -253,13 +375,49 @@ export async function handleTurn(
           input,
           'The menu connection needs attention. A staff member will help you complete your order.',
           'menu_sync',
-          error,
+          refresh.error,
         );
-      }
     }
     const products = await repo.listProducts(company.id);
     if (codeUsable && company.botEnabled && conversation.mode === 'bot')
       return await redeemMenuDraft(repo, company, products, conversation, input, menuCode!);
+    // The order this chat placed: its real status answers "where is my order?", and once it is
+    // finished (or the cart was cancelled) the next message starts a fresh cart, as "new order"
+    // would. An order still with the restaurant keeps its cart. A cancel or a status question
+    // is about the old order, so it keeps the cart too.
+    const cart = conversation.cart;
+    const placed =
+      cart.orderId && (cart.status === 'submitted' || cart.status === 'cancelled')
+        ? await repo
+            .getOrder(company.id, cart.orderId)
+            .then((order) => (order?.conversationId === conversation.id ? order : undefined))
+        : undefined;
+    const finished =
+      cart.status === 'cancelled' ||
+      (cart.status === 'submitted' &&
+        (!placed || ['completed', 'rejected', 'cancelled'].includes(placed.status)));
+    if (
+      finished &&
+      conversation.mode === 'bot' &&
+      company.botEnabled &&
+      !cancelling &&
+      !(asksOrderStatus(input.text) && !input.action)
+    ) {
+      conversation = structuredClone(conversation);
+      // A new revision, so the next order can never reuse an earlier submission key.
+      conversation.cart = { ...emptyCart(), revision: cart.revision + 1 };
+      delete conversation.pendingItemChoice;
+    }
+    const latestOrder =
+      placed && conversation.cart.orderId === placed.id
+        ? {
+            reference: placed.reference,
+            status: placed.status,
+            fulfillment: placed.fulfillment,
+            createdAt: placed.createdAt,
+            updatedAt: placed.updatedAt,
+          }
+        : undefined;
     // The public menu page, when it is on: menu replies share it and fill {menu_link}.
     const menuUrl = await menuPublicUrl(repo, company.id).catch(() => undefined);
     let actions: BotAction[] | undefined;
@@ -267,7 +425,12 @@ export async function handleTurn(
     let interpretation: ModelInterpretation | undefined;
     let ruleOverride: 'handoff' | 'reply' | undefined;
     const submittedCancellation = cancelsSubmittedOrder(conversation, input.text);
-    const skipped: ModelSkipReason | undefined = input.late
+    // "staff" (as the automated-assistant notice offers) reaches a person without any AI.
+    if (!input.action && isStaffRequest(input.text)) actions = [{ type: 'handoff' }];
+    // "Where is my order?" about the order loaded above: the engine states its real status and
+    // drops any AI text, so no AI is paid for.
+    const statusQuestion = !input.action && !!latestOrder && asksOrderStatus(input.text);
+    const skipped: ModelSkipReason | undefined = stale
       ? 'late'
       : input.action
         ? 'button'
@@ -299,6 +462,7 @@ export async function handleTurn(
       !input.action &&
       !actions &&
       !submittedCancellation &&
+      !statusQuestion &&
       company.ai.provider !== 'mock' &&
       conversation.mode === 'bot' &&
       company.botEnabled
@@ -326,16 +490,27 @@ export async function handleTurn(
       } catch (error) {
         if (sandbox)
           throw error instanceof PublicError ? error : new PublicError(sanitizeError(error), 503);
+        // Nothing was spent yet: the message is processed again, unless this is its last try.
+        if (error instanceof StoreUnavailableError && options.retryable) throw error;
+        // The AI could not answer. Staff see the chat, and the bot tries again on the
+        // customer's next message after a few minutes, unless staff wrote.
         if (!(error instanceof AiLimitError))
-          return await saveHandoff(
-            repo,
-            company,
-            conversation,
-            input,
-            'I’m having trouble connecting right now. A staff member will help you; your order has not been submitted.',
-            'ai_error',
-            error,
-          );
+          return await savePause(repo, company, conversation, input, {
+            reason: 'ai_error',
+            until: { afterMs: AI_ERROR_PAUSE_MS },
+            text: aiErrorNotice,
+            notice: 'ai_error',
+            trace: {
+              action: 'staff_attention',
+              code:
+                error instanceof AiCallError
+                  ? `ai_${error.reason}`
+                  : error instanceof StoreUnavailableError
+                    ? 'store_unavailable'
+                    : 'ai_unavailable',
+              detail: `${sanitizeError(error)} The bot tries again after ${AI_ERROR_PAUSE_MS / 60000} minutes.`,
+            },
+          });
         if (!asksForPerson(input.text))
           return await saveLimitPause(repo, company, conversation, input, error);
         // Asking for a person needs no AI: the engine hands the chat to staff for good, and
@@ -350,8 +525,7 @@ export async function handleTurn(
       conversation.mode === 'bot' &&
       company.botEnabled &&
       conversation.cart.orderId &&
-      (input.action?.type === 'cancel' ||
-        /^(cancel|cancel order|منسوخ|order cancel)$/i.test(input.text.trim()))
+      (input.action?.type === 'cancel' || asksToCancelOrder(input.text))
     ) {
       const order = await repo.getOrder(company.id, conversation.cart.orderId);
       if (order?.status === 'pending') {
@@ -362,7 +536,13 @@ export async function handleTurn(
         c.lastInboundAt = new Date(
           Math.max(Date.parse(c.lastInboundAt), Date.parse(input.now)),
         ).toISOString();
-        const reply = `Order ${order.reference} has been cancelled.`;
+        const reply = disclosed(
+          company,
+          conversation,
+          `Order ${order.reference} has been cancelled.`,
+          noticeLanguage(company, conversation, input.text),
+          input.now,
+        );
         const explanation = describeTurn({
           company,
           conversation,
@@ -383,7 +563,7 @@ export async function handleTurn(
           },
           { id: randomUUID(), role: 'assistant', text: reply, createdAt: input.now, explanation },
         );
-        const cancelled = await changeOrderStatus(repo, order, 'cancelled', input.now, c);
+        const cancelled = await changeOrderStatus(repo, order, 'cancelled', input.now, c, reply);
         return {
           conversation: c,
           order: cancelled,
@@ -397,10 +577,29 @@ export async function handleTurn(
       company,
       products,
       conversation,
-      { ...input, menuLink: menuUrl, appHost: appHost() },
+      { ...input, menuLink: menuUrl, appHost: appHost(), ...(latestOrder && { latestOrder }) },
       actions,
       modelResponse,
     );
+    // The automated-assistant notice, on the stored reply too (the next turn reads it). A review
+    // that would grow past WhatsApp's 1,024 characters for buttons gets it on the next reply.
+    const replyId = `${input.messageId}:reply`;
+    const withNotice = result.reply
+      ? disclosed(company, conversation, result.reply, result.conversation.language, input.now)
+      : result.reply;
+    const reviewButtons =
+      result.conversation.cart.status === 'awaiting_confirmation' &&
+      result.conversation.cart.reviewMessageId === replyId &&
+      result.reply.length <= 1024;
+    if (withNotice !== result.reply && !(reviewButtons && withNotice.length > 1024)) {
+      const stored = result.conversation.messages.find(
+        (m) => m.id === replyId && m.role === 'assistant',
+      );
+      if (stored) {
+        stored.text = withNotice;
+        result.reply = withNotice;
+      }
+    }
     // The AI answered, so an older limit pause kept after a button tap has run its course.
     if (interpretation) delete result.conversation.limitPause;
     if (result.reply && result.decision) {
@@ -437,7 +636,9 @@ export async function handleTurn(
           messageId: result.conversation.messages.at(-1)?.id,
           text: result.reply,
           cartRevision: result.conversation.cart.revision,
-          source: result.conversation.mode === 'human' ? 'notice' : 'bot',
+          // An order confirmation always goes, even if the bot is switched off or staff take
+          // over before it is delivered: the order exists, so the customer must hear of it.
+          source: result.order || result.conversation.mode === 'human' ? 'notice' : 'bot',
           // Personalised for this customer only when sent; the stored text keeps the public link.
           ...(menuUrl && result.reply.includes(menuUrl) && { menuLink: true }),
         }),
@@ -499,6 +700,13 @@ async function saveHandoff(
     outcome: 'staff',
     notice: cause,
   });
+  reply = disclosed(
+    company,
+    conversation,
+    reply,
+    noticeLanguage(company, conversation, input.text),
+    input.now,
+  );
   c.messages.push(
     { id: input.messageId, role: 'customer', text: input.text, createdAt: input.now },
     { id: randomUUID(), role: 'assistant', text: reply, createdAt: input.now, explanation },
@@ -523,10 +731,7 @@ async function saveHandoff(
     conversationId: c.id,
     action: 'staff_attention',
     detail: reason ? sanitizeError(reason) : reply,
-    code:
-      reason instanceof PublicError && reason.status === 429
-        ? 'budget_or_rate_limit'
-        : 'connection_failure',
+    code: cause,
     model: company.ai.model,
     botVersion: company.bot?.published?.version,
     createdAt: input.now,
@@ -540,8 +745,7 @@ const LIMIT_NOTICE: Record<AiLimitError['limit'], StaffNoticeCause> = {
   customer: 'customer_limit',
 };
 // An AI limit stopped the bot. The chat waits for staff and goes back to the bot when the limit
-// resets (see resumesAfterLimit). The customer is told once an hour at most, so a flood of
-// messages gets one notice, not one per message.
+// resets (see resumesAfterLimit).
 async function saveLimitPause(
   repo: Repository,
   company: Company,
@@ -550,7 +754,6 @@ async function saveLimitPause(
   limit: AiLimitError,
 ): Promise<TurnResult> {
   const now = new Date();
-  const at = now.toISOString();
   // A pause interrupted by a button tap continues until its original time.
   const earlier = conversation.limitPause;
   const until =
@@ -562,6 +765,89 @@ async function saveLimitPause(
         (limit.limit === 'monthly'
           ? new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString()
           : new Date(Math.floor(now.getTime() / 3600000) * 3600000 + 3600000).toISOString()));
+  return savePause(
+    repo,
+    company,
+    conversation,
+    input,
+    {
+      reason: limit.limit,
+      until,
+      // Before the migration only the monthly check exists, without the value.
+      limit: limit.limitValue ?? (limit.limit === 'monthly' ? company.ai.monthlyBudgetUsd : 0),
+      text: limitNotice,
+      notice: LIMIT_NOTICE[limit.limit],
+      trace: {
+        action: 'ai_limit_reached',
+        detail: `${limit.message} The bot answers again after ${until}.`,
+        code: `ai_limit_${limit.limit}`,
+      },
+    },
+    now,
+  );
+}
+type PauseReason = NonNullable<Conversation['limitPause']>['reason'];
+interface Pause {
+  reason: PauseReason;
+  // When it ends: a time, or how long after it starts.
+  until: string | { afterMs: number };
+  // The limit's value when raising it ends the pause early. Left out for a pause that only
+  // ends at `until`: no setting is ever above it, so resumesAfterLimit waits for the time.
+  limit?: number;
+  text: (lang: Language, cart: Cart) => string;
+  notice?: StaffNoticeCause;
+  skipped?: ModelSkipReason;
+  trace: { action: string; detail: string; code: string };
+}
+// What a customer is told when they sent many messages at once, or a message reached Orderly
+// hours late. Like the limit notice, it says a person will see it and whether the order is safe.
+function burstNotice(lang: Language, cart: Cart): string {
+  const minutes = BURST_PAUSE_MS / 60000;
+  const base = pick(
+    lang,
+    `You’ve sent a lot of messages at once, so automatic replies are paused for ${minutes} minutes. Our team can still see your messages.`,
+    `آپ نے ایک ساتھ بہت سے پیغامات بھیجے ہیں، اس لیے خودکار جوابات ${minutes} منٹ کے لیے روک دیے گئے ہیں۔ ہماری ٹیم آپ کے پیغامات دیکھ سکتی ہے۔`,
+    `Aap ne ek saath bohat se messages bheje hain, is liye automatic jawab ${minutes} minute ke liye ruk gaye hain. Hamari team aap ke messages dekh sakti hai.`,
+  );
+  const order = orderSafetyLine(lang, cart);
+  return order ? `${base} ${order}` : base;
+}
+function lateNotice(lang: Language, cart: Cart): string {
+  const base = pick(
+    lang,
+    'Sorry, your message reached us late. Our team will reply here soon.',
+    'معذرت، آپ کا پیغام ہمیں دیر سے ملا۔ ہماری ٹیم جلد یہیں جواب دے گی۔',
+    'Maazrat, aap ka message hamein der se mila. Hamari team jald yahin jawab degi.',
+  );
+  const order = orderSafetyLine(lang, cart);
+  return order ? `${base} ${order}` : base;
+}
+const pick = (lang: Language, en: string, ur: string, roman: string) =>
+  lang === 'ur' ? ur : lang === 'roman-ur' ? roman : en;
+// The automated-assistant notice that starts every chat session, on WhatsApp chats only.
+function disclosed(
+  company: Company,
+  before: Conversation,
+  reply: string,
+  lang: Language,
+  now: string,
+): string {
+  return before.channel === 'whatsapp'
+    ? withDisclosure(company.name, before, reply, lang, now)
+    : reply;
+}
+// The bot stops answering this chat until `until` (or the limit is raised): staff see it under
+// "Needs staff", and it goes back to the bot by itself unless staff wrote. Only this customer
+// is paused. They are told once an hour at most, so a flood of messages gets one notice.
+async function savePause(
+  repo: Repository,
+  company: Company,
+  conversation: Conversation,
+  input: TurnInput,
+  pause: Pause,
+  now = new Date(),
+): Promise<TurnResult> {
+  const at = now.toISOString();
   const notify =
     !conversation.limitNoticeAt ||
     now.getTime() - Date.parse(conversation.limitNoticeAt) >= LIMIT_NOTICE_INTERVAL_MS;
@@ -569,11 +855,13 @@ async function saveLimitPause(
   c.mode = 'human';
   delete c.botPausedAt;
   c.limitPause = {
-    reason: limit.limit,
+    reason: pause.reason,
     at,
-    until,
-    // Before the migration only the monthly check exists, without the value.
-    limit: limit.limitValue ?? (limit.limit === 'monthly' ? company.ai.monthlyBudgetUsd : 0),
+    until:
+      typeof pause.until === 'string'
+        ? pause.until
+        : new Date(now.getTime() + pause.until.afterMs).toISOString(),
+    limit: pause.limit ?? Number.MAX_SAFE_INTEGER,
   };
   c.language = noticeLanguage(company, conversation, input.text);
   c.version++;
@@ -590,7 +878,7 @@ async function saveLimitPause(
   let reply = '';
   let explanation: TurnResult['explanation'];
   if (notify) {
-    reply = limitNotice(c.language, c.cart);
+    reply = disclosed(company, conversation, pause.text(c.language, c.cart), c.language, input.now);
     c.limitNoticeAt = at;
     explanation = describeTurn({
       company,
@@ -599,7 +887,8 @@ async function saveLimitPause(
       steps: ['staff_attention'],
       decision: { parts: ['notice'], modelText: 'none', corrections: [] },
       outcome: 'staff',
-      notice: LIMIT_NOTICE[limit.limit],
+      ...(pause.notice && { notice: pause.notice }),
+      ...(pause.skipped && { skipped: pause.skipped }),
     });
     c.messages.push({
       id: randomUUID(),
@@ -627,9 +916,7 @@ async function saveLimitPause(
     id: randomUUID(),
     companyId: company.id,
     conversationId: c.id,
-    action: 'ai_limit_reached',
-    detail: `${limit.message} The bot answers again after ${until}.`,
-    code: `ai_limit_${limit.limit}`,
+    ...pause.trace,
     model: company.ai.model,
     botVersion: company.bot?.published?.version,
     createdAt: input.now,
@@ -642,10 +929,10 @@ async function saveLimitPause(
     explanation,
   };
 }
-// "cancel" for an order already sent to the restaurant: the engine handles it without AI.
+// "cancel" for an order already sent to the restaurant: the engine handles it without AI. The
+// same recogniser as the engine's, so both agree on what counts as a cancel request.
 const cancelsSubmittedOrder = (conversation: Conversation, text: string) =>
-  Boolean(conversation.cart.orderId) &&
-  /^(cancel|cancel order|منسوخ|order cancel)$/i.test(text.trim());
+  Boolean(conversation.cart.orderId) && asksToCancelOrder(text);
 export async function queueOrderSync(repo: Repository, order: Order) {
   if (
     order.sandbox ||
@@ -661,12 +948,14 @@ export async function queueOrderSync(repo: Repository, order: Order) {
   await repo.insertJob(job);
   await dispatchJob(repo, job);
 }
+/** `text`: the customer's notice in place of the standard "Order X is now …" line. */
 export async function changeOrderStatus(
   repo: Repository,
   order: Order,
   status: Order['status'],
   now = new Date().toISOString(),
   automatedConversation?: Conversation,
+  text?: string,
 ): Promise<Order> {
   if (order.status === status) return order;
   transitionOrder(order, status, now);
@@ -692,7 +981,7 @@ export async function changeOrderStatus(
       makeJob(order.companyId, 'whatsapp_send', {
         ...jobAddress(conversation),
         conversationId: conversation.id,
-        text: `Order ${order.reference} is now ${status.replaceAll('_', ' ')}.`,
+        text: text ?? `Order ${order.reference} is now ${status.replaceAll('_', ' ')}.`,
         orderId: order.id,
         reference: order.reference,
         status,
@@ -712,6 +1001,87 @@ export async function changeOrderStatus(
     throw new PublicError('Another staff member changed this order. Refresh and try again.', 409);
   for (const job of jobs) await dispatchJob(repo, job);
   return updated;
+}
+// A customer's order is still waiting for the restaurant (the database queues this job 15
+// minutes after it was placed, once per order). They are told once, in their language, while
+// WhatsApp still lets the business write to them; otherwise nothing is sent. Telling them how
+// to cancel only where "cancel" is handled by itself.
+const FOLLOWUP_WINDOW_MS = 24 * 60 * 60 * 1000 - 5 * 60 * 1000;
+async function sendOrderFollowup(repo: Repository, stored: Company, job: Job) {
+  const company = configuredCompany(stored);
+  const order = await repo.getOrder(company.id, String(job.payload.orderId));
+  const conversation =
+    order && order.conversationId === String(job.payload.conversationId)
+      ? await repo.getConversation(company.id, order.conversationId)
+      : undefined;
+  const messageId = `order-followup:${order?.id}`;
+  if (
+    !order ||
+    order.status !== 'pending' ||
+    order.sandbox ||
+    // Staff already spoke to the customer about this order on the phone.
+    order.phoneConfirmation?.outcome === 'confirmed' ||
+    order.phoneConfirmation?.outcome === 'declined' ||
+    automationPaused() ||
+    conversation?.channel !== 'whatsapp' ||
+    conversation.blocked ||
+    Date.now() - Date.parse(conversation.lastInboundAt) >= FOLLOWUP_WINDOW_MS ||
+    conversation.messages.some((m) => m.id === messageId)
+  )
+    return;
+  const lang = noticeLanguage(company, conversation, '');
+  const cancels = conversation.mode === 'bot' && company.botEnabled;
+  const text = [
+    pick(
+      lang,
+      `Your order ${order.reference} is still waiting for the restaurant to confirm. We have reminded the team.`,
+      `آپ کا آرڈر ${order.reference} ابھی ریسٹورنٹ کی تصدیق کا منتظر ہے۔ ہم نے ٹیم کو یاد دہانی کرا دی ہے۔`,
+      `Aap ka order ${order.reference} abhi restaurant ki confirmation ka intezar kar raha hai. Humne team ko yaad dila diya hai.`,
+    ),
+    ...(cancels
+      ? [
+          pick(
+            lang,
+            'Reply “cancel” if you want to cancel.',
+            'اگر آپ آرڈر منسوخ کرنا چاہتے ہیں تو “cancel” لکھیں۔',
+            'Order cancel karna ho to “cancel” likhein.',
+          ),
+        ]
+      : []),
+  ].join(' ');
+  const next: Conversation = {
+    ...conversation,
+    version: conversation.version + 1,
+    updatedAt: new Date().toISOString(),
+    messages: [
+      ...conversation.messages,
+      // Automatic, so a chat staff answered last does not look as if it waits for them again.
+      { id: messageId, role: 'assistant', text, createdAt: new Date().toISOString(), notice: true },
+    ],
+  };
+  // The order and status let the send drop the reminder if staff act on the order first.
+  const send = makeJob(company.id, 'whatsapp_send', {
+    ...jobAddress(conversation),
+    conversationId: conversation.id,
+    messageId,
+    text,
+    orderId: order.id,
+    status: 'pending',
+    source: 'notice',
+  });
+  if (!(await repo.commitTurn(company.id, next, conversation.version, undefined, [send])))
+    throw new PublicError('The conversation changed while processing. Retrying.', 409);
+  await repo
+    .addTrace({
+      id: randomUUID(),
+      companyId: company.id,
+      conversationId: conversation.id,
+      action: 'order_followup',
+      detail: `Told the customer that order ${order.reference} is still waiting for the restaurant.`,
+      createdAt: new Date().toISOString(),
+    })
+    .catch(() => undefined);
+  await dispatchJob(repo, send);
 }
 export async function queueReply(
   repo: Repository,
@@ -734,15 +1104,16 @@ export async function queueReply(
 // minute's recovery pass and let later replies overtake earlier ones.
 const CONNECTION_LOCK_WAIT_MS = 30000;
 // A send finishes well within this (the gateway call times out after 20 s), so a worker
-// killed mid-send blocks the business's other sends for 90 s, not the full worker lease.
-const SEND_LOCK_LEASE_MS = 90000;
+// killed mid-send blocks the business's other sends for 90 s at most, never the full worker
+// lease: half of it when the lease is short (Supabase Free).
+const sendLockLeaseMs = () => Math.min(90000, Math.floor(workerLeaseMs() / 2));
 async function acquireConnectionLock(
   repo: Repository,
   companyId: string,
   owner: string,
   {
     ready = async () => true,
-    leaseMs = WORKER_LEASE_MS,
+    leaseMs = workerLeaseMs(),
     waitMs = CONNECTION_LOCK_WAIT_MS,
   }: { ready?: () => Promise<boolean>; leaseMs?: number; waitMs?: number } = {},
 ) {
@@ -787,7 +1158,7 @@ export function droppedReplyReason(
   const automatic = job.payload.source === 'bot' || job.payload.source === 'notice';
   if (automatic && conversation.blocked) return 'Not sent: this number was blocked.';
   if (job.payload.source !== 'bot') return undefined;
-  if (!company.botEnabled || conversation.botPausedAt)
+  if (!company.botEnabled || automationPaused() || conversation.botPausedAt)
     return 'Not sent: the bot was switched off before the reply went out.';
   const writtenBeforePause =
     !!conversation.limitPause && job.createdAt <= conversation.limitPause.at;
@@ -795,14 +1166,78 @@ export function droppedReplyReason(
     return 'Not sent: staff took over this chat before the reply went out.';
   return undefined;
 }
+const PREVIOUS_CONNECTION = 'Not sent: queued for a previous WhatsApp connection.';
+// The address a job or chat uses, when it is still the business's current WhatsApp connection.
+async function currentAddress(
+  repo: Repository,
+  companyId: string,
+  value: unknown,
+): Promise<{ current: true; address?: WhatsAppAddress } | { current: false }> {
+  try {
+    return { current: true, address: await assertCurrentAddress(repo, companyId, value) };
+  } catch (error) {
+    if (error instanceof PublicError && error.status === 422) return { current: false };
+    throw error;
+  }
+}
+// A reply that can never go out (queued before the WhatsApp connection changed) ends as done,
+// with the reason on the message, instead of failing again on every retry.
+async function finishNotSent(repo: Repository, job: Job, reason: string) {
+  await recordNotSent(repo, job, reason).catch(() => undefined);
+  await repo
+    .addTrace({
+      id: randomUUID(),
+      companyId: job.companyId,
+      ...(typeof job.payload.conversationId === 'string' && {
+        conversationId: job.payload.conversationId,
+      }),
+      action: 'whatsapp.not_sent',
+      detail: reason,
+      createdAt: new Date().toISOString(),
+    })
+    .catch(() => undefined);
+  await repo.saveJob({ ...job, status: 'done', leaseUntil: undefined, error: undefined });
+}
+// One line per failed job for the function logs: what failed, never payloads, numbers or text.
+function logJobFailure(job: Job, permanent: boolean, error: unknown) {
+  const name = error instanceof Error ? error.name : typeof error;
+  const code = (error as { code?: unknown } | undefined)?.code;
+  const status = error instanceof PublicError ? error.status : undefined;
+  const message = (error instanceof Error ? error.message : String(error))
+    .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
+    .replace(/\b(?:sk-[\w-]{8,}|eyJ[\w-]+\.[\w-]+\.[\w-]+)\b/g, '[redacted]')
+    .replace(/\+?\d[\d\s-]{6,}\d/g, '[number]');
+  console.error(
+    JSON.stringify({
+      event: 'job_failed',
+      jobId: job.id,
+      kind: job.kind,
+      companyId: job.companyId,
+      attempts: job.attempts,
+      permanent,
+      error:
+        `${[name, typeof code === 'string' ? code : undefined, status].filter(Boolean).join('/')}: ${message}`.slice(
+          0,
+          300,
+        ),
+    }),
+  );
+}
 export async function processJob(repo: Repository, id: string) {
+  const lease = workerLeaseMs();
   const job = await repo.claimJob(
     id,
     new Date().toISOString(),
-    new Date(Date.now() + WORKER_LEASE_MS).toISOString(),
+    new Date(Date.now() + lease).toISOString(),
   );
   if (!job) return;
   let connectionLocked = false;
+  // The connection is free for the business's next send as soon as WhatsApp has this one.
+  const releaseConnection = async () => {
+    if (!connectionLocked) return;
+    connectionLocked = false;
+    await repo.releaseConversationLock(job.companyId, 'whatsapp-connection', job.id);
+  };
   try {
     // Only sending talks to WhatsApp. A customer's messages are already processed in
     // order per customer and under the conversation lock, so they must not hold the
@@ -810,17 +1245,18 @@ export async function processJob(repo: Repository, id: string) {
     if (job.kind === 'whatsapp_send') {
       // Replies to one customer leave in the order they were written. An earlier send
       // still 'processing' counts only if claimed recently: a worker killed mid-send must
-      // not hold back the customer's later replies until its 8-minute lease runs out.
+      // not hold back the customer's later replies until its worker lease runs out.
       const conversationId = String(job.payload.conversationId);
+      const sendLease = sendLockLeaseMs();
       let waitingForEarlier = false;
       connectionLocked = await acquireConnectionLock(repo, job.companyId, job.id, {
-        leaseMs: SEND_LOCK_LEASE_MS,
+        leaseMs: sendLease,
         ready: async () => {
           waitingForEarlier = await repo.hasEarlierSend(
             job.companyId,
             conversationId,
             job,
-            new Date(Date.now() + WORKER_LEASE_MS - SEND_LOCK_LEASE_MS).toISOString(),
+            new Date(Date.now() + lease - sendLease).toISOString(),
           );
           return !waitingForEarlier;
         },
@@ -838,8 +1274,10 @@ export async function processJob(repo: Repository, id: string) {
         return;
       }
       if (!connectionLocked) throw new PublicError('WhatsApp connection is busy.', 409);
+      if (!(await currentAddress(repo, job.companyId, job.payload.whatsappAddress)).current)
+        return await finishNotSent(repo, job, PREVIOUS_CONNECTION);
     }
-    if (job.kind === 'incoming' || job.kind === 'whatsapp_send')
+    if (job.kind === 'incoming')
       await assertCurrentAddress(repo, job.companyId, job.payload.whatsappAddress);
     if (job.attempts > 5)
       throw new PublicError('Repeated worker interruptions require staff review.', 503);
@@ -885,7 +1323,7 @@ export async function processJob(repo: Repository, id: string) {
             company.id,
             conversation.id,
             job.id,
-            new Date(Date.now() + WORKER_LEASE_MS).toISOString(),
+            new Date(Date.now() + lease).toISOString(),
           ))
         )
           throw new PublicError('Conversation is busy.', 409);
@@ -924,17 +1362,29 @@ export async function processJob(repo: Repository, id: string) {
           await repo.releaseConversationLock(company.id, conversation.id, job.id);
         }
       } else {
-        const late = Date.now() - Date.parse(job.createdAt) > 10 * 60 * 1000;
-        await handleTurn(repo, company, conversation, {
-          messageId: String(job.payload.messageId),
-          text: String(job.payload.text),
-          action: late ? { type: 'handoff' } : (job.payload.action as BotAction | undefined),
-          now: job.createdAt,
-          ...(late && { late }),
-        });
+        // A late message is still answered: the engine asks again before placing an order,
+        // and a message hours late is left for staff (see handleTurn).
+        const late = Date.now() - Date.parse(job.createdAt) > LATE_AFTER_MS;
+        await handleTurn(
+          repo,
+          company,
+          conversation,
+          {
+            messageId: String(job.payload.messageId),
+            text: String(job.payload.text),
+            action: job.payload.action as BotAction | undefined,
+            now: job.createdAt,
+            ...(late && { late }),
+          },
+          // The last tries hand a database outage to staff instead of failing for good.
+          { retryable: job.attempts < 4 },
+        );
       }
     } else if (job.kind === 'staff_alert') {
       await sendStaffAlert(repo, job);
+    } else if (job.kind === 'order_followup') {
+      // Never a WhatsApp send of its own: it decides whether to queue one.
+      await sendOrderFollowup(repo, company, job);
     } else if (job.kind === 'sheet_sync') {
       const sheetLock = `sheet:${company.id}`;
       if (
@@ -942,7 +1392,7 @@ export async function processJob(repo: Repository, id: string) {
           company.id,
           sheetLock,
           job.id,
-          new Date(Date.now() + WORKER_LEASE_MS).toISOString(),
+          new Date(Date.now() + lease).toISOString(),
         ))
       )
         throw new PublicError('Another spreadsheet write is running.', 409);
@@ -961,7 +1411,7 @@ export async function processJob(repo: Repository, id: string) {
       } finally {
         await repo.releaseConversationLock(company.id, sheetLock, job.id);
       }
-    } else {
+    } else if (job.kind === 'whatsapp_send') {
       const conversation = await repo.getConversation(
         company.id,
         String(job.payload.conversationId),
@@ -976,7 +1426,9 @@ export async function processJob(repo: Repository, id: string) {
       }
       if (conversation.channel !== 'whatsapp')
         throw new PublicError('Sandbox cannot send WhatsApp messages.', 422);
-      const address = await assertCurrentAddress(repo, company.id, conversation.whatsappAddress);
+      const target = await currentAddress(repo, company.id, conversation.whatsappAddress);
+      if (!target.current) return await finishNotSent(repo, job, PREVIOUS_CONNECTION);
+      const address = target.address;
       if (address && !sameAddress(address, job.payload.whatsappAddress as typeof address))
         throw new PublicError('Queued message destination changed. Staff review required.', 422);
       const adapter =
@@ -1004,8 +1456,12 @@ export async function processJob(repo: Repository, id: string) {
         );
       else {
         const snapshot = structuredClone(conversation);
-        // Never attach a new cart's confirmation to an older queued response.
-        if (job.payload.cartRevision !== conversation.cart.revision)
+        // Never attach a new cart's confirmation to an older queued response: the Confirm
+        // button goes only with the message that showed the review the cart awaits.
+        if (
+          job.payload.cartRevision !== conversation.cart.revision ||
+          job.payload.messageId !== conversation.cart.reviewMessageId
+        )
           snapshot.cart.status = 'building';
         // The menu page link becomes this customer's own one-tap link, only in what is sent.
         const text =
@@ -1018,6 +1474,8 @@ export async function processJob(repo: Repository, id: string) {
       // reuses the receipt instead of sending the same message again.
       job.payload.externalId = messageId;
       await repo.saveJob(job);
+      // WhatsApp has the message: the business's next send need not wait for the bookkeeping.
+      await releaseConnection();
       await repo.recordDelivery(
         company.id,
         messageId,
@@ -1033,13 +1491,27 @@ export async function processJob(repo: Repository, id: string) {
         detail: `Message accepted by WhatsApp transport: ${messageId}`,
         createdAt: new Date().toISOString(),
       });
-    }
+    } else throw new PublicError('This version of Orderly cannot run this kind of job.', 422);
     await repo.saveJob({ ...job, status: 'done', leaseUntil: undefined, error: undefined });
   } catch (error) {
     const permanent = job.attempts >= 5 || (error instanceof PublicError && error.status === 422);
+    logJobFailure(job, permanent, error);
+    // A customer's message that can never be processed is put in the chat for staff instead,
+    // so it no longer holds back the customer's later messages.
+    const recorded =
+      permanent && job.kind === 'incoming'
+        ? await recordFailedMessage(
+            repo,
+            job,
+            // A message for a previous connection never starts a chat of its own.
+            !(error instanceof PublicError && error.status === 422),
+          ).catch(() => undefined)
+        : undefined;
+    const released = !!recorded?.released;
     await repo.saveJob({
       ...job,
-      status: permanent ? 'failed' : 'pending',
+      status: released ? 'done' : permanent ? 'failed' : 'pending',
+      ...(released && { payload: { ...job.payload, failedPermanently: true } }),
       leaseUntil: undefined,
       nextRunAt: new Date(Date.now() + Math.min(3600000, 2 ** job.attempts * 5000)).toISOString(),
       error:
@@ -1058,12 +1530,12 @@ export async function processJob(repo: Repository, id: string) {
           ? error.message
           : 'Sending failed. Check the WhatsApp connection.',
       ).catch(() => undefined);
-    // A failed incoming message remains a FIFO barrier until recovery. Mark its
-    // conversation for staff too, so retrying the stream cannot resume ordering silently.
-    let failedConversationId: string | undefined;
-    if (permanent && job.kind === 'incoming') {
-      const address = job.payload.whatsappAddress as
-        import('../src/shared/whatsapp').WhatsAppAddress | undefined;
+    // An incoming message that could not be recorded remains a FIFO barrier until recovery.
+    // Mark its conversation for staff too, so retrying the stream cannot resume ordering
+    // silently.
+    let failedConversationId = recorded?.conversationId;
+    if (permanent && job.kind === 'incoming' && !released) {
+      const address = job.payload.whatsappAddress as WhatsAppAddress | undefined;
       const current = address
         ? await repo.findWhatsAppConversation(job.companyId, address)
         : await repo.findConversation(job.companyId, String(job.payload.phone), 'whatsapp');
@@ -1098,7 +1570,68 @@ export async function processJob(repo: Repository, id: string) {
     });
     if (!permanent) throw new PublicError('Background job is waiting to retry.', 503);
   } finally {
-    if (connectionLocked)
-      await repo.releaseConversationLock(job.companyId, 'whatsapp-connection', job.id);
+    await releaseConnection();
   }
+}
+/**
+ * A message that failed for good goes into its chat as it arrived, and the chat goes to staff,
+ * as for any message the bot cannot answer. Its job can then end, so the customer's later
+ * messages are recorded too. A blocked number's chat is left alone. `released` is false when
+ * the chat could not be saved: the job then stays failed and holds those messages back.
+ */
+async function recordFailedMessage(
+  repo: Repository,
+  job: Job,
+  create: boolean,
+): Promise<{ conversationId?: string; released: boolean }> {
+  const address = job.payload.whatsappAddress as WhatsAppAddress | undefined;
+  const phone = String(job.payload.phone ?? '');
+  const messageId = String(job.payload.messageId);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const found = address
+      ? await repo.findWhatsAppConversation(job.companyId, address)
+      : await repo.findConversation(job.companyId, phone, 'whatsapp');
+    if (found?.blocked) return { conversationId: found.id, released: true };
+    if (!found && !create) return { released: false };
+    const current: Conversation = found ?? {
+      ...createConversation(
+        job.companyId,
+        address ? `${address.connectionId}:${address.generation}:${address.peer}` : phone,
+        'whatsapp',
+        '1970-01-01T00:00:00.000Z',
+      ),
+      customerPhone: phone,
+      ...(address ? { whatsappAddress: address } : {}),
+      updatedAt: job.createdAt,
+      lastInboundAt: job.createdAt,
+    };
+    const fromCustomer = !job.payload.echo;
+    const next: Conversation = {
+      ...current,
+      mode: 'human',
+      botPausedAt: undefined,
+      limitPause: undefined,
+      version: current.version + 1,
+      updatedAt: new Date().toISOString(),
+      ...(fromCustomer && {
+        lastInboundAt: new Date(
+          Math.max(Date.parse(current.lastInboundAt), Date.parse(job.createdAt)),
+        ).toISOString(),
+      }),
+      messages: current.messages.some((m) => m.id === messageId)
+        ? current.messages
+        : [
+            ...current.messages,
+            {
+              id: messageId,
+              role: fromCustomer ? 'customer' : 'staff',
+              text: String(job.payload.text ?? '').slice(0, 4000),
+              createdAt: job.createdAt,
+            },
+          ],
+    };
+    if (await repo.saveConversation(next, current.version))
+      return { conversationId: current.id, released: true };
+  }
+  return { released: false };
 }
