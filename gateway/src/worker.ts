@@ -15,19 +15,27 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { loadConfig } from './config.js';
 import { Store } from './store.js';
-import { canonicalJid, phoneFromJid, heartbeatDue, reconnectDecision, TICK_MS } from './policy.js';
+import {
+  canonicalJid,
+  phoneFromJid,
+  heartbeatDue,
+  reconnectDecision,
+  retryPairing,
+  PAIRING_TIMEOUT_MS,
+  TICK_MS,
+} from './policy.js';
 import { sendOnce, recoverUncertainSends } from './sender.js';
-import { drainOnce, EVENT_BATCH, retryDeadEvents } from './drain.js';
-import { endSocket } from './shutdown.js';
+import { drainOnce, EVENT_BATCH, retryDeadEvents, SESSION_RETIRED } from './drain.js';
+import { endSocket, logsOut } from './shutdown.js';
 import { chatContent, messageText, receiptStatus, upsertedMessages } from './upserts.js';
 import { mapIdentity, messageIdentity } from './routing.js';
 import {
-  awaitsContent,
   expiredPlaceholders,
-  holdPlaceholder,
   inboundTarget,
   isSeen,
   queueMessage,
+  releasePlaceholder,
+  withoutContent,
 } from './inbound.js';
 import { signedHeaders } from '../../server/whatsapp/signing.js';
 import {
@@ -50,6 +58,10 @@ let phone: string | undefined;
 let stopped = false;
 // Set once fail() has reported a fatal code; the close it causes must not overwrite it.
 let failed = false;
+// Set once Orderly answered that it no longer uses this session; the supervisor then ends it.
+let retired = false;
+// Whether a pairing nobody finished has had its one retry (see retryPairing).
+let pairingRetried = false;
 let retries = 0;
 let restarts = 0;
 let openedAt = 0;
@@ -128,7 +140,7 @@ function setStatus(next: typeof status, code?: string) {
   report();
 }
 async function drain() {
-  if (!store || stopped) return;
+  if (!store || stopped || retired) return;
   if (draining) {
     // An event saved during a pass is sent right after it, not on the next 15 s tick.
     drainAgain = true;
@@ -155,6 +167,10 @@ async function postEvent(raw: string) {
     redirect: 'error',
   });
   await response.body?.cancel().catch(() => undefined);
+  if (response.status === SESSION_RETIRED && !retired) {
+    retired = true;
+    process.send?.({ type: 'stale' });
+  }
   return response.status;
 }
 function receipt(key: proto.IMessageKey, status?: number | null) {
@@ -204,8 +220,7 @@ function incoming(message: WAMessage) {
   const content = chatContent(message.message);
   if (!content) {
     // Held until its content arrives; staff are told if it never does (see the tick below).
-    if (awaitsContent(message) && !isSeen(store, native, id, fromMe))
-      holdPlaceholder(store, id, native, timestamp, Date.now());
+    withoutContent(store, message, target, timestamp, Date.now());
     return;
   }
   if (isSeen(store, native, id, fromMe)) {
@@ -218,22 +233,26 @@ function incoming(message: WAMessage) {
   if (identity) linkIdentity(identity.lid, identity.pn);
   enqueue(native, id, timestamp, messageText(content), fromMe);
 }
+const queueFull = () => store.count('events') >= 10000;
 function enqueue(native: string, id: string, timestamp: number, text: string, fromMe: boolean) {
-  if (store.count('events') >= 10000) {
+  if (queueFull()) {
     fail('INBOUND_QUEUE_FULL');
     return;
   }
   queueMessage(store, { connectionId, generation, native, id, timestamp, text, fromMe });
   void drain().catch(() => fail('EVENT_STORAGE_FAILURE'));
 }
-// A customer message whose content never reached this device goes to staff (as unsupported
-// media does) instead of vanishing. Copies that arrived meanwhile were already taken.
+// A customer message whose content never reached this device goes to staff instead of
+// vanishing. Copies that arrived meanwhile were already taken; one that comes later still is.
 function releasePlaceholders() {
   const now = Date.now();
   for (const { id, value } of expiredPlaceholders(store, now)) {
-    if (value.timestamp >= now - 86400000 && !isSeen(store, value.native, id, false))
-      enqueue(value.native, id, value.timestamp, '', false);
-    else store.delete('placeholder', id);
+    if (queueFull()) {
+      fail('INBOUND_QUEUE_FULL');
+      return;
+    }
+    releasePlaceholder(store, { connectionId, generation, id, placeholder: value }, now);
+    void drain().catch(() => fail('EVENT_STORAGE_FAILURE'));
   }
 }
 function fail(code: string) {
@@ -393,6 +412,15 @@ async function connect() {
           setStatus('error', `DISCONNECT_${code}`);
           return;
         }
+        // A pairing nobody finished ends instead of opening new registrations for ever; the
+        // worker exits, so the place is free again. 515 right after pairing has an account.
+        if (decision.action === 'retry' && !auth.creds.account) {
+          if (!retryPairing(code, pairingRetried, !!auth.creds.me)) {
+            fail('PAIRING_EXPIRED');
+            return;
+          }
+          pairingRetried = true;
+        }
         // A requested restart is not a failure; everything else counts towards the backoff.
         if (decision.action === 'restart') restarts++;
         else retries++;
@@ -458,6 +486,14 @@ process.on('message', (message: any) => {
       recoverUncertainSends(store);
       setStatus('connecting');
       await connect();
+      if (!auth.creds.account)
+        setTimeout(
+          () =>
+            guard(() => {
+              if (!auth.creds.account) fail('PAIRING_EXPIRED');
+            }),
+          PAIRING_TIMEOUT_MS,
+        );
     });
   if (message.type === 'send') {
     sendChain = sendChain
@@ -496,8 +532,9 @@ process.on('message', (message: any) => {
     stopped = true;
     clearTimeout(reconnectTimer);
     pairing = {};
-    // Only the supervisor's disconnect and new-pairing commands ask for a logout (see shutdown.ts).
-    void endSocket(socket, message.logout === true)
+    // Only the supervisor's disconnect, new-pairing and retire steps ask for a logout, and only
+    // a finished pairing can be logged out (see shutdown.ts).
+    void endSocket(socket, logsOut(message.logout === true, auth?.creds))
       .catch(() => false)
       .then(() => setImmediate(() => process.exit(0)));
   }
@@ -508,7 +545,7 @@ process.on('message', (message: any) => {
 setInterval(
   () =>
     guard(async () => {
-      if (!store || stopped) return;
+      if (!store || stopped || retired) return;
       if (status === 'connected' && heartbeatDue(lastStatusAt, Date.now(), GATEWAY_HEARTBEAT_MS))
         setStatus('connected');
       pruneSent();

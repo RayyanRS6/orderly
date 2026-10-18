@@ -1,4 +1,5 @@
 import { fork, type ChildProcess } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
@@ -11,6 +12,24 @@ import { Store } from './store.js';
 import type { GatewayConfig } from './config.js';
 import { signedHeaders } from '../../server/whatsapp/signing.js';
 import { crashRestartDelay, HEALTHY_AFTER_MS, restorable } from './policy.js';
+import { SESSION_RETIRED } from './drain.js';
+
+// Everything a session keeps about the restaurant's WhatsApp, wiped on disconnect and new pairing.
+const SESSION_NAMESPACES = [
+  'auth',
+  'events',
+  'dead-events',
+  'status-event',
+  'identity',
+  'route',
+  'seen',
+  'seen-id',
+  'placeholder',
+  'own',
+  'receipts',
+  'sent',
+  'receipt-events',
+];
 
 type Session = {
   connectionId: string;
@@ -69,6 +88,7 @@ export class Supervisor {
         void this.close();
         return;
       }
+      this.admitWaiting();
       void this.flushEvents().catch(() => this.log('EVENT_RETRY_FAILED'));
     }, 15000);
     this.timer.unref();
@@ -84,15 +104,97 @@ export class Supervisor {
     );
   }
   restore() {
-    for (const { value: session } of this.store.list<Session>('sessions')) {
-      // Also revives sessions an earlier gateway parked in 'error' after a passing failure.
-      if (restorable(session.status, session.errorCode)) this.spawn(session);
-      else if (session.status === 'awaiting_pairing')
-        this.update({ ...session, status: 'error', errorCode: 'PAIRING_EXPIRED' });
+    const sessions = this.store.list<Session>('sessions').map(({ value }) => value);
+    // Numbers that were connected start first, so a gateway with fewer places keeps them.
+    sessions.sort((a, b) => Number(b.status === 'connected') - Number(a.status === 'connected'));
+    for (const session of sessions) {
+      if (session.status === 'awaiting_pairing') this.park(session, 'PAIRING_EXPIRED');
+      // Also revives sessions an earlier gateway parked in 'error' after a passing failure,
+      // but never a pairing nobody finished: an older gateway kept retrying those for ever.
+      else if (!restorable(session.status, session.errorCode)) continue;
+      else if (!this.paired(session)) this.park(session, 'PAIRING_EXPIRED');
+      else if (this.children.size >= this.config.maxSessions)
+        this.park(session, 'SESSION_CAPACITY_REACHED');
+      else this.spawn(session);
+    }
+  }
+  // Whether a session finished pairing: it was connected, or its stored credentials hold the
+  // account WhatsApp signs on pairing (also for sessions an older gateway saved).
+  private paired(session: Session): boolean {
+    if (session.status === 'connected') return true;
+    const path = join(this.config.dataDir, `${session.connectionId}.sqlite`);
+    if (!existsSync(path)) return false;
+    let sessionStore: Store | undefined;
+    try {
+      sessionStore = new Store(path, this.config.key);
+      return !!sessionStore.get<{ account?: unknown }>('auth', 'creds')?.account;
+    } catch {
+      return false;
+    } finally {
+      sessionStore?.close();
+    }
+  }
+  // Leaves a session stopped for the given reason, and tells Orderly.
+  private park(session: Session, errorCode: string) {
+    const next: Session = { ...session, status: 'error', errorCode };
+    this.update(next);
+    this.queueError(next);
+    this.log(errorCode, session.connectionId);
+  }
+  // A paired number a full gateway left stopped starts as soon as a place is free.
+  private admitWaiting() {
+    try {
+      for (const { value: session } of this.store.list<Session>('sessions')) {
+        if (this.stopping || this.children.size >= this.config.maxSessions) return;
+        if (
+          session.status === 'error' &&
+          session.errorCode === 'SESSION_CAPACITY_REACHED' &&
+          !this.operations.has(session.connectionId)
+        )
+          this.spawn(session);
+      }
+    } catch {
+      this.log('SESSION_ADMIT_FAILED');
     }
   }
   private update(session: Session) {
     this.store.set('sessions', session.connectionId, session);
+  }
+  private wipe(connectionId: string) {
+    const sessionStore = new Store(
+      join(this.config.dataDir, `${connectionId}.sqlite`),
+      this.config.key,
+    );
+    try {
+      for (const namespace of SESSION_NAMESPACES) sessionStore.clear(namespace);
+    } finally {
+      sessionStore.close();
+    }
+  }
+  // Orderly answered an event of this session with SESSION_RETIRED: the business moved to the
+  // official route or disconnected, maybe while the gateway could not be told. The session is
+  // ended as a disconnect would end it: the linked device is logged out and its credentials,
+  // queues and chat mappings are wiped. A command for the session in progress wins.
+  private async retire(connectionId: string, generation: number) {
+    const current = this.store.get<Session>('sessions', connectionId);
+    if (
+      this.stopping ||
+      !current ||
+      current.generation !== generation ||
+      current.status === 'disconnected' ||
+      this.operations.has(connectionId)
+    )
+      return;
+    this.operations.add(connectionId);
+    try {
+      this.update({ ...current, status: 'disconnected', errorCode: undefined, crashes: 0 });
+      await this.stopChild(connectionId, true);
+      this.wipe(connectionId);
+      this.log('SESSION_RETIRED', connectionId);
+    } finally {
+      this.operations.delete(connectionId);
+    }
+    this.admitWaiting();
   }
   private spawn(session: Session) {
     if (this.stopping || this.children.has(session.connectionId)) return;
@@ -151,6 +253,10 @@ export class Supervisor {
           this.log(message.errorCode, session.connectionId);
         }
         if (message.type === 'warning') this.log(message.code, session.connectionId);
+        if (message.type === 'stale')
+          void this.retire(session.connectionId, session.generation).catch(() =>
+            this.log('SESSION_RETIRE_FAILED', session.connectionId),
+          );
       } catch {
         this.log('SUPERVISOR_MESSAGE_FAILURE', session.connectionId);
         child.kill();
@@ -236,8 +342,15 @@ export class Supervisor {
             redirect: 'error',
             signal: AbortSignal.timeout(10000),
           });
-          if (response.ok && this.store.get<any>('events', row.id)?.eventId === row.value.eventId)
+          const current = this.store.get<any>('events', row.id)?.eventId === row.value.eventId;
+          if (response.ok && current) this.store.delete('events', row.id);
+          else if (response.status === SESSION_RETIRED && current) {
+            // Orderly no longer uses this session; end it even though no worker runs now.
             this.store.delete('events', row.id);
+            void this.retire(row.value.connectionId, row.value.generation).catch(() =>
+              this.log('SESSION_RETIRE_FAILED', row.value.connectionId),
+            );
+          }
         } catch {
           break;
         }
@@ -246,9 +359,10 @@ export class Supervisor {
       this.flushing = false;
     }
   }
-  // logout is true only for an owner's disconnect or new pairing: the worker then removes this
-  // linked device from the phone before its credentials are wiped. Redeploys, restarts and a
-  // lost lease close without logging out, so restaurants keep their pairing.
+  // logout is true only for an owner's disconnect or new pairing, or a session Orderly retired:
+  // the worker then removes this linked device from the phone before its credentials are wiped.
+  // Redeploys, restarts and a lost lease close without logging out, so restaurants keep their
+  // pairing.
   async stopChild(id: string, logout = false) {
     const child = this.children.get(id);
     if (!child) return;
@@ -314,33 +428,12 @@ export class Supervisor {
       this.update(next);
       const revoke = body.action === 'pair' || body.action === 'disconnect';
       await this.stopChild(body.connectionId, revoke);
-      if (revoke) {
-        const sessionStore = new Store(
-          join(this.config.dataDir, `${body.connectionId}.sqlite`),
-          this.config.key,
-        );
-        for (const namespace of [
-          'auth',
-          'events',
-          'dead-events',
-          'status-event',
-          'identity',
-          'route',
-          'seen',
-          'seen-id',
-          'placeholder',
-          'own',
-          'receipts',
-          'sent',
-          'receipt-events',
-        ])
-          sessionStore.clear(namespace);
-        sessionStore.close();
-      }
+      if (revoke) this.wipe(body.connectionId);
       if (body.action !== 'disconnect') this.spawn(next);
       return this.status(body);
     } finally {
       this.operations.delete(body.connectionId);
+      if (body.action === 'disconnect') this.admitWaiting();
     }
   }
   status(input: unknown): Snapshot {

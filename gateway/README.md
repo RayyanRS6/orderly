@@ -14,15 +14,19 @@ the only business-logic authority. Official Meta connections remain supported.
   ten-account production capacity guarantee. The ten-process automated test uses fake
   sockets, not ten real WhatsApp accounts.
 - Text only. A photo, video or document caption reaches the bot as text marked "(sent with a
-  photo)" and so on; a location pin becomes "Location shared: <place> (lat, long)". Voice notes,
-  stickers, contacts and uncaptioned media trigger staff handoff; staff use the WhatsApp phone
-  app to inspect them. Media is never downloaded; playback and transcription are not part of v1.
+  photo)" and so on; a location pin becomes "Location shared: <place> (lat, long)", and a live
+  location is read the same way, from the position it was shared with (its caption as the place).
+  Voice notes, stickers, contacts and uncaptioned media trigger staff handoff; staff use the
+  WhatsApp phone app to inspect them. Media is never downloaded; playback and transcription are
+  not part of v1.
 - Every message is judged on its own, whatever the batch type. History, groups, newsletters,
   status broadcasts, protocol events and reactions are excluded, and messages older than 24
   hours are not replayed as new orders. A customer message that arrives here without content
   (WhatsApp's "unavailable" placeholder, or a decryption failure) is held: the phone's resend or
-  the sender's retry is filed under the same chat, and if nothing comes within 45 seconds staff
-  get a handoff to read it on the phone. Verify staff-phone echoes in the live pilot; protocol
+  the sender's retry is filed under the same chat, and a copy that turns out to be a reaction,
+  an edit or a deletion just ends the hold. If nothing comes within 45 seconds staff get a
+  handoff saying Orderly could not read a message (check the phone); a copy that still arrives
+  later reaches Orderly under its own ID. Verify staff-phone echoes in the live pilot; protocol
   behavior may change.
 - Native LIDs remain identities, not phone numbers. Mapping uses the `sender_pn`/`sender_lid`
   WhatsApp attaches to customer messages, plus authenticated contact and phone-number-share
@@ -103,7 +107,8 @@ the migration so old queued replies can be fenced safely.
 - Test a native LID customer with and without a phone mapping. Ensure no LID becomes a phone.
   Check that replies to a chat mapped from LID to phone number (or back) are delivered.
 - Send a captioned photo and a location pin from a customer phone: the bot reads the caption and
-  the place; a voice note or sticker goes to staff.
+  the place; a voice note or sticker goes to staff. Share a live location for a few minutes: the
+  bot should get it once, not once per position update.
 - Reply on the restaurant phone during a slow bot turn: the bot must pause; its own echoes
   must not pause it. Resume only from Orderly's staff controls.
 - WhatsApp Business app **greeting and away messages** are sent by the phone and reach Orderly
@@ -132,8 +137,21 @@ retained credentials. 408/428/503 retry without limit, backing off from 1 second
 and then every 5 minutes; 500, 0 and unknown codes do the same from a 5-second start. A connect
 that neither opens nor fails within 45 seconds is abandoned and retried. The status stays
 `reconnecting` with `DISCONNECT_<code>` meanwhile. A healthy socket resets network retries after
-two minutes. A gateway restart also revives sessions an older version parked in `error` with a
-passing failure code (`RECONNECT_EXHAUSTED`, `SESSION_CRASH`, `DISCONNECT_0/408/428/500/503/515`).
+two minutes.
+
+These retries are for numbers that finished pairing. A pairing nobody finishes ends as
+`PAIRING_EXPIRED` and its worker exits, freeing the place: when its QR codes run out (408), on
+a second failure (the first, if a pairing code was already shown) or after 5 minutes. The owner
+starts a new pairing.
+
+A gateway restart brings back sessions that finished pairing and were `connected`, `connecting`
+or `reconnecting`, or that an older version parked in `error` with a passing failure code:
+`RECONNECT_EXHAUSTED`, `SESSION_CRASH`, `EVENT_STORAGE_FAILURE`, `SESSION_HANDLER_FAILURE`,
+`SEND_HANDLER_FAILURE`, `UNCAUGHT_EXCEPTION`, `UNHANDLED_REJECTION`, `INBOUND_QUEUE_FULL`,
+`SESSION_CAPACITY_REACHED`, or any `DISCONNECT_<code>` that is retried (all but 401, 403, 405,
+411 and 440). A pairing that never finished, including the abandoned ones older versions kept
+retrying, becomes `PAIRING_EXPIRED` instead. At most `GATEWAY_MAX_SESSIONS` start, numbers that
+were connected first; the rest wait as `SESSION_CAPACITY_REACHED` and start once a place frees.
 
 Heartbeats reach Orderly once a minute (the 15-second tick still retries undelivered events); a
 heartbeat older than 3 minutes is not ready to send. The gateway must also report a verified
@@ -152,11 +170,18 @@ phone. Do not delete receipt records to force a resend. Exactly-once delivery ca
 guaranteed across an external messaging service, but duplicate blind retries are prevented.
 
 Disconnect and new pairing first log the linked device out of WhatsApp (best effort, at most
-3.5 seconds, only while the socket is connected), then wipe credentials and jobs, so leftover
-credentials and later backups stop working. Redeploys, restarts and a lost lease only close the
-socket and keep the pairing. If the session was offline at the time, the logout cannot happen:
-the owner should still check WhatsApp → Linked devices and remove the old session. Orders and
-Orderly chat history remain.
+3.5 seconds, only while the socket is connected and only for a finished pairing), then wipe
+credentials and jobs, so leftover credentials and later backups stop working. Redeploys,
+restarts and a lost lease only close the socket and keep the pairing. If the session was offline
+at the time, the logout cannot happen: the owner should still check WhatsApp → Linked devices
+and remove the old session. Orders and Orderly chat history remain.
+
+If the owner switches to the official route or disconnects while the gateway cannot be reached,
+Orderly saves the change anyway and the old session keeps running here, linked to the phone.
+Orderly answers its next event or heartbeat (within a minute while it is connected) with 410,
+and the gateway then ends it as a disconnect would: logout, then wipe (logged as
+`SESSION_RETIRED`). Until the gateway is reachable again, removing the device under Linked
+devices on the phone is the immediate remedy.
 
 ## Protocol updates and rollback
 

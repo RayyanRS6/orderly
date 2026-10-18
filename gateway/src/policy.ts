@@ -28,9 +28,22 @@ export function reconnectDecision(
     : Math.min(300000, 5000 * 2 ** (n - 1));
   return { action: 'retry', delayMs: Math.round(base * (0.75 + random * 0.5)) };
 }
+// The retries above are for numbers that finished pairing. A pairing nobody finishes must end:
+// every retry opens a new WhatsApp registration with new QR codes. WhatsApp ends one whose QR
+// codes ran out with 408; that, or a second passing failure, ends it as PAIRING_EXPIRED and the
+// owner starts a new pairing. Once a pairing code was asked for, the number is in the
+// credentials and a retry would try to log in as it, so there is no retry then either.
+export function retryPairing(code: number, retried: boolean, codeRequested: boolean): boolean {
+  return code !== 408 && !retried && !codeRequested;
+}
+// A pairing not finished by then ends as PAIRING_EXPIRED, even if WhatsApp never closes the
+// socket (unpaired sockets have no connect watchdog, so this one frees the place).
+export const PAIRING_TIMEOUT_MS = 300000;
 // Worker failures a fresh process can recover from. INVALID_ACCOUNT_IDENTITY and pairing
-// problems need the owner instead.
+// problems need the owner instead. SESSION_CAPACITY_REACHED: a paired number a full gateway left
+// stopped at start-up; it starts once a place is free, or at the next start.
 export const RESTARTABLE_FAILURES = [
+  'SESSION_CAPACITY_REACHED',
   'RECONNECT_EXHAUSTED',
   'SESSION_CRASH',
   'EVENT_STORAGE_FAILURE',
@@ -40,7 +53,8 @@ export const RESTARTABLE_FAILURES = [
   'UNHANDLED_REJECTION',
   'INBOUND_QUEUE_FULL',
 ];
-// Sessions a gateway restart brings back by itself. Older gateways parked these in 'error'.
+// Sessions a gateway restart brings back by itself, if they finished pairing (see
+// Supervisor.restore). Older gateways parked these in 'error'.
 export function restorable(status: string, errorCode?: string): boolean {
   if (['connected', 'connecting', 'reconnecting'].includes(status)) return true;
   if (status !== 'error' || !errorCode) return false;
