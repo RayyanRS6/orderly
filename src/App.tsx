@@ -28,7 +28,14 @@ import {
   X,
 } from 'lucide-react';
 import type { Bootstrap } from './shared/types';
-import { api, setAccessToken, setSessionRejectedHandler } from './lib/api';
+import {
+  api,
+  setAccessToken,
+  setAccessTokenSource,
+  setSessionRecovery,
+  setSessionRejectedHandler,
+} from './lib/api';
+import { sessionHooks } from './lib/session';
 import { cn, initials, label } from './lib/utils';
 import {
   Workspace,
@@ -161,6 +168,12 @@ export default function App() {
         const { createClient } = await import('@supabase/supabase-js');
         const auth = createClient(result.supabaseUrl, result.supabaseAnonKey);
         setClient(auth);
+        // Every request reads the current session, which refreshes an expiring token even in a
+        // background tab. A 401 first tries a refresh; only a sign-in that is definitely gone
+        // signs this browser out (never being offline, or the sign-in service being busy).
+        const hooks = sessionHooks(auth.auth);
+        setAccessTokenSource(hooks.token);
+        setSessionRecovery(hooks.recover);
         // The server rejected the saved session (revoked, or ended elsewhere) while this
         // browser still holds it. Forget it here only, so the sign-in form appears instead
         // of an error screen that can't be left.
@@ -219,6 +232,8 @@ export default function App() {
       active = false;
       unsubscribe?.();
       setSessionRejectedHandler(undefined);
+      setAccessTokenSource(undefined);
+      setSessionRecovery(undefined);
     };
   }, []);
 
@@ -627,7 +642,7 @@ export default function App() {
         {client && (
           <button
             className="mt-2.5 flex min-h-9.5 w-full items-center justify-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.04] px-4 py-2 text-xs font-semibold text-cream/65 transition-[background-color,color,translate,scale] duration-200 hover:bg-white/[0.08] hover:text-red-300 active:scale-[0.97]"
-            onClick={() => void client.auth.signOut()}
+            onClick={() => void signOutHere(client)}
           >
             <LogOut className="size-3.5" />
             Sign out
@@ -761,7 +776,7 @@ export default function App() {
                   <button
                     className="icon-btn-glass"
                     aria-label="Sign out"
-                    onClick={() => void client.auth.signOut()}
+                    onClick={() => void signOutHere(client)}
                   >
                     <LogOut className="size-4" />
                   </button>
@@ -890,6 +905,14 @@ export default function App() {
       <Toaster toasts={toasts} onDismiss={dismissToast} />
     </Workspace.Provider>
   );
+}
+
+/**
+ * Sign out on this device only. Supabase's default ends every session of the account, which
+ * would also sign out the kitchen phone sharing it; Security & privacy has "Sign out all sessions".
+ */
+function signOutHere(client: SupabaseClient) {
+  return client.auth.signOut({ scope: 'local' });
 }
 
 function Brand({ dark = true }: { dark?: boolean }) {
@@ -1131,7 +1154,7 @@ function AccountChallenge({
         >
           Continue
         </ActionButton>
-        <button type="button" className="btn w-full" onClick={() => void client.auth.signOut()}>
+        <button type="button" className="btn w-full" onClick={() => void signOutHere(client)}>
           Sign out
         </button>
         {factorId && (
