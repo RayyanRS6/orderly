@@ -1,4 +1,4 @@
-import { botConfig } from '../shared/bot';
+import { botConfig, paymentMethods } from '../shared/bot';
 import type {
   Cart,
   Company,
@@ -159,7 +159,7 @@ export function buildWebOrder(
     `\n${cart.fulfillment === 'delivery' ? `Delivery: ${cart.address} (${cart.zone})` : 'Pickup'} · ${cart.customerName}`,
     `${say(lang, 'Delivery fee', 'ڈیلیوری فیس', 'Delivery fee')}: ${money(quote.deliveryFee)}`,
     `${say(lang, 'Total', 'کل رقم', 'Total')}: ${money(quote.total)}`,
-    `\n${orderReceivedText(lang, order)}`,
+    `\n${orderReceivedText(lang, order, paymentMethods(company))}`,
   ].join('\n');
   if (reply.length > 3500)
     throw new MenuOrderError(

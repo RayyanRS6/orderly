@@ -7,7 +7,7 @@ import type {
   RecentReply,
   SetupStep,
 } from '../src/shared/agent-flow.js';
-import { botConfig, sameBotConfig } from '../src/shared/bot.js';
+import { botConfig, cashOnly, paymentMethods, sameBotConfig } from '../src/shared/bot.js';
 import {
   AI_ERROR_PAUSE_MS,
   BURST_PAUSE_MS,
@@ -25,6 +25,18 @@ import { modelFingerprint } from './integrations/model-catalog.js';
 import { gatewayAvailable } from './whatsapp/client.js';
 import { GATEWAY_HEARTBEAT_STALE_MS } from '../src/shared/whatsapp.js';
 
+const TRANSFER_LABELS = {
+  jazzcash: 'JazzCash',
+  easypaisa: 'Easypaisa',
+  bank_transfer: 'bank transfer',
+};
+// The payment methods customers are told about, as the order confirmation words them.
+function paymentOptions(company: Company): string {
+  if (cashOnly(company)) return 'Payment options are cash on pickup or delivery.';
+  const methods = paymentMethods(company);
+  const transfers = methods.flatMap((method) => (method === 'cash' ? [] : TRANSFER_LABELS[method]));
+  return `Payment options are ${methods.includes('cash') ? 'cash on pickup or delivery, or ' : ''}${transfers.join(' / ')}. For a transfer the restaurant shares its payment details and confirms the transfer itself; Orderly never sends account numbers.`;
+}
 const usd = (value: number) => `$${value.toFixed(value > 0 && value < 0.01 ? 4 : 2)}`;
 const yes = (value: boolean, ok = 'Yes', no = 'No') => (value ? ok : no);
 const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -446,10 +458,7 @@ export async function buildAgentFlow(
       'An answer that matches an approved question is sent word-for-word, allergy answers included.',
       'If no fact covers a question, the bot says it isn’t sure and hands off to staff. An allergy question without an approved answer gets a fixed safety notice and goes to staff.',
     ],
-    fixed: [
-      'Payment options are cash on pickup or delivery.',
-      'Orders can’t be confirmed while the restaurant is closed.',
-    ],
+    fixed: [paymentOptions(company), 'Orders can’t be confirmed while the restaurant is closed.'],
     todo: businessComplete ? undefined : 'Add the business address and phone in Settings.',
   };
 

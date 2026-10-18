@@ -1,4 +1,4 @@
-import type { BotConfig, Company } from './types';
+import type { BotConfig, Company, PaymentMethod } from './types';
 
 export const MAX_BOT_INSTRUCTIONS = 20_000;
 
@@ -63,6 +63,24 @@ export function offeredFulfillment(
   if (offered === 'delivery') return delivers ? 'delivery' : undefined;
   return delivers ? 'both' : 'pickup';
 }
+/** Every payment method an owner can offer, in the order customers are told about them. */
+export const PAYMENT_METHODS: readonly PaymentMethod[] = [
+  'cash',
+  'jazzcash',
+  'easypaisa',
+  'bank_transfer',
+];
+/** How this restaurant's customers may pay. Missing, empty or unknown values: cash only. */
+export function paymentMethods(company: Pick<Company, 'paymentMethods'>): PaymentMethod[] {
+  const stored: unknown = company.paymentMethods;
+  const chosen = Array.isArray(stored)
+    ? PAYMENT_METHODS.filter((method) => stored.includes(method))
+    : [];
+  return chosen.length ? chosen : ['cash'];
+}
+/** Cash only, as every restaurant was before payment methods could be chosen. */
+export const cashOnly = (company: Pick<Company, 'paymentMethods'>) =>
+  paymentMethods(company).every((method) => method === 'cash');
 export function configuredCompany(company: Company, draft = false): Company {
   const config = botConfig(company, draft);
   return { ...company, faqs: [...(company.faqs ?? []), ...config.knowledge] };

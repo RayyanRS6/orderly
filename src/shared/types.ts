@@ -38,6 +38,8 @@ export interface DeliveryZone {
   name: string;
   fee: number;
 }
+/** A way a customer may pay the restaurant. Orderly itself takes no payments. */
+export type PaymentMethod = 'cash' | 'jazzcash' | 'easypaisa' | 'bank_transfer';
 export interface Company {
   id: string;
   name: string;
@@ -50,6 +52,12 @@ export interface Company {
   catalogSource: 'app' | 'sheets';
   openingHours: { start: string; end: string; days: number[] };
   deliveryZones: DeliveryZone[];
+  /**
+   * How customers may pay the restaurant. Missing or empty means cash only. Orderly never
+   * collects or sends account numbers: for a transfer the customer is told the restaurant will
+   * share its payment details and confirm the transfer itself.
+   */
+  paymentMethods?: PaymentMethod[];
   faqs: { question: string; answer: string }[];
   // Every business answers with its own provider API key (Bot settings → AI model).
   ai: {

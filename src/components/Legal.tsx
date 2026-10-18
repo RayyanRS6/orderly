@@ -48,7 +48,7 @@ const documents: Record<LegalKind, { title: string; intro: string; sections: [st
         ],
         [
           'Payments',
-          'Orderly does not collect card numbers, bank account details or CNIC numbers, and does not handle payments. You pay the restaurant directly, as you arrange with it: usually cash on delivery or at pickup, which is what the order confirmation and the menu page say. A JazzCash, Easypaisa or bank transfer is possible only if the restaurant offers it, and restaurant staff check it themselves outside Orderly. Please do not send card, bank or CNIC details in the chat: anything typed there is kept with the chat until it is deleted.',
+          'Orderly does not collect card numbers, bank account details or CNIC numbers, and does not handle payments. You pay the restaurant directly, as you arrange with it: usually cash on delivery or at pickup. A JazzCash, Easypaisa or bank transfer is possible only if the restaurant offers it: the order confirmation then says so, the restaurant gives you its payment details itself, and restaurant staff check the transfer themselves outside Orderly. Please do not send card, bank or CNIC details in the chat: anything typed there is kept with the chat until it is deleted.',
         ],
         [
           'Security and incidents',

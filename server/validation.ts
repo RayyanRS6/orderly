@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { MAX_BOT_INSTRUCTIONS } from '../src/shared/bot.js';
+import { MAX_BOT_INSTRUCTIONS, PAYMENT_METHODS } from '../src/shared/bot.js';
 import { AI_LIMIT_RANGES, MODEL_LIMITS } from '../src/shared/models.js';
 import { PHOTO_URL_RE } from '../src/shared/menu.js';
 import { SLUG_RE } from '../src/shared/slug.js';
@@ -128,6 +128,16 @@ export const companySchema = z
     deliveryZones: z
       .array(z.object({ name: text(100).min(1), fee: z.number().int().min(0).max(100_000_000) }))
       .max(50),
+    // How customers may pay. Left out by dashboards from before it: the stored choice stays, and
+    // a business that never chose takes cash only.
+    paymentMethods: z
+      .array(z.enum(PAYMENT_METHODS), 'Choose how customers can pay.')
+      .min(1, 'Choose at least one way customers can pay.')
+      .max(PAYMENT_METHODS.length)
+      .refine((methods) => new Set(methods).size === methods.length, {
+        message: 'Choose each payment method only once.',
+      })
+      .optional(),
     faqs: z.array(z.object({ question: text(250).min(1), answer: text(1500).min(1) })).max(30),
     ai: z.object({
       provider: z.enum(['mock', 'openai', 'anthropic', 'gemini']),

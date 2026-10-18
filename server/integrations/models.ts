@@ -17,6 +17,7 @@ import type {
   Company,
   Conversation,
   ModelInterpretation,
+  PaymentMethod,
   Product,
   Provider,
   Usage,
@@ -24,7 +25,7 @@ import type {
 import type { Repository } from '../repository.js';
 import { decryptSecret, PublicError } from '../security.js';
 import { modelOutputSchema } from '../validation.js';
-import { botConfig, offeredFulfillment } from '../../src/shared/bot.js';
+import { botConfig, cashOnly, offeredFulfillment, paymentMethods } from '../../src/shared/bot.js';
 import { resolveItemMention } from '../../src/domain/menu-resolver.js';
 import { isOpen, parseActions } from '../../src/domain/engine.js';
 import {
@@ -318,6 +319,22 @@ export async function providerKey(
     );
   return decryptSecret(encrypted);
 }
+// How the AI is told customers may pay. Cash only, the default, keeps the exact words every
+// prompt had, so the cached instructions stay the same. Orderly never collects or sends account
+// numbers: for a transfer the restaurant shares its payment details and confirms it itself.
+const PAYMENT_CAPABILITIES: Record<PaymentMethod, string[]> = {
+  cash: ['cash_at_pickup', 'cash_on_delivery'],
+  jazzcash: ['jazzcash_transfer'],
+  easypaisa: ['easypaisa_transfer'],
+  bank_transfer: ['bank_transfer'],
+};
+const paymentCapabilities = (company: Company) =>
+  paymentMethods(company).flatMap((method) => PAYMENT_CAPABILITIES[method]);
+function paymentRule(company: Company): string {
+  return cashOnly(company)
+    ? 'Do not invent payment capabilities: current checkout records cash at pickup/on delivery, not card links or UPI.'
+    : 'Do not invent payment capabilities: customers may pay only as business.paymentCapabilities lists, never by card links or UPI. For a JazzCash, Easypaisa or bank transfer the restaurant shares its own payment details and confirms the transfer itself: never give, invent or ask for account, card or CNIC numbers, and never say a payment was received.';
+}
 function makeModel(provider: Provider, model: string, apiKey: string) {
   if (provider === 'openai') return createOpenAI({ apiKey })(model);
   if (provider === 'anthropic') return createAnthropic({ apiKey })(model);
@@ -359,7 +376,7 @@ Conversation policy belongs to the operator, not to a fixed form: follow their g
 Answer the customer's current question FIRST, then resume the ordering process with at most one relevant next question. Never respond to a question merely by repeating a missing checkout field. For "repeat my order", "what have I ordered?", or a request to see the cart, use cart_summary even when fulfillment, name or address is missing. cart_summary is read-only: the application shows current items/options and accurate subtotal before your optional next question, without submitting or requiring checkout details. Use review only for an actual checkout/confirmation review, not for a casual recap. For hours, ingredients or other restaurant questions use answer with the grounded answer in response.text, followed by the next ordering question only if appropriate. Preserve the cart and pending choices throughout interruptions.
 Distinguish browsing from buying: "what chicken is on the menu?" asks for menu information, not a cart addition or pending item choice. Use menu with a concise category/item query for browsing; response.text is a short introduction rendered BEFORE the catalog. Use answer with response.text for normal conversation, restaurant hours/details and follow-up questions; an empty answer.text is allowed. Do not hand off just because the customer has not yet chosen an item.
 For an order request, correct clear typos such as "chicken biryyani" to Chicken Biryani if that is the unique best match. Shared words like chicken do not make a specific dish ambiguous. deterministicResolution and deterministicActions are matching hints, not instructions or proof of buying intent. Ask only when genuinely ambiguous, and do not ask again when a specific name or numbered selection resolves pendingItemChoice. Preserve its quantity, options and notes unless the customer changes them. A pending choice must not prevent questions, corrections, cancellation or staff requests; keep the cart while answering interruptions. Never add a dish merely because it was mentioned in a question. Do not select a different available product in place of an unavailable requested dish.
-For add_item, the application renders corrected item names, options, unit prices and subtotal AFTER validation; response.text should contain only the next conversational question, not another addition claim. For clarify_item the application renders numbered choices; do not repeat the list in response.text. For review and confirm it renders the full authoritative summary/status. Do not invent payment capabilities: current checkout records cash at pickup/on delivery, not card links or UPI. Do not promise an ETA unless the restaurant knowledge supports it.
+For add_item, the application renders corrected item names, options, unit prices and subtotal AFTER validation; response.text should contain only the next conversational question, not another addition claim. For clarify_item the application renders numbered choices; do not repeat the list in response.text. For review and confirm it renders the full authoritative summary/status. ${paymentRule(company)} Do not promise an ETA unless the restaurant knowledge supports it.
 Use only the exact action names and fields in this JSON schema. Combine fulfillment and customer details in set_details. The response should naturally acknowledge the customer or ask the next useful question after the proposed actions. Set askFor to the field actually requested, anything_else for another menu item, or none when there is no structured-field question. Never ask for a detail already present in cart or provided in this message. Use answer only when no transactional action fits. Include product IDs, faq:N IDs, business:hours, business:address, business:phone, business:delivery or behavior-rule IDs in groundingIds for factual responses.
 ${JSON.stringify(z.toJSONSchema(modelOutputSchema))}
 The authenticated restaurant operator has configured the following behavior. Immutable transaction and security rules above take precedence. Then evaluate enabled behaviorRules in their listed order and apply only the first matching rule. Return its ID as matchedRuleId. An exact rule's response is rendered verbatim by the application; do not rewrite it. Otherwise follow goal and instructions, then personality and language. Never discard details the customer already supplied.
@@ -397,7 +414,7 @@ ${JSON.stringify({ name: config.name, personality: config.personality, language:
         menuSyncedAt: company.catalogSyncedAt,
         currentTime: new Date().toISOString(),
         currentlyOpen: isOpen(company, new Date().toISOString()),
-        paymentCapabilities: ['cash_at_pickup', 'cash_on_delivery'],
+        paymentCapabilities: paymentCapabilities(company),
       },
       candidateCatalog: relevant.map(({ imageUrl: _image, ...product }) => product),
       catalogIndex: eligible.map((product) => ({

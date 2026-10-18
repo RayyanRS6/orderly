@@ -1,4 +1,4 @@
-import { botConfig, offeredFulfillment } from '../shared/bot';
+import { botConfig, offeredFulfillment, paymentMethods } from '../shared/bot';
 import type {
   BotAction,
   BotConfig,
@@ -11,6 +11,7 @@ import type {
   Order,
   OrderLine,
   OrderStatus,
+  PaymentMethod,
   Product,
   ReplyDecision,
   ReplyPart,
@@ -305,13 +306,54 @@ export function buildOrder(
     ...(source && { source }),
   };
 }
-export function orderReceivedText(lang: Language, order: Order): string {
-  let reply = say(
+const TRANSFER_NAMES: Record<Exclude<PaymentMethod, 'cash'>, [string, string, string]> = {
+  jazzcash: ['JazzCash', 'جاز کیش', 'JazzCash'],
+  easypaisa: ['Easypaisa', 'ایزی پیسہ', 'Easypaisa'],
+  bank_transfer: ['bank transfer', 'بینک ٹرانسفر', 'bank transfer'],
+};
+// "a, b or c" in Urdu and Roman Urdu.
+const orList = (names: string[], comma: string, or: string) =>
+  names.length > 1 ? `${names.slice(0, -1).join(comma)} ${or} ${names.at(-1)}` : (names[0] ?? '');
+// How a restaurant that also takes transfers is paid. Orderly never collects or sends account
+// numbers: the customer is told the restaurant shares its details and confirms the transfer.
+function transferPaymentText(
+  lang: Language,
+  fulfillment: Order['fulfillment'],
+  methods: readonly PaymentMethod[],
+): string {
+  const cash = methods.includes('cash');
+  const transfers = methods.filter((method) => method !== 'cash');
+  const names = (index: 0 | 1 | 2) => transfers.map((method) => TRANSFER_NAMES[method][index]);
+  return say(
     lang,
-    `Order ${order.reference} received — ${money(order.total)}. Awaiting restaurant acceptance. Payment is cash ${order.fulfillment === 'pickup' ? 'at pickup' : 'on delivery'}.`,
-    `آرڈر ${order.reference} موصول ہوا — ${money(order.total)}۔ ریسٹورنٹ کی منظوری کا انتظار ہے۔ ادائیگی نقد ہوگی۔`,
-    `Order ${order.reference} receive ho gaya — ${money(order.total)}. Restaurant ki manzoori ka intezar hai. Payment cash hogi.`,
+    `Payment: ${cash ? `cash ${fulfillment === 'pickup' ? 'at pickup' : 'on delivery'}, or ` : ''}${names(0).join(' / ')} — the restaurant will share the payment details and confirm the transfer itself.`,
+    `ادائیگی ${orList([...(cash ? ['نقد'] : []), ...names(1)], '، ', 'یا')} سے ${cash ? 'ہو سکتی ہے' : 'ہوگی'}۔ ٹرانسفر کے لیے ریسٹورنٹ ادائیگی کی تفصیل خود بھیجے گا اور ٹرانسفر کی تصدیق خود کرے گا۔`,
+    `Payment ${orList([...(cash ? ['cash'] : []), ...names(2)], ', ', 'ya')} se ${cash ? 'ho sakti hai' : 'hogi'}. Transfer ke liye restaurant payment details khud bhejega aur transfer khud confirm karega.`,
   );
+}
+/**
+ * What the customer is told once their order is placed. `methods` are the restaurant's payment
+ * methods (see paymentMethods); cash only, the default, keeps the wording orders always had.
+ */
+export function orderReceivedText(
+  lang: Language,
+  order: Order,
+  methods: readonly PaymentMethod[] = ['cash'],
+): string {
+  const payment = methods.some((method) => method !== 'cash')
+    ? transferPaymentText(lang, order.fulfillment, methods)
+    : say(
+        lang,
+        `Payment is cash ${order.fulfillment === 'pickup' ? 'at pickup' : 'on delivery'}.`,
+        'ادائیگی نقد ہوگی۔',
+        'Payment cash hogi.',
+      );
+  let reply = `${say(
+    lang,
+    `Order ${order.reference} received — ${money(order.total)}. Awaiting restaurant acceptance.`,
+    `آرڈر ${order.reference} موصول ہوا — ${money(order.total)}۔ ریسٹورنٹ کی منظوری کا انتظار ہے۔`,
+    `Order ${order.reference} receive ho gaya — ${money(order.total)}. Restaurant ki manzoori ka intezar hai.`,
+  )} ${payment}`;
   if (order.phoneConfirmationRequired)
     reply += say(
       lang,
@@ -2402,7 +2444,7 @@ export function processTurn(
         order = buildOrder(company, next, cart, quote, input.now, submissionKey);
         cart.status = 'submitted';
         cart.orderId = order.id;
-        reply = orderReceivedText(lang, order);
+        reply = orderReceivedText(lang, order, paymentMethods(company));
         traces.push('order_pending_restaurant_acceptance');
         break;
       }
