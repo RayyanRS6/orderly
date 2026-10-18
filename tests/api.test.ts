@@ -495,7 +495,11 @@ describe('HTTP and service behavior', () => {
     await repo.insertJob(job);
     vi.spyOn(repo, 'commitTurn').mockRejectedValueOnce(new Error('Database unavailable'));
     await processJob(repo, job.id);
-    expect((await repo.getJob(job.id))?.status).toBe('failed');
+    // The message is kept in the chat for staff, so the job no longer blocks later messages.
+    expect(await repo.getJob(job.id)).toMatchObject({
+      status: 'done',
+      payload: { failedPermanently: true },
+    });
     expect((await repo.getConversation(company.id, conversation.id))?.mode).toBe('human');
     expect(await repo.listTraces(company.id)).toEqual(
       expect.arrayContaining([

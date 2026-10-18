@@ -729,9 +729,9 @@ describe('handleTurn reply explanations', () => {
       {
         messageId: randomUUID(),
         text: 'hello?',
-        action: { type: 'handoff' },
         late: true,
-        now: new Date().toISOString(),
+        // Only a message more than 2 hours late is passed to staff.
+        now: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(),
       },
     );
     expect(generate).not.toHaveBeenCalled();

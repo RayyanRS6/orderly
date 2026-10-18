@@ -254,7 +254,8 @@ describe('provider-safe conversation path', () => {
     const fetch = vi.fn();
     vi.stubGlobal('fetch', fetch);
     await processJob(repo, job.id);
-    expect((await repo.getJob(job.id))?.status).toBe('failed');
+    // Recorded as not sent instead of failed, so 'Retry failed work' cannot resend it.
+    expect((await repo.getJob(job.id))?.status).toBe('done');
     expect(fetch).not.toHaveBeenCalled();
   });
   it('never silently rebinds legacy Meta jobs when a new provider is active', async () => {

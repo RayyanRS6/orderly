@@ -752,7 +752,7 @@ describe('shared helpers', () => {
       reason: 'customer' as const,
       at: '2026-10-16T10:00:00.000Z',
       until: '2026-10-16T11:00:00.000Z',
-      limit: 30,
+      limit: AI_LIMIT_DEFAULTS.repliesPerCustomerPerHour,
     };
     const paused: Conversation = { ...newCustomer(), mode: 'human', limitPause: pause };
     const at = (iso: string) => Date.parse(iso);

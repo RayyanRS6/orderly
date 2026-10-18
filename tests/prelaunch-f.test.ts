@@ -457,7 +457,12 @@ describe('spam safety net (G4.2)', () => {
       replies_per_hour: 1500,
       replies_per_customer: 100,
     });
-    expect(AI_LIMIT_DEFAULTS).toEqual({ repliesPerHour: 1500, repliesPerCustomerPerHour: 100 });
+    // The per-minute message limit is checked in code only, so SQL has no counterpart for it.
+    expect(AI_LIMIT_DEFAULTS).toEqual({
+      repliesPerHour: 1500,
+      repliesPerCustomerPerHour: 100,
+      messagesPerCustomerPerMinute: 25,
+    });
     expect(await rpc('ai_limit_status', [company.id])).toMatchObject({
       repliesPerHour: 1500,
       repliesPerCustomerPerHour: 100,

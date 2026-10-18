@@ -205,7 +205,11 @@ describe('staff alerts, in memory (G7.7, G5.1, G4.2)', () => {
   });
 
   it('defaults to 1,500 AI replies an hour and 100 per customer', () => {
-    expect(effectiveAiLimits()).toEqual({ repliesPerHour: 1500, repliesPerCustomerPerHour: 100 });
+    expect(effectiveAiLimits()).toEqual({
+      repliesPerHour: 1500,
+      repliesPerCustomerPerHour: 100,
+      messagesPerCustomerPerMinute: 25,
+    });
     expect(AI_LIMIT_DEFAULTS).toEqual(effectiveAiLimits());
   });
 });
