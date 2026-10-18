@@ -118,6 +118,51 @@ const automaticNotice = (m: Message) =>
   m.notice === true || (m.role === 'staff' && STATUS_NOTICE.test(m.text ?? ''));
 const awaitsStaffReply = (messages: Message[]) =>
   messages.filter((m) => !automaticNotice(m)).at(-1)?.role !== 'staff';
+// Mirrors SQL waiting_since: a waiting customer has waited since their latest message, unless a
+// staff reply (not an automatic notice) came after it. Never later than the chat was saved; with
+// no such message, since the chat was saved.
+const waitingSince = (c: Conversation) => {
+  const last = c.messages
+    .filter((m) => !automaticNotice(m) && (m.role === 'customer' || m.role === 'staff'))
+    .at(-1);
+  return last?.role === 'customer' && Date.parse(last.createdAt) < Date.parse(c.updatedAt)
+    ? last.createdAt
+    : c.updatedAt;
+};
+// Mirrors SQL business_time_zone: the business's zone name (or UTC), else Asia/Karachi.
+const businessTimeZone = (company?: Company) => {
+  const zone = company?.timezone ?? '';
+  if (!/^(UTC|GMT|[A-Za-z][A-Za-z0-9_+-]*(\/[A-Za-z][A-Za-z0-9_+-]*)+)$/.test(zone))
+    return 'Asia/Karachi';
+  try {
+    new Intl.DateTimeFormat('en-CA', { timeZone: zone });
+    return zone;
+  } catch {
+    return 'Asia/Karachi';
+  }
+};
+// Mirrors SQL workspace_summary's daily counts: the last 30 of the business's own days, oldest
+// first, so an order at 00:30 in Karachi counts on that day.
+const dailyOrders = (orders: Order[], timeZone: string, now = Date.now()) => {
+  const day = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  });
+  const counts = new Map<string, number>();
+  for (const o of orders) {
+    const at = Date.parse(o.createdAt);
+    if (Number.isNaN(at)) continue;
+    const key = day.format(at);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const today = Date.parse(`${day.format(now)}T00:00:00Z`);
+  return Array.from({ length: 30 }, (_, i) => {
+    const date = new Date(today - (29 - i) * 86400000).toISOString().slice(0, 10);
+    return { date, count: counts.get(date) ?? 0 };
+  });
+};
 // Mirrors SQL whatsapp_down: a linked phone that stopped working while its business's bot is on
 // (logged out or failed, connected but silent past the heartbeat limit, or still reconnecting
 // `minutes` after it went down), with when it stopped. Only a phone that was paired.
@@ -442,7 +487,7 @@ export class MemoryRepository implements Repository {
             id: `handoff:${c.id}`,
             kind: 'handoff' as const,
             entityId: c.id,
-            createdAt: c.updatedAt,
+            createdAt: waitingSince(c),
           })),
         ...s.jobs
           .filter((j) => j.companyId === companyId && j.status === 'failed')
@@ -753,13 +798,17 @@ export class MemoryRepository implements Repository {
       const conversations = s.conversations.filter(
         (c) => c.companyId === companyId && (c.channel === 'demo') === sandbox,
       );
-      return summaryOf(
-        s.orders.filter(
-          (o) => o.companyId === companyId && conversations.some((c) => c.id === o.conversationId),
-        ),
-        conversations,
-        s.usage.filter((u) => u.companyId === companyId),
+      const orders = s.orders.filter(
+        (o) => o.companyId === companyId && conversations.some((c) => c.id === o.conversationId),
       );
+      return {
+        ...summaryOf(
+          orders,
+          conversations,
+          s.usage.filter((u) => u.companyId === companyId),
+        ),
+        daily: dailyOrders(orders, businessTimeZone(s.companies.find((c) => c.id === companyId))),
+      };
     });
   }
   listCompanyJobs(companyId: string) {

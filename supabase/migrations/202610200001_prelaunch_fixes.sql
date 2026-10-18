@@ -1,19 +1,21 @@
 -- Pre-launch fixes: staff email alerts reach the person who asked for them, erasing a customer
 -- finds every format of their number and clears their blocked-number label, a customer export
 -- finds every chat erasing would remove, automatic order notices no longer hide a customer waiting
--- for staff, a linked phone that stopped working alerts staff, a message that failed for good goes
--- into its chat instead of holding back the customer's later ones, the spam safety net is 1,500
--- AI replies an hour (100 per customer) with a warning at 80%, a pipeline health check, a daily
--- purge of old operational rows, and a ledger of applied migrations.
+-- for staff or restart how long they have waited, a linked phone that stopped working alerts
+-- staff, a message that failed for good goes into its chat instead of holding back the customer's
+-- later ones, the spam safety net is 1,500 AI replies an hour (100 per customer) with a warning
+-- at 80%, the Active orders filter leaves out pending orders, the daily orders chart counts the
+-- business's own days, a pipeline health check, a daily purge of old operational rows, and a
+-- ledger of applied migrations.
 -- Apply after 202610190003_menu_purge_schedule.sql and before deploying the backend that calls
 -- orderly_pipeline_health and customer_records. The backend and dashboard running now keep
 -- working: every function keeps its signature and result shape (staff_attention only adds a
 -- 'whatsapp' count and items), and the only new column has a default.
 -- Safe to rerun while no later file redefines these functions. It replaces, starting from their
 -- latest bodies: alert_recipient (202609180001), erase_customer and run_retention (202609170001),
--- prune_orderly_cron_history (202609110001), and ai_limit_settings, has_overdue_attention,
--- staff_attention and fail_exhausted_orderly_jobs (202610180001). After it, 202610180001 refuses
--- to run again.
+-- query_orders and workspace_summary (202609160001), prune_orderly_cron_history (202609110001),
+-- and ai_limit_settings, has_overdue_attention, staff_attention and fail_exhausted_orderly_jobs
+-- (202610180001). After it, 202610180001 refuses to run again.
 set lock_timeout = '5s';
 
 -- Which migrations were applied, and when. Each migration from this one on records itself last.
@@ -131,6 +133,21 @@ language sql immutable set search_path = public as $$
   end;
 $$;
 
+-- Since when a customer waiting for staff has waited, for the bell and email alerts: their latest
+-- message, unless a staff reply came after it. Automatic notices count as nothing, as in
+-- awaits_staff_reply, so an order status change no longer restarts the wait. Never later than
+-- the chat was last saved; with no such message, when the chat was last saved, as before.
+create or replace function public.waiting_since(p_messages jsonb,p_updated_at timestamptz) returns timestamptz
+language sql stable set search_path = public as $$
+  select least(p_updated_at,(
+    select case when m->>'role'='customer' then (m->>'createdAt')::timestamptz end
+    from jsonb_array_elements(case when jsonb_typeof(p_messages)='array' then p_messages else '[]'::jsonb end) with ordinality a(m,n)
+    where m->>'notice' is distinct from 'true'
+      and (m->>'role'='customer' or (m->>'role'='staff'
+        and coalesce(m->>'text','') !~ '^Order [^ ]+ is now (pending|accepted|preparing|ready|out for delivery|completed|rejected|cancelled)\.$'))
+    order by n desc limit 1));
+$$;
+
 -- Keep in step with AI_LIMIT_DEFAULTS and AI_LIMIT_RANGES in src/shared/models.ts. Changed: the
 -- defaults are 1,500 replies an hour for the restaurant and 100 for one customer.
 create or replace function public.ai_limit_settings(p_data jsonb)
@@ -172,12 +189,13 @@ language sql stable security definer set search_path=public as $$
 $$;
 
 -- Latest body from 202610180001_spam_protection.sql. Changed: an automatic notice is not a staff
--- reply, an order waiting 15 minutes counts whatever the alert delay, the 80% warning counts, and
--- so does a linked phone that stopped working (one still reconnecting after the alert delay).
+-- reply, a customer has waited since their message (waiting_since), an order waiting 15 minutes
+-- counts whatever the alert delay, the 80% warning counts, and so does a linked phone that
+-- stopped working (one still reconnecting after the alert delay).
 create or replace function public.has_overdue_attention(p_company_id text,p_minutes integer) returns boolean
 language sql stable security definer set search_path=public as $$
   select exists(select 1 from orders where company_id=p_company_id and data->>'status'='pending' and data->>'sandbox'='false' and created_at<now()-make_interval(mins=>least(p_minutes,15)))
-    or exists(select 1 from conversations where company_id=p_company_id and channel='whatsapp' and data->>'mode'='human' and awaits_staff_reply(data->'messages') and jsonb_typeof(data->'blocked') is distinct from 'object' and updated_at<now()-make_interval(mins=>p_minutes))
+    or exists(select 1 from conversations where company_id=p_company_id and channel='whatsapp' and data->>'mode'='human' and awaits_staff_reply(data->'messages') and jsonb_typeof(data->'blocked') is distinct from 'object' and waiting_since(data->'messages',updated_at)<now()-make_interval(mins=>p_minutes))
     or exists(select 1 from jobs where company_id=p_company_id and status='failed' and data->>'kind'<>'staff_alert' and created_at<now()-make_interval(mins=>p_minutes))
     or company_budget_warning(p_company_id)
     or exists(select 1 from ai_limit_hits where company_id=p_company_id and last_hit_at>now()-interval '1 hour')
@@ -185,7 +203,8 @@ language sql stable security definer set search_path=public as $$
     or exists(select 1 from whatsapp_down(p_company_id,p_minutes));
 $$;
 -- Latest body from 202610180001_spam_protection.sql. Changed: an automatic notice is not a staff
--- reply, and the 80% warning is a 'limit' item with scope 'hourly_near' (dashboards that do not
+-- reply, a waiting customer's item is dated from their message (waiting_since) as email alerts
+-- count it, and the 80% warning is a 'limit' item with scope 'hourly_near' (dashboards that do not
 -- know it show "AI limit reached"). It is not counted in "limits", which are limits reached. A
 -- linked phone that stopped working is a 'whatsapp' item (counted in "whatsapp"; dashboards that do
 -- not know it show "Something needs attention"); one reconnecting shows after 3 minutes, when
@@ -204,7 +223,7 @@ language sql stable security definer set search_path=public as $$
     select 'order:'||id as id,'order'::text as kind,id as "entityId",created_at as "createdAt",null::text as scope,null::timestamptz as "resetsAt"
       from orders where company_id=p_company_id and data->>'status'='pending' and data->>'sandbox'='false'
     union all
-    select 'handoff:'||id,'handoff',id,updated_at,null,null from conversations
+    select 'handoff:'||id,'handoff',id,waiting_since(data->'messages',updated_at),null,null from conversations
       where company_id=p_company_id and channel='whatsapp' and data->>'mode'='human' and awaits_staff_reply(data->'messages')
         and jsonb_typeof(data->'blocked') is distinct from 'object'
     union all
@@ -249,6 +268,46 @@ language sql stable security definer set search_path=public as $$
     'conversations',coalesce((select jsonb_agg(data order by updated_at desc, id) from matched),'[]'::jsonb),
     'orders',coalesce((select jsonb_agg(o.data order by o.created_at desc, o.id) from orders o
       where o.company_id=p_company_id and o.conversation_id in (select id from matched)),'[]'::jsonb));
+$$;
+
+-- Latest body from 202609160001_launch_hardening.sql. Changed: 'active' is the orders staff are
+-- working on (accepted, preparing, ready or out for delivery), as the Orders page shows them
+-- beside its own Pending tab and the local store counts them; pending orders are not in it.
+create or replace function public.query_orders(p_company_id text,p_filter jsonb) returns jsonb language sql stable security definer set search_path=public as $$
+  with opts as (select greatest(1,least(100,coalesce((p_filter->>'pageSize')::integer,50))) size,greatest(1,coalesce((p_filter->>'page')::integer,1)) page),
+  matching as (select o.* from orders o join conversations c on c.id=o.conversation_id and c.company_id=o.company_id where o.company_id=p_company_id
+    and (not p_filter ? 'sandbox' or (c.channel='demo')=(p_filter->>'sandbox')::boolean)
+    and (coalesce(p_filter->>'status','all')='all' or o.data->>'status'=p_filter->>'status' or (p_filter->>'status'='active' and o.data->>'status' in ('accepted','preparing','ready','out_for_delivery')))
+    and (coalesce(p_filter->>'search','')='' or strpos(lower(concat_ws(' ',o.data->>'reference',o.data->>'customerName',o.data->>'customerPhone')),lower(p_filter->>'search'))>0)
+    and (not p_filter ? 'from' or o.created_at>=(p_filter->>'from')::timestamptz) and (not p_filter ? 'to' or o.created_at<=(p_filter->>'to')::timestamptz)),
+  page_rows as (select data from matching order by created_at desc,id desc limit (select size from opts) offset (select (page-1)*size from opts))
+  select jsonb_build_object('items',coalesce((select jsonb_agg(data) from page_rows),'[]'),'total',(select count(*) from matching),'page',page,'pageSize',size) from opts;
+$$;
+
+-- A business's time zone (companies.data->>'timezone'), for counting its orders by its own days:
+-- a zone name such as 'Asia/Karachi', or UTC. Anything else means Asia/Karachi, so a bad setting
+-- never breaks the Overview: a missing zone, an offset or a POSIX rule (Postgres reads '+05:00'
+-- and 'UTC+5' as 5 hours west of UTC), an abbreviation, and a name Postgres does not know.
+create or replace function public.business_time_zone(p_data jsonb) returns text
+language plpgsql stable set search_path = public as $$
+declare zone text := p_data->>'timezone';
+begin
+  if coalesce(zone,'') !~ '^(UTC|GMT|[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z][A-Za-z0-9_+-]*)+)$' then return 'Asia/Karachi'; end if;
+  perform now() at time zone zone;
+  return zone;
+exception when others then return 'Asia/Karachi';
+end $$;
+
+-- Latest body from 202609160001_launch_hardening.sql. Changed: the daily counts are the business's
+-- own days (business_time_zone), as the Overview chart labels them, not UTC days, so an order at
+-- 00:30 in Karachi counts on that day, not the day before. Oldest first, today last, as before.
+create or replace function public.workspace_summary(p_company_id text,p_sandbox boolean) returns jsonb language sql stable security definer set search_path=public as $$
+  with zone as (select business_time_zone((select data from companies where id=p_company_id)) tz),
+  conv as (select * from conversations where company_id=p_company_id and (channel='demo')=p_sandbox),
+  ord as (select o.*,(o.created_at at time zone (select tz from zone))::date as local_day from orders o join conv c on c.id=o.conversation_id where o.company_id=p_company_id),
+  days as (select (now() at time zone (select tz from zone))::date-i as day_date from generate_series(0,29) i)
+  select jsonb_build_object('orders',(select count(*) from ord),'pending',(select count(*) from ord where data->>'status'='pending'),'value',(select coalesce(sum((data->>'total')::numeric),0) from ord where data->>'status' not in ('cancelled','rejected')),'conversations',(select count(*) from conv),'needsStaff',(select count(*) from conv where data->>'mode'='human'),'monthlySpend',(select coalesce(sum(cost_usd),0) from usage_events where company_id=p_company_id and created_at>=date_trunc('month',now())),
+    'daily',(select jsonb_agg(jsonb_build_object('date',day_date,'count',(select count(*) from ord where local_day=day_date)) order by day_date) from days));
 $$;
 
 -- Latest body from 202610180001_spam_protection.sql. Changed, as the worker does since these
@@ -472,10 +531,10 @@ $$;
 
 do $$ declare f record; begin
   for f in select oid::regprocedure signature from pg_proc where pronamespace='public'::regnamespace
-    and proname=any(array['alert_recipient','erase_customer','run_retention','awaits_staff_reply','ai_limit_settings',
-      'ai_hourly_warning','whatsapp_down','has_overdue_attention','staff_attention','customer_records',
-      'fail_exhausted_orderly_jobs','orderly_pipeline_health','purge_orderly_operations',
-      'prune_orderly_cron_history']) loop
+    and proname=any(array['alert_recipient','erase_customer','run_retention','awaits_staff_reply','waiting_since',
+      'ai_limit_settings','ai_hourly_warning','whatsapp_down','has_overdue_attention','staff_attention',
+      'customer_records','query_orders','business_time_zone','workspace_summary','fail_exhausted_orderly_jobs',
+      'orderly_pipeline_health','purge_orderly_operations','prune_orderly_cron_history']) loop
     execute format('revoke all on function %s from public,anon,authenticated',f.signature);
     execute format('grant execute on function %s to service_role',f.signature);
   end loop;
