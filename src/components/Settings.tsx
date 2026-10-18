@@ -32,7 +32,7 @@ import {
   Status,
 } from './ui';
 import { WhatsAppSignup } from './WhatsAppSignup';
-import { WhatsAppConnection } from './WhatsAppConnection';
+import { LinkedCleanupNote, WhatsAppConnection } from './WhatsAppConnection';
 
 const providers: Record<Provider, { name: string; model: string }> = {
   mock: { name: 'Local demo · no API calls', model: MODEL_DEFAULTS.mock },
@@ -584,6 +584,8 @@ export function Integrations() {
   const [disconnectError, setDisconnectError] = useState('');
   // Kept after closing, so the title doesn't change while the dialog fades out.
   const [disconnectName, setDisconnectName] = useState('');
+  // The old linked-phone session still needs removing on the phone (gatewayCleanupPending).
+  const [linkedCleanup, setLinkedCleanup] = useState(false);
   const { data, mutate, navigate } = useWorkspace();
   const { pending, run } = useAction();
   const [editing, setEditing] = useState<Integration | null>(null);
@@ -612,11 +614,19 @@ export function Integrations() {
           setDisconnectError('');
           void run('disconnect', async () => {
             try {
-              await mutate(`/integrations/${target.kind}`, undefined, 'DELETE', {
-                dialog: true,
-                success: `${integrationInfo[target.kind]?.title ?? 'Integration'} disconnected.`,
-              });
+              const result = await mutate<{ gatewayCleanupPending?: boolean }>(
+                `/integrations/${target.kind}`,
+                undefined,
+                'DELETE',
+                {
+                  dialog: true,
+                  success: `${integrationInfo[target.kind]?.title ?? 'Integration'} disconnected.`,
+                },
+              );
               setDisconnecting(undefined);
+              // A linked phone was in use and its session could not be ended from here.
+              if (target.kind === 'whatsapp' && result?.gatewayCleanupPending)
+                setLinkedCleanup(true);
             } catch (e) {
               setDisconnectError((e as Error).message);
             }
@@ -687,6 +697,9 @@ export function Integrations() {
                   <p className="mb-4 rounded-xl bg-red-50 px-3 py-2 text-xs font-medium text-red-700">
                     {integration.error}
                   </p>
+                )}
+                {integration.kind === 'whatsapp' && linkedCleanup && (
+                  <LinkedCleanupNote className="mb-4" onDismiss={() => setLinkedCleanup(false)} />
                 )}
                 <div className="mt-auto flex flex-wrap gap-2">
                   <button

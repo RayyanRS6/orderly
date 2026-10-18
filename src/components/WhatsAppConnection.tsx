@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { RefreshCw, Smartphone, ShieldAlert } from 'lucide-react';
+import { RefreshCw, Smartphone, ShieldAlert, X } from 'lucide-react';
 import type { WhatsAppConnection as Connection } from '../shared/whatsapp';
 import { api, ApiError } from '../lib/api';
 import { dialogOpen, useAction, useWorkspace } from '../lib/workspace';
+import { cn } from '../lib/utils';
 import { ActionButton, ConfirmDialog, ErrorNotice, Field } from './ui';
 
 /**
@@ -61,6 +62,55 @@ export function connectionAdvice(state: Connection['status'], errorCode?: string
   if (errorCode)
     return 'Try reconnecting, or start a new pairing if WhatsApp logged this device out.';
 }
+/** Gateway problems with one thing to do, said in full instead of "needs attention". */
+export const GATEWAY_PROBLEMS: Record<string, string> = {
+  PAIRING_EXPIRED: 'The pairing code expired. Start pairing again.',
+  SESSION_CAPACITY_REACHED:
+    'Orderly’s linked-phone service is full right now. Contact Orderly support.',
+};
+/** A failed request's words, or the plain words for a gateway code it carries. */
+export function gatewayMessage(e: unknown, fallback: string) {
+  if (e instanceof ApiError && e.code && GATEWAY_PROBLEMS[e.code]) return GATEWAY_PROBLEMS[e.code]!;
+  return e instanceof Error ? e.message : fallback;
+}
+/** What the status box says about a connection problem. */
+export function connectionProblem(state: Connection['status'], errorCode: string) {
+  return (
+    GATEWAY_PROBLEMS[errorCode] ??
+    `Connection needs attention: ${reason(errorCode)}. ${connectionAdvice(state, errorCode) ?? ''}`.trim()
+  );
+}
+/** Said when a switch or disconnect could not end the old linked-phone session itself. */
+export const LINKED_CLEANUP =
+  'Also remove Orderly under WhatsApp → Linked devices on the restaurant phone: the old session could not be ended from here.';
+/** The cleanup step, kept on screen until the owner dismisses it. */
+export function LinkedCleanupNote({
+  onDismiss,
+  className = 'mt-4',
+}: {
+  onDismiss: () => void;
+  className?: string;
+}) {
+  return (
+    <div
+      role="status"
+      className={cn(
+        'step-in flex items-start gap-2.5 rounded-2xl border border-sun/50 bg-sun/10 p-4 text-sm leading-relaxed text-stone-800',
+        className,
+      )}
+    >
+      <p className="min-w-0 flex-1 font-medium">{LINKED_CLEANUP}</p>
+      <button
+        type="button"
+        className="-m-1 rounded-full p-1 text-stone-500 transition-[color,scale] duration-200 hover:text-ink active:scale-90"
+        aria-label="Dismiss note"
+        onClick={onDismiss}
+      >
+        <X className="size-4" />
+      </button>
+    </div>
+  );
+}
 
 type Action = 'pair' | 'disconnect' | 'select-meta' | 'reconnect';
 const DONE: Record<Action, string> = {
@@ -107,6 +157,8 @@ export function WhatsAppConnection() {
   const [accepted, setAccepted] = useState(false);
   const [error, setError] = useState('');
   const [confirmError, setConfirmError] = useState('');
+  // The old linked session still needs removing on the phone (gatewayCleanupPending).
+  const [cleanup, setCleanup] = useState(false);
   const [confirm, setConfirm] = useState<'pair' | 'disconnect' | 'select-meta'>();
   // The open confirmation, readable from a request that finishes later.
   const asked = useRef(confirm);
@@ -140,6 +192,7 @@ export function WhatsAppConnection() {
     setSnapshot(undefined);
     setError('');
     setAccepted(false);
+    setCleanup(false);
     void loadConnection()
       .then((result) => {
         if (active) showConnection(result);
@@ -190,7 +243,7 @@ export function WhatsAppConnection() {
           delay = (e.retryAfter ?? STATUS_BACKOFF_S) * 1000;
         } else {
           setSnapshot(undefined);
-          setError(e instanceof Error ? e.message : 'Connection unavailable.');
+          setError(gatewayMessage(e, 'Connection unavailable.'));
           delay = pairingPollDelay(status);
         }
       }
@@ -247,7 +300,7 @@ export function WhatsAppConnection() {
               : { confirmed: true },
         );
       } catch (e) {
-        const message = e instanceof Error ? e.message : 'Connection failed.';
+        const message = gatewayMessage(e, 'Connection failed.');
         // Its confirmation shows the failure while still open for this action. Reconnect
         // has none, and a confirmation closed meanwhile can't, so those show below (and
         // as a notification).
@@ -267,12 +320,9 @@ export function WhatsAppConnection() {
       // Only close the confirmation if it still belongs to this action.
       setConfirm((current) => (current === action ? undefined : current));
       notify(DONE[action], action === 'reconnect' ? 'info' : 'success');
-      // The switch is saved, but the old linked session could not be ended from here.
-      if (result?.gatewayCleanupPending)
-        notify(
-          'Also remove Orderly under WhatsApp → Linked devices on the restaurant phone: the old session could not be ended from here.',
-          'info',
-        );
+      // The switch is saved, but the old linked session could not be ended from here: the
+      // owner removes it on the phone. Kept on screen, since a notification goes away.
+      if (result?.gatewayCleanupPending) setCleanup(true);
       // The change is saved, so a failed reload only delays the new status.
       try {
         showConnection(await loadConnection());
@@ -503,13 +553,12 @@ export function WhatsAppConnection() {
           )}
           {(snapshot?.errorCode || connection.errorCode) && (
             <p className="mt-3 rounded-xl bg-red-50 px-3.5 py-2.5 text-sm font-medium text-red-700">
-              Connection needs attention:{' '}
-              {reason(snapshot?.errorCode || connection.errorCode || '')}.{' '}
-              {connectionAdvice(state, snapshot?.errorCode || connection.errorCode)}
+              {connectionProblem(state, snapshot?.errorCode || connection.errorCode || '')}
             </p>
           )}
         </div>
       )}
+      {cleanup && <LinkedCleanupNote onDismiss={() => setCleanup(false)} />}
       {error && (
         <div className="mt-4">
           <ErrorNotice message={error} />
