@@ -51,7 +51,7 @@ import {
 import { modelFingerprint } from './integrations/model-catalog.js';
 import { GoogleSheetsAdapter } from './integrations/sheets.js';
 import { WhatsAppAdapter } from './integrations/whatsapp.js';
-import { decryptSecret, PublicError } from './security.js';
+import { decryptSecret, PublicError, redactSecrets } from './security.js';
 import { sanitizeError } from './security.js';
 import { botConfig, configuredCompany } from '../src/shared/bot.js';
 import { dispatchJob, makeJob } from './jobs.js';
@@ -1333,7 +1333,7 @@ function logJobFailure(job: Job, permanent: boolean, error: unknown) {
   const name = error instanceof Error ? error.name : typeof error;
   const code = (error as { code?: unknown } | undefined)?.code;
   const status = error instanceof PublicError ? error.status : undefined;
-  const message = (error instanceof Error ? error.message : String(error))
+  const message = redactSecrets(error instanceof Error ? error.message : String(error))
     .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
     .replace(/\b(?:sk-[\w-]{8,}|eyJ[\w-]+\.[\w-]+\.[\w-]+)\b/g, '[redacted]')
     .replace(/\+?\d[\d\s-]{6,}\d/g, '[number]');
