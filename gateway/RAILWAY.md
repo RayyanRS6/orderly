@@ -196,7 +196,12 @@ sessions disconnected since. Keep backup retention short.
 Only a business the Orderly admin has enabled for linked-phone pairing can pair (`PUT
 /api/admin/businesses/:companyId/linked-device` with `{"allowed": true}`, or the audited SQL in
 [DEPLOYMENT.md §4](../docs/DEPLOYMENT.md); a business already on a linked phone keeps it).
-In Orderly → **Integrations**, go through the risk notice with the restaurant owner: this
+An admin revoke (`{"allowed": false}`, recorded as `admin.linked_device.revoked`) blocks every
+further pairing for that business, including pairing its own phone again; its current session
+keeps working until it ends. Without an admin decision either way, only a business from before
+approvals whose linked phone is still in use (connected, connecting, reconnecting or waiting for
+its pairing to finish) may pair it again without approval; one that disconnected, was logged out
+or failed needs approval like any other. In Orderly → **Integrations**, go through the risk notice with the restaurant owner: this
 unofficial method is against WhatsApp's terms, WhatsApp can ban the
 whole number temporarily or permanently, including the restaurant's own WhatsApp app, and
 messages are decrypted on Orderly's gateway on Railway. The owner ticks the consent box, and
