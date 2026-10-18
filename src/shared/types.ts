@@ -106,6 +106,9 @@ export interface Cart {
   quotedTotal?: number;
   status: 'building' | 'awaiting_confirmation' | 'submitted' | 'cancelled';
   orderId?: string;
+  /** The bot reply that showed the review this cart awaits confirmation against, and when. */
+  reviewMessageId?: string;
+  reviewedAt?: string;
 }
 export interface Message {
   id: string;

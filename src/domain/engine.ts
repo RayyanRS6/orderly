@@ -1,4 +1,4 @@
-import { botConfig } from '../shared/bot';
+import { botConfig, offeredFulfillment } from '../shared/bot';
 import type {
   BotAction,
   BotConfig,
@@ -147,10 +147,16 @@ const say = (lang: Language, en: string, ur: string, roman: string) =>
   lang === 'ur' ? ur : lang === 'roman-ur' ? roman : en;
 function invalidate(cart: Cart) {
   cart.revision += 1;
+  unreview(cart);
+}
+// Back to building without a cart change: nothing is confirmable until a review is shown again.
+function unreview(cart: Cart) {
   cart.status = 'building';
   delete cart.reviewedRevision;
   delete cart.quoteHash;
   delete cart.quotedTotal;
+  delete cart.reviewMessageId;
+  delete cart.reviewedAt;
 }
 
 export function isOpen(company: Company, now: string): boolean {
@@ -249,6 +255,22 @@ export function closedText(company: Company, lang: Language): string {
   );
 }
 
+const noChatOrdering = (lang: Language) =>
+  say(
+    lang,
+    'Ordering in this chat is not available right now. Please ask our staff for help.',
+    'ابھی اس چیٹ میں آرڈر دستیاب نہیں ہے۔ براہ کرم عملے سے رابطہ کریں۔',
+    'Abhi is chat mein order available nahi hai. Meherbani karke staff se baat karein.',
+  );
+// The engine's own refusal of a pickup/delivery choice the restaurant does not offer.
+function fulfillmentRefusal(company: Company, chosen: 'pickup' | 'delivery'): string | undefined {
+  const offered = offeredFulfillment(company);
+  if (offered === 'both' || offered === chosen) return undefined;
+  return offered
+    ? `This restaurant currently offers ${offered} only.`
+    : 'Ordering in this chat is not available right now. Please ask our staff for help.';
+}
+
 function missingDetails(company: Company, cart: Cart, lang: Language): string | undefined {
   if (!cart.items.length)
     return say(
@@ -257,7 +279,18 @@ function missingDetails(company: Company, cart: Cart, lang: Language): string | 
       'آپ کیا آرڈر کرنا چاہیں گے؟',
       'Aap kya order karna chahenge?',
     );
-  if (!cart.fulfillment)
+  const offered = offeredFulfillment(company);
+  if (!offered) return noChatOrdering(lang);
+  if (cart.fulfillment && offered !== 'both' && cart.fulfillment !== offered)
+    return say(
+      lang,
+      `We currently offer ${offered} only. Please choose ${offered}.`,
+      offered === 'pickup'
+        ? 'ابھی صرف پک اپ دستیاب ہے۔ براہ کرم پک اپ منتخب کریں۔'
+        : 'ابھی صرف ڈیلیوری دستیاب ہے۔ براہ کرم ڈیلیوری منتخب کریں۔',
+      `Abhi sirf ${offered} available hai. Meherbani karke ${offered} chunein.`,
+    );
+  if (!cart.fulfillment && offered === 'both')
     return say(
       lang,
       'Would you like pickup or delivery?',
@@ -271,14 +304,16 @@ function missingDetails(company: Company, cart: Cart, lang: Language): string | 
       'آرڈر کے لیے آپ کا نام کیا ہے؟',
       'Order ke liye aap ka naam kya hai?',
     );
-  if (cart.fulfillment === 'delivery' && !cart.zone)
+  // The only option on offer is the customer's, without asking.
+  const fulfillment = cart.fulfillment ?? offered;
+  if (fulfillment === 'delivery' && !cart.zone)
     return say(
       lang,
       `Which delivery area? ${company.deliveryZones.map((z) => z.name).join(', ')}.`,
       `ڈیلیوری کا علاقہ بتائیں: ${company.deliveryZones.map((z) => z.name).join('، ')}۔`,
       `Delivery ka ilaqa batayein: ${company.deliveryZones.map((z) => z.name).join(', ')}.`,
     );
-  if (cart.fulfillment === 'delivery' && !cart.address?.trim())
+  if (fulfillment === 'delivery' && !cart.address?.trim())
     return say(
       lang,
       'Please send your complete delivery address.',
@@ -341,9 +376,18 @@ export function isCartSummaryRequest(text: string): boolean {
   );
 }
 
-function review(company: Company, products: Product[], cart: Cart, lang: Language): string {
+// While closed, the review shows the order but is not confirmable: the cart stays 'building', so
+// no Confirm button is attached and a later "confirm" gets a fresh review.
+function review(
+  company: Company,
+  products: Product[],
+  cart: Cart,
+  lang: Language,
+  now: string,
+): string {
   const missing = missingDetails(company, cart, lang);
   if (missing) return `${cartSummary(company, products, cart, lang)}\n\n${missing}`;
+  const open = isOpen(company, now);
   const quote = quoteCart(company, products, cart);
   const lines = quote.items
     .map(
@@ -357,15 +401,26 @@ function review(company: Company, products: Product[], cart: Cart, lang: Languag
     `\n${cart.fulfillment === 'delivery' ? `Delivery: ${cart.address} (${cart.zone})` : 'Pickup'} · ${cart.customerName}`,
     `${say(lang, 'Delivery fee', 'ڈیلیوری فیس', 'Delivery fee')}: ${money(quote.deliveryFee)}`,
     `${say(lang, 'Total', 'کل رقم', 'Total')}: ${money(quote.total)}`,
-    say(
-      lang,
-      '\nReply “confirm” to submit this order for restaurant acceptance.',
-      '\nریسٹورنٹ کی منظوری کے لیے آرڈر بھیجنے کو “تصدیق” لکھیں۔',
-      '\nRestaurant ki manzoori ke liye “confirm” ya “haan” likhein.',
-    ),
+    open
+      ? say(
+          lang,
+          '\nReply “confirm” to submit this order for restaurant acceptance.',
+          '\nریسٹورنٹ کی منظوری کے لیے آرڈر بھیجنے کو “تصدیق” لکھیں۔',
+          '\nRestaurant ki manzoori ke liye “confirm” ya “haan” likhein.',
+        )
+      : `\n${closedText(company, lang)}${say(
+          lang,
+          ' Your cart is saved. Send “review” when we are open.',
+          ' آپ کی ٹوکری محفوظ ہے۔ ہمارے کھلنے پر “جائزہ” لکھیں۔',
+          ' Cart save hai. Jab hum khule hon to “review” likhein.',
+        )}`,
   ].join('\n');
   if (text.length > 3500)
     throw new Error('This order is too large for one message. Please ask staff to complete it.');
+  if (!open) {
+    unreview(cart);
+    return text;
+  }
   cart.status = 'awaiting_confirmation';
   cart.reviewedRevision = cart.revision;
   cart.quoteHash = quote.hash;
@@ -662,10 +717,59 @@ export function inventsLink(
   });
 }
 
-const affirmative = (text: string) =>
-  /^(confirm(?: order| it)?|yes(?: please)?|yes confirm|place (?:my |the )?order|submit(?: order)?|haan(?: ji)?|han(?: ji)?|ji(?: haan| han)?|tasdeeq|order confirm(?: kar do| kardo)?|تصدیق|ہاں(?: جی)?|جی(?: ہاں)?|آرڈر کنفرم|کنفرم|تصدیق کریں)[.!،۔\s]*$/u.test(
-    normalize(text),
-  );
+// Consent to place a reviewed order, read from the whole message. Explicit wording ("Yes,
+// confirm", "confirm kar dein ✅", "place order", "جی کنفرم") counts against the latest review; a
+// bare "yes", "ok", "haan" or "ٹھیک ہے" only straight after the review itself, since it may
+// answer any question. A question, a negation or any other word (an item, a detail) is never
+// consent: "confirm?", "confirm nahi", "yes, add raita", "2 more naan, confirm".
+const YES_WORDS =
+  'yes|yess+|yeah|yep|yup|ok|okay|okey|okk+|sure|haan|han|haan ji|han ji|ji haan|ji han|ji|jee|g|theek hai|thik hai|theek|thik|bilkul|جی|ہاں|جی ہاں|ہاں جی|ٹھیک ہے|ٹھیک|اوکے';
+const FILLERS = 'please|pls|plz|ji|jee|g|bhai|sir|پلیز|جی';
+const EXPLICIT_CONSENT = new RegExp(
+  `^(?:(?:${YES_WORDS}|${FILLERS}|abhi) ){0,3}(?:confirm(?:ed)?(?: (?:my |the |this )?order| it)?|order confirm(?:ed)?|(?:place|submit) (?:my |the |this )?order|order place|submit|tasdeeq|کنفرم|تصدیق|آرڈر کنفرم|آرڈر کی تصدیق)(?: (?:kar ?do|kar ?dein|kar ?dain|kar ?den|karo|kr ?do|kr ?dein|kar ?dijiye|kar ?dijye|kar ?de|کر دیں|کریں|کر دو|کرو|کردیں|کر دیجیے|کر دیجئے|کیجیے|کیجئے))?(?: (?:${FILLERS}|now))*$`,
+  'u',
+);
+const BARE_CONSENT = new RegExp(
+  `^(?:(?:${FILLERS}) )?(?:${YES_WORDS}|order kar ?do|order kar ?dein|order kar ?dain|آرڈر کر دیں)(?: (?:${FILLERS}|hai))*$`,
+  'u',
+);
+// ✅ ✔ ☑ 👍 👌 🙏 with skin tones and joiners. Any other emoji leaves a word that is not consent.
+const POSITIVE_MARK =
+  '[\\u2705\\u2714\\u2611\\u{1F44D}\\u{1F44C}\\u{1F64F}\\u{1F3FB}-\\u{1F3FF}\\uFE0F\\u200D]';
+function consent(text: string): 'explicit' | 'bare' | undefined {
+  const value = normalize(text);
+  if (
+    /[?؟❌✖\u{1F6AB}\u{1F44E}]|نہیں|مت(?:\s|$)/u.test(value) ||
+    /\b(?:no|not|nahi|nahin|nai|nhi|mat|dont|don['’]t|never|cancel)\b/u.test(value)
+  )
+    return undefined;
+  const words = value
+    .replace(new RegExp(POSITIVE_MARK, 'gu'), ' ')
+    .replace(/[.!,،۔]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (EXPLICIT_CONSENT.test(words)) return 'explicit';
+  if (BARE_CONSENT.test(words) || (!words && new RegExp(POSITIVE_MARK, 'u').test(value)))
+    return 'bare';
+  return undefined;
+}
+// The message a customer is answering: the one before theirs. parseActions also runs before the
+// message is saved (for the AI's hint), so a trailing copy of this very text is skipped.
+function answeredMessage(conversation: Conversation, text: string) {
+  const last = conversation.messages.at(-1);
+  return last?.role === 'customer' && last.text === text.slice(0, 4000)
+    ? conversation.messages.at(-2)
+    : last;
+}
+// Whether that message is the review this cart awaits confirmation against, and it was delivered.
+const isLatestReview = (cart: Cart, message?: Conversation['messages'][number]) =>
+  cart.status === 'awaiting_confirmation' &&
+  !!cart.reviewMessageId &&
+  message?.role === 'assistant' &&
+  message.id === cart.reviewMessageId &&
+  message.delivery !== 'failed';
+// A review older than this is shown again before an order is placed from it.
+const REVIEW_FRESH_MS = 60 * 60 * 1000;
 function contains(text: string, phrase: string): boolean {
   const p = normalize(phrase).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(`(^|[^\\p{L}\\p{N}])${p}(?=$|[^\\p{L}\\p{N}])`, 'u').test(normalize(text));
@@ -877,7 +981,15 @@ export function parseActions(
         },
       ];
   }
-  if (affirmative(value)) return [{ type: 'confirm' }];
+  // A bare "yes" may answer any question, so it means confirm only straight after the review.
+  // Otherwise it is an acknowledgement, never a dish ("haan" is one letter from "naan").
+  const agreed = consent(text);
+  if (
+    agreed === 'explicit' ||
+    (agreed === 'bare' && isLatestReview(conversation.cart, answeredMessage(conversation, text)))
+  )
+    return [{ type: 'confirm' }];
+  if (agreed === 'bare') return [{ type: 'answer', text: '' }];
   if (
     /^(menu|show menu|show me (?:the )?menu|مینو|menu dikhao|menu bhej(?: do)?|salam|salaam|hello|hi|السلام علیکم)[.!،۔\s]*$/u.test(
       value,
@@ -1203,6 +1315,25 @@ export function processTurn(
     hash: cart.quoteHash,
     status: cart.status,
   };
+  // A typed confirmation answers the message just before it. It counts only when that message
+  // is the review the cart awaits (not an answer, a staff message or a notice since), the review
+  // reached the customer, and it is under an hour old.
+  const reviewAnswered = isLatestReview(conversation.cart, conversation.messages.at(-1));
+  const reviewAge = cart.reviewedAt ? Date.parse(input.now) - Date.parse(cart.reviewedAt) : NaN;
+  const reviewFresh = reviewAge >= 0 && reviewAge <= REVIEW_FRESH_MS;
+  // The review text this turn shows, so finish() records which reply carried it.
+  let shownReview: string | undefined;
+  const showReview = () => {
+    const text = review(company, products, cart, lang, input.now);
+    if (cart.status === 'awaiting_confirmation') shownReview = text;
+    return text;
+  };
+  // Only a choice the restaurant offers: with one option, it is the customer's without asking.
+  const offered = offeredFulfillment(company);
+  const settleFulfillment = () => {
+    if (!cart.fulfillment && (offered === 'pickup' || offered === 'delivery'))
+      cart.fulfillment = offered;
+  };
   // Allergy questions get the owner's approved words, or a fixed notice and a person; never AI
   // wording. A follow-up question straight after one about a dish or "it" ("and the karahi?",
   // "so it's safe?") is guarded too; a menu request or another topic is not.
@@ -1470,6 +1601,14 @@ export function processTurn(
       if (!parts.includes('engine')) parts.push('engine');
     }
     if (modelText === 'used' && !parts.includes('model')) modelText = 'replaced';
+    // Confirmation counts only against the reply that showed the review. A review the final
+    // reply does not carry (replaced by a handoff or an error) was never seen: not confirmable.
+    if (shownReview && cart.status === 'awaiting_confirmation') {
+      if (reply.includes(shownReview)) {
+        cart.reviewMessageId = `${input.messageId}:reply`;
+        cart.reviewedAt = input.now;
+      } else unreview(cart);
+    }
     if (reply)
       next.messages.push({
         id: `${input.messageId}:reply`,
@@ -1758,6 +1897,7 @@ export function processTurn(
         cart.items = trial.items;
         delete next.pendingItemChoice;
         invalidate(cart);
+        settleFulfillment();
         const product = products.find(
           (p) => p.id === action.productId && p.companyId === company.id,
         )!;
@@ -1804,12 +1944,8 @@ export function processTurn(
         ]);
         if (action.fulfillment && !['pickup', 'delivery'].includes(action.fulfillment))
           throw new Error('Choose pickup or delivery.');
-        if (
-          action.fulfillment &&
-          configuration.fulfillment !== 'both' &&
-          action.fulfillment !== configuration.fulfillment
-        )
-          throw new Error(`This restaurant currently offers ${configuration.fulfillment} only.`);
+        const refused = action.fulfillment && fulfillmentRefusal(company, action.fulfillment);
+        if (refused) throw new Error(refused);
         if (action.customerName !== undefined) {
           const name = action.customerName.trim();
           if (name.length < 2 || name.length > 80)
@@ -1828,7 +1964,9 @@ export function processTurn(
           );
           if (!zone)
             throw new Error(
-              `We deliver to: ${company.deliveryZones.map((z) => z.name).join(', ')}.`,
+              company.deliveryZones.length
+                ? `We deliver to: ${company.deliveryZones.map((z) => z.name).join(', ')}.`
+                : (fulfillmentRefusal(company, 'delivery') ?? 'We do not deliver right now.'),
             );
           details.zone = zone.name;
         }
@@ -1839,6 +1977,8 @@ export function processTurn(
             delete details.zone;
           }
         }
+        if (!details.fulfillment && (offered === 'pickup' || offered === 'delivery'))
+          details.fulfillment = offered;
         cart.customerName = details.customerName;
         cart.fulfillment = details.fulfillment;
         cart.address = details.address;
@@ -1848,41 +1988,41 @@ export function processTurn(
           JSON.stringify([details.fulfillment, details.customerName, details.address, details.zone])
         )
           invalidate(cart);
-        if (!modelResponse)
-          reply = missingDetails(company, cart, lang) ?? review(company, products, cart, lang);
+        if (!modelResponse) reply = missingDetails(company, cart, lang) ?? showReview();
         continue;
       }
       if (action.type === 'review') {
-        if (
-          cart.fulfillment &&
-          configuration.fulfillment !== 'both' &&
-          cart.fulfillment !== configuration.fulfillment
-        )
-          throw new Error(
-            `This restaurant currently offers ${configuration.fulfillment} only. Please update your fulfillment choice.`,
-          );
+        settleFulfillment();
+        const refused = cart.fulfillment && fulfillmentRefusal(company, cart.fulfillment);
+        if (refused)
+          throw new Error(offered ? `${refused} Please update your fulfillment choice.` : refused);
         incompleteReviewQuestion = modelResponse ? missingDetails(company, cart, lang) : undefined;
         reply = incompleteReviewQuestion
           ? cartSummary(company, products, cart, lang)
-          : review(company, products, cart, lang);
+          : showReview();
         continue;
       }
       if (action.type === 'confirm') {
-        if (
-          cart.fulfillment &&
-          configuration.fulfillment !== 'both' &&
-          cart.fulfillment !== configuration.fulfillment
-        )
-          throw new Error(
-            `This restaurant currently offers ${configuration.fulfillment} only. Please update your fulfillment choice.`,
-          );
-        if (!input.action && !affirmative(input.text)) {
-          reply = say(
+        settleFulfillment();
+        const refused = cart.fulfillment && fulfillmentRefusal(company, cart.fulfillment);
+        if (refused)
+          throw new Error(offered ? `${refused} Please update your fulfillment choice.` : refused);
+        // Typed words must be consent; a bare "yes" only straight after the review itself.
+        const agreed = input.action ? 'explicit' : consent(input.text);
+        if (!agreed || (agreed === 'bare' && !reviewAnswered)) {
+          const prompt = say(
             lang,
             'Please review your order and explicitly reply “confirm” to submit it.',
             'آرڈر دیکھ کر بھیجنے کے لیے واضح طور پر “تصدیق” لکھیں۔',
             'Order review kar ke wazeh taur par “confirm” likhein.',
           );
+          // The review again right below, so the next "confirm" places this order. While closed,
+          // the review itself says so instead.
+          reply = !cart.items.length
+            ? prompt
+            : isOpen(company, input.now)
+              ? `${prompt}\n\n${showReview()}`
+              : showReview();
           traces.push('unconfirmed_model_action_rejected');
           continue;
         }
@@ -1890,6 +2030,8 @@ export function processTurn(
           reply =
             closedText(company, lang) +
             say(lang, ' Your cart is saved.', ' آپ کی ٹوکری محفوظ ہے۔', ' Cart save hai.');
+          // Nothing stays confirmable while closed; once open, "confirm" shows a fresh review.
+          if (cart.status === 'awaiting_confirmation') unreview(cart);
           continue;
         }
         const missing = missingDetails(company, cart, lang);
@@ -1898,16 +2040,34 @@ export function processTurn(
           continue;
         }
         const quote = quoteCart(company, products, cart);
+        // Consent counts against the latest review only: typed words must answer the review
+        // message itself, and any confirmation must come within the hour and not arrive late.
         if (
           initialReview.status !== 'awaiting_confirmation' ||
           initialReview.revision !== cart.revision ||
           initialReview.hash !== quote.hash ||
           cart.reviewedRevision !== cart.revision ||
           cart.quoteHash !== quote.hash ||
-          (action.revision !== undefined && action.revision !== cart.revision)
+          (action.revision !== undefined && action.revision !== cart.revision) ||
+          (!input.action && !reviewAnswered) ||
+          !reviewFresh ||
+          input.late
         ) {
           traces.push('fresh_confirmation_required');
-          reply = `${say(lang, 'Please confirm the current details below.', 'نیچے دی گئی موجودہ تفصیل کی تصدیق کریں۔', 'Neeche di gayi maujooda details confirm karein.')}\n\n${review(company, products, cart, lang)}`;
+          const lead = input.late
+            ? say(
+                lang,
+                'Sorry for the delay. Please confirm your order again.',
+                'تاخیر کے لیے معذرت۔ براہ کرم اپنے آرڈر کی دوبارہ تصدیق کریں۔',
+                'Der ke liye maazrat. Meherbani karke apna order dobara confirm karein.',
+              )
+            : say(
+                lang,
+                'Please confirm the current details below.',
+                'نیچے دی گئی موجودہ تفصیل کی تصدیق کریں۔',
+                'Neeche di gayi maujooda details confirm karein.',
+              );
+          reply = `${lead}\n\n${showReview()}`;
           continue;
         }
         const submissionKey = `${company.id}:${next.id}:${cart.revision}`;
