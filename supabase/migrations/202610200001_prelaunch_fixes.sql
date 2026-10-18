@@ -38,6 +38,40 @@ language sql stable security definer set search_path=public as $$
       or exists(select 1 from platform_admins a where a.user_id=u.id));
 $$;
 
+-- What erasing some of one customer's chats removes, for erase_customer and erase_conversation,
+-- which lock the business and check that nothing is running first: the chats, their orders, the
+-- content of their jobs (found by chat, order, WhatsApp address and message stream, and by the
+-- customer's number when it is known; p_phone is '' for a privacy ID), their traces and usage
+-- links, the name and chat link on their blocks, and receipts never linked to any chat. Not
+-- callable on its own (no grants).
+create or replace function public.erase_customer_chats(p_company_id text,p_ids text[],p_phone text) returns integer
+language plpgsql set search_path=public as $$
+declare order_ids text[]; addresses jsonb[]; streams text[]; marks text[]; block_ids text[];
+  known boolean := btrim(coalesce(p_phone,''))<>'';
+  digits text := regexp_replace(coalesce(p_phone,''),'[^0-9]','','g');
+  by_digits boolean := digits ~ '^[1-9][0-9]{9,14}$';
+begin
+  select array_agg(id) into order_ids from orders where company_id=p_company_id and conversation_id=any(p_ids);
+  select array_agg(data->'whatsappAddress'),
+      array_agg((data->'whatsappAddress'->>'connectionId')||':'||(data->'whatsappAddress'->>'generation')||':'||(data->'whatsappAddress'->>'peer')),
+      array_agg(data->'blocked'->>'blockId')
+    into addresses, streams, marks from conversations where company_id=p_company_id and id=any(p_ids);
+  -- Before the chats go: the blocks marked on them, pointing at them, or holding this number.
+  select array_agg(distinct block_id) into block_ids from blocked_customers where company_id=p_company_id
+    and (conversation_id=any(p_ids) or block_id=any(marks) or (by_digits and key='pn:'||digits));
+  -- Keep dedupe tombstones, remove payloads so webhook retries cannot restore deleted data.
+  update jobs set status='done',lease_until=null,data=(data-'leaseUntil'-'lastError'-'error')||'{"status":"done","payload":{}}'::jsonb where company_id=p_company_id
+    and ((known and data->'payload'->>'phone'=p_phone) or (by_digits and regexp_replace(data->'payload'->>'phone','[^0-9]','','g')=digits)
+      or data->'payload'->>'conversationId'=any(p_ids) or data->'payload'->>'orderId'=any(order_ids)
+      or data->'payload'->>'streamKey'=any(streams) or data->'payload'->'whatsappAddress'=any(addresses));
+  delete from traces where company_id=p_company_id and conversation_id=any(p_ids);
+  update usage_events set data=data-'conversationId' where company_id=p_company_id and data->>'conversationId'=any(p_ids);
+  update blocked_customers set label='Erased customer',conversation_id=null where company_id=p_company_id and block_id=any(block_ids);
+  delete from message_deliveries where company_id=p_company_id and conversation_id is null;
+  delete from orders where company_id=p_company_id and conversation_id=any(p_ids);
+  delete from conversations where company_id=p_company_id and id=any(p_ids);
+  return coalesce(cardinality(p_ids),0);
+end $$;
 -- Latest body from 202609170001_retention.sql. Changed:
 -- * A whole international number matches every WhatsApp chat with the same digits, so
 --   '+92 300 1234567' finds '923001234567' (Cloud API) and '+923001234567' (linked phone). A
@@ -48,8 +82,9 @@ $$;
 -- * A block of this customer keeps its keys (it still applies) but loses the name and the chat
 --   link; receipts of messages never linked to any chat go.
 -- * An empty number is refused.
+-- * The removal itself is erase_customer_chats (above), shared with erase_conversation.
 create or replace function public.erase_customer(p_company_id text,p_phone text) returns integer language plpgsql security definer set search_path=public as $$
-declare ids text[]; order_ids text[]; addresses jsonb[]; streams text[]; marks text[]; block_ids text[];
+declare ids text[];
   digits text := regexp_replace(coalesce(p_phone,''),'[^0-9]','','g');
   by_digits boolean := digits ~ '^[1-9][0-9]{9,14}$';
 begin
@@ -58,26 +93,37 @@ begin
   if btrim(coalesce(p_phone,''))='' then raise exception 'Customer phone number required'; end if;
   select array_agg(id) into ids from conversations where company_id=p_company_id
     and (customer_phone=p_phone or (by_digits and channel='whatsapp' and regexp_replace(customer_phone,'[^0-9]','','g')=digits));
-  select array_agg(id) into order_ids from orders where company_id=p_company_id and conversation_id=any(ids);
-  select array_agg(data->'whatsappAddress'),
-      array_agg((data->'whatsappAddress'->>'connectionId')||':'||(data->'whatsappAddress'->>'generation')||':'||(data->'whatsappAddress'->>'peer')),
-      array_agg(data->'blocked'->>'blockId')
-    into addresses, streams, marks from conversations where company_id=p_company_id and id=any(ids);
-  -- Before the chats go: the blocks marked on them, pointing at them, or holding this number.
-  select array_agg(distinct block_id) into block_ids from blocked_customers where company_id=p_company_id
-    and (conversation_id=any(ids) or block_id=any(marks) or (by_digits and key='pn:'||digits));
-  -- Keep dedupe tombstones, remove payloads so webhook retries cannot restore deleted data.
-  update jobs set status='done',lease_until=null,data=(data-'leaseUntil'-'lastError'-'error')||'{"status":"done","payload":{}}'::jsonb where company_id=p_company_id
-    and (data->'payload'->>'phone'=p_phone or (by_digits and regexp_replace(data->'payload'->>'phone','[^0-9]','','g')=digits)
-      or data->'payload'->>'conversationId'=any(ids) or data->'payload'->>'orderId'=any(order_ids)
-      or data->'payload'->>'streamKey'=any(streams) or data->'payload'->'whatsappAddress'=any(addresses));
-  delete from traces where company_id=p_company_id and conversation_id=any(ids);
-  update usage_events set data=data-'conversationId' where company_id=p_company_id and data->>'conversationId'=any(ids);
-  update blocked_customers set label='Erased customer',conversation_id=null where company_id=p_company_id and block_id=any(block_ids);
-  delete from message_deliveries where company_id=p_company_id and conversation_id is null;
-  delete from orders where company_id=p_company_id and conversation_id=any(ids);
-  delete from conversations where company_id=p_company_id and id=any(ids);
-  return coalesce(cardinality(ids),0);
+  return erase_customer_chats(p_company_id,ids,p_phone);
+end $$;
+
+-- A customer known by one of their chats, for one whose number WhatsApp never shared (a privacy
+-- ID on the linked phone): that chat, every chat with its number when it has one (as
+-- erase_customer matches a number) and every WhatsApp chat with the same peer (the same privacy
+-- ID or linked-phone number, on any connection). Not callable on its own (no grants).
+create or replace function public.conversation_customer_ids(p_company_id text,p_conversation_id text) returns text[]
+language sql stable set search_path=public as $$
+  with target as (
+    select id, customer_phone phone, regexp_replace(customer_phone,'[^0-9]','','g') digits,
+      nullif(data->'whatsappAddress'->>'peer','') peer
+    from conversations where company_id=p_company_id and id=p_conversation_id)
+  select array_agg(c.id order by c.id) from conversations c, target t
+  where c.company_id=p_company_id
+    and (c.id=t.id
+      or (btrim(t.phone)<>'' and (c.customer_phone=t.phone
+        or (t.digits ~ '^[1-9][0-9]{9,14}$' and c.channel='whatsapp' and regexp_replace(c.customer_phone,'[^0-9]','','g')=t.digits)))
+      or (t.peer is not null and c.channel='whatsapp' and c.data->'whatsappAddress'->>'peer'=t.peer));
+$$;
+-- Erases a customer known by one of their chats (conversation_customer_ids), from the Inbox, with
+-- the same checks and the same removal as erase_customer. 0 when the chat no longer exists.
+create or replace function public.erase_conversation(p_company_id text,p_conversation_id text) returns integer language plpgsql security definer set search_path=public as $$
+declare ids text[];
+begin
+  perform 1 from companies where id=p_company_id for update;
+  if exists(select 1 from companies where id=p_company_id and data->>'botEnabled'='true') or exists(select 1 from jobs where company_id=p_company_id and status='processing' and lease_until>now()) or exists(select 1 from conversation_locks where company_id=p_company_id and lease_until>now()) then raise exception 'Pause automation and wait for running work before deleting customer data'; end if;
+  ids := conversation_customer_ids(p_company_id,p_conversation_id);
+  if ids is null then return 0; end if;
+  return erase_customer_chats(p_company_id,ids,
+    (select customer_phone from conversations where company_id=p_company_id and id=p_conversation_id));
 end $$;
 
 -- Latest body from 202609170001_retention.sql. Changed: a chat whose number is unknown ('') no
@@ -262,6 +308,21 @@ language sql stable security definer set search_path=public as $$
     where c.company_id=p_company_id and btrim(coalesce(p_phone,''))<>''
       and (c.customer_phone=p_phone or (p.digits ~ '^[1-9][0-9]{9,14}$' and c.channel='whatsapp'
         and regexp_replace(c.customer_phone,'[^0-9]','','g')=p.digits))
+    order by c.updated_at desc, c.id limit 200
+  )
+  select jsonb_build_object(
+    'conversations',coalesce((select jsonb_agg(data order by updated_at desc, id) from matched),'[]'::jsonb),
+    'orders',coalesce((select jsonb_agg(o.data order by o.created_at desc, o.id) from orders o
+      where o.company_id=p_company_id and o.conversation_id in (select id from matched)),'[]'::jsonb));
+$$;
+-- What erase_conversation would remove for a customer known by one of their chats, as
+-- customer_records for a number: the chats (conversation_customer_ids), newest first, at most 200,
+-- and the orders placed in them. Nothing when the chat no longer exists.
+create or replace function public.conversation_records(p_company_id text,p_conversation_id text) returns jsonb
+language sql stable security definer set search_path=public as $$
+  with matched as (
+    select c.id, c.data, c.updated_at from conversations c
+    where c.company_id=p_company_id and c.id=any(conversation_customer_ids(p_company_id,p_conversation_id))
     order by c.updated_at desc, c.id limit 200
   )
   select jsonb_build_object(
@@ -570,9 +631,15 @@ do $$ declare f record; begin
     and proname=any(array['alert_recipient','erase_customer','run_retention','awaits_staff_reply','waiting_since',
       'ai_limit_settings','ai_hourly_warning','whatsapp_down','has_overdue_attention','staff_attention',
       'customer_records','query_orders','business_time_zone','workspace_summary','fail_exhausted_orderly_jobs',
-      'orderly_pipeline_health','purge_orderly_operations','prune_orderly_cron_history']) loop
+      'orderly_pipeline_health','purge_orderly_operations','prune_orderly_cron_history',
+      'erase_conversation','conversation_records']) loop
     execute format('revoke all on function %s from public,anon,authenticated',f.signature);
     execute format('grant execute on function %s to service_role',f.signature);
+  end loop;
+  -- Parts of the functions above, never called on their own: erasing without its checks.
+  for f in select oid::regprocedure signature from pg_proc where pronamespace='public'::regnamespace
+    and proname=any(array['erase_customer_chats','conversation_customer_ids']) loop
+    execute format('revoke all on function %s from public,anon,authenticated,service_role',f.signature);
   end loop;
 end $$;
 

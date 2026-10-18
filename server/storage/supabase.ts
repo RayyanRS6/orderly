@@ -502,6 +502,30 @@ export class SupabaseRepository implements Repository {
   eraseCustomer(companyId: string, phone: string) {
     return this.rpc<number>('erase_customer', { p_company_id: companyId, p_phone: phone });
   }
+  async eraseConversation(companyId: string, conversationId: string) {
+    const result = await this.client.rpc('erase_conversation', {
+      p_company_id: companyId,
+      p_conversation_id: conversationId,
+    });
+    if (migrationMissing(result.error))
+      throw new PublicError(
+        'Apply the 202610200001_prelaunch_fixes.sql database migration first.',
+        503,
+      );
+    return unwrap(result) as number;
+  }
+  async conversationRecords(companyId: string, conversationId: string) {
+    const result = await this.client.rpc('conversation_records', {
+      p_company_id: companyId,
+      p_conversation_id: conversationId,
+    });
+    if (migrationMissing(result.error))
+      throw new PublicError(
+        'Apply the 202610200001_prelaunch_fixes.sql database migration first.',
+        503,
+      );
+    return unwrap(result) as { conversations: Conversation[]; orders: Order[] };
+  }
   async customerRecords(companyId: string, phone: string) {
     const result = await this.client.rpc('customer_records', {
       p_company_id: companyId,

@@ -198,6 +198,31 @@ const matchesCustomer = (c: Conversation, phone: string) => {
   );
 };
 const streamOf = (a: WhatsAppAddress) => `${a.connectionId}:${a.generation}:${a.peer}`;
+// Mirrors SQL erase_conversation and conversation_records: a customer known by one of their
+// chats is that chat, every chat with its number (as for erase_customer) and every WhatsApp
+// chat with the same peer (their privacy ID, on any connection).
+const chatsOfCustomer = (s: State, target: Conversation) => {
+  const peer = target.whatsappAddress?.peer;
+  return s.conversations.filter(
+    (c) =>
+      c.companyId === target.companyId &&
+      (c.id === target.id ||
+        matchesCustomer(c, target.customerPhone) ||
+        (!!peer && c.channel === 'whatsapp' && c.whatsappAddress?.peer === peer)),
+  );
+};
+// Mirrors SQL customer_records and conversation_records: newest first, at most 200 chats, and
+// the orders placed in them.
+const recordsOf = (s: State, companyId: string, chats: Conversation[]) => {
+  const conversations = chats
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id))
+    .slice(0, 200);
+  const ids = new Set(conversations.map((c) => c.id));
+  const orders = s.orders
+    .filter((o) => o.companyId === companyId && ids.has(o.conversationId))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id));
+  return { conversations, orders };
+};
 interface State {
   /** Stands in for Supabase Auth users. */
   accounts?: Account[];
@@ -973,90 +998,119 @@ export class MemoryRepository implements Repository {
   }
   eraseCustomer(companyId: string, phone: string) {
     return this.mutate((s) => {
-      if (
-        s.companies.find((c) => c.id === companyId)?.botEnabled ||
-        s.jobs.some(
-          (j) =>
-            j.companyId === companyId &&
-            j.status === 'processing' &&
-            Date.parse(j.leaseUntil ?? '') > Date.now(),
-        ) ||
-        s.locks.some((l) => l.companyId === companyId && Date.parse(l.leaseUntil) > Date.now())
-      )
-        throw new PublicError(
-          'Pause automation and wait for running work before deleting customer data.',
-          409,
-        );
+      this.assertErasable(s, companyId);
       if (!phone.trim()) throw new Error('Customer phone number required');
       // Mirrors SQL erase_customer: every format of a whole number, and the chats' own jobs.
-      const digits = phoneDigits(phone);
-      const samePhone = (value: unknown, whatsapp: boolean) =>
-        typeof value === 'string' &&
-        (value === phone || (whatsapp && wholeNumber(digits) && phoneDigits(value) === digits));
-      const erased = s.conversations.filter(
-        (c) => c.companyId === companyId && samePhone(c.customerPhone, c.channel === 'whatsapp'),
+      return this.eraseChats(
+        s,
+        companyId,
+        s.conversations.filter((c) => c.companyId === companyId && matchesCustomer(c, phone)),
+        phone,
       );
-      const ids = new Set(erased.map((c) => c.id));
-      const orderIds = new Set(
-        s.orders
-          .filter((o) => o.companyId === companyId && ids.has(o.conversationId))
-          .map((o) => o.id),
-      );
-      const addresses = erased.flatMap((c) => (c.whatsappAddress ? [c.whatsappAddress] : []));
-      const streams = new Set(addresses.map(streamOf));
-      const blockIds = new Set(erased.flatMap((c) => (c.blocked ? [c.blocked.blockId] : [])));
-      for (const b of s.blockedCustomers ?? [])
-        if (
-          b.companyId === companyId &&
-          ((b.conversationId && ids.has(b.conversationId)) ||
-            (wholeNumber(digits) && b.key === `pn:${digits}`))
-        )
-          blockIds.add(b.blockId);
-      s.jobs = s.jobs.filter(
-        (j) =>
-          j.companyId !== companyId ||
-          !(
-            samePhone(j.payload.phone, true) ||
-            ids.has(String(j.payload.conversationId)) ||
-            orderIds.has(String(j.payload.orderId)) ||
-            streams.has(String(j.payload.streamKey)) ||
-            addresses.some((a) => sameAddress(a, j.payload.whatsappAddress as WhatsAppAddress))
-          ),
-      );
-      // The block still applies (its keys stay) but no longer names the customer or their chat.
-      for (const b of s.blockedCustomers ?? [])
-        if (b.companyId === companyId && blockIds.has(b.blockId)) {
-          b.label = 'Erased customer';
-          delete b.conversationId;
-        }
-      for (const [key, receipt] of this.receipts)
-        if (key.startsWith(`${companyId}:`) && !receipt.conversationId) this.receipts.delete(key);
-      s.traces = s.traces.filter(
-        (t) => t.companyId !== companyId || !ids.has(t.conversationId ?? ''),
-      );
-      s.usage = s.usage.map((u) =>
-        u.companyId === companyId && ids.has(u.conversationId ?? '')
-          ? { ...u, conversationId: undefined }
-          : u,
-      );
-      s.orders = s.orders.filter((o) => !orderIds.has(o.id));
-      s.conversations = s.conversations.filter((c) => !ids.has(c.id));
-      return ids.size;
     });
+  }
+  // Mirrors SQL erase_conversation: the chat, the chats with its number, and the WhatsApp chats
+  // with its privacy ID or linked-phone address peer.
+  eraseConversation(companyId: string, conversationId: string) {
+    return this.mutate((s) => {
+      this.assertErasable(s, companyId);
+      const target = s.conversations.find(
+        (c) => c.companyId === companyId && c.id === conversationId,
+      );
+      if (!target) return 0;
+      return this.eraseChats(s, companyId, chatsOfCustomer(s, target), target.customerPhone);
+    });
+  }
+  // Mirrors SQL conversation_records.
+  conversationRecords(companyId: string, conversationId: string) {
+    return this.read((s) => {
+      const target = s.conversations.find(
+        (c) => c.companyId === companyId && c.id === conversationId,
+      );
+      return recordsOf(s, companyId, target ? chatsOfCustomer(s, target) : []);
+    });
+  }
+  private assertErasable(s: State, companyId: string) {
+    if (
+      s.companies.find((c) => c.id === companyId)?.botEnabled ||
+      s.jobs.some(
+        (j) =>
+          j.companyId === companyId &&
+          j.status === 'processing' &&
+          Date.parse(j.leaseUntil ?? '') > Date.now(),
+      ) ||
+      s.locks.some((l) => l.companyId === companyId && Date.parse(l.leaseUntil) > Date.now())
+    )
+      throw new PublicError(
+        'Pause automation and wait for running work before deleting customer data.',
+        409,
+      );
+  }
+  // Mirrors SQL erase_customer_chats: these chats, their orders, their jobs (by chat, order,
+  // address and message stream, and by the customer's number when it is known), traces and
+  // usage links, and the name on their blocks. The number may be '' (a privacy ID).
+  private eraseChats(s: State, companyId: string, erased: Conversation[], phone: string) {
+    const digits = phoneDigits(phone);
+    const samePhone = (value: unknown, whatsapp: boolean) =>
+      !!phone.trim() &&
+      typeof value === 'string' &&
+      (value === phone || (whatsapp && wholeNumber(digits) && phoneDigits(value) === digits));
+    const ids = new Set(erased.map((c) => c.id));
+    const orderIds = new Set(
+      s.orders
+        .filter((o) => o.companyId === companyId && ids.has(o.conversationId))
+        .map((o) => o.id),
+    );
+    const addresses = erased.flatMap((c) => (c.whatsappAddress ? [c.whatsappAddress] : []));
+    const streams = new Set(addresses.map(streamOf));
+    const blockIds = new Set(erased.flatMap((c) => (c.blocked ? [c.blocked.blockId] : [])));
+    for (const b of s.blockedCustomers ?? [])
+      if (
+        b.companyId === companyId &&
+        ((b.conversationId && ids.has(b.conversationId)) ||
+          (wholeNumber(digits) && b.key === `pn:${digits}`))
+      )
+        blockIds.add(b.blockId);
+    s.jobs = s.jobs.filter(
+      (j) =>
+        j.companyId !== companyId ||
+        !(
+          samePhone(j.payload.phone, true) ||
+          ids.has(String(j.payload.conversationId)) ||
+          orderIds.has(String(j.payload.orderId)) ||
+          streams.has(String(j.payload.streamKey)) ||
+          addresses.some((a) => sameAddress(a, j.payload.whatsappAddress as WhatsAppAddress))
+        ),
+    );
+    // The block still applies (its keys stay) but no longer names the customer or their chat.
+    for (const b of s.blockedCustomers ?? [])
+      if (b.companyId === companyId && blockIds.has(b.blockId)) {
+        b.label = 'Erased customer';
+        delete b.conversationId;
+      }
+    for (const [key, receipt] of this.receipts)
+      if (key.startsWith(`${companyId}:`) && !receipt.conversationId) this.receipts.delete(key);
+    s.traces = s.traces.filter(
+      (t) => t.companyId !== companyId || !ids.has(t.conversationId ?? ''),
+    );
+    s.usage = s.usage.map((u) =>
+      u.companyId === companyId && ids.has(u.conversationId ?? '')
+        ? { ...u, conversationId: undefined }
+        : u,
+    );
+    s.orders = s.orders.filter((o) => !orderIds.has(o.id));
+    s.conversations = s.conversations.filter((c) => !ids.has(c.id));
+    return ids.size;
   }
   // Mirrors SQL customer_records.
   customerRecords(companyId: string, phone: string) {
-    return this.read((s) => {
-      const conversations = s.conversations
-        .filter((c) => c.companyId === companyId && matchesCustomer(c, phone))
-        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id))
-        .slice(0, 200);
-      const ids = new Set(conversations.map((c) => c.id));
-      const orders = s.orders
-        .filter((o) => o.companyId === companyId && ids.has(o.conversationId))
-        .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id));
-      return { conversations, orders };
-    });
+    return this.read((s) =>
+      recordsOf(
+        s,
+        companyId,
+        s.conversations.filter((c) => c.companyId === companyId && matchesCustomer(c, phone)),
+      ),
+    );
   }
   async consumeRateLimit(key: string, limit: number) {
     const minute = Math.floor(Date.now() / 60000);

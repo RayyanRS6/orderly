@@ -134,6 +134,16 @@ export interface Repository {
     companyId: string,
     phone: string,
   ): Promise<{ conversations: Conversation[]; orders: Order[] }>;
+  // For a customer known only by a chat (WhatsApp shared no number, a privacy ID): erases that
+  // chat, every chat with its number when it has one and every WhatsApp chat with its privacy ID
+  // or number on the linked phone, as eraseCustomer erases a number's. 0 when the chat is gone.
+  eraseConversation(companyId: string, conversationId: string): Promise<number>;
+  // What eraseConversation would remove, as customerRecords for a number. Fails with 503 before
+  // its migration.
+  conversationRecords(
+    companyId: string,
+    conversationId: string,
+  ): Promise<{ conversations: Conversation[]; orders: Order[] }>;
   consumeRateLimit(key: string, limit: number): Promise<boolean>;
   listCompanies(): Promise<Company[]>;
   getCompany(id: string): Promise<Company | undefined>;
