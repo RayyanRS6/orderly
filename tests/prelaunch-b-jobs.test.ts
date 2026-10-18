@@ -272,11 +272,13 @@ describe('G7.1: a customer whose order is still waiting is told so once', () => 
       action,
       now: new Date().toISOString(),
     });
+  // Each order's customer has their own number: two chats with one number cannot both be saved.
+  let orderPhones = 0;
   async function waitingOrder(change: Partial<Conversation> = {}) {
     let c: Conversation = {
       ...createConversation(
         company.id,
-        `92300660${randomUUID().slice(0, 4).replace(/\D/g, '1')}`,
+        `92300660${String(++orderPhones).padStart(4, '0')}`,
         'whatsapp',
         new Date().toISOString(),
       ),
