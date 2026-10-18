@@ -26,11 +26,13 @@ export const shortDate = (date?: string | number | Date | null) => {
 
 export const initials = (name?: string | null) => {
   if (!name) return 'O';
-  const parts = name.trim().split(/\s+/).filter(Boolean);
+  // Only words with a letter or digit count, and their first one is taken whole, so
+  // 'Bun & Co.' gives 'BC', 'Ali (demo)' gives 'AD' and an emoji never splits in half.
+  const parts = name
+    .trim()
+    .split(/\s+/)
+    .map((word) => Array.from(word).find((ch) => /[\p{L}\p{N}]/u.test(ch)))
+    .filter(Boolean);
   if (parts.length === 0) return 'O';
-  return parts
-    .slice(0, 2)
-    .map((n) => n[0] || '')
-    .join('')
-    .toUpperCase() || 'O';
+  return parts.slice(0, 2).join('').toUpperCase() || 'O';
 };

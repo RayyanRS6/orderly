@@ -89,7 +89,9 @@ export function People() {
     !person.admin && (
       <button
         type="button"
-        className="btn btn-quiet hover:bg-red-50 hover:text-red-700"
+        // Red at rest too: touch screens never show the hover, and this can't be undone.
+        className="btn btn-quiet text-red-700 hover:bg-red-50 hover:text-red-700"
+        aria-label={`Delete account for ${personName(person)}`}
         disabled={!directory?.canDeleteAccounts}
         title={
           directory?.canDeleteAccounts
@@ -138,7 +140,7 @@ export function People() {
       <section className="card mb-6 p-5 sm:p-6 space-y-4">
         <h2 className="panel-title">Add someone to a business</h2>
         <form
-          className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4"
+          className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4"
           onSubmit={(e) => {
             e.preventDefault();
             const added = email.trim();
@@ -221,6 +223,7 @@ export function People() {
                   <button
                     type="button"
                     className="btn btn-quiet"
+                    aria-label={`Open ${business.name}`}
                     onClick={() => {
                       go(workspacePath(business.slug, 'security'));
                       window.scrollTo(0, 0);
@@ -230,7 +233,9 @@ export function People() {
                   </button>
                 </div>
                 {!members.length && (
-                  <p className="mt-4 text-sm text-stone-500">Nobody has been added yet.</p>
+                  <p className="mt-4 rounded-2xl border border-dashed border-ink/10 bg-paper/70 px-4 py-6 text-center text-sm text-stone-500">
+                    Nobody has been added yet.
+                  </p>
                 )}
                 <ul className="mt-3 divide-y divide-ink/[0.05]">
                   {members.map(({ person, role: memberRole }) => (
@@ -240,25 +245,29 @@ export function People() {
                     >
                       {details(person, memberRole)}
                       <div className="flex flex-wrap items-center gap-2">
-                        <CustomSelect
-                          aria-label={`Role for ${personName(person)} at ${business.name}`}
-                          value={memberRole}
-                          disabled={person.you}
-                          onChange={(v) => {
-                            if (v !== memberRole)
-                              ask({
-                                kind: 'role',
-                                person,
-                                companyId: business.id,
-                                role: v as 'owner' | 'staff',
-                              });
-                          }}
-                          options={roles}
-                        />
+                        {/* A fixed width keeps the buttons beside the select. */}
+                        <div className="w-36 shrink-0">
+                          <CustomSelect
+                            aria-label={`Role for ${personName(person)} at ${business.name}`}
+                            value={memberRole}
+                            disabled={person.you}
+                            onChange={(v) => {
+                              if (v !== memberRole)
+                                ask({
+                                  kind: 'role',
+                                  person,
+                                  companyId: business.id,
+                                  role: v as 'owner' | 'staff',
+                                });
+                            }}
+                            options={roles}
+                          />
+                        </div>
                         {!person.you && (
                           <button
                             type="button"
-                            className="btn btn-quiet"
+                            className="btn btn-quiet hover:bg-red-50 hover:text-red-700"
+                            aria-label={`Remove ${personName(person)} from ${business.name}`}
                             onClick={() => ask({ kind: 'remove', person, companyId: business.id })}
                           >
                             Remove

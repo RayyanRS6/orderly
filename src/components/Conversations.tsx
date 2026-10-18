@@ -250,7 +250,7 @@ export function Playground({ active = true }: { active?: boolean }) {
       <div className="notice mb-5 grid gap-4 p-4 text-[13px] text-cream sm:grid-cols-[minmax(12rem,18rem)_1fr] sm:items-end sm:p-5">
         <Field label="Configuration to test">
           <CustomSelect
-            className="rounded-xl border-white/10 bg-white/[0.06] text-cream hover:border-white/20 hover:bg-white/10 focus-visible:border-brand-500/60 focus-visible:bg-white/10 focus-visible:ring-brand-500/25"
+            theme="dark"
             value={testTarget}
             disabled={restoring}
             onChange={(value) => {
@@ -271,7 +271,10 @@ export function Playground({ active = true }: { active?: boolean }) {
         </Field>
         <div className="space-y-1 text-xs leading-relaxed text-cream/65">
           <p>
-            AI: <strong className="text-cream">{data.company.ai?.model || 'Not connected'}</strong>
+            AI:{' '}
+            <strong className="text-cream">
+              {(data.company.ai?.provider !== 'mock' && data.company.ai?.model) || 'Not connected'}
+            </strong>
             {' · '}Menu:{' '}
             <strong className="text-cream">
               {data.company.catalogSource === 'sheets' ? 'Google Sheet' : 'In-app catalog'}
@@ -281,12 +284,14 @@ export function Playground({ active = true }: { active?: boolean }) {
             {data.company.catalogSyncedAt
               ? `Menu refreshed ${new Date(data.company.catalogSyncedAt).toLocaleString('en-PK')}. `
               : ''}
-            API charges apply. No WhatsApp messages or order-Sheet rows are created.
+            {/* The built-in demo AI is free and local. */}
+            {data.company.ai && data.company.ai.provider !== 'mock' ? 'API charges apply. ' : ''}
+            No WhatsApp messages or order-Sheet rows are created.
           </p>
         </div>
       </div>
       <div className="grid gap-5 xl:grid-cols-3">
-        <div className="card flex h-[calc(100dvh-29rem)] min-h-[20rem] max-h-[44rem] flex-col overflow-hidden sm:h-[calc(100dvh-23rem)] xl:col-span-2">
+        <div className="card flex h-[calc(100dvh-6rem)] min-h-[20rem] max-h-[44rem] flex-col overflow-hidden sm:h-[calc(100dvh-23rem)] xl:col-span-2">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-ink/[0.06] bg-linear-to-b from-white/70 to-white/30 px-5 py-3.5 sm:px-6">
             <div className="flex min-w-0 flex-1 basis-48 items-center gap-3">
               <div className="flex size-10 shrink-0 -rotate-6 items-center justify-center rounded-xl bg-ink text-brand-500 shadow-[0_10px_20px_-10px_rgb(14_6_4/0.75)]">
@@ -330,7 +335,7 @@ export function Playground({ active = true }: { active?: boolean }) {
               This conversation is waiting for staff.{' '}
               <button
                 className="ml-1 rounded-full bg-brand-500 px-2.5 py-0.5 font-semibold text-ink shadow-[0_8px_16px_-8px_rgb(255_105_44/0.9)] transition-colors hover:bg-brand-400"
-                onClick={() => navigate('inbox')}
+                onClick={() => navigate('inbox', conversation.id)}
               >
                 Open inbox
               </button>
@@ -392,7 +397,8 @@ export function Playground({ active = true }: { active?: boolean }) {
               </ActionButton>
             </form>
             <p className="mt-2.5 text-center text-[11px] font-medium text-stone-400">
-              English · اردو · Roman Urdu · Chat stays saved until you refresh it
+              English · <span lang="ur">اردو</span> · Roman Urdu · Chat stays saved until you
+              refresh it
             </p>
           </div>
         </div>

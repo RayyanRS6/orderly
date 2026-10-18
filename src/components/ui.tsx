@@ -33,6 +33,30 @@ export function clockTime(value?: string | number | Date | null) {
 export function keepOpenForToasts(event: { target: EventTarget | null; preventDefault(): void }) {
   if ((event.target as Element | null)?.closest?.('[data-toaster]')) event.preventDefault();
 }
+/**
+ * Our dialogs open from state, not a Radix Trigger, so Radix has nowhere to send focus when
+ * they close and it lands on <body>. This remembers what had focus when the dialog opened
+ * and returns there (when it still exists).
+ */
+export function useReturnFocus() {
+  const opener = useRef<HTMLElement | null>(null);
+  return {
+    onOpenAutoFocus: () => {
+      const active = document.activeElement;
+      opener.current = active instanceof HTMLElement && active !== document.body ? active : null;
+    },
+    onCloseAutoFocus: (event: Event) => {
+      // The opener can be gone (a confirmed action removed its button): fall back to the
+      // dialog still open underneath, if any, rather than <body>.
+      const target = opener.current?.isConnected
+        ? opener.current
+        : document.querySelector<HTMLElement>('[role="dialog"][data-state="open"]');
+      if (!target) return;
+      event.preventDefault();
+      target.focus();
+    },
+  };
+}
 /** Bottom-right notifications for saves and errors. */
 export function Toaster({
   toasts,
@@ -86,7 +110,7 @@ export function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: (id: 
       <p className="min-w-0 flex-1 font-medium leading-relaxed">{toast.message}</p>
       <button
         type="button"
-        className="rounded-full opacity-60 transition-[opacity,scale] duration-200 hover:opacity-100 active:scale-90"
+        className="-m-1 rounded-full p-1 opacity-60 transition-[opacity,scale] duration-200 hover:opacity-100 active:scale-90"
         aria-label="Dismiss notification"
         onClick={() => onDismiss(toast.id)}
       >
@@ -145,6 +169,7 @@ export function Modal({
   description,
   children,
   wide,
+  dismissable = true,
 }: {
   open: boolean;
   onOpenChange: (value: boolean) => void;
@@ -152,9 +177,14 @@ export function Modal({
   description?: string;
   children: ReactNode;
   wide?: boolean;
+  /** false: a click on the dimmed backdrop doesn't close it (long forms). Escape and Close still do. */
+  dismissable?: boolean;
 }) {
   const workspace = useContext(Workspace);
   const clearError = useRef(workspace?.clearError);
+  const errorRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const returnFocus = useReturnFocus();
   useEffect(() => {
     clearError.current = workspace?.clearError;
   });
@@ -162,29 +192,44 @@ export function Modal({
   useEffect(() => {
     if (open) clearError.current?.();
   }, [open]);
+  // A failed save shows above the form; bring it into view when the dialog is scrolled down
+  // at its buttons. Only when a new error appears, so scrolling to fix a field isn't undone.
+  useEffect(() => {
+    if (workspace?.error) errorRef.current?.scrollIntoView({ block: 'nearest' });
+  }, [workspace?.error]);
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
         <Dialog.Overlay className="dialog-overlay fixed inset-0 z-40" />
         <Dialog.Content
-          onInteractOutside={keepOpenForToasts}
+          {...returnFocus}
+          {...(description ? {} : { 'aria-describedby': undefined })}
+          onInteractOutside={(event) => {
+            if (!dismissable) event.preventDefault();
+            else keepOpenForToasts(event);
+          }}
+          // Escape with a dropdown open closes just the dropdown (CustomSelect handles it),
+          // not the whole dialog and what was typed in it.
+          onEscapeKeyDown={(event) => {
+            // Any open list in the dialog: Safari doesn't focus a clicked trigger.
+            if (contentRef.current?.querySelector('[role="combobox"][aria-expanded="true"]'))
+              event.preventDefault();
+          }}
+          ref={contentRef}
           className={cn(
             'dialog-content fixed inset-x-4 top-1/2 z-50 mx-auto max-h-[90dvh] -translate-y-1/2 overflow-y-auto rounded-[28px] border border-white/90 bg-cream p-6 sm:p-8 shadow-[inset_0_1px_0_#fff,0_40px_80px_-30px_rgb(14_6_4/0.45),0_12px_28px_-14px_rgb(14_6_4/0.2)]',
             wide ? 'max-w-2xl' : 'max-w-lg',
           )}
         >
           <div className="mb-6 pr-10">
-            <Dialog.Title className="font-serif text-[28px] font-normal leading-[1.05] tracking-[-0.01em] text-ink sm:text-[32px]">
+            <Dialog.Title className="break-words font-serif text-[28px] font-normal leading-[1.05] tracking-[-0.01em] text-ink sm:text-[32px]">
               {title}
             </Dialog.Title>
-            <Dialog.Description
-              className={cn(
-                'mt-2 text-[13.5px] leading-relaxed text-stone-500',
-                !description && 'sr-only',
-              )}
-            >
-              {description || title}
-            </Dialog.Description>
+            {description && (
+              <Dialog.Description className="mt-2 text-[13.5px] leading-relaxed text-stone-500">
+                {description}
+              </Dialog.Description>
+            )}
           </div>
           <Dialog.Close
             className="icon-btn absolute right-5 top-5 bg-ink/[0.04]"
@@ -193,7 +238,7 @@ export function Modal({
             <X className="size-5" />
           </Dialog.Close>
           {workspace?.error && (
-            <div className="mb-4">
+            <div ref={errorRef} className="mb-4">
               <ErrorNotice message={workspace.error} onDismiss={workspace.clearError} />
             </div>
           )}
@@ -229,12 +274,17 @@ export function ConfirmDialog({
   /** 'primary' for a change that is not a removal, such as a new role. */
   tone?: 'danger' | 'primary';
 }) {
+  const returnFocus = useReturnFocus();
   return (
     <AlertDialog.Root open={open} onOpenChange={onOpenChange}>
       <AlertDialog.Portal>
         <AlertDialog.Overlay className="dialog-overlay fixed inset-0 z-40" />
-        <AlertDialog.Content className="dialog-content fixed inset-x-4 top-1/2 z-50 mx-auto max-w-md -translate-y-1/2 rounded-[28px] border border-white/90 bg-cream p-6 sm:p-7 shadow-[inset_0_1px_0_#fff,0_40px_80px_-30px_rgb(14_6_4/0.45),0_12px_28px_-14px_rgb(14_6_4/0.2)]">
-          <AlertDialog.Title className="font-serif text-[28px] font-normal leading-[1.05] tracking-[-0.01em] text-ink">
+        <AlertDialog.Content
+          {...returnFocus}
+          className="dialog-content fixed inset-x-4 top-1/2 z-50 mx-auto max-h-[90dvh] max-w-md -translate-y-1/2 overflow-y-auto rounded-[28px] border border-white/90 bg-cream p-6 sm:p-7 shadow-[inset_0_1px_0_#fff,0_40px_80px_-30px_rgb(14_6_4/0.45),0_12px_28px_-14px_rgb(14_6_4/0.2)]"
+        >
+          {/* Titles often name an email address: let a long one wrap inside the dialog. */}
+          <AlertDialog.Title className="break-words font-serif text-[28px] font-normal leading-[1.05] tracking-[-0.01em] text-ink">
             {title}
           </AlertDialog.Title>
           <AlertDialog.Description className="mt-3 text-[13.5px] text-stone-500 leading-relaxed">

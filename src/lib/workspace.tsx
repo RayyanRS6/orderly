@@ -47,7 +47,8 @@ export interface WorkspaceContext {
   error: string;
   clearError: () => void;
   page: Page;
-  navigate: (page: Page, id?: string) => void;
+  /** keepScroll: opening or closing a detail over a list keeps the list where it was. */
+  navigate: (page: Page, id?: string, options?: { keepScroll?: boolean }) => void;
   detailId?: string;
   auth?: SupabaseClient;
   switchCompany: (id: string) => void;

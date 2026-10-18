@@ -1,3 +1,4 @@
+import { Fragment } from 'react';
 import { MessageCircle } from 'lucide-react';
 import { supportEmail } from './Public';
 
@@ -17,7 +18,7 @@ const documents: Record<LegalKind, { title: string; intro: string; sections: [st
       sections: [
         [
           'What we collect',
-          'From customers: your name, your WhatsApp number or WhatsApp ID, your delivery address and area, what you order (items, options, notes, totals), and the messages you send and receive in the restaurant’s chat. On a restaurant’s menu page you type your name, WhatsApp number and address; the cart stays in that browser tab. From restaurant owners and staff: email address, login and security details (such as two-step verification), and the business details, menu and settings they enter. Technical data: security and error logs, and rate-limit keys made from your IP address or number with a one-way code, so the raw IP address is not stored. Only the text of chat messages is kept: location pins, photos and voice notes are not stored, and the chat is handed to staff instead.',
+          'From customers: your name, your WhatsApp number or WhatsApp ID, your delivery address and area, what you order (items, options, notes, totals), and the messages you send and receive in the restaurant’s chat. On a restaurant’s menu page you type your name, WhatsApp number and address; the cart stays in that browser tab. From restaurant owners and staff: email address, login and security details (such as two-step verification), and the business details, menu and settings they enter. Technical data: security and error logs, and rate-limit keys made from your IP address or number with a one-way code, so the raw IP address is not stored. Only the text of chat messages is kept: a shared location is saved as its name, address and coordinates, and a photo’s caption is saved as text, but photos, videos, documents and voice notes themselves are not stored; for those without text the chat is handed to staff.',
         ],
         [
           'Why we use it',
@@ -132,10 +133,25 @@ const documents: Record<LegalKind, { title: string; intro: string; sections: [st
     },
   };
 
+// Turns the support address in the copy into a mailto link; the words stay the same.
+function withEmailLink(text: string) {
+  const parts = text.split(supportEmail);
+  return parts.map((part, i) => (
+    <Fragment key={i}>
+      {part}
+      {i < parts.length - 1 && (
+        <a className="text-brand-800 underline underline-offset-2" href={`mailto:${supportEmail}`}>
+          {supportEmail}
+        </a>
+      )}
+    </Fragment>
+  ));
+}
+
 export function LegalPage({ kind }: { kind: LegalKind }) {
   const document = documents[kind];
   return (
-    <div className="min-h-dvh canvas-glow px-4 py-10 text-stone-800 sm:py-16">
+    <main className="min-h-dvh canvas-glow px-4 py-10 text-stone-800 sm:py-16">
       <article className="card enter-rise mx-auto max-w-3xl p-7 sm:p-12">
         <a
           className="group inline-flex items-center gap-3 font-serif text-[28px] font-normal leading-none tracking-[-0.01em] text-ink"
@@ -145,18 +161,21 @@ export function LegalPage({ kind }: { kind: LegalKind }) {
             <MessageCircle className="size-5" strokeWidth={2.5} />
             <span className="live-dot absolute right-1.5 top-1.5 size-1.5 rounded-full bg-current text-brand-500 ring-2 ring-canvas" />
           </span>
-          orderly<span className="text-brand-500">.</span>
+          {/* One flex item, so the gap doesn't separate the word from its dot. */}
+          <span>
+            orderly<span className="text-brand-500">.</span>
+          </span>
         </a>
         <h1 className="mt-10 font-serif text-[40px] font-normal leading-[1.02] tracking-[-0.012em] text-ink sm:text-[52px]">
           {document.title}
         </h1>
-        <p className="mt-4 leading-7 text-stone-600">{document.intro}</p>
+        <p className="mt-4 leading-7 text-stone-600">{withEmailLink(document.intro)}</p>
         <p className="eyebrow mt-4">Last updated {LEGAL_LAST_UPDATED}</p>
         <div className="stagger mt-10 space-y-8">
           {document.sections.map(([title, copy]) => (
             <section key={title}>
               <h2 className="panel-title">{title}</h2>
-              <p className="mt-2 leading-7 text-stone-600">{copy}</p>
+              <p className="mt-2 leading-7 text-stone-600">{withEmailLink(copy)}</p>
             </section>
           ))}
         </div>
@@ -181,6 +200,6 @@ export function LegalPage({ kind }: { kind: LegalKind }) {
           </a>
         </nav>
       </article>
-    </div>
+    </main>
   );
 }

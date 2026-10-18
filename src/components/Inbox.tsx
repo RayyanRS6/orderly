@@ -14,6 +14,7 @@ import {
   Empty,
   ErrorNotice,
   PageHeading,
+  Spinner,
   Status,
 } from './ui';
 import { WhyToggle } from './ReplyExplanation';
@@ -125,9 +126,11 @@ export function Inbox() {
   const [hasOlder, setHasOlder] = useState(false);
   const [error, setError] = useState('');
   const [text, setText] = useState('');
-  const [loading, setLoading] = useState(false);
+  // A deep link starts out loading, so phones don't flash the list first.
+  const [loading, setLoading] = useState(!!detailId);
   const requestId = useRef(0);
   const end = useRef<HTMLDivElement>(null);
+  const logRef = useRef<HTMLDivElement>(null);
   const refresh = useCallback(async () => {
     const request = ++requestId.current;
     try {
@@ -155,8 +158,9 @@ export function Inbox() {
     setError('');
     setBlocking(false);
     setBlockError('');
+    // Also clears a load that was cut short by going back to the list.
+    setLoading(!!detailId);
     if (detailId) {
-      setLoading(true);
       api<Conversation>(`/conversations/${detailId}`, data.company.id)
         .then((c) => {
           if (active) {
@@ -175,22 +179,25 @@ export function Inbox() {
       active = false;
     };
   }, [detailId, data.company.id]);
+  // Only a chat that loaded is checked for new messages: one that failed to load keeps its
+  // own error instead of turning into "Updates delayed".
+  const loaded = !!detailId && conversation?.id === detailId;
   useEffect(() => {
-    if (!detailId) return;
+    if (!detailId || !loaded) return;
     let active = true;
     const poll = setInterval(() => {
       if (document.hidden || busy) return;
       void api<Conversation>(`/conversations/${detailId}`, data.company.id)
         .then((c) => {
-          if (active)
-            setConversation((old) => ({
-              ...c,
-              messages: [
-                ...new Map(
-                  [...(old?.messages ?? []), ...c.messages].map((m) => [m.id, m]),
-                ).values(),
-              ].sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
-            }));
+          if (!active) return;
+          // Back online: an earlier delay notice no longer applies.
+          setError((e) => (e.startsWith('Updates delayed') ? '' : e));
+          setConversation((old) => ({
+            ...c,
+            messages: [
+              ...new Map([...(old?.messages ?? []), ...c.messages].map((m) => [m.id, m])).values(),
+            ].sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+          }));
         })
         .catch((e) => {
           if (active) setError(`Updates delayed: ${e.message}`);
@@ -200,9 +207,12 @@ export function Inbox() {
       active = false;
       clearInterval(poll);
     };
-  }, [detailId, data.company.id, busy]);
+  }, [detailId, loaded, data.company.id, busy]);
+  // Only the message list scrolls to the newest message: on phones the page is taller than
+  // the screen, and scrollIntoView would also move the page staff are reading.
   useEffect(() => {
-    end.current?.scrollIntoView({ block: 'nearest' });
+    const log = logRef.current;
+    if (log) log.scrollTop = log.scrollHeight;
   }, [conversation?.messages.at(-1)?.id]);
   // A failure shows as a notification, so the pressed button only needs its spinner.
   const act = (key: string, path: string, body: unknown, success?: string) =>
@@ -236,12 +246,15 @@ export function Inbox() {
   };
   async function older() {
     if (!conversation) return;
+    const id = conversation.id;
     setLoading(true);
     try {
       const r = await api<PageResult<Message>>(
-        `/conversations/${conversation.id}/messages?page=${historyPage + 1}`,
+        `/conversations/${id}/messages?page=${historyPage + 1}`,
         data.company.id,
       );
+      // Staff opened another chat meanwhile: these messages and this loading state aren't its.
+      if (shown.current !== id) return;
       setConversation((c) =>
         c
           ? {
@@ -255,15 +268,23 @@ export function Inbox() {
       setHistoryPage(historyPage + 1);
       setHasOlder((historyPage + 1) * 100 < r.total);
     } catch (e) {
-      setError((e as Error).message);
+      if (shown.current === id) setError((e as Error).message);
     } finally {
-      setLoading(false);
+      if (shown.current === id) setLoading(false);
     }
   }
   const flags = conversation
     ? conversationFlags(conversation, Date.now(), data.company)
     : undefined;
   const pauseNote = conversation ? limitNote(conversation, Date.now(), data.company) : '';
+  // Phones show one pane: the thread while a chat loads or is open, otherwise the list (also
+  // after a failed load, so the error isn't followed by an empty "Choose a conversation").
+  const showThread = !!detailId && (!!conversation || loading);
+  // The server's own rule; only the hint changes, since this device's clock may be off.
+  const windowClosed =
+    conversation?.channel === 'whatsapp' &&
+    Date.now() - Date.parse(conversation.lastInboundAt) >= 86400000;
+  const filtered = !!search || status !== 'all';
   const keepWithStaff = (id: string) =>
     void act(
       'keep',
@@ -293,13 +314,21 @@ export function Inbox() {
         title="Inbox"
         description="Read customer messages, take over and track delivery outcomes."
       />
-      <ErrorNotice message={error} />
-      <div className="card grid h-[calc(100dvh-18rem)] min-h-[24rem] max-h-[52rem] overflow-hidden md:h-[calc(100dvh-15rem)] md:grid-cols-[18rem_1fr]">
+      <div className="mb-4 empty:hidden">
+        <ErrorNotice message={error} onDismiss={() => setError('')} />
+      </div>
+      <div
+        className={cn(
+          'card grid h-[calc(100dvh-18rem)] min-h-[24rem] max-h-[52rem] overflow-hidden md:h-[calc(100dvh-15rem)] md:grid-cols-[18rem_1fr]',
+          // On phones an open chat grows with its header instead of squeezing the messages.
+          showThread && 'max-md:h-auto max-md:max-h-none',
+        )}
+      >
         <section
           aria-label="Conversation list"
           className={cn(
-            'min-h-0 flex-col border-r border-ink/[0.06]',
-            detailId ? 'hidden md:flex' : 'flex',
+            'min-h-0 min-w-0 flex-col border-r border-ink/[0.06]',
+            showThread ? 'hidden md:flex' : 'flex',
           )}
         >
           <div className="space-y-3 border-b border-ink/[0.06] p-4">
@@ -336,7 +365,7 @@ export function Inbox() {
                   setPage(1);
                 }}
               />
-              Show sandbox conversations
+              Show sandbox conversations only
             </label>
           </div>
           <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
@@ -350,11 +379,12 @@ export function Inbox() {
                     c.id === detailId &&
                       'bg-white shadow-[inset_3px_0_0_var(--color-brand-500),0_0_0_1px_rgb(14_6_4/0.06),0_12px_22px_-16px_rgb(14_6_4/0.45)] hover:bg-white',
                   )}
+                  aria-current={c.id === detailId ? 'true' : undefined}
                   onClick={() => navigate('inbox', c.id)}
                 >
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <strong className="text-[13.5px] font-semibold break-words text-ink">
-                      {c.customerName || c.customerPhone}
+                    <strong className="min-w-0 text-[13.5px] font-semibold break-words text-ink">
+                      {c.customerName || c.customerPhone || 'WhatsApp contact'}
                     </strong>
                     {(c.mode === 'human' || badge) && (
                       <span className="flex flex-wrap items-center gap-1.5">
@@ -373,19 +403,27 @@ export function Inbox() {
                 </button>
               );
             })}
-            {!result.items.length && (
-              <Empty
-                title="No conversations"
-                description="Customer messages appear here after WhatsApp is connected. Use the sandbox filter to see tests."
-              />
-            )}
+            {!result.items.length &&
+              (filtered ? (
+                <Empty
+                  title="No matching conversations"
+                  description="Try another name, number or filter."
+                />
+              ) : (
+                <Empty
+                  title="No conversations"
+                  description="Customer messages appear here after WhatsApp is connected. Use the sandbox filter to see tests."
+                />
+              ))}
           </div>
           <div className="flex flex-wrap items-center justify-between gap-2 border-t border-ink/[0.06] p-3 text-xs text-stone-500">
             <button className="btn" disabled={page === 1} onClick={() => setPage(page - 1)}>
               Previous
             </button>
-            <span>
-              {result.total} total · {page}
+            {/* Wraps onto two lines between the buttons in the narrow desktop column. */}
+            <span className="min-w-0 flex-1 text-center tabular-nums">
+              {result.total} {result.total === 1 ? 'conversation' : 'conversations'} · Page {page}{' '}
+              of {Math.max(1, Math.ceil(result.total / 30))}
             </span>
             <button
               className="btn"
@@ -398,7 +436,7 @@ export function Inbox() {
         </section>
         <section
           aria-label="Conversation messages"
-          className={cn('min-h-0 min-w-0 flex-col', detailId ? 'flex' : 'hidden md:flex')}
+          className={cn('min-h-0 min-w-0 flex-col', showThread ? 'flex' : 'hidden md:flex')}
         >
           {conversation ? (
             <>
@@ -505,15 +543,21 @@ export function Inbox() {
                   )}
                 </div>
               </div>
-              <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto bg-canvas/50 bg-[radial-gradient(rgb(14_6_4/0.07)_1px,transparent_1.5px)] bg-[length:18px_18px] p-4 sm:px-6">
+              {/* New messages are announced; older history loading in at the top is not. */}
+              <div
+                ref={logRef}
+                role="log"
+                aria-busy={loading || undefined}
+                className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto bg-canvas/50 bg-[radial-gradient(rgb(14_6_4/0.07)_1px,transparent_1.5px)] bg-[length:18px_18px] p-4 max-md:max-h-[60dvh] max-md:min-h-56 max-md:flex-none sm:px-6"
+              >
                 {hasOlder && (
-                  <button
-                    className="btn mx-auto shrink-0"
-                    disabled={loading}
+                  <ActionButton
+                    className="mx-auto shrink-0"
+                    loading={loading}
                     onClick={() => void older()}
                   >
                     Load older messages
-                  </button>
+                  </ActionButton>
                 )}
                 {conversation.messages.map((m) => (
                   <div
@@ -586,14 +630,23 @@ export function Inbox() {
                   </ActionButton>
                 </div>
                 <p className="mt-2 px-3 text-[11.5px] leading-relaxed text-stone-500">
-                  Replying pauses this conversation’s bot. Free-form WhatsApp replies require an
-                  open 24-hour customer service window.
+                  {windowClosed
+                    ? 'The reply window has closed. Wait for the customer to message or send an approved status update.'
+                    : 'Replying pauses this conversation’s bot. Free-form WhatsApp replies require an open 24-hour customer service window.'}
                 </p>
               </form>
             </>
+          ) : loading ? (
+            <p
+              role="status"
+              className="flex flex-1 items-center justify-center gap-2 text-sm text-stone-500"
+            >
+              <Spinner />
+              Loading conversation…
+            </p>
           ) : (
             <Empty
-              title={loading ? 'Loading conversation…' : 'Choose a conversation'}
+              title="Choose a conversation"
               description="Select a customer to read the history and reply."
             />
           )}

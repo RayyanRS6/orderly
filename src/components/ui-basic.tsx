@@ -57,20 +57,24 @@ export function ActionButton({
 export function Badge({
   children,
   tone = 'neutral',
+  className,
 }: {
   children: ReactNode;
   tone?: 'green' | 'amber' | 'neutral' | 'red';
+  className?: string;
 }) {
   return (
     <span
       className={cn(
         'inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-0.5 text-[11px] font-semibold border',
         {
-          'border-success-700/15 bg-success-700/10 text-success-700': tone === 'green',
+          // success-800: 11px text on its own tint stays above 4.5:1 on the canvas too.
+          'border-success-700/15 bg-success-700/10 text-success-800': tone === 'green',
           'border-brand-500/20 bg-brand-500/12 text-brand-800': tone === 'amber',
           'border-ink/[0.06] bg-ink/5 text-stone-500': tone === 'neutral',
           'border-red-600/15 bg-red-600/10 text-red-700': tone === 'red',
         },
+        className,
       )}
     >
       {children}
@@ -88,7 +92,7 @@ export function ErrorNotice({ message, onDismiss }: { message?: string; onDismis
       <p className="flex-1 font-medium">{message}</p>
       {onDismiss && (
         <button
-          className="rounded-full text-red-500 transition-[color,scale] duration-200 hover:text-red-800 active:scale-90"
+          className="-m-1 rounded-full p-1 text-red-500 transition-[color,scale] duration-200 hover:text-red-800 active:scale-90"
           aria-label="Dismiss error"
           onClick={onDismiss}
         >
@@ -206,11 +210,18 @@ export function CustomSelect({
         handleClose();
       }
     }
+    // Escape closes the list even when the trigger lost focus (Safari doesn't focus a
+    // clicked button); with focus on the trigger, its own handler does the same.
+    function handleEscape(e: KeyboardEvent) {
+      if (e.key === 'Escape') handleClose();
+    }
     document.addEventListener('mousedown', handlePointerDown);
     document.addEventListener('touchstart', handlePointerDown);
+    document.addEventListener('keydown', handleEscape);
     return () => {
       document.removeEventListener('mousedown', handlePointerDown);
       document.removeEventListener('touchstart', handlePointerDown);
+      document.removeEventListener('keydown', handleEscape);
     };
   }, [open]);
 
@@ -284,17 +295,6 @@ export function CustomSelect({
       ref={containerRef}
       className={cn('relative', variant === 'input' ? 'w-full' : 'inline-block')}
     >
-      {(name || required) && (
-        <input
-          aria-hidden="true"
-          required={required}
-          name={name}
-          value={value}
-          onChange={() => {}}
-          onFocus={() => triggerRef.current?.focus()}
-          className="sr-only absolute"
-        />
-      )}
       <button
         ref={triggerRef}
         id={selectId}
@@ -319,7 +319,8 @@ export function CustomSelect({
         }}
         onKeyDown={handleKeyDown}
         className={cn(
-          'flex items-center justify-between gap-2 transition-[background-color,border-color,color,box-shadow,scale] duration-200 select-none cursor-pointer focus:outline-none active:scale-[0.98]',
+          'flex items-center justify-between gap-2 transition-[background-color,border-color,color,box-shadow,scale] duration-200 select-none cursor-pointer active:scale-[0.98]',
+          // Pills keep the global button focus outline; field-style selects focus like .input.
           variant === 'pill'
             ? cn(
                 'h-[40px] rounded-full border text-[13px] font-semibold pl-4 pr-3',
@@ -328,7 +329,7 @@ export function CustomSelect({
                   : 'border-white/90 bg-white/75 text-stone-700 shadow-[inset_0_1px_0_#fff,0_6px_14px_-10px_rgb(14_6_4/0.35)] hover:bg-white hover:text-ink focus-visible:ring-4 focus-visible:ring-brand-500/15',
               )
             : cn(
-                'min-h-[40px] w-full rounded-xl border text-[13px] px-3.5 py-2 text-left',
+                'min-h-[40px] w-full rounded-xl border text-[13px] px-3.5 py-2 text-left focus:outline-hidden',
                 theme === 'dark'
                   ? 'border-white/10 bg-white/[0.05] text-cream hover:bg-white/[0.08] focus-visible:border-brand-500/50 focus-visible:ring-4 focus-visible:ring-brand-500/20'
                   : 'border-ink/10 bg-white/80 text-ink shadow-[inset_0_1px_2px_rgb(14_6_4/0.03)] hover:border-ink/18 focus-visible:border-brand-500/60 focus-visible:bg-white focus-visible:ring-4 focus-visible:ring-brand-500/15',
@@ -352,6 +353,19 @@ export function CustomSelect({
           )}
         />
       </button>
+      {/* After the trigger, so a wrapping <label> names the combobox, not this input. */}
+      {(name || required) && (
+        <input
+          aria-hidden="true"
+          tabIndex={-1}
+          required={required}
+          name={name}
+          value={value}
+          onChange={() => {}}
+          onFocus={() => triggerRef.current?.focus()}
+          className="sr-only absolute"
+        />
+      )}
 
       {open && (
         <div

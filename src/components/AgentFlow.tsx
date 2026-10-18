@@ -44,7 +44,8 @@ import {
 import { api } from '../lib/api';
 import { useWorkspace, type Page } from '../lib/workspace';
 import { cn, shortDate } from '../lib/utils';
-import { Badge, ErrorNotice, PageHeading } from './ui';
+import { isLite } from '../lib/motion';
+import { ActionButton, Badge, ErrorNotice, PageHeading } from './ui';
 import { ReplyExplanation } from './ReplyExplanation';
 
 type Icon = ComponentType<{ className?: string }>;
@@ -257,6 +258,15 @@ export function AgentFlow() {
     setAutoFit(false);
     setZoom(Math.min(1.4, Math.max(0.5, Math.round(value * 100) / 100)));
   };
+  // Below the canvas breakpoint the Inspector sits under the long list: bring it into view.
+  const showInspector = () => {
+    const title = document.getElementById('inspector-title');
+    if (!title) return;
+    const { top, bottom } = title.getBoundingClientRect();
+    if (top >= 0 && bottom <= window.innerHeight) return;
+    const still = isLite() || window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    title.scrollIntoView({ block: 'start', behavior: still ? 'auto' : 'smooth' });
+  };
 
   return (
     <>
@@ -264,10 +274,10 @@ export function AgentFlow() {
         title="Agent flow"
         description="Everything connected to this business’s bot, what data each part uses, and why it replied the way it did. It updates whenever you change a setting."
       >
-        <button className="btn" disabled={loading} onClick={() => void load()}>
-          <RefreshCw className={cn('size-4', loading && 'animate-spin')} />
+        <ActionButton loading={loading} loadingLabel="Refresh" onClick={() => void load()}>
+          <RefreshCw className="size-4" />
           Refresh
-        </button>
+        </ActionButton>
         <button className="btn btn-primary" onClick={() => navigate('playground')}>
           Test your bot
           <ArrowRight className="size-4" />
@@ -379,7 +389,7 @@ export function AgentFlow() {
               </span>
             ))}
             {flow && (
-              <span className="hidden items-center gap-0.5 rounded-full border border-ink/[0.08] bg-white/85 p-1 shadow-[inset_0_1px_0_#fff,0_6px_14px_-10px_rgb(14_6_4/0.35)] md:inline-flex">
+              <span className="hidden items-center gap-0.5 rounded-full border border-ink/[0.08] bg-white/85 p-1 shadow-[inset_0_1px_0_#fff,0_6px_14px_-10px_rgb(14_6_4/0.35)] xl:inline-flex">
                 <button
                   type="button"
                   className="flex size-7 items-center justify-center rounded-full text-stone-600 transition-[background-color,color,scale] duration-200 hover:bg-ink/5 hover:text-ink active:scale-90"
@@ -434,7 +444,7 @@ export function AgentFlow() {
           </div>
         ) : (
           <>
-            <div className="hidden md:block">
+            <div className="hidden xl:block">
               <div
                 ref={viewport}
                 className="custom-scrollbar overflow-auto bg-[radial-gradient(circle,rgba(14,6,4,0.13)_1px,transparent_1.2px)] bg-[length:22px_22px]"
@@ -450,7 +460,8 @@ export function AgentFlow() {
                     }}
                   >
                     <Edges onPath={edgeOnPath} replaying={!!path} />
-                    {[...nodes.values()].map((node) => (
+                    {/* Visual top-to-bottom order, so Tab follows what is on screen. */}
+                    {MOBILE_ORDER.flatMap((id) => nodes.get(id) ?? []).map((node) => (
                       <CanvasNode
                         key={node.id}
                         node={node}
@@ -464,7 +475,7 @@ export function AgentFlow() {
                 </div>
               </div>
             </div>
-            <ol className="stagger space-y-2 p-4 md:hidden" aria-label="Bot flow steps">
+            <ol className="stagger space-y-2 p-4 xl:hidden" aria-label="Bot flow steps">
               {MOBILE_ORDER.map((id) => {
                 const node = nodes.get(id);
                 if (!node) return null;
@@ -475,7 +486,10 @@ export function AgentFlow() {
                     <button
                       type="button"
                       aria-pressed={selected === id}
-                      onClick={() => setSelected(id)}
+                      onClick={() => {
+                        setSelected(id);
+                        showInspector();
+                      }}
                       className={cn(
                         'flex w-full items-center gap-3 rounded-2xl border-2 bg-white/80 p-3 text-left shadow-[0_10px_22px_-18px_rgb(14_6_4/0.45)] transition-[opacity,background-color,box-shadow,scale] duration-300 active:scale-[0.98]',
                         STATUS_STYLE[node.status].ring,
@@ -487,17 +501,19 @@ export function AgentFlow() {
                       <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-ink text-brand-500 shadow-[0_8px_16px_-10px_rgb(14_6_4/0.7)]">
                         <Icon className="size-4" />
                       </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-[13px] font-semibold text-ink">
+                      {/* The subtitle claims no width, so on a narrow phone the title and the
+                          status share the row and wrap to two lines instead of being cut. */}
+                      <span className="min-w-0 flex-auto">
+                        <span className="line-clamp-2 text-[13px] font-semibold text-ink">
                           {node.title}
                         </span>
-                        <span className="block truncate text-xs text-stone-500">
+                        <span className="block truncate text-xs text-stone-500 [contain:inline-size]">
                           {node.subtitle}
                         </span>
                       </span>
                       <span
                         className={cn(
-                          'inline-flex max-w-[40%] shrink-0 items-center gap-1.5 text-right text-[11px] font-semibold',
+                          'inline-flex max-w-[40%] items-center gap-1.5 text-right text-[11px] font-semibold',
                           STATUS_STYLE[node.status].text,
                         )}
                       >
@@ -510,7 +526,7 @@ export function AgentFlow() {
                               'live-dot text-success-700',
                           )}
                         />
-                        <span className="truncate">{node.statusLabel}</span>
+                        <span className="line-clamp-2">{node.statusLabel}</span>
                       </span>
                     </button>
                   </li>
@@ -920,7 +936,7 @@ function Inspector({
   const style = STATUS_STYLE[node.status];
   const notes = explanation ? replayNotes(node.id, explanation, productName) : [];
   return (
-    <section className="card p-5 sm:p-6" aria-labelledby="inspector-title" aria-live="polite">
+    <section className="card p-5 sm:p-6" aria-labelledby="inspector-title">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="flex min-w-0 items-center gap-3">
           <span className="flex size-11 shrink-0 -rotate-6 items-center justify-center rounded-xl bg-ink text-brand-500 shadow-[0_10px_20px_-10px_rgb(14_6_4/0.75)]">

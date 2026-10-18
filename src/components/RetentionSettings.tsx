@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { RetentionStatus } from '../shared/types';
 import { api } from '../lib/api';
 import { dialogOpen, useAction, useWorkspace } from '../lib/workspace';
+import { shortDate } from '../lib/utils';
 import { ActionButton, ConfirmDialog, ErrorNotice, Field } from './ui';
 
 export function RetentionSettings() {
@@ -136,15 +137,14 @@ export function RetentionSettings() {
       )}
       {status?.eligibleAfter && status.days > 0 && (
         <p className="text-xs text-stone-500">
-          Cleanup cannot start before {new Date(status.eligibleAfter).toLocaleString()}. A changed
-          policy has a 24-hour grace period. Cleanup runs hourly in batches of up to 100
-          conversations per workspace; busy workspaces are skipped.
+          Cleanup cannot start before {shortDate(status.eligibleAfter)}. A changed policy has a
+          24-hour grace period. Cleanup runs hourly in batches of up to 100 conversations per
+          workspace; busy workspaces are skipped.
         </p>
       )}
       {status?.lastRunAt && (
         <p className="text-xs text-stone-500">
-          Last cleanup: {new Date(status.lastRunAt).toLocaleString()} · {status.lastDeleted}{' '}
-          conversations deleted.
+          Last cleanup: {shortDate(status.lastRunAt)} · {status.lastDeleted} conversations deleted.
         </p>
       )}
       {data.mode === 'demo' && (
@@ -165,6 +165,8 @@ export function RetentionSettings() {
             : 'Future automatic cleanup will stop. Already deleted data cannot be restored by turning this off.'
         }
         confirmLabel="Save policy"
+        // Turning deletion off removes nothing, so it is not a red action.
+        tone={Number(days) ? 'danger' : 'primary'}
         onConfirm={() => void save()}
       />
     </section>

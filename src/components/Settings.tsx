@@ -1,11 +1,10 @@
-import { useRef, useState } from 'react';
+import { useId, useRef, useState } from 'react';
 import {
   ArrowRight,
   Bot,
   Building2,
   Cable,
   Check,
-  ExternalLink,
   KeyRound,
   MessageCircle,
   Plus,
@@ -19,13 +18,13 @@ import type { Company, Integration, IntegrationKind, Provider } from '../shared/
 import { money } from '../shared/types';
 import { MODEL_DEFAULTS } from '../shared/models';
 import { useAction, useWorkspace } from '../lib/workspace';
-import { cn, initials, label } from '../lib/utils';
+import { workspacePath } from '../lib/routes';
+import { cn, initials, shortDate } from '../lib/utils';
 import {
   ActionButton,
   Badge,
   ConfirmDialog,
   CustomSelect,
-  Empty,
   Field,
   Modal,
   PageHeading,
@@ -64,7 +63,12 @@ export function Settings() {
     };
   });
   const [saved, setSaved] = useState(false);
+  const [dirty, setDirty] = useState(false);
+  const daysLabel = useId();
   const canEdit = data.role !== 'staff';
+  // With no Sheet saved, a Sheet menu source sends every bot turn to staff. A saved but
+  // untested one works, so this checks configured, not connected.
+  const sheetsReady = !!(data.integrations || []).find((i) => i.kind === 'sheets')?.configured;
   const usage = data.usage || [];
   const recordedSpend =
     data.summary?.monthlySpend ??
@@ -74,6 +78,7 @@ export function Settings() {
   const update = (values: Partial<Company>) => {
     edits.current++;
     setSaved(false);
+    setDirty(true);
     setDraft((d) => ({ ...d, ...values }));
   };
   return (
@@ -92,11 +97,15 @@ export function Settings() {
             const { aiLimits: _limits, ...body } = draft;
             await mutate(`/companies/${draft.id}`, body, 'PUT', { success: 'Settings saved.' });
             // Edits typed while saving are not saved yet.
-            if (edits.current === before) setSaved(true);
+            if (edits.current === before) {
+              setSaved(true);
+              setDirty(false);
+            }
           }).catch(() => undefined);
         }}
       >
-        <fieldset disabled={!canEdit} className="stagger space-y-6 disabled:opacity-70">
+        {/* No fade on the whole fieldset: the controls dim themselves, the text stays readable. */}
+        <fieldset disabled={!canEdit} className="stagger space-y-6">
           <section className="card group p-6">
             <div className="mb-6 flex items-center gap-3">
               <Building2 className="box-content size-[18px] shrink-0 -rotate-6 rounded-xl bg-ink p-[9px] text-brand-500 shadow-[0_10px_20px_-10px_rgb(14_6_4/0.7)] transition-transform duration-300 ease-[var(--ease-spring)] group-hover:rotate-0" />
@@ -173,18 +182,26 @@ export function Settings() {
                 />
               </Field>
               <div className="sm:col-span-2">
-                <span className="field-label">Open days · Asia/Karachi</span>
-                <div className="stagger flex flex-wrap gap-2">
+                <span id={daysLabel} className="field-label">
+                  Open days · Asia/Karachi
+                </span>
+                <div
+                  role="group"
+                  aria-labelledby={daysLabel}
+                  className="stagger flex flex-wrap gap-2"
+                >
                   {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day, i) => {
                     const openDays = draft.openingHours?.days || [];
                     return (
                       <label
                         key={day}
                         className={cn(
-                          'flex min-h-9 cursor-pointer items-center gap-2 rounded-full border px-3.5 text-xs font-semibold transition-[background-color,border-color,color,box-shadow,scale] duration-200 ease-[var(--ease-soft)] active:scale-95',
+                          'flex min-h-11 md:min-h-9 cursor-pointer items-center gap-2 rounded-full border px-3.5 text-xs font-semibold transition-[background-color,border-color,color,box-shadow,scale] duration-200 ease-[var(--ease-soft)] active:scale-95',
                           openDays.includes(i)
                             ? 'border-ink bg-ink text-cream shadow-[0_8px_18px_-8px_rgb(14_6_4/0.7)]'
                             : 'border-ink/10 bg-white/70 text-stone-600 hover:border-ink/25 hover:bg-white hover:text-ink',
+                          // The fieldset no longer fades, so a read-only chip dims itself.
+                          !canEdit && 'cursor-not-allowed opacity-60',
                         )}
                       >
                         <input
@@ -235,8 +252,9 @@ export function Settings() {
             )}
             <div className="stagger space-y-3">
               {(draft.deliveryZones || []).map((zone, i) => (
-                <div className="flex items-end gap-3" key={i}>
-                  <div className="flex-1">
+                // On phones the fee and remove button wrap below, so the area name stays readable.
+                <div className="flex flex-wrap items-end gap-3" key={i}>
+                  <div className="min-w-[11rem] flex-1">
                     <Field label="Area">
                       <input
                         className="input"
@@ -252,37 +270,48 @@ export function Settings() {
                       />
                     </Field>
                   </div>
-                  <div className="w-28">
-                    <Field label="Fee (PKR)">
-                      <input
-                        className="input"
-                        type="number"
-                        min="0"
-                        step="0.01"
-                        required
-                        value={zone.fee / 100}
-                        onChange={(e) =>
-                          update({
-                            deliveryZones: (draft.deliveryZones || []).map((z, j) =>
-                              j === i ? { ...z, fee: Math.round(Number(e.target.value) * 100) } : z,
-                            ),
-                          })
-                        }
-                      />
-                    </Field>
+                  <div className="flex items-end gap-3">
+                    <div className="w-28">
+                      <Field label="Fee (PKR)">
+                        {/* An emptied fee stays empty (NaN in the draft), so required can stop the save. */}
+                        <input
+                          className="input"
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          required
+                          value={Number.isNaN(zone.fee) ? '' : zone.fee / 100}
+                          onChange={(e) =>
+                            update({
+                              deliveryZones: (draft.deliveryZones || []).map((z, j) =>
+                                j === i
+                                  ? {
+                                      ...z,
+                                      fee:
+                                        e.target.value === ''
+                                          ? NaN
+                                          : Math.round(Number(e.target.value) * 100),
+                                    }
+                                  : z,
+                              ),
+                            })
+                          }
+                        />
+                      </Field>
+                    </div>
+                    <button
+                      className="icon-btn hover:bg-red-50 hover:text-red-700"
+                      type="button"
+                      aria-label={`Remove delivery area ${zone.name || i + 1}`}
+                      onClick={() =>
+                        update({
+                          deliveryZones: (draft.deliveryZones || []).filter((_, j) => j !== i),
+                        })
+                      }
+                    >
+                      <Trash2 className="size-4" />
+                    </button>
                   </div>
-                  <button
-                    className="icon-btn hover:bg-red-50 hover:text-red-700"
-                    type="button"
-                    aria-label={`Remove delivery area ${zone.name || i + 1}`}
-                    onClick={() =>
-                      update({
-                        deliveryZones: (draft.deliveryZones || []).filter((_, j) => j !== i),
-                      })
-                    }
-                  >
-                    <Trash2 className="size-4" />
-                  </button>
                 </div>
               ))}
             </div>
@@ -294,20 +323,37 @@ export function Settings() {
             </div>
             <div className="grid gap-5 sm:grid-cols-2">
               <div className="sm:col-span-2">
-                <button type="button" className="btn btn-ink" onClick={() => navigate('bot')}>
+                {/* A link, not a button, so the disabled fieldset doesn't block it for staff. */}
+                <a
+                  className="btn btn-ink text-center"
+                  href={workspacePath(data.company.slug, 'bot')}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    navigate('bot');
+                  }}
+                >
                   Open bot behavior & model settings
-                </button>
+                </a>
               </div>
               <Field
                 label="Menu source"
-                hint="One source controls item prices and availability for this business."
+                hint={`One source controls item prices and availability for this business.${
+                  sheetsReady || draft.catalogSource === 'sheets'
+                    ? ''
+                    : ' To use a Sheet, connect Google Sheets in Integrations first.'
+                }`}
               >
                 <CustomSelect
                   value={draft.catalogSource}
+                  disabled={!canEdit}
                   onChange={(val) => update({ catalogSource: val as 'app' | 'sheets' })}
                   options={[
                     { value: 'app', label: 'Manage here · forms or CSV' },
-                    { value: 'sheets', label: 'Connected Google Sheet' },
+                    {
+                      value: 'sheets',
+                      label: 'Connected Google Sheet',
+                      disabled: draft.catalogSource !== 'sheets' && !sheetsReady,
+                    },
                   ]}
                 />
               </Field>
@@ -332,7 +378,7 @@ export function Settings() {
             </div>
           </section>
           <section className="card p-6">
-            <div className="mb-2 flex items-center justify-between gap-3">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
               <h2 className="panel-title">Common questions</h2>
               <button
                 className="btn"
@@ -398,9 +444,19 @@ export function Settings() {
           <div className="flex items-center justify-end gap-4">
             <span
               role="status"
-              className={cn('text-[13px] font-semibold text-success-700', saved && 'enter-pop')}
+              className={cn(
+                'text-[13px] font-semibold',
+                saved ? 'text-success-700' : dirty ? 'text-brand-800' : 'text-stone-600',
+                saved && 'enter-pop',
+              )}
             >
-              {saved ? 'Settings saved.' : !canEdit ? 'Only an owner can edit settings.' : ''}
+              {saved
+                ? 'Settings saved.'
+                : dirty
+                  ? 'Unsaved changes'
+                  : !canEdit
+                    ? 'Only an owner can edit settings.'
+                    : ''}
             </span>
             <ActionButton
               type="submit"
@@ -496,6 +552,8 @@ const integrationInfo: Record<
 export function Integrations() {
   const [disconnecting, setDisconnecting] = useState<Integration>();
   const [disconnectError, setDisconnectError] = useState('');
+  // Kept after closing, so the title doesn't change while the dialog fades out.
+  const [disconnectName, setDisconnectName] = useState('');
   const { data, mutate, navigate } = useWorkspace();
   const { pending, run } = useAction();
   const [editing, setEditing] = useState<Integration | null>(null);
@@ -512,7 +570,7 @@ export function Integrations() {
         onOpenChange={(v) => {
           if (!v) setDisconnecting(undefined);
         }}
-        title="Disconnect this integration?"
+        title={`Disconnect ${disconnectName || 'this integration'}?`}
         description="Automation will pause, Orderly will delete the stored credential and cancel pending delivery work for this integration. Revoke Orderly access or the API key in the provider account separately. Existing provider data is kept."
         confirmLabel="Disconnect"
         busy={pending === 'disconnect'}
@@ -642,9 +700,10 @@ export function Integrations() {
                 {integration.configured && (
                   <button
                     disabled={!canEdit}
-                    className="btn mt-3 text-red-700 hover:border-red-200 hover:bg-red-50 hover:text-red-800"
+                    className="btn mt-3 self-start text-red-700 hover:border-red-200 hover:bg-red-50 hover:text-red-800"
                     onClick={() => {
                       setDisconnectError('');
+                      setDisconnectName(info.title);
                       setDisconnecting(integration);
                     }}
                   >
@@ -653,7 +712,7 @@ export function Integrations() {
                 )}
                 {integration.checkedAt && (
                   <p className="mt-4 font-mono text-[11px] text-stone-400">
-                    Last checked {new Date(integration.checkedAt).toLocaleString()}
+                    Last checked {shortDate(integration.checkedAt)}
                   </p>
                 )}
               </section>
@@ -847,7 +906,9 @@ export function Businesses() {
               {company.address || 'Add a pickup address in Settings.'}
             </p>
             <div className="mb-6 mt-5 flex flex-wrap gap-2">
-              <Badge tone="neutral">{company.botEnabled ? 'Bot enabled' : 'Bot paused'}</Badge>
+              <Badge tone={company.botEnabled ? 'neutral' : 'amber'}>
+                {company.botEnabled ? 'Bot enabled' : 'Bot paused'}
+              </Badge>
               <Badge tone="neutral">{company.currency}</Badge>
               <Badge tone="neutral">
                 {(providers[company.ai?.provider] || providers.mock).name}
@@ -928,25 +989,5 @@ export function Businesses() {
         </form>
       </Modal>
     </>
-  );
-}
-
-function Team() {
-  const { data } = useWorkspace();
-  return (
-    <section className="card mt-6 p-6">
-      <div className="flex items-center gap-3">
-        <ShieldCheck className="size-5 text-brand-500" />
-        <h2 className="panel-title">Team access</h2>
-      </div>
-      <p className="mt-3 text-sm leading-relaxed text-stone-500">
-        Your role is {label(data.role).toLowerCase()}. In live mode, the platform administrator
-        creates Supabase accounts and assigns owner or staff membership to this company. Staff can
-        manage orders and reply to customers. Owners can also change menus and connections.
-      </p>
-      <p className="mt-3 break-all rounded-xl border border-white bg-white/60 p-3.5 font-mono text-xs text-stone-500">
-        Company ID: {data.company.id}
-      </p>
-    </section>
   );
 }

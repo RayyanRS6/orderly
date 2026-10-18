@@ -74,7 +74,10 @@ export function BotSettings() {
   const [base, setBase] = useState(draft);
   const [revision, setRevision] = useState(data.company.bot?.revision ?? 0);
   const [restoring, setRestoring] = useState<number>();
+  // The version the restore dialog names, kept while it fades out after `restoring` clears.
+  const lastRestore = useRef<number>(undefined);
   const [restoreError, setRestoreError] = useState('');
+  const [leaving, setLeaving] = useState(false);
   const [ai, setAi] = useState(data.company.ai);
   const [approved, setApproved] = useState(data.company.privacy?.aiDataApproved ?? false);
   const [apiKey, setApiKey] = useState('');
@@ -83,8 +86,10 @@ export function BotSettings() {
   const [catalog, setCatalog] = useState<ModelOption[]>([]);
   const [checkedAt, setCheckedAt] = useState('');
   const [catalogNote, setCatalogNote] = useState('');
+  const [catalogError, setCatalogError] = useState('');
   const [loading, setLoading] = useState(false);
-  // Reply limits as typed, so a box can be cleared while editing.
+  // Limits as typed, so a box can be cleared while editing.
+  const [monthlyText, setMonthlyText] = useState(() => String(data.company.ai.monthlyBudgetUsd));
   const savedLimits = effectiveAiLimits(data.company.aiLimits);
   const [repliesPerHour, setRepliesPerHour] = useState(() => String(savedLimits.repliesPerHour));
   const [repliesPerCustomer, setRepliesPerCustomer] = useState(() =>
@@ -97,6 +102,32 @@ export function BotSettings() {
   // Compared by meaning: the database reorders fields and the server trims text.
   const changed = !sameBotConfig(draft, base);
   const live = !!published && sameBotConfig(draft, published.config);
+  // Edits live only on this page: warn before a reload or closing the tab throws them away.
+  useEffect(() => {
+    if (!changed) return;
+    const warn = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [changed]);
+  // The server's checks (on trimmed text), named the way this page labels the fields.
+  const ruleProblem = draft.behaviorRules.findIndex(
+    (rule) => !rule.when.trim() || (rule.responseMode === 'exact' && !rule.response.trim()),
+  );
+  const answerProblem = draft.knowledge.findIndex((k) => !k.question.trim() || !k.answer.trim());
+  const draftProblem = !draft.name.trim()
+    ? 'Assistant name can’t be empty.'
+    : !draft.goal.trim()
+      ? 'Goal can’t be empty.'
+      : ruleProblem >= 0
+        ? draft.behaviorRules[ruleProblem]!.when.trim()
+          ? `Rule ${ruleProblem + 1} uses exact words but has no reply.`
+          : `Rule ${ruleProblem + 1} needs “When this happens”.`
+        : answerProblem >= 0
+          ? `Question ${answerProblem + 1} needs a question and an answer.`
+          : undefined;
   // Someone saved elsewhere (another tab or owner) and there are no edits here: follow along.
   useEffect(() => {
     const latest = data.company.bot?.revision ?? 0;
@@ -130,6 +161,7 @@ export function BotSettings() {
   const canConnect = usesAi && approved && !!ai.model && (savedKey || !!apiKey.trim());
   const update = (patch: Partial<BotConfig>) => setDraft({ ...draft, ...patch });
   async function discover(refresh = false) {
+    setCatalogError('');
     // Models can only be listed once this business has saved its own key.
     if (!usesAi || !savedKey) {
       setCatalog([]);
@@ -146,7 +178,7 @@ export function BotSettings() {
       setCatalog(result.items);
       setCheckedAt(result.checkedAt);
     } catch (e) {
-      setCatalogNote((e as Error).message);
+      setCatalogError((e as Error).message);
       setCatalog([]);
     } finally {
       setLoading(false);
@@ -192,7 +224,12 @@ export function BotSettings() {
   const act = (key: string, work: () => Promise<unknown>) =>
     void run(key, work).catch(() => undefined);
   // Any of the three limits can be saved here, even while AI is off.
-  const monthlyChanged = ai.monthlyBudgetUsd !== data.company.ai.monthlyBudgetUsd;
+  const monthlyBudget = /^\d+(\.\d+)?$/.test(monthlyText.trim()) ? Number(monthlyText) : NaN;
+  // Connect and Turn AI off send the limit too: keep the saved one while the box is empty.
+  const monthlyToSend = Number.isNaN(monthlyBudget)
+    ? data.company.ai.monthlyBudgetUsd
+    : monthlyBudget;
+  const monthlyChanged = monthlyBudget !== data.company.ai.monthlyBudgetUsd;
   const limitsChanged =
     monthlyChanged ||
     Number(repliesPerHour) !== savedLimits.repliesPerHour ||
@@ -200,12 +237,7 @@ export function BotSettings() {
   const [minPerHour, maxPerHour] = AI_LIMIT_RANGES.repliesPerHour;
   const [minPerCustomer, maxPerCustomer] = AI_LIMIT_RANGES.repliesPerCustomerPerHour;
   const limitProblem =
-    monthlyChanged &&
-    !(
-      Number.isFinite(ai.monthlyBudgetUsd) &&
-      ai.monthlyBudgetUsd >= 0 &&
-      ai.monthlyBudgetUsd <= 10000
-    )
+    monthlyChanged && !(monthlyBudget >= 0 && monthlyBudget <= 10000)
       ? 'Choose a monthly limit from $0 to $10,000.'
       : !validReplyLimit('repliesPerHour', repliesPerHour)
         ? `Choose ${minPerHour} to ${maxPerHour.toLocaleString('en-US')} AI replies per hour.`
@@ -220,9 +252,7 @@ export function BotSettings() {
           ...data.company,
           ai: {
             ...data.company.ai,
-            monthlyBudgetUsd: monthlyChanged
-              ? ai.monthlyBudgetUsd
-              : data.company.ai.monthlyBudgetUsd,
+            monthlyBudgetUsd: monthlyToSend,
           },
           aiLimits: {
             repliesPerHour: Number(repliesPerHour),
@@ -241,7 +271,7 @@ export function BotSettings() {
           provider: ai.provider,
           model: ai.model,
           approve: true,
-          monthlyBudgetUsd: ai.monthlyBudgetUsd,
+          monthlyBudgetUsd: monthlyToSend,
           ...(apiKey.trim() && { apiKey: apiKey.trim() }),
           ...(ai.pricing && { pricing: ai.pricing }),
         },
@@ -311,6 +341,7 @@ export function BotSettings() {
         ...catalog,
       ];
   const picked = items.find((m) => m.id === ai.model);
+  const restoreShown = restoring ?? lastRestore.current;
   return (
     <>
       <ConfirmDialog
@@ -343,9 +374,9 @@ export function BotSettings() {
           if (!open) setRestoring(undefined);
           setRestoreError('');
         }}
-        title={`Restore version ${restoring}?`}
-        description={`Customers get version ${restoring} right away. The settings on this page are not published, and they will be replaced by version ${restoring}. To keep them, publish them first.`}
-        confirmLabel={`Restore version ${restoring}`}
+        title={`Restore version ${restoreShown}?`}
+        description={`Customers get version ${restoreShown} right away. The settings on this page are not published, and they will be replaced by version ${restoreShown}. To keep them, publish them first.`}
+        confirmLabel={`Restore version ${restoreShown}`}
         busy={pending === `restore-${restoring}`}
         busyLabel="Restoring…"
         error={restoreError}
@@ -353,11 +384,26 @@ export function BotSettings() {
           if (restoring !== undefined) restore(restoring);
         }}
       />
+      <ConfirmDialog
+        open={leaving}
+        onOpenChange={setLeaving}
+        tone="primary"
+        title="Leave without saving?"
+        description="Test your bot uses the saved draft. The changes on this page are not saved and will be lost if you leave."
+        confirmLabel="Leave page"
+        onConfirm={() => {
+          setLeaving(false);
+          navigate('playground');
+        }}
+      />
       <PageHeading
         title="Bot settings"
         description="Choose how this business’s assistant behaves. Drafts stay separate from the published bot."
       >
-        <button className="btn" onClick={() => navigate('playground')}>
+        <button
+          className="btn"
+          onClick={() => (changed ? setLeaving(true) : navigate('playground'))}
+        >
           Test saved draft
         </button>
       </PageHeading>
@@ -375,6 +421,7 @@ export function BotSettings() {
               className="flex items-start gap-2.5 rounded-xl bg-paper px-3 py-2 text-[13px] leading-5 text-stone-700"
             >
               <span
+                role="img"
                 aria-label={c.ready ? 'Complete' : 'Required'}
                 className={
                   c.ready
@@ -417,13 +464,19 @@ export function BotSettings() {
           </ActionButton>
         )}
       </section>
+      {!owner && (
+        <p className="mb-4 text-sm text-stone-500">Only an owner can change bot settings.</p>
+      )}
       <fieldset disabled={!owner} className="stagger min-w-0 space-y-6 disabled:opacity-70">
         <section className="card p-5 sm:p-6 space-y-5" aria-labelledby="ai-model-title">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 id="ai-model-title" className="panel-title">
               AI model
             </h2>
-            <Badge tone={connected ? 'green' : 'amber'}>
+            <Badge
+              tone={connected ? 'green' : 'amber'}
+              className="max-w-full whitespace-normal [overflow-wrap:anywhere]"
+            >
               {connected
                 ? `Connected · ${PROVIDER_NAMES[data.company.ai.provider]} ${data.company.ai.model}`
                 : 'Not connected'}
@@ -462,24 +515,33 @@ export function BotSettings() {
               />
             </Field>
             {usesAi && (
-              <Field
-                label="Model"
-                hint={
-                  catalogNote ||
-                  (checkedAt ? `Model list checked ${shortDate(checkedAt)}.` : undefined)
-                }
-              >
-                <CustomSelect
-                  value={ai.model}
-                  disabled={loading}
-                  onChange={(v) => setAi({ ...ai, model: v, pricing: undefined })}
-                  options={items.map((m) => ({
-                    value: m.id,
-                    label: `${m.name}${recommendedModel(ai.provider, m.id) ? ' · recommended' : ''}${!m.available ? ' · unavailable' : !m.priced ? ' · prices required' : ''}`,
-                    disabled: !m.available,
-                  }))}
-                />
-              </Field>
+              <div>
+                <Field
+                  label="Model"
+                  hint={
+                    catalogNote ||
+                    (checkedAt && !catalogError
+                      ? `Model list checked ${shortDate(checkedAt)}.`
+                      : undefined)
+                  }
+                >
+                  <CustomSelect
+                    value={ai.model}
+                    disabled={loading}
+                    onChange={(v) => setAi({ ...ai, model: v, pricing: undefined })}
+                    options={items.map((m) => ({
+                      value: m.id,
+                      label: `${m.name}${recommendedModel(ai.provider, m.id) ? ' · recommended' : ''}${!m.available ? ' · unavailable' : !m.priced ? ' · prices required' : ''}`,
+                      disabled: !m.available,
+                    }))}
+                  />
+                </Field>
+                {catalogError && (
+                  <p role="alert" className="mt-1.5 text-xs font-semibold text-brand-700">
+                    {catalogError}
+                  </p>
+                )}
+              </div>
             )}
             {usesAi && (
               <div className="sm:col-span-2">
@@ -507,7 +569,8 @@ export function BotSettings() {
                   target="_blank"
                   rel="noreferrer"
                 >
-                  Get a {PROVIDER_NAMES[ai.provider]} API key
+                  Get {/^[AEIOU]/i.test(PROVIDER_NAMES[ai.provider]) ? 'an' : 'a'}{' '}
+                  {PROVIDER_NAMES[ai.provider]} API key
                   <ExternalLink className="size-3" />
                 </a>
               </div>
@@ -560,7 +623,7 @@ export function BotSettings() {
                         ai: {
                           provider: 'mock',
                           model: MODEL_DEFAULTS.mock,
-                          monthlyBudgetUsd: ai.monthlyBudgetUsd,
+                          monthlyBudgetUsd: monthlyToSend,
                         },
                       },
                       'PUT',
@@ -627,6 +690,8 @@ export function BotSettings() {
                         ''
                       }
                       onChange={(e) => {
+                        // An empty box would send a price of 0, which the server rejects.
+                        if (!e.target.value) return;
                         const rates: [number, number] = ai.pricing
                           ? [...ai.pricing]
                           : [picked?.inputRate ?? 0, picked?.outputRate ?? 0];
@@ -638,10 +703,15 @@ export function BotSettings() {
                 ))}
               </div>
               <div className="mt-3 flex flex-wrap items-center gap-4">
-                <button className="btn" disabled={!savedKey} onClick={() => void discover(true)}>
-                  <RefreshCw className={cn('size-4', loading && 'animate-spin')} />
-                  {loading ? 'Loading…' : 'Refresh model list'}
-                </button>
+                <ActionButton
+                  loading={loading}
+                  loadingLabel="Loading…"
+                  disabled={!savedKey}
+                  onClick={() => void discover(true)}
+                >
+                  <RefreshCw className="size-4" />
+                  Refresh model list
+                </ActionButton>
                 <a
                   className="text-xs font-semibold text-brand-700 underline decoration-brand-500/40 underline-offset-4 transition-colors hover:text-brand-800 hover:decoration-brand-500"
                   href={KEY_HINTS[ai.provider].pricing}
@@ -661,7 +731,7 @@ export function BotSettings() {
             <h3 id="limits-title" className="eyebrow">
               Limits
             </h3>
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
               <Field
                 label="Monthly AI spending limit (USD)"
                 hint="When a limit is reached, customers get a short notice, staff can reply, and the bot answers again once the limit resets or you raise it."
@@ -672,8 +742,8 @@ export function BotSettings() {
                   min="0"
                   max="10000"
                   step="1"
-                  value={ai.monthlyBudgetUsd}
-                  onChange={(e) => setAi({ ...ai, monthlyBudgetUsd: Number(e.target.value) })}
+                  value={monthlyText}
+                  onChange={(e) => setMonthlyText(e.target.value)}
                 />
               </Field>
               <Field
@@ -803,13 +873,10 @@ export function BotSettings() {
               value={draft.instructions}
               onChange={(e) => update({ instructions: e.target.value })}
             />
-            <p
-              className="mt-1.5 text-right font-mono text-[11px] tabular-nums text-stone-500"
-              aria-live="polite"
-            >
+            <span className="mt-1.5 block text-right font-mono text-[11px] tabular-nums text-stone-500">
               {draft.instructions.length.toLocaleString()} / {MAX_BOT_INSTRUCTIONS.toLocaleString()}{' '}
               characters
-            </p>
+            </span>
           </Field>
           <Field
             label="Greeting (optional)"
@@ -870,13 +937,15 @@ export function BotSettings() {
               <div
                 key={rule.id}
                 className={cn(
-                  'step-in space-y-4 rounded-2xl border p-4 transition-colors',
+                  'step-in space-y-4 rounded-2xl border p-3 transition-colors sm:p-4',
                   rule.enabled
                     ? 'border-ink/[0.06] bg-paper'
                     : 'border-dashed border-ink/15 bg-cream/40',
                 )}
               >
-                <div className="flex items-center gap-2">
+                {/* No gap on phones: the 44px icon buttons already space themselves, and
+                    'Rule 10' still fits at 320px. */}
+                <div className="flex items-center sm:gap-2">
                   <input
                     type="checkbox"
                     className="toggle"
@@ -892,7 +961,7 @@ export function BotSettings() {
                   />
                   <strong
                     className={cn(
-                      'ml-1 min-w-0 flex-1 truncate font-serif text-[22px] font-normal leading-tight tracking-[-0.01em] transition-colors max-sm:text-[18px]',
+                      'ml-2 min-w-0 flex-1 truncate font-serif text-[22px] font-normal leading-tight tracking-[-0.01em] transition-colors max-sm:text-[18px] sm:ml-1',
                       rule.enabled ? 'text-ink' : 'text-stone-500',
                     )}
                   >
@@ -1116,12 +1185,16 @@ export function BotSettings() {
                 ? 'Change something above to publish a new version.'
                 : 'Publish saves and makes these settings live in one step. You can test a saved draft first in Test your bot.'}
             </p>
+            {draftProblem && (
+              <p className="mt-2 text-xs font-semibold text-brand-300">{draftProblem}</p>
+            )}
           </div>
           <div className="flex flex-wrap gap-3">
             <ActionButton
               loading={pending === 'draft'}
               loadingLabel="Saving…"
-              disabled={!changed}
+              disabled={!changed || !!draftProblem}
+              title={draftProblem}
               onClick={saveDraft}
             >
               {changed ? <Save className="size-4" /> : <Check className="pop-spin size-4" />}
@@ -1131,7 +1204,8 @@ export function BotSettings() {
               className="btn-primary"
               loading={pending === 'publish'}
               loadingLabel="Publishing…"
-              disabled={live && !changed}
+              disabled={(live && !changed) || !!draftProblem}
+              title={draftProblem}
               onClick={publish}
             >
               {live && !changed ? (
@@ -1172,7 +1246,10 @@ export function BotSettings() {
                         // A saved draft or edits that are not live would be replaced: ask first.
                         setRestoreError('');
                         if (live && !changed) restore(v.version);
-                        else setRestoring(v.version);
+                        else {
+                          lastRestore.current = v.version;
+                          setRestoring(v.version);
+                        }
                       }}
                     >
                       Restore version {v.version}

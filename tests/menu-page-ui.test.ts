@@ -328,14 +328,25 @@ describe('menu page banners', () => {
         }),
       ),
     ).toBe('');
-    expect(
+    const closed = () =>
       renderToStaticMarkup(
         createElement(OrderingNotice, {
           menu: { ...menu, ordering: { ...menu.ordering, reason: 'closed' } },
           hasLink: false,
         }),
-      ),
-    ).toContain('We’re closed right now. We open at 12:00.');
+      );
+    vi.useFakeTimers();
+    try {
+      // 08:00 in Karachi: it opens later today.
+      vi.setSystemTime(new Date('2026-10-18T03:00:00Z'));
+      expect(closed()).toContain('We’re closed right now. We open at 12:00.');
+      // 23:30 in Karachi: today's opening time has passed, so no time is promised.
+      vi.setSystemTime(new Date('2026-10-18T18:30:00Z'));
+      expect(closed()).toContain('We’re closed right now.');
+      expect(closed()).not.toContain('We open at');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

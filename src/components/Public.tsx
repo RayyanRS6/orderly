@@ -8,9 +8,15 @@ export function PublicHeader() {
         href="/"
       >
         <MessageCircle className="size-7 text-brand-600 transition-transform duration-500 ease-[var(--ease-spring)] group-hover:-rotate-12 group-hover:scale-110" />
-        Orderly<span className="text-brand-500">.</span>
+        {/* One flex item, so the gap doesn't separate the word from its dot. */}
+        <span>
+          Orderly<span className="text-brand-500">.</span>
+        </span>
       </a>
-      <nav className="flex flex-wrap items-center gap-1 text-[13.5px] font-medium">
+      <nav
+        aria-label="Main"
+        className="flex flex-wrap items-center gap-1 text-[13.5px] font-medium"
+      >
         <a
           className="rounded-full px-3 py-1.5 text-stone-600 transition-colors hover:bg-ink/5 hover:text-ink"
           href="/#how-it-works"
@@ -38,9 +44,9 @@ export function PublicHeader() {
 }
 export function PublicFooter() {
   return (
-    <footer className="mx-auto mt-16 flex max-w-6xl flex-wrap justify-between gap-4 border-t border-ink/[0.08] px-5 py-8 text-sm text-stone-500">
+    <footer className="mx-auto mt-16 flex max-w-6xl flex-wrap justify-between gap-4 border-t border-ink/[0.08] px-5 py-8 text-sm text-stone-500 sm:px-8">
       <span>© 2026 Orderly</span>
-      <nav className="flex flex-wrap gap-4">
+      <nav aria-label="Footer" className="flex flex-wrap gap-4">
         <a className="transition-colors hover:text-ink" href="/privacy">
           Privacy
         </a>
@@ -142,7 +148,7 @@ export function Landing() {
               </article>
             ))}
           </div>
-          <p className="mt-5 text-sm leading-7 text-stone-500">
+          <p className="mt-5 max-w-2xl text-sm leading-7 text-stone-500">
             A personal Facebook login authorizes business assets; it does not turn on a bot for a
             personal WhatsApp account. A WhatsApp Business account, eligible number, account
             permissions and Meta setup are required. Coexistence with the WhatsApp Business mobile
@@ -173,23 +179,23 @@ export function Contact() {
   return (
     <div className="min-h-dvh canvas-glow">
       <PublicHeader />
-      <main className="mx-auto max-w-3xl px-5 py-12">
+      <main className="mx-auto max-w-3xl px-5 py-12 sm:px-8">
         <p className="eyebrow enter-pop rounded-full border border-ink/10 bg-white/55 py-1.5 pl-3 pr-3.5 text-stone-600">
           Orderly support
         </p>
         <h1 className="enter-rise mt-5 font-serif text-[44px] font-normal leading-[1.02] tracking-[-0.015em] text-ink [--d:80ms] sm:text-[60px]">
           Let’s get your business connected.
         </h1>
-        <p className="enter-rise mt-6 text-[17px] leading-8 text-stone-600 [--d:160ms]">
+        <p className="enter-rise mt-6 max-w-2xl text-[17px] leading-8 text-stone-600 [--d:160ms]">
           For setup, pricing, support, privacy questions or deletion requests, contact Orderly at:
         </p>
         <a
-          className="enter-rise mt-6 block break-all font-serif text-[30px] leading-tight text-brand-700 underline decoration-brand-500/40 decoration-2 underline-offset-[6px] transition-colors hover:text-brand-600 hover:decoration-brand-500 [--d:240ms]"
+          className="enter-rise mt-6 block break-all font-serif text-[30px] leading-tight max-[359px]:text-[28px] text-brand-700 underline decoration-brand-500/40 decoration-2 underline-offset-[6px] transition-colors hover:text-brand-600 hover:decoration-brand-500 [--d:240ms]"
           href={`mailto:${supportEmail}`}
         >
           {supportEmail}
         </a>
-        <p className="mt-6 text-sm leading-7 text-stone-500">
+        <p className="mt-6 max-w-2xl text-sm leading-7 text-stone-500">
           Include your business name and a description of the issue. For customer privacy requests,
           name the restaurant you contacted and the relevant phone number. Please do not send
           passwords, API keys or verification codes. We verify requests before releasing or deleting
@@ -264,7 +270,7 @@ export function Pricing() {
         </div>
         <section className="mt-9 space-y-4 rounded-[28px] border-[1.5px] border-dashed border-ink/20 p-6 sm:p-8">
           <h2 className="panel-title">What to include in your request</h2>
-          <p className="text-sm leading-7 text-stone-600">
+          <p className="max-w-2xl text-sm leading-7 text-stone-600">
             Tell us your restaurant name, number of branches, approximate monthly WhatsApp
             conversations, menu size and whether you already have a WhatsApp Business account. Do
             not send API keys or passwords by email.
@@ -273,7 +279,7 @@ export function Pricing() {
             Request a written quote <ArrowRight className="size-4" />
           </a>
         </section>
-        <p className="mt-7 text-sm leading-7 text-stone-500">
+        <p className="mt-7 max-w-2xl text-sm leading-7 text-stone-500">
           Meta eligibility and approval are separate from Orderly's fees. A connection is activated
           after setup checks and a real test. Staff still confirm orders by phone and manage
           preparation and dispatch. Payments, rider tracking and arbitrary workflow building are not

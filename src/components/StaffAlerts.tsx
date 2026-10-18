@@ -4,8 +4,9 @@ import * as Dialog from '@radix-ui/react-dialog';
 import { api } from '../lib/api';
 import { useWorkspace, type Page } from '../lib/workspace';
 import type { StaffAttention } from '../shared/types';
+import { shortDate } from '../lib/utils';
 import { EmailAlerts } from './EmailAlerts';
-import { clockTime, keepOpenForToasts } from './ui';
+import { clockTime, ErrorNotice, keepOpenForToasts } from './ui';
 
 /**
  * What one alert says and where it leads. A kind this dashboard does not know yet (from a
@@ -179,12 +180,12 @@ export function StaffAlerts() {
                 ? 'Alerts could not refresh'
                 : attention
                   ? attention.total
-                    ? `${attention.total} items need attention`
+                    ? `${attention.total} ${attention.total === 1 ? 'item needs' : 'items need'} attention`
                     : 'No unresolved staff alerts'
                   : 'Checking staff alerts…'}
             </p>
             <button
-              className="min-h-9 rounded-full px-3.5 text-xs font-semibold text-brand-700 transition-colors hover:bg-brand-500/10 hover:text-brand-800"
+              className="min-h-9 rounded-full px-3.5 text-xs font-semibold text-brand-800 transition-colors hover:bg-brand-500/10 hover:text-brand-900"
               onClick={() => void toggle()}
             >
               {enabled ? 'Turn off browser alerts' : 'Enable browser alerts'}
@@ -202,14 +203,7 @@ export function StaffAlerts() {
                 alerts depend on browser permissions and background limits; they are not a phone
                 push service. Configure email escalation below for alerts when the app is closed.
               </p>
-              {error && (
-                <p
-                  role="alert"
-                  className="rounded-xl bg-red-50 px-3.5 py-2.5 font-medium text-red-700"
-                >
-                  {error} Retrying automatically.
-                </p>
-              )}
+              {error && <ErrorNotice message={`${error} Retrying automatically.`} />}
               {attention && (
                 <div className="stagger flex flex-wrap gap-2">
                   <button
@@ -219,7 +213,7 @@ export function StaffAlerts() {
                       navigate('orders');
                     }}
                   >
-                    {attention.orders} pending orders
+                    {attention.orders} pending {attention.orders === 1 ? 'order' : 'orders'}
                   </button>
                   <button
                     className="btn"
@@ -228,7 +222,7 @@ export function StaffAlerts() {
                       navigate('inbox');
                     }}
                   >
-                    {attention.handoffs} human handoffs
+                    {attention.handoffs} human {attention.handoffs === 1 ? 'handoff' : 'handoffs'}
                   </button>
                   <button
                     className="btn"
@@ -237,7 +231,7 @@ export function StaffAlerts() {
                       navigate('activity');
                     }}
                   >
-                    {attention.failures} failed jobs
+                    {attention.failures} failed {attention.failures === 1 ? 'job' : 'jobs'}
                   </button>
                   {!!attention.budgets && (
                     <button
@@ -278,7 +272,7 @@ export function StaffAlerts() {
                       >
                         <span className="font-medium text-ink">{target.label}</span>
                         <time className="font-mono text-[11px] text-stone-500">
-                          {new Date(a.createdAt).toLocaleString()}
+                          {shortDate(a.createdAt)}
                           {a.kind === 'handoff' &&
                             Date.now() - Date.parse(a.createdAt) > 10 * 60000 && (
                               <span className="pop-in ml-2 inline-flex rounded-full bg-red-50 px-2 py-0.5 font-sans text-[11px] font-semibold text-red-700">
