@@ -218,6 +218,7 @@ describe('F09: allergy questions never get AI wording', () => {
     'Dairy Milk shake',
     'peanut butter shake please',
     'do you have peanut shake?',
+    'will I have egg paratha with that?',
     'anda paratha hai?',
     'menu mein anda paratha hai?',
     'biryani without egg please',
