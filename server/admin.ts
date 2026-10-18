@@ -112,6 +112,20 @@ export function adminRoutes(repo: Repository) {
     await repo.audit(id, c.get('userId'), `admin.team.role_${role} ${userId}`);
     return c.json({ ok: true });
   });
+  // Whether this business may pair a new linked phone (the unofficial route). Only the admin
+  // sets it; owners cannot. A business already on a linked phone keeps it either way.
+  app.put('/businesses/:companyId/linked-device', async (c) => {
+    const id = companyId.parse(c.req.param('companyId'));
+    const { allowed } = z
+      .object({ allowed: z.boolean() })
+      .strict()
+      .parse(await c.req.json());
+    const stored = await repo.getCompany(id);
+    if (!stored) throw new PublicError('Business not found.', 404);
+    await repo.saveCompany({ ...stored, linkedDeviceAllowed: allowed });
+    await repo.audit(id, c.get('userId'), `admin.linked_device.${allowed ? 'allowed' : 'revoked'}`);
+    return c.json({ ok: true, linkedDeviceAllowed: allowed });
+  });
   app.delete('/businesses/:companyId/members/:userId', async (c) => {
     const id = companyId.parse(c.req.param('companyId'));
     const userId = z.string().uuid().parse(c.req.param('userId'));

@@ -64,8 +64,22 @@ export interface Company {
   catalogSyncedAt?: string;
   createdAt: string;
   bot?: BotSettings;
-  privacy?: { aiDataApproved: boolean; retentionDays: number };
+  privacy?: { aiDataApproved: boolean; retentionDays: number; aiApproval?: AiDataApproval };
   modelVerification?: { fingerprint: string; checkedAt: string };
+  /** Set only by the Orderly admin: this business may pair a new linked phone. */
+  linkedDeviceAllowed?: boolean;
+}
+/** Who accepted the AI data terms, for which provider, and what they confirmed. */
+export interface AiDataApproval {
+  provider: Provider;
+  userId: string;
+  at: string;
+  /** The version of the terms text that was accepted. */
+  version: string;
+  /** No data-sharing or model-training opt-in is turned on for the provider account. */
+  noTrainingOptIn: boolean;
+  /** The key's Google Cloud project has billing on (paid tier). Required for Gemini. */
+  paidTierAttested: boolean;
 }
 export interface ProductOption {
   id: string;
@@ -364,6 +378,8 @@ export interface ReadinessCheck {
   id: string;
   label: string;
   ready: boolean;
+  /** Advice that never blocks automation, such as terms to confirm again. */
+  warning?: string;
 }
 export interface ModelOption {
   id: string;

@@ -9,9 +9,23 @@ import {
   type WhatsAppAddress,
   type GatewayEvent,
 } from '../../src/shared/whatsapp';
+import { z } from 'zod';
 import { PublicError } from '../security';
-import { gatewayRequest, gatewaySnapshotSchema } from './client';
+import { gatewayAvailable, gatewayRequest, gatewaySnapshotSchema } from './client';
 import { dispatchJob, makeJob } from '../jobs';
+
+/** The linked-phone risk notice an owner accepts before pairing. Raise it when the text changes. */
+export const LINKED_DEVICE_CONSENT_VERSION = 'linked-device-risk-2026-10-18';
+/** Who accepted the linked-phone risk notice for this pairing, and which version of it. */
+export type LinkedDeviceConsent = { userId: string; at: string; version: string };
+// A connection as stored, with the consent its pairing was made under.
+type StoredConnection = WhatsAppConnection & { linkedDeviceConsent?: LinkedDeviceConsent };
+// Older gateways may answer /health without these fields; the gateway still refuses itself.
+const gatewayHealthSchema = z.object({
+  ok: z.boolean(),
+  workers: z.number().int().min(0),
+  capacity: z.number().int().min(0),
+});
 
 export async function withConnectionLock<T>(
   repo: Repository,
@@ -34,7 +48,10 @@ export async function withConnectionLock<T>(
     await repo.releaseConversationLock(companyId, 'whatsapp-connection', lock);
   }
 }
-export async function saveConnection(repo: Repository, value: WhatsAppConnection) {
+export async function saveConnection<T extends WhatsAppConnection>(
+  repo: Repository,
+  value: T,
+): Promise<T> {
   const next = { ...value, revision: value.revision + 1, updatedAt: new Date().toISOString() };
   if (!(await repo.saveWhatsAppConnection(next, value.revision)))
     throw new PublicError('WhatsApp connection changed. Refresh and retry.', 409);
@@ -93,20 +110,87 @@ export async function metaConfigurationBoundary(
     updatedAt: new Date().toISOString(),
   });
 }
+/** A route change already saved, whose old gateway session may still be running. */
+export type SwitchResult = StoredConnection & { gatewayCleanupPending?: true };
+// Ends the gateway session of a connection Orderly no longer uses. Best effort: the database
+// already fences it (its events are dropped and its sends refused), so a gateway that is down
+// or switched off never stops a business going back to its official route. False when the
+// session may still run on the gateway, linked to the phone.
+async function releaseGatewaySession(connection: WhatsAppConnection): Promise<boolean> {
+  if (!gatewayAvailable()) return false;
+  try {
+    await gatewayRequest('/session', {
+      connectionId: connection.id,
+      generation: connection.generation,
+      action: 'disconnect',
+    });
+    return true;
+  } catch {
+    console.warn('Orderly: a linked-phone session could not be ended on the gateway.');
+    return false;
+  }
+}
+// Saves a change to a pairing attempt that failed, unless the connection has moved on since.
+// A gateway status event can change the revision meanwhile, so it reads again and retries
+// once. Never throws: the reason pairing failed is what the owner must see.
+async function settleAttempt(
+  repo: Repository,
+  attempt: StoredConnection,
+  change: (latest: StoredConnection) => StoredConnection,
+): Promise<StoredConnection | undefined> {
+  for (let tries = 0; tries < 2; tries++)
+    try {
+      const latest: StoredConnection | undefined = await repo.getWhatsAppConnection(
+        attempt.companyId,
+      );
+      if (
+        latest?.id !== attempt.id ||
+        latest.generation !== attempt.generation ||
+        latest.provider !== 'baileys'
+      )
+        return;
+      return await saveConnection(repo, change(latest));
+    } catch {
+      /* Read again and retry once. */
+    }
+  console.warn('Orderly: a failed linked-phone pairing could not be settled.');
+}
 export async function startPairing(
   repo: Repository,
   companyId: string,
   method: 'qr' | 'code',
   phone?: string,
+  consent?: LinkedDeviceConsent,
 ) {
   // Health check before pausing a working provider. No tenant credentials in the check.
-  await gatewayRequest('/health', {});
+  const health = gatewayHealthSchema.safeParse(await gatewayRequest('/health', {}));
   return withConnectionLock(repo, companyId, async () => {
     const current = await repo.getWhatsAppConnection(companyId);
     const company = await repo.getCompany(companyId);
     if (!company) throw new PublicError('Company not found.', 404);
+    // Refused before anything changes: pausing replies and leaving a working official route
+    // for a pairing that cannot start would lose the customers' messages.
+    if (health.success && !health.data.ok)
+      throw new PublicError(
+        'The linked-phone service is restarting. Nothing was changed. Try again in a few minutes.',
+        503,
+      );
+    if (
+      health.success &&
+      current?.provider !== 'baileys' &&
+      health.data.workers >= health.data.capacity
+    )
+      throw new PublicError(
+        'The linked-phone service has no free place right now. Nothing was changed. Contact Orderly support.',
+        503,
+      );
+    const meta = (await repo.getIntegrations(companyId)).find((i) => i.kind === 'whatsapp');
+    // The official route to go back to if pairing cannot start.
+    const official = current
+      ? current.provider === 'meta' && !['disconnected', 'logged_out'].includes(current.status)
+      : !!meta?.config.phoneNumberId;
     await repo.saveCompany({ ...company, botEnabled: false });
-    let next = await saveConnection(repo, {
+    const attempt: StoredConnection = {
       id: current?.id ?? randomUUID(),
       companyId,
       generation: (current?.generation ?? 0) + 1,
@@ -114,8 +198,10 @@ export async function startPairing(
       provider: 'baileys',
       status: 'connecting',
       pairingMethod: method,
+      ...(consent && { linkedDeviceConsent: consent }),
       updatedAt: new Date().toISOString(),
-    });
+    };
+    const next = await saveConnection(repo, attempt);
     try {
       const snapshot = gatewaySnapshotSchema.parse(
         await gatewayRequest('/session', {
@@ -128,18 +214,44 @@ export async function startPairing(
       );
       return { connection: next, snapshot };
     } catch (error) {
-      next = await saveConnection(repo, {
-        ...next,
-        status: 'error',
-        errorCode: 'GATEWAY_START_FAILED',
-      });
+      if (!official) {
+        // A re-pair of a linked phone stays as failed: the gateway may already have ended
+        // the old session, so calling it connected would be untrue.
+        await settleAttempt(repo, next, (latest) => ({
+          ...latest,
+          status: 'error',
+          errorCode: 'GATEWAY_START_FAILED',
+        }));
+        throw error;
+      }
+      // Back to the official route, at a new generation the gateway has never seen, so
+      // Meta messages are received again and automation is as the owner left it.
+      const restored = await settleAttempt(repo, next, (latest) => ({
+        ...latest,
+        provider: 'meta',
+        generation: latest.generation + 1,
+        status: meta?.status === 'connected' ? 'connected' : 'connecting',
+        pairingMethod: undefined,
+        errorCode: undefined,
+        accountJid: undefined,
+        phoneNumber: undefined,
+        pushName: undefined,
+        lastHeartbeatAt: undefined,
+        linkedDeviceConsent: undefined,
+      }));
+      if (restored) {
+        // After a timeout the gateway may have started the session anyway, holding a place.
+        await releaseGatewaySession(restored);
+        const latest = await repo.getCompany(companyId);
+        if (latest && company.botEnabled) await repo.saveCompany({ ...latest, botEnabled: true });
+      }
       throw error;
     }
   });
 }
 export async function disconnectGateway(repo: Repository, companyId: string) {
-  return withConnectionLock(repo, companyId, async () => {
-    const current = await repo.getWhatsAppConnection(companyId);
+  return withConnectionLock(repo, companyId, async (): Promise<SwitchResult> => {
+    const current: StoredConnection | undefined = await repo.getWhatsAppConnection(companyId);
     const company = await repo.getCompany(companyId);
     if (company) await repo.saveCompany({ ...company, botEnabled: false });
     if (!current) {
@@ -155,6 +267,7 @@ export async function disconnectGateway(repo: Repository, companyId: string) {
         updatedAt: new Date().toISOString(),
       });
     }
+    // Saved first, so the disconnect holds even when the gateway cannot be reached.
     const next = await saveConnection(repo, {
       ...current,
       generation: current.generation + 1,
@@ -163,43 +276,34 @@ export async function disconnectGateway(repo: Repository, companyId: string) {
       phoneNumber: undefined,
       lastHeartbeatAt: undefined,
     });
-    if (current.provider === 'baileys')
-      await gatewayRequest('/session', {
-        connectionId: next.id,
-        generation: next.generation,
-        action: 'disconnect',
-      });
+    if (current.provider === 'baileys' && !(await releaseGatewaySession(next)))
+      return { ...next, gatewayCleanupPending: true };
     return next;
   });
 }
 export async function selectMeta(repo: Repository, companyId: string) {
-  return withConnectionLock(repo, companyId, async () => {
-    const current = await repo.getWhatsAppConnection(companyId);
+  return withConnectionLock(repo, companyId, async (): Promise<SwitchResult | undefined> => {
+    const current: StoredConnection | undefined = await repo.getWhatsAppConnection(companyId);
     if (!current) return; // Legacy official integration needs no migration of conversations.
     if (current.provider === 'meta' && current.status !== 'disconnected') return current;
     const company = await repo.getCompany(companyId);
     if (company) await repo.saveCompany({ ...company, botEnabled: false });
-    let next = await saveConnection(repo, {
+    const meta = (await repo.getIntegrations(companyId)).find((i) => i.kind === 'whatsapp');
+    // The official route is saved first, in one step, so going back to it never depends on
+    // the linked-phone gateway being up.
+    const next = await saveConnection(repo, {
       ...current,
+      provider: 'meta',
       generation: current.generation + 1,
-      status: 'disconnected',
+      status: meta?.status === 'connected' ? 'connected' : 'connecting',
       accountJid: undefined,
       phoneNumber: undefined,
       lastHeartbeatAt: undefined,
-    });
-    if (current.provider === 'baileys')
-      await gatewayRequest('/session', {
-        connectionId: next.id,
-        generation: next.generation,
-        action: 'disconnect',
-      });
-    const meta = (await repo.getIntegrations(companyId)).find((i) => i.kind === 'whatsapp');
-    next = await saveConnection(repo, {
-      ...next,
-      provider: 'meta',
-      status: meta?.status === 'connected' ? 'connected' : 'connecting',
       errorCode: undefined,
+      linkedDeviceConsent: undefined,
     });
+    if (current.provider === 'baileys' && !(await releaseGatewaySession(next)))
+      return { ...next, gatewayCleanupPending: true };
     return next;
   });
 }

@@ -3,7 +3,10 @@ import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
 import type {
   Account,
+  AiDataApproval,
   Company,
+  Conversation,
+  Order,
   Role,
   ListFilter,
   BotSettings,
@@ -11,7 +14,8 @@ import type {
 } from '../src/shared/types';
 import type { Repository } from './repository';
 import { PublicError } from './security';
-import { botSchema } from './validation';
+import { AI_TERMS_VERSION, botSchema } from './validation';
+import { normalizeTypedPhone } from '../src/shared/menu';
 import { defaultBot, configuredCompany } from '../src/shared/bot';
 import { availableModels, modelFingerprint, verifyProviderKey } from './integrations/model-catalog';
 import { AiModelAdapter, providerKey, validateModelConfiguration } from './integrations/models';
@@ -179,6 +183,17 @@ export function managementRoutes(repo: Repository) {
         approve: z.literal(true, {
           error: 'Tick the agreement to send customer messages to this AI provider.',
         }),
+        // What the owner confirms about the provider account. Optional here only so that a
+        // dashboard from before it existed gets a clear message below.
+        attest: z
+          .object({
+            noTrainingOptIn: z.literal(true, {
+              error: 'Confirm that no data-sharing or training opt-in is on for this account.',
+            }),
+            paidTier: z.boolean().optional(),
+          })
+          .strict()
+          .optional(),
         monthlyBudgetUsd: z.number().min(0).max(10000).optional(),
         pricing: z
           .tuple([z.number().positive().max(1000), z.number().positive().max(1000)])
@@ -186,7 +201,22 @@ export function managementRoutes(repo: Repository) {
       })
       .strict()
       .parse(await c.req.json());
+    if (!body.attest) throw new PublicError('Please reload the page to continue.', 400);
+    // Google may use and have people read what is sent to an unpaid Gemini key.
+    if (body.provider === 'gemini' && body.attest.paidTier !== true)
+      throw new PublicError(
+        'Confirm that this key’s Google Cloud project has billing turned on (paid tier). Free-tier keys must not receive customer messages.',
+        400,
+      );
     const monthlyBudgetUsd = body.monthlyBudgetUsd ?? company.ai.monthlyBudgetUsd;
+    const approval: AiDataApproval = {
+      provider: body.provider,
+      userId: c.get('userId'),
+      at: new Date().toISOString(),
+      version: AI_TERMS_VERSION,
+      noTrainingOptIn: true,
+      paidTierAttested: body.attest.paidTier === true,
+    };
     const candidate: Company = {
       ...company,
       ai: {
@@ -195,7 +225,11 @@ export function managementRoutes(repo: Repository) {
         monthlyBudgetUsd,
         ...(body.pricing && { pricing: body.pricing }),
       },
-      privacy: { aiDataApproved: true, retentionDays: company.privacy?.retentionDays ?? 0 },
+      privacy: {
+        aiDataApproved: true,
+        retentionDays: company.privacy?.retentionDays ?? 0,
+        aiApproval: approval,
+      },
     };
     validateModelConfiguration(candidate);
     const key = body.apiKey ?? (await providerKey(repo, candidate));
@@ -220,6 +254,8 @@ export function managementRoutes(repo: Repository) {
             : 'Check the model name and your account credit.'
         }`,
         422,
+        // Kept so the failure log shows the provider's error name and status.
+        { cause: error },
       );
     }
     const checkedAt = new Date().toISOString();
@@ -246,6 +282,7 @@ export function managementRoutes(repo: Repository) {
       privacy: {
         aiDataApproved: true,
         retentionDays: latest.privacy?.retentionDays ?? candidate.privacy?.retentionDays ?? 0,
+        aiApproval: approval,
       },
       modelVerification: { fingerprint: modelFingerprint(candidate, key), checkedAt },
     });
@@ -363,10 +400,16 @@ export function managementRoutes(repo: Repository) {
     const kind = z
       .enum(['whatsapp', 'sheets', 'openai', 'gemini', 'anthropic'])
       .parse(c.req.param('kind'));
-    if (kind === 'whatsapp') await disconnectGateway(repo, c.get('company').id);
+    const gatewayCleanupPending =
+      kind === 'whatsapp' &&
+      !!(await disconnectGateway(repo, c.get('company').id)).gatewayCleanupPending;
     await repo.disconnectIntegration(c.get('company').id, kind);
     await repo.audit(c.get('company').id, c.get('userId'), `integration.${kind}.disconnected`);
-    return c.json({ ok: true, providerRevocationRequired: true });
+    return c.json({
+      ok: true,
+      providerRevocationRequired: true,
+      ...(gatewayCleanupPending && { gatewayCleanupPending }),
+    });
   });
   app.get('/team', async (c) => {
     owner(c.get('role'));
@@ -432,28 +475,41 @@ export function managementRoutes(repo: Repository) {
     await repo.audit(c.get('company').id, c.get('userId'), 'team.member_removed');
     return c.json({ ok: true });
   });
+  // A number as owners type it ('0300 1234567', '+92 300 1234567') and the forms it is stored
+  // in: digits from Meta (923001234567), +digits from the linked phone, or exactly as typed.
+  const phoneForms = (typed: string) => {
+    const raw = typed.trim();
+    const digits = normalizeTypedPhone(raw);
+    return { raw, stored: digits ? [digits, `+${digits}`] : [] };
+  };
+  const NO_RECORDS =
+    'No records found for this number. Copy the number exactly as shown in the Inbox.';
   app.get('/privacy/customer', async (c) => {
     owner(c.get('role'));
-    const phone = z.string().min(4).max(80).parse(c.req.query('phone'));
-    const conversations = (
-      await Promise.all(
-        ['whatsapp', 'demo'].map((channel) =>
-          repo.findConversation(c.get('company').id, phone, channel as 'whatsapp' | 'demo'),
-        ),
-      )
-    ).filter((x) => !!x);
-    const orders = [];
-    for (let page = 1; ; page++) {
-      const result = await repo.queryOrders(c.get('company').id, {
-        search: phone,
-        page,
-        pageSize: 100,
-      });
-      orders.push(...result.items.filter((o) => o.customerPhone === phone));
-      if (page * 100 >= result.total) break;
-      if (page >= 100)
-        throw new PublicError('Large export: contact support for a complete archive.', 413);
-    }
+    const { raw, stored } = phoneForms(z.string().min(4).max(80).parse(c.req.query('phone')));
+    const forms = [...new Set([...stored, raw])];
+    const companyId = c.get('company').id;
+    const found = new Map<string, Conversation>();
+    for (const phone of forms)
+      for (const channel of ['whatsapp', 'demo'] as const) {
+        const conversation = await repo.findConversation(companyId, phone, channel);
+        if (conversation) found.set(conversation.id, conversation);
+      }
+    const conversations = [...found.values()];
+    const matched = new Map<string, Order>();
+    for (const phone of forms)
+      for (let page = 1; ; page++) {
+        const result = await repo.queryOrders(companyId, { search: phone, page, pageSize: 100 });
+        for (const order of result.items)
+          if (forms.includes(order.customerPhone)) matched.set(order.id, order);
+        if (page * 100 >= result.total) break;
+        if (page >= 100)
+          throw new PublicError('Large export: contact support for a complete archive.', 413);
+      }
+    const orders = [...matched.values()];
+    // An empty file would read as "we hold nothing", when the number may just be typed
+    // differently from how it is stored.
+    if (!conversations.length && !orders.length) throw new PublicError(NO_RECORDS, 404);
     for (const conversation of conversations) {
       conversation.messages = [];
       for (let page = 1; ; page++) {
@@ -479,8 +535,17 @@ export function managementRoutes(repo: Repository) {
         externalCopiesAcknowledged: z.literal(true),
       })
       .parse(await c.req.json());
-    const deleted = await repo.eraseCustomer(c.get('company').id, phone);
-    await repo.audit(c.get('company').id, c.get('userId'), 'privacy.customer_erased');
+    const companyId = c.get('company').id;
+    // The number's digits first (the database matches every stored form of them), then +digits
+    // for a database that still matches exact text, and the number as typed only if neither
+    // found anything.
+    const { raw, stored } = phoneForms(phone);
+    let deleted = 0;
+    for (const form of stored) deleted += await repo.eraseCustomer(companyId, form);
+    if (!deleted && !stored.includes(raw)) deleted += await repo.eraseCustomer(companyId, raw);
+    // The count shows afterwards whether a request really removed anything.
+    await repo.audit(companyId, c.get('userId'), `privacy.customer_erased.${deleted}`);
+    if (!deleted) throw new PublicError(NO_RECORDS, 404);
     return c.json({ deleted });
   });
   // The public menu page: anyone on the team sees it, owners switch it on or off.

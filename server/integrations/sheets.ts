@@ -1,7 +1,23 @@
 import { createSign } from 'node:crypto';
 import type { Integration, Order, Product } from '../../src/shared/types.js';
 import { PublicError } from '../security.js';
-import { catalogFromRows } from './catalog.js';
+import { catalogFromRows, catalogHeaders } from './catalog.js';
+
+const ORDER_HEADERS = [
+  'Order ID',
+  'Reference',
+  'Created',
+  'Customer',
+  'Phone',
+  'Fulfillment',
+  'Address',
+  'Area',
+  'Items',
+  'Subtotal PKR',
+  'Delivery PKR',
+  'Total PKR',
+  'Status',
+];
 
 export interface CatalogSource {
   readCatalog(companyId: string): Promise<Product[]>;
@@ -67,55 +83,98 @@ export class GoogleSheetsAdapter implements CatalogSource, OrderDestination {
       );
     return response.json();
   }
-  async test(): Promise<void> {
+  /**
+   * Checks what syncing needs, before any order depends on it: the orders tab exists and can
+   * be written (Editor access, proved by rewriting its header cell), and, when the menu is
+   * read from this Sheet (menuFor: the company), that the menu tab exists and its items parse.
+   */
+  async test(options: { menuFor?: string } = {}): Promise<void> {
     const token = await this.token();
-    await this.request('?fields=spreadsheetId,sheets.properties.title', token);
+    const meta = await this.request('?fields=spreadsheetId,sheets.properties.title', token);
+    // Tab names match regardless of case, as in the Sheets API ranges used at runtime.
+    const tabs = new Set(
+      ((meta?.sheets ?? []) as { properties?: { title?: unknown } }[]).map((tab) =>
+        String(tab?.properties?.title ?? '')
+          .trim()
+          .toLowerCase(),
+      ),
+    );
+    const missing = (name: string) => !tabs.has(name.trim().toLowerCase());
+    const orders = this.integration.config.ordersSheet || 'Orders';
+    if (missing(orders))
+      throw new PublicError(
+        `The spreadsheet has no tab named “${orders}”. Add it for order copies, or change the orders tab name.`,
+      );
+    const menu = this.integration.config.catalogSheet || 'Menu';
+    if (options.menuFor && missing(menu))
+      throw new PublicError(
+        `The spreadsheet has no tab named “${menu}”. Add your menu there, or change the menu tab name.`,
+      );
+    const sheet = this.sheet(orders);
+    // An empty tab gets its header row, which already proves write access; otherwise the
+    // header cell is rewritten with the same text.
+    if ((await this.ordersColumn(token, sheet)).length)
+      await this.request(
+        `/values/${encodeURIComponent(`${sheet}!A1`)}?valueInputOption=RAW`,
+        token,
+        {
+          method: 'PUT',
+          body: JSON.stringify({ values: [[ORDER_HEADERS[0]]] }),
+        },
+      );
+    if (options.menuFor && !(await this.readCatalog(options.menuFor)).some((p) => p.available))
+      throw new PublicError(
+        'The menu tab has no available items. Mark at least one item available.',
+      );
   }
   async readCatalog(companyId: string): Promise<Product[]> {
     const token = await this.token();
     // Whole rows: naming a last column could reach past a narrow tab's grid and fail the read.
     const range = `${this.sheet(this.integration.config.catalogSheet || 'Menu')}!1:502`;
-    const data = await this.request(`/values/${encodeURIComponent(range)}`, token);
-    const rows: string[][] = data.values ?? [];
-    // Columns A–J parse exactly as before; after them only a photo column is read. Any other
-    // later column (even one repeating an earlier header) is ignored.
-    const photo = new Set(['image', 'image_url', 'photo']);
-    const keep = (rows[0] ?? []).flatMap((header, index) =>
-      index < 10 || photo.has(String(header).trim().toLowerCase()) ? [index] : [],
+    // Cell values, not their display text: 1,200 shown in any locale arrives as 1200, and a
+    // checkbox as true or false. Dates stay as shown, so a name like 1/2 stays text.
+    const data = await this.request(
+      `/values/${encodeURIComponent(range)}?valueRenderOption=UNFORMATTED_VALUE&dateTimeRenderOption=FORMATTED_STRING`,
+      token,
     );
+    const rows: unknown[][] = data.values ?? [];
+    // Columns are found by their header, in any order: the first column with each known
+    // header is read, and every other column (a later repeat, notes, anything unknown) is
+    // ignored. Inserting a column can no longer push sizes or add-ons out of the menu.
+    const known = new Set([...catalogHeaders, 'image_url', 'photo']);
+    const seen = new Set<string>();
+    const keep = (rows[0] ?? []).flatMap((header, index) => {
+      const name = String(header ?? '')
+        .trim()
+        .toLowerCase();
+      if (!known.has(name) || seen.has(name)) return [];
+      seen.add(name);
+      return [index];
+    });
     return catalogFromRows(
       companyId,
-      rows.map((row) => keep.map((index) => row[index] ?? '')),
+      rows.map((row) => keep.map((index) => row?.[index] ?? '')),
     );
   }
-  async syncOrder(order: Order): Promise<void> {
-    const token = await this.token();
-    const sheet = this.sheet(this.integration.config.ordersSheet || 'Orders');
-    const headers = [
-      'Order ID',
-      'Reference',
-      'Created',
-      'Customer',
-      'Phone',
-      'Fulfillment',
-      'Address',
-      'Area',
-      'Items',
-      'Subtotal PKR',
-      'Delivery PKR',
-      'Total PKR',
-      'Status',
-    ];
+  // The orders tab's first column. An empty tab gets the header row; any other first cell
+  // than the Order ID header is refused, so unrelated data is never overwritten.
+  private async ordersColumn(token: string, sheet: string): Promise<string[][]> {
     const data = await this.request(`/values/${encodeURIComponent(`${sheet}!A:A`)}`, token);
     const values: string[][] = data.values ?? [];
-    if (values.length && values[0]?.[0] !== 'Order ID')
+    if (values.length && values[0]?.[0] !== ORDER_HEADERS[0])
       throw new PublicError('The orders tab must be empty or begin with the Order ID header.');
     if (!values.length)
       await this.request(
         `/values/${encodeURIComponent(`${sheet}!A1:M1`)}?valueInputOption=RAW`,
         token,
-        { method: 'PUT', body: JSON.stringify({ values: [headers] }) },
+        { method: 'PUT', body: JSON.stringify({ values: [ORDER_HEADERS] }) },
       );
+    return values;
+  }
+  async syncOrder(order: Order): Promise<void> {
+    const token = await this.token();
+    const sheet = this.sheet(this.integration.config.ordersSheet || 'Orders');
+    const values = await this.ordersColumn(token, sheet);
     const row = [
       order.id,
       order.reference,

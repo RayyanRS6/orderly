@@ -2,7 +2,10 @@ import { z } from 'zod';
 import { MAX_BOT_INSTRUCTIONS } from '../src/shared/bot.js';
 import { AI_LIMIT_RANGES, MODEL_LIMITS } from '../src/shared/models.js';
 import { PHOTO_URL_RE } from '../src/shared/menu.js';
+import { SLUG_RE } from '../src/shared/slug.js';
 const text = (max: number) => z.string().trim().max(max);
+/** The AI data terms an owner confirms in Connect and test. Raise it when their wording changes. */
+export const AI_TERMS_VERSION = 'ai-data-terms-2026-10-18';
 export const behaviorRuleSchema = z
   .object({
     id: text(80).min(1),
@@ -85,15 +88,13 @@ export const productSchema = z
           message: 'Option IDs and names must be unique.',
         });
   });
+// The settings an owner edits. Fields the server manages (id, createdAt, catalogSyncedAt, the
+// AI data approval, linked-phone permission) are not listed, so a copy sent back is dropped.
+// A save never changes the slug either; the save route keeps the stored one.
 export const companySchema = z
   .object({
-    id: z.string().uuid().optional(),
     name: text(120).min(1),
-    slug: z
-      .string()
-      .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/)
-      .max(140)
-      .optional(),
+    slug: z.string().regex(SLUG_RE).max(140).optional(),
     address: text(500),
     phone: text(40),
     timezone: z.string().refine((v) => {
@@ -145,14 +146,6 @@ export const companySchema = z
           .optional(),
       })
       .strict()
-      .optional(),
-    catalogSyncedAt: z.string().datetime().optional(),
-    createdAt: z.string().datetime().optional(),
-    privacy: z
-      .object({
-        aiDataApproved: z.boolean(),
-        retentionDays: z.union([z.literal(0), z.number().int().min(30).max(3650)]),
-      })
       .optional(),
   })
   .superRefine((company, ctx) => {

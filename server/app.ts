@@ -3,23 +3,19 @@ import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { secureHeaders } from 'hono/secure-headers';
 import { cors } from 'hono/cors';
+import { requestId } from 'hono/request-id';
 import { createClient } from '@supabase/supabase-js';
 import { z, ZodError } from 'zod';
 import type { Repository } from './repository.js';
-import type {
-  BotAction,
-  Company,
-  Integration,
-  IntegrationKind,
-  Role,
-  OrderStatus,
-} from '../src/shared/types.js';
-import { createConversation } from '../src/domain/engine.js';
+import type { Company, Integration, IntegrationKind, Role } from '../src/shared/types.js';
+import { createConversation, transitionOrder } from '../src/domain/engine.js';
+import { slugify } from '../src/shared/slug.js';
 import { appMode, env } from './config.js';
 import {
   PublicError,
   encryptSecret,
   decryptSecret,
+  logFailure,
   safeEqual,
   sanitizeError,
   verifyMetaSignature,
@@ -47,6 +43,7 @@ import { whatsappRoutes } from './whatsapp/routes';
 import { gatewaySecret } from './whatsapp/client';
 import { verifySigned } from './whatsapp/signing';
 import { customerKeys, gatewayEventSchema } from '../src/shared/whatsapp';
+import { metaEchoText, metaInboundContent } from './whatsapp/inbound';
 import {
   receiveGatewayEvent,
   jobAddress,
@@ -77,11 +74,24 @@ const owner = (role: Role) => {
   if (!['owner', 'admin'].includes(role))
     throw new PublicError('Only the restaurant owner can change these settings.', 403);
 };
+// A request path with its record IDs replaced, for audit entries and failure logs.
+const routePattern = (path: string) => path.replace(/\/[a-f0-9-]{36}(?=\/|$)/g, '/:id');
+// Only a rejected token means signing in again. When Supabase Auth cannot be reached or is
+// failing, the session may be fine, so the dashboard is told to retry instead.
+const authUnavailable = (error: unknown) => {
+  const e = error as { name?: unknown; status?: unknown } | null;
+  return (
+    e?.name === 'AuthRetryableFetchError' ||
+    (typeof e?.status === 'number' && (e.status === 0 || e.status === 429 || e.status >= 500))
+  );
+};
 
 export type AppOptions = { waitUntil?: (task: Promise<unknown>) => void };
 
 export function createApp(repo: Repository, options: AppOptions = {}) {
   const app = new Hono<Env>();
+  // First, so even a refused origin has a reference that matches its log line.
+  app.use('/api/*', requestId());
   app.use('/api/*', secureHeaders());
   app.use('/api/*', async (c, next) => {
     // The split frontend may access only this exact origin; webhooks and workers
@@ -116,8 +126,21 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
         },
         400,
       );
+    // c.req.json() on a body that is not JSON.
+    if (error instanceof SyntaxError)
+      return c.json({ error: 'Request body must be valid JSON.' }, 400);
+    if (error instanceof PublicError && !error.cause)
+      return c.json({ error: error.message }, error.status as 400);
+    // Unexpected, or a public message hiding its real cause: log one line and return its
+    // reference, so a report from the dashboard can be matched to the log.
+    const reference = c.get('requestId');
+    logFailure(
+      'request_failed',
+      { method: c.req.method, route: routePattern(c.req.path).slice(0, 120), requestId: reference },
+      error,
+    );
     return c.json(
-      { error: sanitizeError(error) },
+      { error: sanitizeError(error), requestId: reference },
       (error instanceof PublicError ? error.status : 500) as 400,
     );
   });
@@ -231,14 +254,9 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
         if (change.field === 'smb_message_echoes') {
           for (const echo of value.message_echoes ?? []) {
             if (typeof echo.id !== 'string' || typeof echo.to !== 'string') continue;
-            const text = String(
-              echo.text?.body ??
-                (echo.type === 'edit'
-                  ? `Staff edited a message: ${echo.edit?.message?.text?.body ?? '[media]'}`
-                  : echo.type === 'revoke'
-                    ? 'Staff deleted a message in WhatsApp.'
-                    : `Staff sent a ${echo.type || 'media'} message in WhatsApp.`),
-            ).slice(0, 2000);
+            // A staff reaction is not a takeover: it must not pause the bot for this customer.
+            const text = metaEchoText(echo);
+            if (text === undefined) continue;
             const job = makeJob(company.id, 'incoming', {
               ...bindMeta(echo.to),
               phone: echo.to,
@@ -255,30 +273,23 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
           // A blocked number's message is dropped before anything is saved; Meta still gets 200.
           if (await repo.findBlockedCustomer(company.id, customerKeys({ phone: message.from })))
             continue;
-          let text = String(
-            message.text?.body ??
-              message.interactive?.button_reply?.title ??
-              message.interactive?.list_reply?.title ??
-              '',
-          ).slice(0, 2000);
-          const button = String(
-            message.interactive?.button_reply?.id ?? message.interactive?.list_reply?.id ?? '',
-          );
-          let action: BotAction | undefined;
-          if (/^confirm:\d+$/.test(button))
-            action = { type: 'confirm', revision: Number(button.split(':')[1]) };
-          if (['menu', 'review', 'handoff', 'new_order'].includes(button))
-            action = { type: button } as BotAction;
-          if (!text && !action) {
-            text = 'Customer sent a media message. Staff assistance requested.';
-            action = { type: 'handoff' };
+          const content = metaInboundContent(message);
+          if ('ignore' in content) {
+            // Nothing to answer, so no job: the chat and its 24-hour window stay as they are.
+            await repo.addTrace({
+              id: randomUUID(),
+              companyId: company.id,
+              ...content.trace,
+              createdAt: new Date().toISOString(),
+            });
+            continue;
           }
           const job = makeJob(company.id, 'incoming', {
             ...bindMeta(message.from),
             phone: message.from,
             messageId: message.id,
-            text,
-            action,
+            text: content.text,
+            action: content.action,
           });
           // Preserve the original message timestamp for WhatsApp's 24-hour window.
           if (/^\d+$/.test(String(message.timestamp)))
@@ -315,8 +326,24 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
       if (!bearer) throw new PublicError('Sign in to continue.', 401);
       const client = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_ANON_KEY!, {
         auth: { persistSession: false, autoRefreshToken: false },
+        // A hanging sign-in check becomes a retryable error, well before the browser gives up.
+        global: {
+          fetch: (input, init) =>
+            fetch(input, {
+              ...init,
+              signal: init?.signal
+                ? AbortSignal.any([init.signal, AbortSignal.timeout(10000)])
+                : AbortSignal.timeout(10000),
+            }),
+        },
       });
-      const { data, error } = await client.auth.getUser(bearer);
+      const { data, error } = await client.auth
+        .getUser(bearer)
+        .catch(() => ({ data: { user: null }, error: { name: 'AuthRetryableFetchError' } }));
+      if (error && authUnavailable(error)) {
+        c.header('Retry-After', '5');
+        throw new PublicError('Sign-in service is busy, please retry.', 503);
+      }
       if (error || !data.user) throw new PublicError('Your session expired. Sign in again.', 401);
       if (data.user.factors?.some((f) => f.status === 'verified')) {
         let assurance = '';
@@ -374,11 +401,7 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
       c.req.path !== '/api/chat' &&
       !c.req.path.startsWith('/api/admin/')
     )
-      await repo.audit(
-        company.id,
-        userId,
-        `${c.req.method} ${c.req.path.replace(/\/[a-f0-9-]{36}(?=\/|$)/g, '/:id')}`,
-      );
+      await repo.audit(company.id, userId, `${c.req.method} ${routePattern(c.req.path)}`);
   });
   app.route('/api', managementRoutes(repo));
   app.route('/api/admin', adminRoutes(repo));
@@ -460,10 +483,7 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
     const company: Company = {
       ...body,
       id,
-      slug: `${body.name
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .slice(0, 70)}-${id.slice(0, 6)}`,
+      slug: `${slugify(body.name)}-${id.slice(0, 6)}`,
       timezone: 'Asia/Karachi',
       currency: 'PKR',
       botEnabled: false,
@@ -483,19 +503,36 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
   });
   app.put('/api/companies/:id', async (c) => {
     owner(c.get('role'));
-    if (c.req.param('id') !== c.get('company').id) throw new PublicError('Company not found.', 404);
-    const body = companySchema.parse(await c.req.json());
-    const company = {
-      ...c.get('company'),
+    const stored = c.get('company');
+    if (c.req.param('id') !== stored.id) throw new PublicError('Company not found.', 404);
+    const input = await c.req.json();
+    // Every save echoes the slug back. A business created before slugs were cleaned up may
+    // hold one the schema refuses, and its own slug must never block a save.
+    if (input && typeof input === 'object' && input.slug === stored.slug) delete input.slug;
+    const body = companySchema.parse(input);
+    // Fields the server manages keep their stored values whatever the body says: a stale or
+    // edited copy must not approve AI data sharing, stop Sheet refreshes (a future
+    // catalogSyncedAt), rename the workspace URL or allow linked-phone pairing.
+    const { id, slug, createdAt, catalogSyncedAt, privacy, linkedDeviceAllowed } = stored;
+    const company: Company = {
+      ...stored,
       ...body,
-      id: c.get('company').id,
-      createdAt: c.get('company').createdAt,
+      id,
+      slug,
+      createdAt,
+      catalogSyncedAt,
+      privacy,
+      linkedDeviceAllowed,
     };
     validateModelConfiguration(company);
+    // The AI data approval was given for one provider and model; another needs a new one,
+    // which only Connect and test records.
+    if (company.ai.provider !== stored.ai.provider || company.ai.model !== stored.ai.model)
+      company.privacy = { aiDataApproved: false, retentionDays: privacy?.retentionDays ?? 0 };
     // Only settings that change which model runs need a new test; a budget change does not.
     const tested = (ai: Company['ai']) =>
       JSON.stringify([ai.provider, ai.model, ai.pricing ?? null]);
-    if (tested(company.ai) !== tested(c.get('company').ai)) company.modelVerification = undefined;
+    if (tested(company.ai) !== tested(stored.ai)) company.modelVerification = undefined;
     if (appMode() === 'live' && company.botEnabled) {
       const missing = (await readiness(repo, company)).filter((check) => !check.ready);
       if (missing.length)
@@ -542,8 +579,14 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
     return c.json({ count: await refreshCatalog(repo, c.get('company')) });
   });
   app.post('/api/chat', async (c) => {
-    const body = chatSchema.parse(await c.req.json());
     const company = c.get('company');
+    // Test chats spend the business's own AI budget, which live customers also need. One
+    // business gets 15 a minute however many people test, checked before any AI work.
+    if (!(await repo.consumeRateLimit(`chat:${company.id}`, 15))) {
+      c.header('Retry-After', '60');
+      throw new PublicError('Too many test messages. Please wait a minute.', 429);
+    }
+    const body = chatSchema.parse(await c.req.json());
     let conversation = body.conversationId
       ? await repo.getConversation(company.id, body.conversationId)
       : undefined;
@@ -577,13 +620,14 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
       .parse(await c.req.json());
     const order = await repo.getOrder(c.get('company').id, c.req.param('id'));
     if (!order) throw new PublicError('Order not found.', 404);
-    let updated;
+    // Only the order rules' own message reaches staff ("Cannot change …"). Anything else, such
+    // as a database failure, is logged and answered with the general error.
     try {
-      updated = await changeOrderStatus(repo, order, status);
+      transitionOrder(order, status, new Date().toISOString());
     } catch (error) {
-      if (error instanceof PublicError) throw error;
       throw new PublicError(error instanceof Error ? error.message : 'Invalid order transition.');
     }
+    const updated = await changeOrderStatus(repo, order, status);
     const conversation = await repo.getConversation(order.companyId, order.conversationId);
     if (conversation) {
       const text = `Order ${order.reference} is now ${status.replaceAll('_', ' ')}.`;
@@ -751,10 +795,10 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
         ...c.get('company'),
         botEnabled: false,
         modelVerification: undefined,
+        // A new key may belong to another account, so its terms are approved again.
         privacy:
           kind === c.get('company').ai.provider
             ? {
-                ...c.get('company').privacy,
                 aiDataApproved: false,
                 retentionDays: c.get('company').privacy?.retentionDays ?? 0,
               }
@@ -781,7 +825,10 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
         ({ displayPhoneNumber } =
           (await (await integrationAdapter(repo, company.id, 'whatsapp')).test()) ?? {});
       else if (kind === 'sheets')
-        await (await integrationAdapter(repo, company.id, kind as 'sheets')).test();
+        // With the menu read from the Sheet, the test also reads and checks the menu tab.
+        await (
+          await integrationAdapter(repo, company.id, 'sheets')
+        ).test(company.catalogSource === 'sheets' ? { menuFor: company.id } : {});
       else await verifyProviderKey(kind, await providerKey(repo, company, kind));
       const checkedAt = new Date().toISOString();
       const updated = {
