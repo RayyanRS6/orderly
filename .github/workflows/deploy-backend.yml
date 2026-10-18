@@ -1,25 +1,34 @@
 name: Deploy Supabase backend
 
+# A push to main is type-checked and tested first; production is deployed only when every check
+# passes, and only from main. Docs, Markdown and the gateway (checked by check-gateway.yml and
+# deployed by Railway) never redeploy the backend.
 on:
   push:
     branches:
       - main
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - 'gateway/**'
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# Whole runs queue in push order, so an older commit can never deploy after a newer one.
 concurrency:
   group: supabase-production
   cancel-in-progress: false
 
 jobs:
-  deploy:
+  verify:
     runs-on: ubuntu-latest
-    environment: production
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Use Node.js 24
         uses: actions/setup-node@v4
@@ -30,10 +39,60 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build Supabase Edge Function
-        run: npm run build:edge
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Tests (engine, API, migrations and RLS in PGlite)
+        run: npm test
+
+      - name: Build the Edge Function and start it in Deno
+        run: npm run test:edge-runtime
+
+      - name: Keep the tested bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: orderly-edge-bundle
+          path: supabase/functions/orderly/index.js
+          if-no-files-found: error
+          retention-days: 7
+
+  deploy:
+    needs: verify
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      # Only the locked Supabase CLI is needed here; skipping install scripts keeps package
+      # scripts out of the job that holds the deploy token.
+      - name: Install the Supabase CLI
+        run: npm ci --ignore-scripts
+
+      - name: Use the bundle that passed the checks
+        uses: actions/download-artifact@v4
+        with:
+          name: orderly-edge-bundle
+          path: supabase/functions/orderly
 
       - name: Deploy Orderly Edge Function
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-        run: npx supabase functions deploy orderly --project-ref zygsuxgqkeedgcbjhfzx --use-api
+        run: |
+          test -s supabase/functions/orderly/index.js
+          npx supabase functions deploy orderly --project-ref zygsuxgqkeedgcbjhfzx --use-api
+
+      - name: Check the live function answers
+        run: |
+          body=$(curl -fsS --retry 6 --retry-delay 5 --retry-all-errors https://zygsuxgqkeedgcbjhfzx.supabase.co/functions/v1/orderly/api/health)
+          echo "$body"
+          echo "$body" | grep -q '"mode":"live"'

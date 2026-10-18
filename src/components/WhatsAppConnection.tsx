@@ -210,9 +210,16 @@ export function WhatsAppConnection() {
           Unofficial linked-device connection
         </p>
         <p className="mt-2 leading-relaxed">
-          Not approved by Meta. WhatsApp can disconnect or restrict the account. No ban-free
-          guarantee. Use only a restaurant-owned number with its owner’s permission. No cold
-          broadcasts.
+          This links the restaurant’s WhatsApp to Orderly with an unofficial method that is against
+          WhatsApp’s terms. WhatsApp can ban the whole number, temporarily or permanently, and the
+          restaurant’s own WhatsApp app on that number stops working too. Messages are decrypted and
+          processed on Orderly’s gateway server (Railway), and sent replies are kept there,
+          encrypted, for up to 3 days.
+        </p>
+        <p className="mt-2 leading-relaxed">
+          The supported route is the official WhatsApp Business Platform below. Its coexistence
+          option keeps the WhatsApp Business app working. Use the linked device only with a
+          restaurant-owned number and its owner’s permission. No cold broadcasts.
         </p>
       </div>
       {!enabled && (
@@ -280,7 +287,10 @@ export function WhatsAppConnection() {
               checked={accepted}
               onChange={(e) => setAccepted(e.target.checked)}
             />
-            I have the owner’s permission and accept the unofficial connection risks.
+            I have the owner’s permission. I understand this unofficial connection is against
+            WhatsApp’s terms, that WhatsApp can ban the whole number temporarily or permanently,
+            including the restaurant’s own WhatsApp app, and that messages are processed on
+            Orderly’s gateway server.
           </label>
           <div className="mt-4 flex flex-wrap gap-2">
             <button

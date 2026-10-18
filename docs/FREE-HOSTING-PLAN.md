@@ -12,7 +12,7 @@ Use Cloudflare Workers Static Assets for the React/Vite frontend, and Supabase E
 | API and workers    | Supabase Edge Functions                                                   | 500,000 included invocations per billing period across the organization; these are function calls, not customers or WhatsApp messages. |
 | Database and login | Existing Supabase Free project                                            | 500 MB database, 50,000 monthly active Auth users, 1 GB separate file storage and 5 GB uncached egress.                                |
 | Recovery scheduler | Supabase Cron                                                             | Execute a small database check every minute; invoke a worker only when due work exists. No separate scheduler subscription.            |
-| AI in tests        | A Gemini model with available free-tier quota, or the existing local mock | Verify the actual Google project's billing tier and quota first. Do not fall back to a paid provider automatically.                    |
+| AI in tests        | A Gemini model with available free-tier quota, or the existing local mock | Free-tier Gemini is for fictional test data only, never real customers (Google may use unpaid data and humans may read it).            |
 
 Sources: [Cloudflare static asset billing](https://developers.cloudflare.com/workers/static-assets/billing-and-limitations/), [Supabase invocation billing](https://supabase.com/docs/guides/platform/manage-your-usage/edge-function-invocations), [Supabase pricing](https://supabase.com/pricing), [Supabase scheduling](https://supabase.com/docs/guides/functions/schedule-functions), [Gemini pricing](https://ai.google.dev/gemini-api/docs/pricing).
 

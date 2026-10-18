@@ -70,7 +70,15 @@ interface Placed {
 function Shell({ children }: { children: ReactNode }) {
   return (
     <div className="canvas-glow min-h-dvh text-ink">
-      <main className="mx-auto max-w-2xl px-4 pt-6 pb-32 sm:pt-10">{children}</main>
+      <main className="mx-auto max-w-2xl px-4 pt-6 pb-32 sm:pt-10">
+        {children}
+        {/* Every state, checkout included, links to how the typed details are used. */}
+        <p className="mt-6 text-center text-[11px] text-stone-400">
+          <a className="underline underline-offset-2 hover:text-stone-600" href="/privacy">
+            Privacy Policy
+          </a>
+        </p>
+      </main>
     </div>
   );
 }

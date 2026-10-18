@@ -2,6 +2,8 @@
 
 Updated 17 September 2026. This supplements the point-in-time [audit](ORDERLY-AUDIT-2026-09-16.md) and [Pakistan budget](ORDERLY-BUDGET-2026-09-16.md). The original findings describe the app before these changes.
 
+> **Superseded in part (18 October 2026).** The website is now <https://orderly.meerurayyan.workers.dev> (the `waytogalaxy999` address below is retired), and the shared platform-funded cap mentioned in the September 18 update was removed on 17 October 2026: each business uses its own AI key. See [GET-IT-RUNNING.md](GET-IT-RUNNING.md) and [DEPLOYMENT.md](DEPLOYMENT.md) for the current setup.
+
 ## Deployed result
 
 - Frontend and public website: https://orderly.waytogalaxy999.workers.dev
@@ -118,7 +120,6 @@ Use `npm run build:edge` before deploying the Supabase function. Apply SQL migra
 
 The follow-up deployment verified both new server RPCs against each live workspace, the active hourly scheduler, the authenticated Laziza privacy/alert screens, public routes and anonymous API rejection. All retention policies remained off. Manual customer erasure also now scrubs provider error text from preserved job tombstones.
 
-
 ## September 18 completion update
 
-See the [audit closure](ORDERLY-AUDIT-CLOSURE-2026-09-18.md) and [exact setup guide](ORDERLY-LAUNCH-STEPS-2026-09-18.md). The deployed additions include opt-in email escalation, 80% workspace budget warnings, a shared platform-funded cap and a public pricing page. Email subscriptions remain empty, retention remains off and Laziza remains paused. The current Cloudflare version is `36bf2967-dd9c-414f-827e-15fc4fd498b8`.
+See the [audit closure](ORDERLY-AUDIT-CLOSURE-2026-09-18.md) and [exact setup guide](ORDERLY-LAUNCH-STEPS-2026-09-18.md). The deployed additions include opt-in email escalation, 80% workspace budget warnings, a shared platform-funded cap (removed 17 October 2026) and a public pricing page. Email subscriptions remain empty, retention remains off and Laziza remains paused. The current Cloudflare version is `36bf2967-dd9c-414f-827e-15fc4fd498b8`.

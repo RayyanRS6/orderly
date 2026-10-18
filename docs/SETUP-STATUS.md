@@ -1,5 +1,9 @@
 # Account setup status
 
+## Note — October 18, 2026
+
+The records below are historical. Since then: the website is <https://orderly.meerurayyan.workers.dev> (the `waytogalaxy999` address in the September 13 record is retired and should be deleted); the shared cap and Orderly's own server Gemini key (September 13 record, "Free tier") are retired, so every business connects its own paid AI key; both WhatsApp routes (Meta Cloud API and the linked-phone gateway on Railway) are in use; and the pilot is two test restaurants, with a friend's restaurant going live first. The legacy Vercel project still needs deleting ([DEPLOYMENT.md](DEPLOYMENT.md) §8). Free (unpaid) Gemini must not be used with real customer data.
+
 ## Update — September 18, 2026
 
 You reported that Meta is ready for onboarding and deferred the client connection until you are together. This supersedes the historical restriction below as your current report; Meta approval and real message delivery have not been independently reverified. The latest deployment has 194 passing tests, 20 RLS-protected application tables, opt-in staff email support, budget warnings/shared cap and `/pricing`. No email recipients were enabled. Laziza remains disconnected and paused; all retention policies remain off. Follow the [exact launch steps](ORDERLY-LAUNCH-STEPS-2026-09-18.md) and [audit closure](ORDERLY-AUDIT-CLOSURE-2026-09-18.md).

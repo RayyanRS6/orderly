@@ -2,6 +2,8 @@
 
 Implementation deployed September 18; final verification/hand-off September 19, 2026. This updates the [September 16 audit](ORDERLY-AUDIT-2026-09-16.md). Follow the [exact launch guide](ORDERLY-LAUNCH-STEPS-2026-09-18.md) for all operator/client steps.
 
+> **Superseded in part (18 October 2026).** The shared platform key and its platform-funded cap (row P2-05 and the "Platform-funded budget" item below) were removed on 16–17 October 2026 (`202610170001_business_keys_only.sql`): every business now connects and pays for its own AI key, and only per-business limits apply. The website moved to <https://orderly.meerurayyan.workers.dev>. Current status and the open items from the October pre-launch audit are in [DEPLOYMENT.md](DEPLOYMENT.md), [BACKUP-AND-RESTORE.md](BACKUP-AND-RESTORE.md), [INCIDENT-RUNBOOK.md](INCIDENT-RUNBOOK.md) and [COMPLIANCE-NOTES-2026-10-18.md](COMPLIANCE-NOTES-2026-10-18.md). The rest of this page is the September record.
+
 ## Status
 
 The prioritized software fixes are implemented. The application is ready for client configuration and a controlled pilot test. It is **not yet verified for unattended customer traffic**. The user has deferred WhatsApp onboarding until the client is present and reports their Meta account is ready. Laziza remains paused and disconnected.
@@ -18,7 +20,7 @@ The prioritized software fixes are implemented. The application is ready for cli
 | P2-02 Responsive UI | Claude UI retained; mobile navigation/chat/layout fixes and scrollable dialogs | Physical-device/keyboard testing remains advisable |
 | P2-03 Data/query scale | Bounded lists, history/archive paging, aggregate metrics, scoped polling and catalog caching | Provider/hosted load qualification at actual traffic |
 | P2-04 Security/operations | Tenant checks/RLS, security headers, MFA/recovery/team controls, rate limits and administrative audit events | Operator MFA enrollment, production Auth SMTP and restore drill |
-| P2-05 Models and budgets | Refreshable provider model choices, pinned selection, generation test, pricing/usage estimates, 80% warnings and shared platform-key cap | Provider price reconciliation and explicit replacement-model testing |
+| P2-05 Models and budgets | Refreshable provider model choices, pinned selection, generation test, pricing/usage estimates, 80% warnings and shared platform-key cap (cap removed 17 October 2026; per-business keys and limits only) | Provider price reconciliation and explicit replacement-model testing |
 | P2-06 Product clarity | Bot goals/personality/flow/knowledge, drafts/publish/rollback, staff phone-confirmation gate, onboarding help, public pricing explanation and exact runbook | Restaurant-specific data and staff sign-off |
 
 ## Added in this completion pass
@@ -26,7 +28,7 @@ The prioritized software fixes are implemented. The application is ready for cli
 - Automatic retention: off by default; owner preview/confirmation, 24-hour grace after enabling/changing, active-work protection, bounded hourly batches and audited cleanup. Third-party Sheets/provider/backups are outside this deletion.
 - Header staff alerts: pending live orders, unresolved WhatsApp handoffs, failed jobs and budget warnings. A staff reply resolves the handoff reminder condition. Optional generic browser notifications require permission.
 - Email escalation: each verified staff account opts in for itself; membership/opt-in/work status are checked again before send. No arbitrary recipient entry. Requests use a stable idempotency key and frozen payload, with retries bounded within the mail provider's dedupe period. Acceptance is not represented as delivery.
-- Platform-funded budget: administrator-only shared ceiling, initially $100/month; workspace caps still apply. Client-owned keys are accounted separately. Reservations and settlement retain funding classification. This limit is not a charge or subscription.
+- Platform-funded budget (**removed 17 October 2026**, with the shared platform key): administrator-only shared ceiling, initially $100/month; workspace caps still apply. Client-owned keys are accounted separately. Reservations and settlement retain funding classification. This limit is not a charge or subscription.
 - Public `/pricing` explains setup, service and provider charges without publishing an unapproved fixed tariff.
 - Local concurrency rehearsal and operator/client setup, privacy, failure recovery and restore instructions.
 
