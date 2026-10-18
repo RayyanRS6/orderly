@@ -161,6 +161,10 @@ secrets above, to any other service.
 volume storage for changed data. Row values are encrypted, but SQLite metadata is not, and a
 backup is useless without the encryption key from your password manager. Restoring a backup
 replaces the volume and redeploys. Never run a restored copy anywhere while the original is live.
+A backup holds working WhatsApp credentials for every number paired at that time. Disconnecting in
+Orderly logs the device out when it is online, which makes those credentials useless; if it was
+offline, remove the device on the phone as well. Restoring an older backup also brings back
+sessions disconnected since. Keep backup retention short.
 
 ## 9. Connect Orderly (Supabase side)
 

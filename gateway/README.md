@@ -138,9 +138,12 @@ After an uncertain outcome, automatic retries return `SEND_UNCERTAIN`; staff mus
 phone. Do not delete receipt records to force a resend. Exactly-once delivery cannot be
 guaranteed across an external messaging service, but duplicate blind retries are prevented.
 
-Disconnect stops the local socket and invalidates credentials/jobs. The owner should also
-remove the old session under WhatsApp → Linked devices; local disconnection is not a promise
-that Meta's companion-device entry was revoked. Orders and Orderly chat history remain.
+Disconnect and new pairing first log the linked device out of WhatsApp (best effort, at most
+3.5 seconds, only while the socket is connected), then wipe credentials and jobs, so leftover
+credentials and later backups stop working. Redeploys, restarts and a lost lease only close the
+socket and keep the pairing. If the session was offline at the time, the logout cannot happen:
+the owner should still check WhatsApp → Linked devices and remove the old session. Orders and
+Orderly chat history remain.
 
 ## Protocol updates and rollback
 

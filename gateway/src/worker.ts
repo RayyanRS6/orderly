@@ -18,6 +18,7 @@ import { Store } from './store.js';
 import { canonicalJid, phoneFromJid, heartbeatDue, reconnectDecision, TICK_MS } from './policy.js';
 import { sendOnce, recoverUncertainSends } from './sender.js';
 import { drainOnce, EVENT_BATCH, retryDeadEvents } from './drain.js';
+import { endSocket } from './shutdown.js';
 import { chatContent, messageText, receiptStatus, upsertedMessages } from './upserts.js';
 import { mapIdentity, messageIdentity } from './routing.js';
 import {
@@ -491,12 +492,14 @@ process.on('message', (message: any) => {
     // Save anything Baileys still buffers first: incoming() runs as a microtask and
     // writes to disk synchronously, so it finishes before the exit below.
     socket?.ev.flush();
+    // Set first, so the close a logout causes is not handled as a WhatsApp logout or retried.
     stopped = true;
     clearTimeout(reconnectTimer);
     pairing = {};
-    // Closing is not logging out: planned restarts must retain credentials.
-    socket?.end(new Error('STOPPED'));
-    setImmediate(() => process.exit(0));
+    // Only the supervisor's disconnect and new-pairing commands ask for a logout (see shutdown.ts).
+    void endSocket(socket, message.logout === true)
+      .catch(() => false)
+      .then(() => setImmediate(() => process.exit(0)));
   }
 });
 // Each status report is one Orderly function call, so an unchanged 'connected' is repeated

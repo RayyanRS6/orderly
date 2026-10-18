@@ -246,7 +246,10 @@ export class Supervisor {
       this.flushing = false;
     }
   }
-  async stopChild(id: string) {
+  // logout is true only for an owner's disconnect or new pairing: the worker then removes this
+  // linked device from the phone before its credentials are wiped. Redeploys, restarts and a
+  // lost lease close without logging out, so restaurants keep their pairing.
+  async stopChild(id: string, logout = false) {
     const child = this.children.get(id);
     if (!child) return;
     this.children.delete(id);
@@ -258,14 +261,18 @@ export class Supervisor {
         this.pending.delete(key);
       }
     await new Promise<void>((resolve) => {
-      const timer = setTimeout(() => {
-        child.kill('SIGKILL');
-      }, 5000);
+      // A logout may wait up to 3.5 s for WhatsApp; the backend allows 20 s for the command.
+      const timer = setTimeout(
+        () => {
+          child.kill('SIGKILL');
+        },
+        logout ? 8000 : 5000,
+      );
       child.once('exit', () => {
         clearTimeout(timer);
         resolve();
       });
-      if (child.connected) child.send({ type: 'stop' });
+      if (child.connected) child.send({ type: 'stop', logout });
       else child.kill();
     });
   }
@@ -305,8 +312,9 @@ export class Supervisor {
       };
       // Persist fence BEFORE closing the old worker, including after a crash.
       this.update(next);
-      await this.stopChild(body.connectionId);
-      if (body.action === 'pair' || body.action === 'disconnect') {
+      const revoke = body.action === 'pair' || body.action === 'disconnect';
+      await this.stopChild(body.connectionId, revoke);
+      if (revoke) {
         const sessionStore = new Store(
           join(this.config.dataDir, `${body.connectionId}.sqlite`),
           this.config.key,
