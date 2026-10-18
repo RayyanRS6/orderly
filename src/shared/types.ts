@@ -66,6 +66,8 @@ export interface Company {
   bot?: BotSettings;
   privacy?: { aiDataApproved: boolean; retentionDays: number };
   modelVerification?: { fingerprint: string; checkedAt: string };
+  /** Set only by the Orderly admin: this business may pair a new linked phone. */
+  linkedDeviceAllowed?: boolean;
 }
 export interface ProductOption {
   id: string;

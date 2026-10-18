@@ -131,7 +131,12 @@ describe('gateway authentication and ownership', () => {
     const pair = await app.request('http://127.0.0.1/api/whatsapp/pair', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-company-id': company.id },
-      body: JSON.stringify({ method: 'qr', riskAccepted: true, switchConfirmed: true }),
+      body: JSON.stringify({
+        method: 'qr',
+        riskAccepted: true,
+        switchConfirmed: true,
+        consent: { version: 'linked-device-risk-2026-10-18', accepted: true },
+      }),
     });
     expect(pair.status).toBe(503);
     vi.stubEnv('APP_MODE', 'live');

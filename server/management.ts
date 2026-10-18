@@ -363,10 +363,16 @@ export function managementRoutes(repo: Repository) {
     const kind = z
       .enum(['whatsapp', 'sheets', 'openai', 'gemini', 'anthropic'])
       .parse(c.req.param('kind'));
-    if (kind === 'whatsapp') await disconnectGateway(repo, c.get('company').id);
+    const gatewayCleanupPending =
+      kind === 'whatsapp' &&
+      !!(await disconnectGateway(repo, c.get('company').id)).gatewayCleanupPending;
     await repo.disconnectIntegration(c.get('company').id, kind);
     await repo.audit(c.get('company').id, c.get('userId'), `integration.${kind}.disconnected`);
-    return c.json({ ok: true, providerRevocationRequired: true });
+    return c.json({
+      ok: true,
+      providerRevocationRequired: true,
+      ...(gatewayCleanupPending && { gatewayCleanupPending }),
+    });
   });
   app.get('/team', async (c) => {
     owner(c.get('role'));
