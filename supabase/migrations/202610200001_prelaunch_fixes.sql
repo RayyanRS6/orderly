@@ -3,17 +3,18 @@
 -- finds every chat erasing would remove, automatic order notices no longer hide a customer waiting
 -- for staff, a linked phone that stopped working alerts staff, a message that failed for good goes
 -- into its chat instead of holding back the customer's later ones, the spam safety net is 1,500
--- AI replies an hour (100 per customer) with a warning at 80%, a pipeline health check, a daily
--- purge of old operational rows, and a ledger of applied migrations.
+-- AI replies an hour (100 per customer) with a warning at 80%, the Active orders filter leaves out
+-- pending orders, a pipeline health check, a daily purge of old operational rows, and a ledger of
+-- applied migrations.
 -- Apply after 202610190003_menu_purge_schedule.sql and before deploying the backend that calls
 -- orderly_pipeline_health and customer_records. The backend and dashboard running now keep
 -- working: every function keeps its signature and result shape (staff_attention only adds a
 -- 'whatsapp' count and items), and the only new column has a default.
 -- Safe to rerun while no later file redefines these functions. It replaces, starting from their
 -- latest bodies: alert_recipient (202609180001), erase_customer and run_retention (202609170001),
--- prune_orderly_cron_history (202609110001), and ai_limit_settings, has_overdue_attention,
--- staff_attention and fail_exhausted_orderly_jobs (202610180001). After it, 202610180001 refuses
--- to run again.
+-- query_orders (202609160001), prune_orderly_cron_history (202609110001), and ai_limit_settings,
+-- has_overdue_attention, staff_attention and fail_exhausted_orderly_jobs (202610180001). After it,
+-- 202610180001 refuses to run again.
 set lock_timeout = '5s';
 
 -- Which migrations were applied, and when. Each migration from this one on records itself last.
@@ -251,6 +252,20 @@ language sql stable security definer set search_path=public as $$
       where o.company_id=p_company_id and o.conversation_id in (select id from matched)),'[]'::jsonb));
 $$;
 
+-- Latest body from 202609160001_launch_hardening.sql. Changed: 'active' is the orders staff are
+-- working on (accepted, preparing, ready or out for delivery), as the Orders page shows them
+-- beside its own Pending tab and the local store counts them; pending orders are not in it.
+create or replace function public.query_orders(p_company_id text,p_filter jsonb) returns jsonb language sql stable security definer set search_path=public as $$
+  with opts as (select greatest(1,least(100,coalesce((p_filter->>'pageSize')::integer,50))) size,greatest(1,coalesce((p_filter->>'page')::integer,1)) page),
+  matching as (select o.* from orders o join conversations c on c.id=o.conversation_id and c.company_id=o.company_id where o.company_id=p_company_id
+    and (not p_filter ? 'sandbox' or (c.channel='demo')=(p_filter->>'sandbox')::boolean)
+    and (coalesce(p_filter->>'status','all')='all' or o.data->>'status'=p_filter->>'status' or (p_filter->>'status'='active' and o.data->>'status' in ('accepted','preparing','ready','out_for_delivery')))
+    and (coalesce(p_filter->>'search','')='' or strpos(lower(concat_ws(' ',o.data->>'reference',o.data->>'customerName',o.data->>'customerPhone')),lower(p_filter->>'search'))>0)
+    and (not p_filter ? 'from' or o.created_at>=(p_filter->>'from')::timestamptz) and (not p_filter ? 'to' or o.created_at<=(p_filter->>'to')::timestamptz)),
+  page_rows as (select data from matching order by created_at desc,id desc limit (select size from opts) offset (select (page-1)*size from opts))
+  select jsonb_build_object('items',coalesce((select jsonb_agg(data) from page_rows),'[]'),'total',(select count(*) from matching),'page',page,'pageSize',size) from opts;
+$$;
+
 -- Latest body from 202610180001_spam_protection.sql. Changed, as the worker does since these
 -- fixes: an incoming message that failed for good goes into its chat (unless it is there already)
 -- and the chat goes to staff, then the job ends as done with payload.failedPermanently, so the
@@ -474,7 +489,7 @@ do $$ declare f record; begin
   for f in select oid::regprocedure signature from pg_proc where pronamespace='public'::regnamespace
     and proname=any(array['alert_recipient','erase_customer','run_retention','awaits_staff_reply','ai_limit_settings',
       'ai_hourly_warning','whatsapp_down','has_overdue_attention','staff_attention','customer_records',
-      'fail_exhausted_orderly_jobs','orderly_pipeline_health','purge_orderly_operations',
+      'query_orders','fail_exhausted_orderly_jobs','orderly_pipeline_health','purge_orderly_operations',
       'prune_orderly_cron_history']) loop
     execute format('revoke all on function %s from public,anon,authenticated',f.signature);
     execute format('grant execute on function %s to service_role',f.signature);
