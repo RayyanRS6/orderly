@@ -20,7 +20,9 @@ import type {
 } from '../shared/types';
 import { botConfig, MAX_BOT_INSTRUCTIONS, normalizeBotConfig, sameBotConfig } from '../shared/bot';
 import {
+  AI_LIMIT_DEFAULTS,
   AI_LIMIT_RANGES,
+  BURST_PAUSE_MS,
   effectiveAiLimits,
   KNOWN_MODEL_RATES,
   MODEL_DEFAULTS,
@@ -38,6 +40,7 @@ import {
   CustomSelect,
   Field,
   PageHeading,
+  ReadinessLink,
 } from './ui';
 
 type ReplyLimit = keyof typeof AI_LIMIT_RANGES;
@@ -80,6 +83,9 @@ export function BotSettings() {
   const [leaving, setLeaving] = useState(false);
   const [ai, setAi] = useState(data.company.ai);
   const [approved, setApproved] = useState(data.company.privacy?.aiDataApproved ?? false);
+  // What the owner confirms about the provider account, each time they connect.
+  const [noTraining, setNoTraining] = useState(false);
+  const [paidTier, setPaidTier] = useState(false);
   const [apiKey, setApiKey] = useState('');
   const [removing, setRemoving] = useState(false);
   const [removeError, setRemoveError] = useState('');
@@ -94,6 +100,9 @@ export function BotSettings() {
   const [repliesPerHour, setRepliesPerHour] = useState(() => String(savedLimits.repliesPerHour));
   const [repliesPerCustomer, setRepliesPerCustomer] = useState(() =>
     String(savedLimits.repliesPerCustomerPerHour),
+  );
+  const [messagesPerMinute, setMessagesPerMinute] = useState(() =>
+    String(savedLimits.messagesPerCustomerPerMinute),
   );
   const lastSavedLimits = useRef(savedLimits);
   const [hourStatus, setHourStatus] = useState<AiLimitStatus>();
@@ -158,7 +167,10 @@ export function BotSettings() {
     ai.model === data.company.ai.model &&
     JSON.stringify(ai.pricing) === JSON.stringify(data.company.ai.pricing) &&
     !apiKey.trim();
-  const canConnect = usesAi && approved && !!ai.model && (savedKey || !!apiKey.trim());
+  const attested = noTraining && (ai.provider !== 'gemini' || paidTier);
+  const canConnect = usesAi && approved && attested && !!ai.model && (savedKey || !!apiKey.trim());
+  // An approval from before these confirmations still works, but the owner should give them.
+  const confirmAgain = data.readiness?.find((check) => check.id === 'privacy')?.warning;
   const update = (patch: Partial<BotConfig>) => setDraft({ ...draft, ...patch });
   async function discover(refresh = false) {
     setCatalogError('');
@@ -199,7 +211,16 @@ export function BotSettings() {
         ? String(savedLimits.repliesPerCustomerPerHour)
         : typed,
     );
-  }, [savedLimits.repliesPerHour, savedLimits.repliesPerCustomerPerHour]);
+    setMessagesPerMinute((typed) =>
+      Number(typed) === before.messagesPerCustomerPerMinute
+        ? String(savedLimits.messagesPerCustomerPerMinute)
+        : typed,
+    );
+  }, [
+    savedLimits.repliesPerHour,
+    savedLimits.repliesPerCustomerPerHour,
+    savedLimits.messagesPerCustomerPerMinute,
+  ]);
   // How many AI replies this hour used. Only a hint: a server without the spam protection
   // migration answers with an error, and then the line is simply left out.
   useEffect(() => {
@@ -233,9 +254,11 @@ export function BotSettings() {
   const limitsChanged =
     monthlyChanged ||
     Number(repliesPerHour) !== savedLimits.repliesPerHour ||
-    Number(repliesPerCustomer) !== savedLimits.repliesPerCustomerPerHour;
+    Number(repliesPerCustomer) !== savedLimits.repliesPerCustomerPerHour ||
+    Number(messagesPerMinute) !== savedLimits.messagesPerCustomerPerMinute;
   const [minPerHour, maxPerHour] = AI_LIMIT_RANGES.repliesPerHour;
   const [minPerCustomer, maxPerCustomer] = AI_LIMIT_RANGES.repliesPerCustomerPerHour;
+  const [minPerMinute, maxPerMinute] = AI_LIMIT_RANGES.messagesPerCustomerPerMinute;
   const limitProblem =
     monthlyChanged && !(monthlyBudget >= 0 && monthlyBudget <= 10000)
       ? 'Choose a monthly limit from $0 to $10,000.'
@@ -243,7 +266,9 @@ export function BotSettings() {
         ? `Choose ${minPerHour} to ${maxPerHour.toLocaleString('en-US')} AI replies per hour.`
         : !validReplyLimit('repliesPerCustomerPerHour', repliesPerCustomer)
           ? `Choose ${minPerCustomer} to ${maxPerCustomer.toLocaleString('en-US')} AI replies per customer.`
-          : undefined;
+          : !validReplyLimit('messagesPerCustomerPerMinute', messagesPerMinute)
+            ? `Choose ${minPerMinute} to ${maxPerMinute} messages per customer per minute.`
+            : undefined;
   const saveLimits = () =>
     act('limits', () =>
       mutate(
@@ -254,9 +279,11 @@ export function BotSettings() {
             ...data.company.ai,
             monthlyBudgetUsd: monthlyToSend,
           },
+          // All three, always: a value left out would be dropped from the saved settings.
           aiLimits: {
             repliesPerHour: Number(repliesPerHour),
             repliesPerCustomerPerHour: Number(repliesPerCustomer),
+            messagesPerCustomerPerMinute: Number(messagesPerMinute),
           },
         },
         'PUT',
@@ -271,6 +298,7 @@ export function BotSettings() {
           provider: ai.provider,
           model: ai.model,
           approve: true,
+          attest: { noTrainingOptIn: true, ...(ai.provider === 'gemini' && { paidTier: true }) },
           monthlyBudgetUsd: monthlyToSend,
           ...(apiKey.trim() && { apiKey: apiKey.trim() }),
           ...(ai.pricing && { pricing: ai.pricing }),
@@ -432,6 +460,7 @@ export function BotSettings() {
                 {c.ready ? '✓' : '○'}
               </span>
               {c.label}
+              <ReadinessLink check={c} />
             </li>
           ))}
         </ul>
@@ -489,6 +518,17 @@ export function BotSettings() {
             sends one test message before switching the bot over. If anything fails, nothing
             changes.
           </p>
+          {confirmAgain && (
+            <div
+              role="status"
+              className="rounded-2xl border border-sun/50 bg-sun/10 p-4 text-sm leading-relaxed text-stone-800"
+            >
+              <p className="font-semibold text-ink">Confirm your AI account settings</p>
+              <p className="mt-1">
+                {confirmAgain} The bot keeps answering meanwhile. Tick the confirmations below.
+              </p>
+            </div>
+          )}
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="AI provider">
               <CustomSelect
@@ -498,6 +538,9 @@ export function BotSettings() {
                   const provider = v as Provider;
                   const saved = provider === data.company.ai.provider;
                   setApproved(saved ? (data.company.privacy?.aiDataApproved ?? false) : false);
+                  // Confirmed for one provider's account; another account needs its own.
+                  setNoTraining(false);
+                  setPaidTier(false);
                   setApiKey('');
                   setAi({
                     ...ai,
@@ -587,8 +630,47 @@ export function BotSettings() {
               <span>
                 I agree to send customer messages to {PROVIDER_NAMES[ai.provider]} to generate
                 replies, and I have checked its data and billing terms
-                {ai.provider === 'gemini' ? ', including the free-tier data-use differences' : ''}.
-                I will let customers know.
+                {ai.provider === 'gemini'
+                  ? ', including that a billed Google Cloud project is required'
+                  : ''}
+                . Orderly tells customers at the start of each chat that they are talking to an
+                automated assistant.
+              </span>
+            </label>
+          )}
+          {usesAi && (
+            <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-ink/[0.06] bg-paper px-4 py-3 text-sm leading-6 transition-colors has-[:checked]:border-brand-500/25 has-[:checked]:bg-brand-50">
+              <input
+                type="checkbox"
+                className="mt-1 size-4 shrink-0 accent-brand-500"
+                checked={noTraining}
+                onChange={(e) => setNoTraining(e.target.checked)}
+              />
+              <span>
+                No data-sharing or model-training opt-in is turned on for this{' '}
+                {PROVIDER_NAMES[ai.provider]} account.
+                <span className="block text-xs leading-5 text-stone-500">
+                  Some provider accounts can share what they receive to improve the provider’s
+                  models. Customer chats must never be used that way; WhatsApp forbids it. Check the
+                  account’s data or privacy settings.
+                </span>
+              </span>
+            </label>
+          )}
+          {ai.provider === 'gemini' && (
+            <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-ink/[0.06] bg-paper px-4 py-3 text-sm leading-6 transition-colors has-[:checked]:border-brand-500/25 has-[:checked]:bg-brand-50">
+              <input
+                type="checkbox"
+                className="mt-1 size-4 shrink-0 accent-brand-500"
+                checked={paidTier}
+                onChange={(e) => setPaidTier(e.target.checked)}
+              />
+              <span>
+                This key’s Google Cloud project has billing turned on (paid tier).
+                <span className="block text-xs leading-5 text-stone-500">
+                  Google may use what is sent to a free-tier key to improve its products, and people
+                  may read it. Free-tier keys must not receive customer messages.
+                </span>
               </span>
             </label>
           )}
@@ -652,7 +734,11 @@ export function BotSettings() {
           </div>
           {usesAi && !canConnect && pending !== 'connect' && (
             <p className="text-xs font-semibold text-brand-700">
-              {!approved ? 'Tick the agreement to continue.' : 'Paste the API key to continue.'}
+              {!approved
+                ? 'Tick the agreement to continue.'
+                : !attested
+                  ? 'Confirm the AI account settings above to continue.'
+                  : 'Paste the API key to continue.'}
             </p>
           )}
           {usesAi && (
@@ -748,7 +834,7 @@ export function BotSettings() {
               </Field>
               <Field
                 label="AI replies per hour (whole restaurant)"
-                hint="Stops a flood of messages from using up the month’s budget at once. A busy hour rarely needs more than a few hundred."
+                hint={`Stops a flood of messages from using up the month’s budget at once. Default ${AI_LIMIT_DEFAULTS.repliesPerHour.toLocaleString('en-US')}. One WhatsApp order takes about 8–10 AI replies.`}
               >
                 <input
                   className="input"
@@ -763,7 +849,7 @@ export function BotSettings() {
               </Field>
               <Field
                 label="AI replies per customer per hour"
-                hint="Stops one number from using the AI again and again. After an hour the bot answers them again."
+                hint={`Stops one number from using the AI again and again. Default ${AI_LIMIT_DEFAULTS.repliesPerCustomerPerHour}. After an hour the bot answers them again.`}
               >
                 <input
                   className="input"
@@ -774,6 +860,21 @@ export function BotSettings() {
                   step="1"
                   value={repliesPerCustomer}
                   onChange={(e) => setRepliesPerCustomer(e.target.value)}
+                />
+              </Field>
+              <Field
+                label="Messages per customer per minute"
+                hint={`This many messages from one number within a minute pause the bot for that customer for ${BURST_PAUSE_MS / 60000} minutes, and staff see the chat. Default ${AI_LIMIT_DEFAULTS.messagesPerCustomerPerMinute}.`}
+              >
+                <input
+                  className="input"
+                  type="number"
+                  inputMode="numeric"
+                  min={minPerMinute}
+                  max={maxPerMinute}
+                  step="1"
+                  value={messagesPerMinute}
+                  onChange={(e) => setMessagesPerMinute(e.target.value)}
                 />
               </Field>
             </div>

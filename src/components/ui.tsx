@@ -1,6 +1,7 @@
 import { useContext, useEffect, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Workspace, type Toast } from '../lib/workspace';
+import type { ReadinessCheck } from '../shared/types';
 import * as Dialog from '@radix-ui/react-dialog';
 import * as AlertDialog from '@radix-ui/react-alert-dialog';
 import { AlertCircle, ArrowRight, Check, CheckCircle2, Info, X } from 'lucide-react';
@@ -313,6 +314,26 @@ export function ConfirmDialog({
         </AlertDialog.Content>
       </AlertDialog.Portal>
     </AlertDialog.Root>
+  );
+}
+/** A readiness row's way to where it is fixed, when it has one and is not done yet. */
+export function ReadinessLink({ check }: { check: ReadinessCheck }) {
+  const workspace = useContext(Workspace);
+  if (check.id !== 'fulfillment' || check.ready || !workspace) return null;
+  return (
+    <button
+      type="button"
+      className="ml-auto shrink-0 font-semibold text-brand-700 underline-offset-4 transition-colors hover:text-brand-800 hover:underline"
+      onClick={() => {
+        workspace.navigate('settings');
+        // Settings shows once this click has been handled; then bring Delivery areas into view.
+        setTimeout(() =>
+          document.getElementById('delivery-areas')?.scrollIntoView({ block: 'start' }),
+        );
+      }}
+    >
+      Delivery settings
+    </button>
   );
 }
 export function PageHeading({

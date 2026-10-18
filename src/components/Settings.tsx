@@ -227,7 +227,7 @@ export function Settings() {
               </div>
             </div>
           </section>
-          <section className="card p-6">
+          <section id="delivery-areas" className="card scroll-mt-24 p-6">
             <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
               <h2 className="panel-title">Delivery areas</h2>
               <button
