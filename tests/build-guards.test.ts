@@ -72,6 +72,7 @@ function prerender(
     const files: Record<string, string> = {
       'src/public-render.tsx':
         'export const renderPublic = (path: string) => `<main>${path}</main>`;',
+      'src/components/Public.tsx': "export const supportEmail = 'help@orderly.example';",
       'dist/index.html': shell,
       'dist/.vite/manifest.json': JSON.stringify(manifest),
       ...Object.fromEntries(Object.entries(chunks).map(([file, code]) => [`dist/${file}`, code])),
@@ -91,6 +92,7 @@ function prerender(
       error: run.stderr,
       menu: page('menu.html'),
       app: page('app.html'),
+      security: page('.well-known/security.txt'),
     };
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -147,5 +149,35 @@ describe('prerendered menu and workspace pages', () => {
     expect(run.error).toContain(`The menu page must stay light`);
     expect(run.error).toContain(named);
     expect(run.menu).toBe('');
+  });
+});
+
+describe('security.txt', () => {
+  it('tells researchers where to report, with the Contact page address, and expires in about 180 days', () => {
+    const before = Date.now();
+    const run = prerender();
+    expect(run.status, run.error).toBe(0);
+    const fields = Object.fromEntries(
+      run.security
+        .trim()
+        .split('\n')
+        .map((line) => line.split(/: (.*)/s).slice(0, 2)),
+    );
+    expect(Object.keys(fields)).toEqual(['Contact', 'Expires', 'Preferred-Languages', 'Policy']);
+    expect(fields.Contact).toBe('mailto:help@orderly.example');
+    expect(fields['Preferred-Languages']).toBe('en');
+    expect(fields.Policy).toBe('/privacy');
+    expect(fields.Expires).toMatch(/^\d{4}-\d{2}-\d{2}T00:00:00\.000Z$/);
+    const days = (Date.parse(fields.Expires) - before) / 86400000;
+    expect(days).toBeGreaterThan(178);
+    expect(days).toBeLessThanOrEqual(180);
+  });
+
+  it('names the real support address from the Contact page', () => {
+    const script = readFileSync(join(process.cwd(), 'scripts/prerender-public.mjs'), 'utf8');
+    expect(script).toContain("export { supportEmail } from './src/components/Public.tsx';");
+    expect(readFileSync(join(process.cwd(), 'src/components/Public.tsx'), 'utf8')).toMatch(
+      /export const supportEmail = '[^'@\s]+@[^'@\s]+'/,
+    );
   });
 });

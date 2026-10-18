@@ -201,6 +201,10 @@ export function Contact() {
           passwords, API keys or verification codes. We verify requests before releasing or deleting
           customer information.
         </p>
+        <p className="mt-3 max-w-2xl text-sm leading-7 text-stone-500">
+          Found a security weakness? Please report it to the same address with the steps to see it,
+          and give us time to fix it before telling others.
+        </p>
       </main>
       <PublicFooter />
     </div>
