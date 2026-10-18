@@ -10,7 +10,7 @@ import {
 import { Store } from './store.js';
 import type { GatewayConfig } from './config.js';
 import { signedHeaders } from '../../server/whatsapp/signing.js';
-import { retryDelay } from './policy.js';
+import { crashRestartDelay, HEALTHY_AFTER_MS, restorable } from './policy.js';
 
 type Session = {
   connectionId: string;
@@ -56,6 +56,7 @@ export class Supervisor {
   constructor(
     private config: GatewayConfig,
     private workerUrl = new URL('./worker.js', import.meta.url),
+    private healthyAfterMs = HEALTHY_AFTER_MS,
   ) {
     this.store = new Store(join(config.dataDir, 'gateway.sqlite'), config.key);
     if (!this.store.lease(this.owner)) {
@@ -84,7 +85,8 @@ export class Supervisor {
   }
   restore() {
     for (const { value: session } of this.store.list<Session>('sessions')) {
-      if (['connected', 'connecting', 'reconnecting'].includes(session.status)) this.spawn(session);
+      // Also revives sessions an earlier gateway parked in 'error' after a passing failure.
+      if (restorable(session.status, session.errorCode)) this.spawn(session);
       else if (session.status === 'awaiting_pairing')
         this.update({ ...session, status: 'error', errorCode: 'PAIRING_EXPIRED' });
     }
@@ -105,6 +107,9 @@ export class Supervisor {
       generation: session.generation,
       status: 'connecting',
     });
+    // The child's own reason for exiting, and since when it has been connected without a break.
+    let fatal: string | undefined;
+    let connectedSince: number | undefined;
     child.on('error', () => {
       this.log('WORKER_PROCESS_ERROR', session.connectionId);
       child.kill();
@@ -119,12 +124,18 @@ export class Supervisor {
           )
             return;
           this.snapshots.set(session.connectionId, message.snapshot);
+          if (message.snapshot.status === 'connected') connectedSince ??= Date.now();
+          else connectedSince = undefined;
+          const healthy =
+            connectedSince !== undefined && Date.now() - connectedSince >= this.healthyAfterMs;
           const current = this.store.get<Session>('sessions', session.connectionId);
           if (current?.generation === session.generation)
             this.update({
               ...current,
               status: message.snapshot.status,
               errorCode: message.snapshot.errorCode,
+              // Old crashes no longer slow down restarts once the session has proved healthy.
+              ...(healthy ? { crashes: 0 } : {}),
             });
         }
         if (message.type === 'result') {
@@ -135,7 +146,11 @@ export class Supervisor {
           if (message.errorCode) pending.reject(new GatewayError(message.errorCode));
           else pending.resolve(message.result);
         }
-        if (message.type === 'fatal') this.log(message.errorCode, session.connectionId);
+        if (message.type === 'fatal') {
+          fatal = typeof message.errorCode === 'string' ? message.errorCode : undefined;
+          this.log(message.errorCode, session.connectionId);
+        }
+        if (message.type === 'warning') this.log(message.code, session.connectionId);
       } catch {
         this.log('SUPERVISOR_MESSAGE_FAILURE', session.connectionId);
         child.kill();
@@ -159,25 +174,27 @@ export class Supervisor {
         ['disconnected', 'logged_out'].includes(current.status)
       )
         return;
+      // Keep the child's real reason (for example INBOUND_QUEUE_FULL) visible in Orderly.
       const next: Session = {
         ...current,
         crashes: current.crashes + 1,
         status: 'error',
-        errorCode: 'SESSION_CRASH',
+        errorCode: fatal ?? 'SESSION_CRASH',
       };
       this.update(next);
       this.queueError(next);
-      if (next.crashes <= 5) {
+      // Restarts never stop; repeated crashes only wait longer, up to 30 minutes.
+      if (restorable(next.status, next.errorCode)) {
         const timer = setTimeout(() => {
           this.restartTimers.delete(timer);
           const latest = this.store.get<Session>('sessions', next.connectionId);
           if (
             latest?.generation === next.generation &&
             latest.status === 'error' &&
-            latest.errorCode === 'SESSION_CRASH'
+            latest.errorCode === next.errorCode
           )
             this.spawn(latest);
-        }, retryDelay(next.crashes));
+        }, crashRestartDelay(next.crashes));
         this.restartTimers.add(timer);
       }
     });

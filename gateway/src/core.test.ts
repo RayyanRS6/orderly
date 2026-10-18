@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { Store } from './store.js';
-import { canonicalJid, phoneFromJid, disconnectPolicy, retryDelay } from './policy.js';
+import { canonicalJid, phoneFromJid, reconnectDecision } from './policy.js';
 import { sendOnce, recoverUncertainSends, type Receipt } from './sender.js';
 
 function fixture() {
@@ -66,12 +66,14 @@ test('unknown LIDs are never interpreted as telephone numbers and group addresse
     assert.equal(canonicalJid(jid), undefined);
 });
 test('disconnect policies distinguish terminal failures from restart and network errors', () => {
-  assert.equal(disconnectPolicy(401), 'logout');
-  assert.equal(disconnectPolicy(515), 'restart');
-  for (const code of [408, 428, 503]) assert.equal(disconnectPolicy(code), 'retry');
-  for (const code of [403, 411, 440, 500, 405, 0]) assert.equal(disconnectPolicy(code), 'stop');
-  assert.ok(retryDelay(3, 0) < retryDelay(3, 1));
-  assert.ok(retryDelay(100, 1) <= 75000);
+  const action = (code: number) => reconnectDecision(code, 1).action;
+  assert.equal(action(401), 'logout');
+  assert.equal(action(515), 'restart');
+  // 500 and 0 are Baileys' generic stream and socket errors: they clear by themselves.
+  for (const code of [408, 428, 503, 500, 0]) assert.equal(action(code), 'retry');
+  for (const code of [403, 411, 440, 405]) assert.equal(action(code), 'stop');
+  assert.ok(reconnectDecision(408, 3, 0, 0).delayMs < reconnectDecision(408, 3, 0, 1).delayMs);
+  assert.ok(reconnectDecision(408, 100, 0, 1).delayMs <= 375000);
 });
 const body = {
   idempotencyKey: 'job-one',

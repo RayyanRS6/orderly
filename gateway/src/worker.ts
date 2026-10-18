@@ -15,11 +15,12 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { loadConfig } from './config.js';
 import { Store } from './store.js';
-import { canonicalJid, phoneFromJid, disconnectPolicy, retryDelay } from './policy.js';
+import { canonicalJid, phoneFromJid, heartbeatDue, reconnectDecision, TICK_MS } from './policy.js';
 import { sendOnce, recoverUncertainSends } from './sender.js';
 import { chatContent, receiptStatus, upsertedMessages } from './upserts.js';
 import { signedHeaders } from '../../server/whatsapp/signing.js';
 import {
+  GATEWAY_HEARTBEAT_MS,
   sendCommandSchema,
   type GatewayEvent,
   type WhatsAppConnection,
@@ -36,8 +37,12 @@ let pairing: { qr?: string; code?: string; expiresAt?: string } = {};
 let method: 'qr' | 'code' = 'qr';
 let phone: string | undefined;
 let stopped = false;
+// Set once fail() has reported a fatal code; the close it causes must not overwrite it.
+let failed = false;
 let retries = 0;
+let restarts = 0;
 let openedAt = 0;
+let lastStatusAt = 0;
 let codeRequested = false;
 let draining = false;
 let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
@@ -50,6 +55,9 @@ let sendChain = Promise.resolve();
 // arrives, although it was accepted. Kept encrypted on disk for three days.
 const SENT_RETENTION_MS = 3 * 86400000;
 const EVENT_BATCH = 50;
+// Baileys has no overall connect timer: a server that never answers the upgrade leaves a
+// socket that neither opens nor closes. Give up on it as a timeout (408) and retry.
+const CONNECT_WATCHDOG_MS = 45000;
 const encode = (value: unknown) => JSON.parse(JSON.stringify(value, BufferJSON.replacer));
 const decode = <T>(value: unknown): T => JSON.parse(JSON.stringify(value), BufferJSON.reviver);
 const snapshot = () => ({
@@ -85,6 +93,7 @@ function event(partial: Partial<GatewayEvent> & { type: GatewayEvent['type'] }) 
 function setStatus(next: typeof status, code?: string) {
   status = next;
   errorCode = code;
+  lastStatusAt = Date.now();
   if (next !== 'awaiting_pairing') pairing = {};
   const account = canonicalJid(socket?.user?.id);
   // QR pairing does not reliably set creds.registered in this pinned library.
@@ -244,7 +253,8 @@ function incoming(message: WAMessage) {
   void drain().catch(() => fail('EVENT_STORAGE_FAILURE'));
 }
 function fail(code: string) {
-  if (stopped) return;
+  if (stopped || failed) return;
+  failed = true;
   try {
     setStatus('error', code);
     socket?.end(new Error(code));
@@ -260,8 +270,13 @@ function guard(work: () => void | Promise<void>) {
     .catch(() => fail('SESSION_HANDLER_FAILURE'));
 }
 async function connect() {
-  if (stopped) return;
+  if (stopped || failed) return;
   codeRequested = false;
+  // End any previous socket before replacing it. It is detached first, so its close event
+  // cannot schedule a second reconnect; ending a closed socket does nothing.
+  const previous = socket;
+  socket = undefined;
+  previous?.end(new Error('REPLACED'));
   const version =
     config.version ??
     store.get<[number, number, number]>('protocol', 'last-good:6.7.22') ??
@@ -288,6 +303,15 @@ async function connect() {
     },
   });
   socket = currentSocket;
+  // Only for an already paired account: pairing waits for the owner, not for the network.
+  const watchdog = auth.creds.account
+    ? setTimeout(() => {
+        if (socket === currentSocket)
+          currentSocket.end(
+            Object.assign(new Error('CONNECT_TIMEOUT'), { output: { statusCode: 408 } }),
+          );
+      }, CONNECT_WATCHDOG_MS)
+    : undefined;
   // Messages delivered after a reconnect are processed outside Baileys' per-node flush,
   // so the last ones can wait in its event buffer until the next live node, which can be
   // hours away on a quiet account. Flush it ourselves, and on close (below).
@@ -349,7 +373,9 @@ async function connect() {
         }
       }
       if (update.connection === 'open') {
+        clearTimeout(watchdog);
         openedAt = Date.now();
+        restarts = 0;
         persistCreds();
         if (!canonicalJid(currentSocket.user?.id)) {
           fail('INVALID_ACCOUNT_IDENTITY');
@@ -362,29 +388,32 @@ async function connect() {
         // Hand over anything still buffered while this socket is current; a new socket
         // starts with an empty buffer and WhatsApp will not deliver these again.
         clearInterval(flushTimer);
+        clearTimeout(watchdog);
         currentSocket.ev.flush();
         pairing = {};
+        // fail() already reported why this worker is stopping.
+        if (failed) return;
         const code =
           (update.lastDisconnect?.error as { output?: { statusCode?: number } })?.output
             ?.statusCode ?? 0;
-        const policy = disconnectPolicy(code);
-        if (policy === 'logout') {
+        if (openedAt && Date.now() - openedAt > 120000) retries = 0;
+        openedAt = 0;
+        const decision = reconnectDecision(code, retries + 1, restarts);
+        if (decision.action === 'logout') {
           store.clear('auth');
           setStatus('logged_out', 'LOGGED_OUT');
           return;
         }
-        if (policy === 'stop') {
+        if (decision.action === 'stop') {
           setStatus('error', `DISCONNECT_${code}`);
           return;
         }
-        if (openedAt && Date.now() - openedAt > 120000) retries = 0;
-        openedAt = 0;
-        if (++retries > 5) {
-          setStatus('error', 'RECONNECT_EXHAUSTED');
-          return;
-        }
+        // A requested restart is not a failure; everything else counts towards the backoff.
+        if (decision.action === 'restart') restarts++;
+        else retries++;
         setStatus('reconnecting', `DISCONNECT_${code}`);
-        reconnectTimer = setTimeout(() => guard(connect), retryDelay(retries));
+        clearTimeout(reconnectTimer);
+        reconnectTimer = setTimeout(() => guard(connect), decision.delayMs);
       }
     }),
   );
@@ -486,15 +515,19 @@ process.on('message', (message: any) => {
     setImmediate(() => process.exit(0));
   }
 });
+// Each status report is one Orderly function call, so an unchanged 'connected' is repeated
+// only once per heartbeat interval. Real changes are reported at once by setStatus, and the
+// tick still retries anything Orderly could not take.
 setInterval(
   () =>
     guard(async () => {
       if (!store || stopped) return;
-      if (status === 'connected') setStatus('connected');
+      if (status === 'connected' && heartbeatDue(lastStatusAt, Date.now(), GATEWAY_HEARTBEAT_MS))
+        setStatus('connected');
       pruneSent();
       await drain();
     }),
-  15000,
+  TICK_MS,
 ).unref();
 // Record only safe codes; do not resume an undefined process state.
 process.on('uncaughtException', () => {

@@ -189,8 +189,9 @@ In Orderly → **Integrations**, accept the risk notice and start QR or phone-co
 the restaurant owner. On the phone: WhatsApp → **Linked devices** → **Link a device**. Keep
 automatic replies paused until the live acceptance checklist in [README.md](README.md) passes.
 
-Afterwards, Orderly's **Agent flow** page shows **Last heartbeat** for the connection. It should
-stay under 90 seconds; older means Orderly treats WhatsApp as offline.
+Afterwards, Orderly's **Agent flow** page shows **Last heartbeat** for the connection. The gateway
+reports once a minute, so it should stay under about 75 seconds; over 3 minutes means Orderly
+treats WhatsApp as offline.
 
 ## 11. Running it: risks and caveats
 

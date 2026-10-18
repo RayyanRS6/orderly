@@ -8,7 +8,7 @@ the only business-logic authority. Official Meta connections remain supported.
 
 - Code includes QR + phone-number pairing, encrypted persistent auth, one child process
   per connection, signed callbacks/commands, durable message deduplication, generation
-  fences, manual-phone takeover, uncertain-send protection, and bounded reconnects.
+  fences, manual-phone takeover, uncertain-send protection, and backed-off reconnects.
 - **Pilot limit: 10 active numbers per gateway; one active route per restaurant.** This
   is an operational safety limit, not a Baileys subscription quota. It is not a measured
   ten-account production capacity guarantee. The ten-process automated test uses fake
@@ -89,8 +89,9 @@ the migration so old queued replies can be fenced safely.
   must not pause it. Resume only from Orderly's staff controls.
 - Interrupt/restart the gateway. Verify encrypted credentials restore without new pairing,
   queued inbound events retry once, and uncertain sends do not automatically resend.
-- Simulate network loss, logout and competing-session errors. Verify bounded retry and
-  actionable status. A logged-out account requires fresh pairing.
+- Simulate network loss, logout and competing-session errors. Verify the session keeps retrying
+  (status `reconnecting`) and recovers by itself once the network is back, and that the status
+  is actionable. A logged-out account requires fresh pairing.
 - Switch Meta → linked device → Meta with pending jobs. No old job may send via the new route.
 - Confirm sandbox messages generate no WhatsApp sends or Sheet order rows.
 - Test load and reconnect behavior progressively before expanding from one authorized number.
@@ -98,16 +99,24 @@ the migration so old queued replies can be fenced safely.
 ## Failure handling
 
 Each child owns one socket and SQLite database. A fatal child error exits; the supervisor
-restarts only that child up to five times. 401 clears authentication and requires pairing;
-440/403/411/500 and unknown codes stop reconnecting. 515 restarts the socket with retained
-credentials. 408/428/503 retry with bounded exponential backoff and jitter. A healthy socket
-resets network retries after two minutes. An explicit owner reconnect resets process retries.
+restarts only that child, with a backoff that grows to at most 30 minutes and never gives up.
+The child's own failure code (for example `INBOUND_QUEUE_FULL`) is kept instead of a generic
+`SESSION_CRASH`. Ten minutes of healthy connection forgets earlier crashes. 401 clears
+authentication and requires pairing; 403/405/411/440 stop reconnecting (405 needs a new
+`GATEWAY_WA_VERSION`, 440 means another copy took over). 515 restarts the socket at once with
+retained credentials. 408/428/503 retry without limit, backing off from 1 second to 1 minute
+and then every 5 minutes; 500, 0 and unknown codes do the same from a 5-second start. A connect
+that neither opens nor fails within 45 seconds is abandoned and retried. The status stays
+`reconnecting` with `DISCONNECT_<code>` meanwhile. A healthy socket resets network retries after
+two minutes. A gateway restart also revives sessions an older version parked in `error` with a
+passing failure code (`RECONNECT_EXHAUSTED`, `SESSION_CRASH`, `DISCONNECT_0/408/428/500/503/515`).
 
-Heartbeats reach Orderly every 15 seconds; a heartbeat older than 90 seconds is not ready to
-send. The gateway must also report a verified account identity. Backend callback failure
-keeps inbound events encrypted on disk, capped at 10,000 per session; a full queue stops
-the session for investigation. Monitor disk, stale heartbeats, `SESSION_CRASH`, queue failures
-and failed Orderly jobs. `/healthz` indicates process liveness, not every number's readiness.
+Heartbeats reach Orderly once a minute (the 15-second tick still retries undelivered events); a
+heartbeat older than 3 minutes is not ready to send. The gateway must also report a verified
+account identity. Backend callback failure keeps inbound events encrypted on disk, capped at
+10,000 per session; a full queue stops the session until it drains. Monitor disk, stale
+heartbeats, crash codes, queue failures and failed Orderly jobs. `/healthz` indicates process
+liveness, not every number's readiness.
 
 Outbound records reserve the WhatsApp message ID before sending and suppress that ID's echo.
 After an uncertain outcome, automatic retries return `SEND_UNCERTAIN`; staff must inspect the
