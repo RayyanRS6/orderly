@@ -41,6 +41,7 @@ import { PLATFORM_AUDIT_ID } from '../config';
 import { orderMatches, pageOf, summaryOf } from '../queries';
 import { effectiveAiLimits } from '../../src/shared/models';
 import {
+  GATEWAY_HEARTBEAT_STALE_MS,
   sameAddress,
   type WhatsAppConnection,
   type WhatsAppAddress,
@@ -117,6 +118,27 @@ const automaticNotice = (m: Message) =>
   m.notice === true || (m.role === 'staff' && STATUS_NOTICE.test(m.text ?? ''));
 const awaitsStaffReply = (messages: Message[]) =>
   messages.filter((m) => !automaticNotice(m)).at(-1)?.role !== 'staff';
+// Mirrors SQL whatsapp_down: a linked phone that stopped working while its business's bot is on
+// (logged out or failed, connected but silent past the heartbeat limit, or still reconnecting
+// `minutes` after it went down), with when it stopped. Only a phone that was paired.
+const whatsappDown = (state: State, companyId: string, minutes: number, now = Date.now()) => {
+  if (!state.companies.find((c) => c.id === companyId)?.botEnabled) return [];
+  return (state.whatsappConnections ?? []).flatMap((w): { id: string; downAt: string }[] => {
+    if (w.companyId !== companyId || w.provider !== 'baileys' || !w.accountJid) return [];
+    const since = (w as WhatsAppConnection & { downSince?: string }).downSince ?? w.updatedAt;
+    if (w.status === 'error' || w.status === 'logged_out') return [{ id: w.id, downAt: since }];
+    if (w.status === 'connected') {
+      const beat = Date.parse(w.lastHeartbeatAt ?? '');
+      return Number.isNaN(beat) || beat < now - GATEWAY_HEARTBEAT_STALE_MS
+        ? [{ id: w.id, downAt: w.lastHeartbeatAt ?? w.updatedAt }]
+        : [];
+    }
+    return (w.status === 'reconnecting' || w.status === 'connecting') &&
+      Date.parse(since) < now - minutes * 60000
+      ? [{ id: w.id, downAt: since }]
+      : [];
+  });
+};
 // Mirrors SQL erase_customer: only a whole international number is compared by its digits.
 const phoneDigits = (value: string) => value.replace(/\D/g, '');
 const wholeNumber = (digits: string) => /^[1-9]\d{9,14}$/.test(digits);
@@ -371,15 +393,18 @@ export class MemoryRepository implements Repository {
         (h) => h.companyId === companyId && Date.parse(h.lastHitAt) > Date.now() - 3600000,
       ),
     );
-    // Mirrors SQL: an order waiting 15 minutes counts whatever the alert delay, and the 80%
-    // warning counts at once.
+    const phoneDown = await this.read((s) => whatsappDown(s, companyId, minutes).length > 0);
+    // Mirrors SQL: an order waiting 15 minutes counts whatever the alert delay, the 80% warning
+    // counts at once, and a linked phone that stopped working by its own rule (whatsapp_down).
     return (
       recentLimit ||
+      phoneDown ||
       alerts.items.some(
         (a) =>
-          (a.kind === 'limit' && a.id.startsWith('limit:hourly_near:')) ||
-          Date.parse(a.createdAt) <
-            Date.now() - (a.kind === 'order' ? Math.min(minutes, 15) : minutes) * 60000,
+          a.kind !== 'whatsapp' &&
+          ((a.kind === 'limit' && a.id.startsWith('limit:hourly_near:')) ||
+            Date.parse(a.createdAt) <
+              Date.now() - (a.kind === 'order' ? Math.min(minutes, 15) : minutes) * 60000),
       )
     );
   }
@@ -465,9 +490,17 @@ export class MemoryRepository implements Repository {
           kind: 'limit',
           entityId: companyId,
           createdAt: new Date(hour).toISOString(),
-          // Newer than the shared type; dashboards that do not know it show "AI limit reached".
-          scope: 'hourly_near' as unknown as AttentionScope,
+          // Dashboards that do not know this scope show "AI limit reached".
+          scope: 'hourly_near' satisfies AttentionScope,
           resetsAt: new Date(hour + 3600000).toISOString(),
+        });
+      // A reconnecting phone shows after 3 minutes, when Agent flow calls it offline.
+      for (const down of whatsappDown(s, companyId, 3))
+        items.push({
+          id: `whatsapp:${down.id}`,
+          kind: 'whatsapp',
+          entityId: down.id,
+          createdAt: down.downAt,
         });
       return {
         total: items.length,
@@ -478,6 +511,7 @@ export class MemoryRepository implements Repository {
         // Limits reached; the 80% warning is not one.
         limits: items.filter((a) => a.kind === 'limit' && !a.id.startsWith('limit:hourly_near:'))
           .length,
+        whatsapp: items.filter((a) => a.kind === 'whatsapp').length,
         items: items
           .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || a.id.localeCompare(b.id))
           .slice(0, 30),

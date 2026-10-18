@@ -1,11 +1,13 @@
 -- Pre-launch fixes: staff email alerts reach the person who asked for them, erasing a customer
 -- finds every format of their number and clears their blocked-number label, automatic order
--- notices no longer hide a customer waiting for staff, the spam safety net is 1,500 AI replies an
--- hour (100 per customer) with a warning at 80%, a pipeline health check, a daily purge of old
--- operational rows, and a ledger of applied migrations.
+-- notices no longer hide a customer waiting for staff, a linked phone that stopped working alerts
+-- staff, the spam safety net is 1,500 AI replies an hour (100 per customer) with a warning at 80%,
+-- a pipeline health check, a daily purge of old operational rows, and a ledger of applied
+-- migrations.
 -- Apply after 202610190003_menu_purge_schedule.sql and before deploying the backend that calls
 -- orderly_pipeline_health. The backend and dashboard running now keep working: every function
--- keeps its signature and result shape, and the only new column has a default.
+-- keeps its signature and result shape (staff_attention only adds a 'whatsapp' count and items),
+-- and the only new column has a default.
 -- Safe to rerun while no later file redefines these functions. It replaces, starting from their
 -- latest bodies: alert_recipient (202609180001), erase_customer and run_retention (202609170001),
 -- prune_orderly_cron_history (202609110001), and ai_limit_settings, has_overdue_attention and
@@ -146,8 +148,30 @@ language sql stable security definer set search_path = public as $$
       and h.window_key=to_char(date_trunc('hour',now() at time zone 'UTC'),'YYYY-MM-DD"T"HH24')));
 $$;
 
+-- A linked phone that stopped working while its business's bot is on, so customers get no
+-- replies: logged out or failed, connected but silent for over 3 minutes (GATEWAY_HEARTBEAT_STALE_MS
+-- in src/shared/whatsapp.ts), or still reconnecting p_minutes after it went down (downSince; the
+-- last change for a connection saved before downSince existed). Only a phone that was paired (its
+-- account is known), so a pairing in progress is not an alert. down_at: when it stopped working.
+create or replace function public.whatsapp_down(p_company_id text,p_minutes integer)
+returns table(id text,down_at timestamptz)
+language sql stable security definer set search_path=public as $$
+  select w.id, case when w.data->>'status'='connected'
+      then coalesce((w.data->>'lastHeartbeatAt')::timestamptz,(w.data->>'updatedAt')::timestamptz)
+      else coalesce((w.data->>'downSince')::timestamptz,(w.data->>'updatedAt')::timestamptz) end
+  from whatsapp_connections w join companies c on c.id=w.company_id
+  where w.company_id=p_company_id and w.data->>'provider'='baileys' and c.data->>'botEnabled'='true'
+    and nullif(w.data->>'accountJid','') is not null
+    and (w.data->>'status' in ('error','logged_out')
+      or (w.data->>'status'='connected'
+        and coalesce((w.data->>'lastHeartbeatAt')::timestamptz,'-infinity')<now()-interval '180 seconds')
+      or (w.data->>'status' in ('reconnecting','connecting')
+        and coalesce((w.data->>'downSince')::timestamptz,(w.data->>'updatedAt')::timestamptz)<now()-make_interval(mins=>p_minutes)));
+$$;
+
 -- Latest body from 202610180001_spam_protection.sql. Changed: an automatic notice is not a staff
--- reply, an order waiting 15 minutes counts whatever the alert delay, and the 80% warning counts.
+-- reply, an order waiting 15 minutes counts whatever the alert delay, the 80% warning counts, and
+-- so does a linked phone that stopped working (one still reconnecting after the alert delay).
 create or replace function public.has_overdue_attention(p_company_id text,p_minutes integer) returns boolean
 language sql stable security definer set search_path=public as $$
   select exists(select 1 from orders where company_id=p_company_id and data->>'status'='pending' and data->>'sandbox'='false' and created_at<now()-make_interval(mins=>least(p_minutes,15)))
@@ -155,11 +179,15 @@ language sql stable security definer set search_path=public as $$
     or exists(select 1 from jobs where company_id=p_company_id and status='failed' and data->>'kind'<>'staff_alert' and created_at<now()-make_interval(mins=>p_minutes))
     or company_budget_warning(p_company_id)
     or exists(select 1 from ai_limit_hits where company_id=p_company_id and last_hit_at>now()-interval '1 hour')
-    or ai_hourly_warning(p_company_id);
+    or ai_hourly_warning(p_company_id)
+    or exists(select 1 from whatsapp_down(p_company_id,p_minutes));
 $$;
 -- Latest body from 202610180001_spam_protection.sql. Changed: an automatic notice is not a staff
 -- reply, and the 80% warning is a 'limit' item with scope 'hourly_near' (dashboards that do not
--- know it show "AI limit reached"). It is not counted in "limits", which are limits reached.
+-- know it show "AI limit reached"). It is not counted in "limits", which are limits reached. A
+-- linked phone that stopped working is a 'whatsapp' item (counted in "whatsapp"; dashboards that do
+-- not know it show "Something needs attention"); one reconnecting shows after 3 minutes, when
+-- Agent flow calls it offline.
 create or replace function public.staff_attention(p_company_id text) returns jsonb
 language sql stable security definer set search_path=public as $$
   with limits as (
@@ -189,6 +217,8 @@ language sql stable security definer set search_path=public as $$
     select 'limit:hourly_near:'||to_char(date_trunc('hour',now() at time zone 'UTC'),'YYYY-MM-DD"T"HH24'),'limit',p_company_id,
       date_trunc('hour',now() at time zone 'UTC') at time zone 'UTC','hourly_near',(date_trunc('hour',now() at time zone 'UTC') at time zone 'UTC')+interval '1 hour'
       where ai_hourly_warning(p_company_id)
+    union all
+    select 'whatsapp:'||id,'whatsapp',id,down_at,null,null from whatsapp_down(p_company_id,3)
   )
   select jsonb_build_object('total',(select count(*) from alerts),
     'orders',(select count(*) from alerts where kind='order'),
@@ -196,6 +226,7 @@ language sql stable security definer set search_path=public as $$
     'failures',(select count(*) from alerts where kind='job'),
     'budgets',(select count(*) from alerts where kind='budget'),
     'limits',(select count(*) from alerts where kind='limit' and scope<>'hourly_near'),
+    'whatsapp',(select count(*) from alerts where kind='whatsapp'),
     'items',coalesce((select jsonb_agg(jsonb_strip_nulls(to_jsonb(a))) from (select * from alerts order by "createdAt" desc,id limit 30) a),'[]'::jsonb));
 $$;
 
@@ -308,7 +339,7 @@ $$;
 do $$ declare f record; begin
   for f in select oid::regprocedure signature from pg_proc where pronamespace='public'::regnamespace
     and proname=any(array['alert_recipient','erase_customer','run_retention','awaits_staff_reply','ai_limit_settings',
-      'ai_hourly_warning','has_overdue_attention','staff_attention','orderly_pipeline_health','purge_orderly_operations',
+      'ai_hourly_warning','whatsapp_down','has_overdue_attention','staff_attention','orderly_pipeline_health','purge_orderly_operations',
       'prune_orderly_cron_history']) loop
     execute format('revoke all on function %s from public,anon,authenticated',f.signature);
     execute format('grant execute on function %s to service_role',f.signature);

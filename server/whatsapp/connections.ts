@@ -18,8 +18,13 @@ import { dispatchJob, makeJob } from '../jobs';
 export const LINKED_DEVICE_CONSENT_VERSION = 'linked-device-risk-2026-10-18';
 /** Who accepted the linked-phone risk notice for this pairing, and which version of it. */
 export type LinkedDeviceConsent = { userId: string; at: string; version: string };
-// A connection as stored, with the consent its pairing was made under.
-type StoredConnection = WhatsAppConnection & { linkedDeviceConsent?: LinkedDeviceConsent };
+// A connection as stored, with the consent its pairing was made under. downSince: when a linked
+// phone stopped being connected (cleared once it is again), for staff alerts. Every reconnect
+// attempt refreshes updatedAt and lastHeartbeatAt, so neither shows how long it has been down.
+type StoredConnection = WhatsAppConnection & {
+  linkedDeviceConsent?: LinkedDeviceConsent;
+  downSince?: string;
+};
 // Older gateways may answer /health without these fields; the gateway still refuses itself.
 const gatewayHealthSchema = z.object({
   ok: z.boolean(),
@@ -310,7 +315,9 @@ export async function selectMeta(repo: Repository, companyId: string) {
 export async function receiveGatewayEvent(repo: Repository, event: GatewayEvent) {
   if (Date.parse(event.timestamp) > Date.now() + 60000)
     throw new PublicError('Gateway timestamp is in the future.', 400);
-  const current = await repo.findWhatsAppConnection(event.connectionId);
+  const current: StoredConnection | undefined = await repo.findWhatsAppConnection(
+    event.connectionId,
+  );
   if (
     !current ||
     current.provider !== 'baileys' ||
@@ -325,14 +332,16 @@ export async function receiveGatewayEvent(repo: Repository, event: GatewayEvent)
       throw new PublicError('Connected event must identify the verified account.', 400);
     if (event.accountJid && current.accountJid && event.accountJid !== current.accountJid)
       throw new PublicError('Account identity changed without new pairing.', 409);
+    const status = event.status ?? current.status;
     await saveConnection(repo, {
       ...current,
-      status: event.status ?? current.status,
+      status,
       lastHeartbeatAt: event.timestamp,
       accountJid: event.accountJid ?? current.accountJid,
       phoneNumber: event.phoneNumber ?? current.phoneNumber,
       pushName: event.pushName ?? current.pushName,
       errorCode: event.errorCode,
+      downSince: status === 'connected' ? undefined : (current.downSince ?? event.timestamp),
     });
     return;
   }

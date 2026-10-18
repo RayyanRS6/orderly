@@ -442,13 +442,19 @@ export interface StaffAttention {
   budgets: number;
   /** Missing from servers older than the AI limits. */
   limits?: number;
+  /** Linked phones that stopped working while the bot is on. Missing from older servers. */
+  whatsapp?: number;
   items: {
     id: string;
-    kind: 'order' | 'handoff' | 'job' | 'budget' | 'limit';
+    /** 'whatsapp': a linked phone stopped working (entityId is the connection). */
+    kind: 'order' | 'handoff' | 'job' | 'budget' | 'limit' | 'whatsapp';
     entityId: string;
     createdAt: string;
-    /** For 'limit': which limit, and when the bot answers again. */
-    scope?: 'monthly' | 'hourly';
+    /**
+     * For 'limit': which limit, and when the bot answers again. 'hourly_near': 80% of this
+     * hour's AI replies are used (a warning, not counted in `limits`).
+     */
+    scope?: 'monthly' | 'hourly' | 'hourly_near';
     resetsAt?: string;
   }[];
 }
