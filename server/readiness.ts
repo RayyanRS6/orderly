@@ -3,6 +3,7 @@ import type { Repository } from './repository';
 import { providerKey } from './integrations/models';
 import { modelFingerprint } from './integrations/model-catalog';
 import { gatewayAvailable } from './whatsapp/client';
+import { GATEWAY_HEARTBEAT_STALE_MS } from '../src/shared/whatsapp';
 
 export async function readiness(repo: Repository, company: Company): Promise<ReadinessCheck[]> {
   const [products, integrations] = await Promise.all([
@@ -26,7 +27,7 @@ export async function readiness(repo: Repository, company: Company): Promise<Rea
         connection.status === 'connected' &&
         !!connection.accountJid &&
         !!connection.lastHeartbeatAt &&
-        Date.now() - Date.parse(connection.lastHeartbeatAt) < 90000
+        Date.now() - Date.parse(connection.lastHeartbeatAt) < GATEWAY_HEARTBEAT_STALE_MS
       : (!connection || connection.status !== 'disconnected') &&
         whatsapp?.status === 'connected' &&
         !!whatsapp.config.ownershipVerifiedAt;

@@ -3,6 +3,7 @@ import type { Repository } from '../repository';
 import { PublicError } from '../security';
 import { gatewayRequest } from '../whatsapp/client';
 import { assertCurrentAddress } from '../whatsapp/connections';
+import { GATEWAY_HEARTBEAT_STALE_MS } from '../../src/shared/whatsapp';
 import { z } from 'zod';
 
 export class LinkedWhatsAppAdapter {
@@ -25,7 +26,7 @@ export class LinkedWhatsAppAdapter {
     if (
       connection?.status !== 'connected' ||
       !connection.lastHeartbeatAt ||
-      Date.now() - Date.parse(connection.lastHeartbeatAt) > 90000
+      Date.now() - Date.parse(connection.lastHeartbeatAt) > GATEWAY_HEARTBEAT_STALE_MS
     )
       throw new PublicError(
         'WhatsApp is offline or its heartbeat expired. Reconnect the linked device.',

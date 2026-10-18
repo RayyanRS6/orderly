@@ -24,6 +24,10 @@ export type WhatsAppConnection = {
   errorCode?: string;
   updatedAt: string;
 };
+// A connected linked phone reports to Orderly once a minute (each report is one Supabase
+// function call). Replies stop only after three missed reports, so one late beat is harmless.
+export const GATEWAY_HEARTBEAT_MS = 60000;
+export const GATEWAY_HEARTBEAT_STALE_MS = 180000;
 export type WhatsAppAddress = {
   connectionId: string;
   generation: number;

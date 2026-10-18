@@ -21,6 +21,7 @@ import { readiness } from './readiness.js';
 import { modelRate, promptCacheEnabled, providerKey } from './integrations/models.js';
 import { modelFingerprint } from './integrations/model-catalog.js';
 import { gatewayAvailable } from './whatsapp/client.js';
+import { GATEWAY_HEARTBEAT_STALE_MS } from '../src/shared/whatsapp.js';
 
 const usd = (value: number) => `$${value.toFixed(value > 0 && value < 0.01 ? 4 : 2)}`;
 const yes = (value: boolean, ok = 'Yes', no = 'No') => (value ? ok : no);
@@ -128,7 +129,10 @@ export async function buildAgentFlow(
           {
             label: 'Last heartbeat',
             value: heartbeatAge === undefined ? 'None yet' : `${heartbeatAge}s ago`,
-            tone: heartbeatAge !== undefined && heartbeatAge < 90 ? 'ok' : 'warn',
+            tone:
+              heartbeatAge !== undefined && heartbeatAge * 1000 < GATEWAY_HEARTBEAT_STALE_MS
+                ? 'ok'
+                : 'warn',
           },
           {
             label: 'Gateway server',
