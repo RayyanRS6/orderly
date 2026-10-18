@@ -15,11 +15,23 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { loadConfig } from './config.js';
 import { Store } from './store.js';
-import { canonicalJid, phoneFromJid, disconnectPolicy, retryDelay } from './policy.js';
+import { canonicalJid, phoneFromJid, heartbeatDue, reconnectDecision, TICK_MS } from './policy.js';
 import { sendOnce, recoverUncertainSends } from './sender.js';
-import { chatContent, receiptStatus, upsertedMessages } from './upserts.js';
+import { drainOnce, EVENT_BATCH, retryDeadEvents } from './drain.js';
+import { endSocket } from './shutdown.js';
+import { chatContent, messageText, receiptStatus, upsertedMessages } from './upserts.js';
+import { mapIdentity, messageIdentity } from './routing.js';
+import {
+  awaitsContent,
+  expiredPlaceholders,
+  holdPlaceholder,
+  inboundTarget,
+  isSeen,
+  queueMessage,
+} from './inbound.js';
 import { signedHeaders } from '../../server/whatsapp/signing.js';
 import {
+  GATEWAY_HEARTBEAT_MS,
   sendCommandSchema,
   type GatewayEvent,
   type WhatsAppConnection,
@@ -36,9 +48,14 @@ let pairing: { qr?: string; code?: string; expiresAt?: string } = {};
 let method: 'qr' | 'code' = 'qr';
 let phone: string | undefined;
 let stopped = false;
+// Set once fail() has reported a fatal code; the close it causes must not overwrite it.
+let failed = false;
 let retries = 0;
+let restarts = 0;
 let openedAt = 0;
+let lastStatusAt = 0;
 let codeRequested = false;
+let conflictLogged = false;
 let draining = false;
 let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 let drainAgain = false;
@@ -49,7 +66,9 @@ let sendChain = Promise.resolve();
 // (common for a first message or a new device). Without the original the reply never
 // arrives, although it was accepted. Kept encrypted on disk for three days.
 const SENT_RETENTION_MS = 3 * 86400000;
-const EVENT_BATCH = 50;
+// Baileys has no overall connect timer: a server that never answers the upgrade leaves a
+// socket that neither opens nor closes. Give up on it as a timeout (408) and retry.
+const CONNECT_WATCHDOG_MS = 45000;
 const encode = (value: unknown) => JSON.parse(JSON.stringify(value, BufferJSON.replacer));
 const decode = <T>(value: unknown): T => JSON.parse(JSON.stringify(value), BufferJSON.reviver);
 const snapshot = () => ({
@@ -84,7 +103,12 @@ function event(partial: Partial<GatewayEvent> & { type: GatewayEvent['type'] }) 
 }
 function setStatus(next: typeof status, code?: string) {
   status = next;
-  errorCode = code;
+  // While a customer message Orderly rejected is set aside, a connected phone says so: the
+  // message only reached the restaurant's phone. Re-sent with every heartbeat until cleared.
+  errorCode =
+    code ??
+    (next === 'connected' && store.count('dead-events') > 0 ? 'INBOUND_EVENT_REJECTED' : undefined);
+  lastStatusAt = Date.now();
   if (next !== 'awaiting_pairing') pairing = {};
   const account = canonicalJid(socket?.user?.id);
   // QR pairing does not reliably set creds.registered in this pinned library.
@@ -115,56 +139,23 @@ async function drain() {
     let more = true;
     while (more) {
       drainAgain = false;
-      const sent = await drainOnce();
+      const sent = await drainOnce(store, postEvent, () => drainAgain);
       more = sent !== false && (drainAgain || sent >= EVENT_BATCH);
     }
   } finally {
     draining = false;
   }
 }
-// Returns how many messages were sent, or false when the backend could not take them.
-async function drainOnce(): Promise<number | false> {
-  // Status first so the backend knows the account before accepting messages, and
-  // receipts last: they are informational and must never hold up a customer message.
-  const rows = [
-    ...store.list<GatewayEvent>('status-event').map((r) => ({ ...r, namespace: 'status-event' })),
-    ...store.list<GatewayEvent>('events', EVENT_BATCH).map((r) => ({ ...r, namespace: 'events' })),
-    ...store
-      .list<GatewayEvent>('receipt-events', EVENT_BATCH)
-      .map((r) => ({ ...r, namespace: 'receipt-events' })),
-  ];
-  let messages = 0;
-  for (const row of rows) {
-    // A customer message saved meanwhile goes before the remaining ticks.
-    if (row.namespace === 'receipt-events' && drainAgain) break;
-    const raw = JSON.stringify(row.value);
-    let response: Response;
-    try {
-      response = await fetch(config.eventsUrl, {
-        method: 'POST',
-        headers: signedHeaders(config.secret, 'event', '/api/whatsapp/gateway/events', raw),
-        body: raw,
-        signal: AbortSignal.timeout(10000),
-        redirect: 'error',
-      });
-    } catch {
-      return false;
-    }
-    if (!response.ok) {
-      // A rejected receipt is dropped; it is only a tick in the inbox.
-      if (row.namespace === 'receipt-events' && response.status < 500) {
-        store.delete(row.namespace, row.id);
-        continue;
-      }
-      // Never silently discard a message or endlessly grow memory. Backend failures
-      // are retried from encrypted disk; an operator can inspect queue counts.
-      return false;
-    }
-    if (store.get<GatewayEvent>(row.namespace, row.id)?.eventId === row.value.eventId)
-      store.delete(row.namespace, row.id);
-    if (row.namespace === 'events') messages++;
-  }
-  return messages;
+async function postEvent(raw: string) {
+  const response = await fetch(config.eventsUrl, {
+    method: 'POST',
+    headers: signedHeaders(config.secret, 'event', '/api/whatsapp/gateway/events', raw),
+    body: raw,
+    signal: AbortSignal.timeout(10000),
+    redirect: 'error',
+  });
+  await response.body?.cancel().catch(() => undefined);
+  return response.status;
 }
 function receipt(key: proto.IMessageKey, status?: number | null) {
   const value = receiptStatus(status);
@@ -189,23 +180,20 @@ function pruneSent() {
   for (const row of store.list<{ at: number }>('sent'))
     if (Date.now() - row.value.at > SENT_RETENTION_MS) store.delete('sent', row.id);
 }
-function mapIdentity(lidValue?: string, pnValue?: string) {
-  const lid = canonicalJid(lidValue);
-  const pn = canonicalJid(pnValue);
-  if (!lid?.endsWith('@lid') || !pn?.endsWith('@s.whatsapp.net')) return;
-  store.transaction(() => {
-    const route = store.get<string>('route', lid) ?? store.get<string>('route', pn) ?? lid;
-    store.set('identity', lid, pn);
-    store.set('route', lid, route);
-    store.set('route', pn, route);
-  });
+// The business's own JIDs, never mapped to a customer.
+const self = () => [canonicalJid(socket?.user?.id), canonicalJid(socket?.user?.lid)];
+function linkIdentity(lid?: string | null, pn?: string | null) {
+  if (mapIdentity(store, lid, pn, self()) === 'conflict' && !conflictLogged) {
+    conflictLogged = true;
+    // Code only: no JIDs or phone numbers in logs.
+    process.send?.({ type: 'warning', code: 'ROUTE_CONFLICT' });
+  }
 }
 function incoming(message: WAMessage) {
-  const native = canonicalJid(message.key.remoteJid);
-  const id = message.key.id;
-  const content = chatContent(message.message);
-  if (!native || !id || !content) return;
-  if (message.key.fromMe && store.get('own', id)) return;
+  const target = inboundTarget(store, message);
+  if (!target) return;
+  const { id, native, held, fromMe } = target;
+  if (fromMe && store.get('own', id)) return;
   const timestamp = Number(message.messageTimestamp) * 1000;
   if (
     !Number.isFinite(timestamp) ||
@@ -213,38 +201,44 @@ function incoming(message: WAMessage) {
     timestamp < Date.now() - 86400000
   )
     return;
-  const seenId = `${native}:${id}`;
-  if (store.get('seen', seenId)) return;
+  const content = chatContent(message.message);
+  if (!content) {
+    // Held until its content arrives; staff are told if it never does (see the tick below).
+    if (awaitsContent(message) && !isSeen(store, native, id, fromMe))
+      holdPlaceholder(store, id, native, timestamp, Date.now());
+    return;
+  }
+  if (isSeen(store, native, id, fromMe)) {
+    if (held) store.delete('placeholder', id);
+    return;
+  }
+  // Before choosing the chat: a LID message that names the customer's phone joins the chat
+  // already kept for that phone, and the other way round.
+  const identity = messageIdentity(native, message.key);
+  if (identity) linkIdentity(identity.lid, identity.pn);
+  enqueue(native, id, timestamp, messageText(content), fromMe);
+}
+function enqueue(native: string, id: string, timestamp: number, text: string, fromMe: boolean) {
   if (store.count('events') >= 10000) {
     fail('INBOUND_QUEUE_FULL');
     return;
   }
-  const peer = store.get<string>('route', native) ?? native;
-  store.set('route', native, peer);
-  const text = (content.conversation ?? content.extendedTextMessage?.text ?? '').slice(0, 4000);
-  const mapped = store.get<string>('identity', native);
-  store.transaction(() => {
-    // Durable dedupe and enqueue commit together, before the model can be called.
-    const value: GatewayEvent = {
-      eventId: randomUUID(),
-      connectionId,
-      generation,
-      type: 'message',
-      peer,
-      messageId: id,
-      text,
-      fromMe: !!message.key.fromMe,
-      unsupported: !text,
-      phoneNumber: phoneFromJid(mapped ?? native),
-      timestamp: new Date(timestamp).toISOString(),
-    };
-    store.set('events', value.eventId, value);
-    store.set('seen', seenId, Date.now());
-  });
+  queueMessage(store, { connectionId, generation, native, id, timestamp, text, fromMe });
   void drain().catch(() => fail('EVENT_STORAGE_FAILURE'));
 }
+// A customer message whose content never reached this device goes to staff (as unsupported
+// media does) instead of vanishing. Copies that arrived meanwhile were already taken.
+function releasePlaceholders() {
+  const now = Date.now();
+  for (const { id, value } of expiredPlaceholders(store, now)) {
+    if (value.timestamp >= now - 86400000 && !isSeen(store, value.native, id, false))
+      enqueue(value.native, id, value.timestamp, '', false);
+    else store.delete('placeholder', id);
+  }
+}
 function fail(code: string) {
-  if (stopped) return;
+  if (stopped || failed) return;
+  failed = true;
   try {
     setStatus('error', code);
     socket?.end(new Error(code));
@@ -260,8 +254,13 @@ function guard(work: () => void | Promise<void>) {
     .catch(() => fail('SESSION_HANDLER_FAILURE'));
 }
 async function connect() {
-  if (stopped) return;
+  if (stopped || failed) return;
   codeRequested = false;
+  // End any previous socket before replacing it. It is detached first, so its close event
+  // cannot schedule a second reconnect; ending a closed socket does nothing.
+  const previous = socket;
+  socket = undefined;
+  previous?.end(new Error('REPLACED'));
   const version =
     config.version ??
     store.get<[number, number, number]>('protocol', 'last-good:6.7.22') ??
@@ -288,6 +287,15 @@ async function connect() {
     },
   });
   socket = currentSocket;
+  // Only for an already paired account: pairing waits for the owner, not for the network.
+  const watchdog = auth.creds.account
+    ? setTimeout(() => {
+        if (socket === currentSocket)
+          currentSocket.end(
+            Object.assign(new Error('CONNECT_TIMEOUT'), { output: { statusCode: 408 } }),
+          );
+      }, CONNECT_WATCHDOG_MS)
+    : undefined;
   // Messages delivered after a reconnect are processed outside Baileys' per-node flush,
   // so the last ones can wait in its event buffer until the next live node, which can be
   // hours away on a quiet account. Flush it ourselves, and on close (below).
@@ -297,13 +305,13 @@ async function connect() {
   }, 1000);
   currentSocket.ev.on('creds.update', () => guard(persistCreds));
   currentSocket.ev.on('chats.phoneNumberShare', ({ lid, jid }) =>
-    guard(() => mapIdentity(lid, jid)),
+    guard(() => linkIdentity(lid, jid)),
   );
   for (const name of ['contacts.upsert', 'contacts.update'] as const)
     currentSocket.ev.on(name, (contacts) =>
       guard(() => {
         for (const c of contacts)
-          mapIdentity(
+          linkIdentity(
             c.lid ?? (c.id?.endsWith('@lid') ? c.id : undefined),
             c.jid ?? (c.id?.endsWith('@s.whatsapp.net') ? c.id : undefined),
           );
@@ -315,7 +323,8 @@ async function connect() {
       // were batched behind our own reply or delivered after a reconnect. incoming()
       // skips our own replies, old and duplicate messages; history sync is disabled.
       if (currentSocket !== socket) return;
-      for (const message of upsertedMessages(update)) {
+      const held = (id: string) => !!store.get('placeholder', id);
+      for (const message of upsertedMessages(update, held)) {
         receipt(message.key, message.status);
         incoming(message);
       }
@@ -349,7 +358,9 @@ async function connect() {
         }
       }
       if (update.connection === 'open') {
+        clearTimeout(watchdog);
         openedAt = Date.now();
+        restarts = 0;
         persistCreds();
         if (!canonicalJid(currentSocket.user?.id)) {
           fail('INVALID_ACCOUNT_IDENTITY');
@@ -362,29 +373,32 @@ async function connect() {
         // Hand over anything still buffered while this socket is current; a new socket
         // starts with an empty buffer and WhatsApp will not deliver these again.
         clearInterval(flushTimer);
+        clearTimeout(watchdog);
         currentSocket.ev.flush();
         pairing = {};
+        // fail() already reported why this worker is stopping.
+        if (failed) return;
         const code =
           (update.lastDisconnect?.error as { output?: { statusCode?: number } })?.output
             ?.statusCode ?? 0;
-        const policy = disconnectPolicy(code);
-        if (policy === 'logout') {
+        if (openedAt && Date.now() - openedAt > 120000) retries = 0;
+        openedAt = 0;
+        const decision = reconnectDecision(code, retries + 1, restarts);
+        if (decision.action === 'logout') {
           store.clear('auth');
           setStatus('logged_out', 'LOGGED_OUT');
           return;
         }
-        if (policy === 'stop') {
+        if (decision.action === 'stop') {
           setStatus('error', `DISCONNECT_${code}`);
           return;
         }
-        if (openedAt && Date.now() - openedAt > 120000) retries = 0;
-        openedAt = 0;
-        if (++retries > 5) {
-          setStatus('error', 'RECONNECT_EXHAUSTED');
-          return;
-        }
+        // A requested restart is not a failure; everything else counts towards the backoff.
+        if (decision.action === 'restart') restarts++;
+        else retries++;
         setStatus('reconnecting', `DISCONNECT_${code}`);
-        reconnectTimer = setTimeout(() => guard(connect), retryDelay(retries));
+        clearTimeout(reconnectTimer);
+        reconnectTimer = setTimeout(() => guard(connect), decision.delayMs);
       }
     }),
   );
@@ -478,23 +492,31 @@ process.on('message', (message: any) => {
     // Save anything Baileys still buffers first: incoming() runs as a microtask and
     // writes to disk synchronously, so it finishes before the exit below.
     socket?.ev.flush();
+    // Set first, so the close a logout causes is not handled as a WhatsApp logout or retried.
     stopped = true;
     clearTimeout(reconnectTimer);
     pairing = {};
-    // Closing is not logging out: planned restarts must retain credentials.
-    socket?.end(new Error('STOPPED'));
-    setImmediate(() => process.exit(0));
+    // Only the supervisor's disconnect and new-pairing commands ask for a logout (see shutdown.ts).
+    void endSocket(socket, message.logout === true)
+      .catch(() => false)
+      .then(() => setImmediate(() => process.exit(0)));
   }
 });
+// Each status report is one Orderly function call, so an unchanged 'connected' is repeated
+// only once per heartbeat interval. Real changes are reported at once by setStatus, and the
+// tick still retries anything Orderly could not take.
 setInterval(
   () =>
     guard(async () => {
       if (!store || stopped) return;
-      if (status === 'connected') setStatus('connected');
+      if (status === 'connected' && heartbeatDue(lastStatusAt, Date.now(), GATEWAY_HEARTBEAT_MS))
+        setStatus('connected');
       pruneSent();
+      releasePlaceholders();
       await drain();
+      await retryDeadEvents(store, postEvent);
     }),
-  15000,
+  TICK_MS,
 ).unref();
 // Record only safe codes; do not resume an undefined process state.
 process.on('uncaughtException', () => {

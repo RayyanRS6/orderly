@@ -108,10 +108,12 @@ volume. DNS must resolve to this server and port 80/443 must be reachable. Start
 DNS-only record while verifying origin HTTPS. No host Docker socket is mounted into either
 container. Gateway messages, pairing QR/codes and signed headers must not be access-logged.
 
-The gateway has a bounded global overload guard (120-request burst, 10 requests/second
-refill), body-size limits and timeouts. All customers on the host share this guard; a 429
-means back off, not switch provider. This is not protection against a volumetric DDoS.
-Use provider network protections and review metrics before raising limits.
+The gateway has a bounded overload guard for Orderly's signed requests (sends and pairing:
+120-request burst, 10 requests/second refill; status and health polls: 60 and 5/second),
+body-size limits and timeouts. It is charged only after the signature is verified, so unsigned
+traffic to the public hostname gets 401/404 but cannot use it up. All customers on the host
+share this guard; a 429 means back off, not switch provider. This is not protection against a
+volumetric DDoS. Use provider network protections and review metrics before raising limits.
 
 From your local `gateway/` directory, with the matching private `.env`:
 

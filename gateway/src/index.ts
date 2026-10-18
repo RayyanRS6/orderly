@@ -24,7 +24,11 @@ async function acquireSupervisor() {
 }
 const supervisor = await acquireSupervisor();
 supervisor.restore();
-const requestBudget = new RequestBudget();
+// Only Orderly's signed requests are charged, after the signature is verified: unsigned traffic
+// (anyone who finds the public hostname) can no longer use up the budget replies depend on.
+// Status polling has its own, smaller bucket, so it can never starve sends and pairing.
+const commandBudget = new RequestBudget();
+const pollBudget = new RequestBudget(60, 5);
 const server = createServer(async (request, response) => {
   response.setHeader('Content-Type', 'application/json');
   response.setHeader('Cache-Control', 'no-store');
@@ -34,12 +38,6 @@ const server = createServer(async (request, response) => {
     response.end(JSON.stringify(body));
   };
   try {
-    if (!requestBudget.allow()) {
-      response.setHeader('Retry-After', '1');
-      request.resume();
-      reply(429, { errorCode: 'GATEWAY_BUSY' });
-      return;
-    }
     if (request.method === 'GET' && request.url === '/healthz') {
       reply(200, { ok: true });
       return;
@@ -64,6 +62,12 @@ const server = createServer(async (request, response) => {
     const nonce = verifySigned(config.secret, 'command', request.url!, raw, headers);
     if (!nonce || !supervisor.store.nonce(nonce))
       throw new GatewayError('INVALID_SIGNATURE_OR_REPLAY', 401);
+    const budget = ['/health', '/status'].includes(request.url!) ? pollBudget : commandBudget;
+    if (!budget.allow()) {
+      response.setHeader('Retry-After', '1');
+      reply(429, { errorCode: 'GATEWAY_BUSY' });
+      return;
+    }
     let body: unknown;
     try {
       body = JSON.parse(raw);

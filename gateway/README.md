@@ -8,19 +8,27 @@ the only business-logic authority. Official Meta connections remain supported.
 
 - Code includes QR + phone-number pairing, encrypted persistent auth, one child process
   per connection, signed callbacks/commands, durable message deduplication, generation
-  fences, manual-phone takeover, uncertain-send protection, and bounded reconnects.
+  fences, manual-phone takeover, uncertain-send protection, and backed-off reconnects.
 - **Pilot limit: 10 active numbers per gateway; one active route per restaurant.** This
   is an operational safety limit, not a Baileys subscription quota. It is not a measured
   ten-account production capacity guarantee. The ten-process automated test uses fake
   sockets, not ten real WhatsApp accounts.
-- Text only. Voice notes/images trigger staff handoff; staff use the WhatsApp phone app
-  to inspect them. Authenticated media playback and transcription are not part of v1.
-- Only live `notify` events are ingested. History, groups, newsletters, status broadcasts,
-  protocol events, reactions and placeholder-resend events are excluded. Offline history
-  is deliberately not replayed as new customer orders. Verify staff-phone echoes in the
-  live pilot; protocol behavior may change.
-- Native LIDs remain identities, not phone numbers. Mapping uses authenticated contact
-  and phone-number-share events. Unknown phone numbers are displayed as unavailable.
+- Text only. A photo, video or document caption reaches the bot as text marked "(sent with a
+  photo)" and so on; a location pin becomes "Location shared: <place> (lat, long)". Voice notes,
+  stickers, contacts and uncaptioned media trigger staff handoff; staff use the WhatsApp phone
+  app to inspect them. Media is never downloaded; playback and transcription are not part of v1.
+- Every message is judged on its own, whatever the batch type. History, groups, newsletters,
+  status broadcasts, protocol events and reactions are excluded, and messages older than 24
+  hours are not replayed as new orders. A customer message that arrives here without content
+  (WhatsApp's "unavailable" placeholder, or a decryption failure) is held: the phone's resend or
+  the sender's retry is filed under the same chat, and if nothing comes within 45 seconds staff
+  get a handoff to read it on the phone. Verify staff-phone echoes in the live pilot; protocol
+  behavior may change.
+- Native LIDs remain identities, not phone numbers. Mapping uses the `sender_pn`/`sender_lid`
+  WhatsApp attaches to customer messages, plus authenticated contact and phone-number-share
+  events. An existing chat is never moved by a later mapping; two chats that already exist
+  for one customer stay apart (logged as `ROUTE_CONFLICT`). Unknown phone numbers are displayed
+  as unavailable.
 - Unofficial automatic replies are limited by Orderly to 24 hours after a customer message.
   This is our conservative policy, not a claim that Meta's template API exists here.
 - No claim of WhatsApp approval, unlimited capacity, ban prevention, or guaranteed delivery.
@@ -85,12 +93,21 @@ the migration so old queued replies can be fenced safely.
 - Send a menu question and complete an explicitly confirmed order. Verify real prices and
   exactly one Sheet row (when Sheets is connected).
 - Test a native LID customer with and without a phone mapping. Ensure no LID becomes a phone.
+  Check that replies to a chat mapped from LID to phone number (or back) are delivered.
+- Send a captioned photo and a location pin from a customer phone: the bot reads the caption and
+  the place; a voice note or sticker goes to staff.
 - Reply on the restaurant phone during a slow bot turn: the bot must pause; its own echoes
   must not pause it. Resume only from Orderly's staff controls.
+- WhatsApp Business app **greeting and away messages** are sent by the phone and reach Orderly
+  like a staff reply, so they pause the bot for that chat (WhatsApp marks them no differently).
+  Ask the owner to turn them off (Business tools → Greeting message / Away message) and use
+  Orderly's own greeting instead. Test once from a number that has never chatted, with the
+  greeting on and then off, and resume any chat it paused.
 - Interrupt/restart the gateway. Verify encrypted credentials restore without new pairing,
   queued inbound events retry once, and uncertain sends do not automatically resend.
-- Simulate network loss, logout and competing-session errors. Verify bounded retry and
-  actionable status. A logged-out account requires fresh pairing.
+- Simulate network loss, logout and competing-session errors. Verify the session keeps retrying
+  (status `reconnecting`) and recovers by itself once the network is back, and that the status
+  is actionable. A logged-out account requires fresh pairing.
 - Switch Meta → linked device → Meta with pending jobs. No old job may send via the new route.
 - Confirm sandbox messages generate no WhatsApp sends or Sheet order rows.
 - Test load and reconnect behavior progressively before expanding from one authorized number.
@@ -98,25 +115,40 @@ the migration so old queued replies can be fenced safely.
 ## Failure handling
 
 Each child owns one socket and SQLite database. A fatal child error exits; the supervisor
-restarts only that child up to five times. 401 clears authentication and requires pairing;
-440/403/411/500 and unknown codes stop reconnecting. 515 restarts the socket with retained
-credentials. 408/428/503 retry with bounded exponential backoff and jitter. A healthy socket
-resets network retries after two minutes. An explicit owner reconnect resets process retries.
+restarts only that child, with a backoff that grows to at most 30 minutes and never gives up.
+The child's own failure code (for example `INBOUND_QUEUE_FULL`) is kept instead of a generic
+`SESSION_CRASH`. Ten minutes of healthy connection forgets earlier crashes. 401 clears
+authentication and requires pairing; 403/405/411/440 stop reconnecting (405 needs a new
+`GATEWAY_WA_VERSION`, 440 means another copy took over). 515 restarts the socket at once with
+retained credentials. 408/428/503 retry without limit, backing off from 1 second to 1 minute
+and then every 5 minutes; 500, 0 and unknown codes do the same from a 5-second start. A connect
+that neither opens nor fails within 45 seconds is abandoned and retried. The status stays
+`reconnecting` with `DISCONNECT_<code>` meanwhile. A healthy socket resets network retries after
+two minutes. A gateway restart also revives sessions an older version parked in `error` with a
+passing failure code (`RECONNECT_EXHAUSTED`, `SESSION_CRASH`, `DISCONNECT_0/408/428/500/503/515`).
 
-Heartbeats reach Orderly every 15 seconds; a heartbeat older than 90 seconds is not ready to
-send. The gateway must also report a verified account identity. Backend callback failure
-keeps inbound events encrypted on disk, capped at 10,000 per session; a full queue stops
-the session for investigation. Monitor disk, stale heartbeats, `SESSION_CRASH`, queue failures
-and failed Orderly jobs. `/healthz` indicates process liveness, not every number's readiness.
+Heartbeats reach Orderly once a minute (the 15-second tick still retries undelivered events); a
+heartbeat older than 3 minutes is not ready to send. The gateway must also report a verified
+account identity. Backend callback failure keeps inbound events encrypted on disk, capped at
+10,000 per session; a full queue stops the session until it drains. A message Orderly rejects
+outright (400/413/422) no longer blocks the ones behind it: it is set aside (at most 500, cleared
+on new pairing), offered again hourly while under 24 hours old, and meanwhile the connected status
+carries `INBOUND_EVENT_REJECTED` (check the restaurant phone for that customer). Message IDs over
+150 characters are hashed before queueing. Monitor disk, stale
+heartbeats, crash codes, queue failures and failed Orderly jobs. `/healthz` indicates process
+liveness, not every number's readiness.
 
 Outbound records reserve the WhatsApp message ID before sending and suppress that ID's echo.
 After an uncertain outcome, automatic retries return `SEND_UNCERTAIN`; staff must inspect the
 phone. Do not delete receipt records to force a resend. Exactly-once delivery cannot be
 guaranteed across an external messaging service, but duplicate blind retries are prevented.
 
-Disconnect stops the local socket and invalidates credentials/jobs. The owner should also
-remove the old session under WhatsApp → Linked devices; local disconnection is not a promise
-that Meta's companion-device entry was revoked. Orders and Orderly chat history remain.
+Disconnect and new pairing first log the linked device out of WhatsApp (best effort, at most
+3.5 seconds, only while the socket is connected), then wipe credentials and jobs, so leftover
+credentials and later backups stop working. Redeploys, restarts and a lost lease only close the
+socket and keep the pairing. If the session was offline at the time, the logout cannot happen:
+the owner should still check WhatsApp → Linked devices and remove the old session. Orders and
+Orderly chat history remain.
 
 ## Protocol updates and rollback
 

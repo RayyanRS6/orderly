@@ -1,16 +1,20 @@
 # Gateway build context is an allowlist; never send local data or secrets to Docker.
+# Re-include files, not folders: a re-included folder (such as `!gateway/`) brings back
+# everything inside it, including gateway/.env and the WhatsApp session database.
 **
-!gateway/
 !gateway/package.json
 !gateway/package-lock.json
 !gateway/tsconfig.json
 !gateway/Dockerfile
 !gateway/docker-entrypoint.sh
-!gateway/src/
 !gateway/src/**
-!src/
-!src/shared/
 !src/shared/whatsapp.ts
-!server/
-!server/whatsapp/
 !server/whatsapp/signing.ts
+# Never, whatever is re-included above.
+gateway/.env
+gateway/.env.*
+gateway/data/
+gateway/node_modules/
+gateway/dist/
+**/*.sqlite
+**/*.sqlite-*
