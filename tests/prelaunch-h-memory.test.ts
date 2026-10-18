@@ -1,12 +1,19 @@
 // The in-memory store (local demo and tests) gives the same answers as the SQL in
-// prelaunch-h-sql.test.ts: the Active orders filter and the Overview's daily counts by the
-// business's own days (F93).
+// prelaunch-h-sql.test.ts: the Active orders filter, the Overview's daily counts by the
+// business's own days (F93) and how long a customer has waited for staff (G5.1).
 import { beforeEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { MemoryRepository } from '../server/repository';
 import { createConversation, processTurn } from '../src/domain/engine';
 import { seedCompanies, seedProducts } from '../src/shared/seed';
-import type { BotAction, Company, OrderStatus, WorkspaceSummary } from '../src/shared/types';
+import type {
+  BotAction,
+  Company,
+  Conversation,
+  Message,
+  OrderStatus,
+  WorkspaceSummary,
+} from '../src/shared/types';
 
 const company = seedCompanies[0]!;
 const products = seedProducts.filter((p) => p.companyId === company.id);
@@ -129,5 +136,94 @@ describe('the Overview counts orders by the business’s own days, in memory (F9
       await settings({ timezone: timezone as string });
       expect(await summary(), String(timezone)).toEqual(karachi);
     }
+  });
+});
+
+describe('a customer waiting for staff has waited since their message, in memory (G5.1)', () => {
+  const message = (
+    role: Message['role'],
+    text: string,
+    createdAt: string,
+    extra: Partial<Message> = {},
+  ): Message => ({ id: randomUUID(), role, text, createdAt, ...extra });
+  async function waiting(messages: Message[], updatedAt = messages.at(-1)?.createdAt ?? now()) {
+    const c: Conversation = {
+      ...createConversation(company.id, nextPhone(), 'whatsapp', updatedAt),
+      mode: 'human',
+      messages,
+      updatedAt,
+      version: 1,
+    };
+    expect(await repo.saveConversation(c, 0)).toBe(true);
+    return c;
+  }
+  async function staffWrites(c: Conversation, text: string, extra: Partial<Message> = {}) {
+    const next = {
+      ...c,
+      version: c.version + 1,
+      updatedAt: now(),
+      messages: [...c.messages, message('staff', text, now(), extra)],
+    };
+    expect(await repo.saveConversation(next, c.version)).toBe(true);
+    return next;
+  }
+  const notice = (c: Conversation, text: string) => staffWrites(c, text, { notice: true });
+  const overdue = (minutes: number) => repo.hasOverdueAttention(company.id, minutes);
+  const since = async (c: Conversation) => {
+    const item = (await repo.staffAttention(company.id)).items.find(
+      (a) => a.id === `handoff:${c.id}`,
+    );
+    return item && Date.parse(item.createdAt);
+  };
+
+  it('keeps counting through order status notices', async () => {
+    const asked = minutesAgo(12);
+    let c = await waiting([
+      message('customer', 'Is my order coming?', asked),
+      // The bot's own reply as it handed the chat to staff is not a staff reply.
+      message('assistant', 'A staff member will reply here shortly.', asked),
+    ]);
+    expect(await since(c)).toBe(Date.parse(asked));
+    expect(await overdue(10)).toBe(true);
+    c = await notice(c, 'Order ORD-1 is now preparing.');
+    c = await notice(c, 'Order ORD-1 is now ready.');
+    c = await staffWrites(c, 'Order ORD-1 is now out for delivery.');
+    expect(Date.parse((await repo.getConversation(company.id, c.id))!.updatedAt)).toBeGreaterThan(
+      Date.now() - 60000,
+    );
+    expect(await since(c)).toBe(Date.parse(asked));
+    expect(await overdue(10)).toBe(true);
+    expect(await overdue(15)).toBe(false);
+  });
+
+  it('counts from the customer’s latest message, until a staff member replies', async () => {
+    const c = await waiting([
+      message('customer', 'Hello', minutesAgo(40)),
+      message('customer', 'Anyone there?', minutesAgo(5)),
+    ]);
+    expect(await since(c)).toBe(Date.parse(c.messages[1]!.createdAt));
+    expect(await overdue(10)).toBe(false);
+    const answered = await staffWrites(c, 'Calling you now');
+    expect(await since(answered)).toBeUndefined();
+    expect(await overdue(1)).toBe(false);
+  });
+
+  it('counts from when the chat was saved when no customer message is waiting', async () => {
+    const saved = minutesAgo(20);
+    const chats = [
+      await waiting(
+        [
+          message('customer', 'Hi', minutesAgo(30)),
+          message('staff', 'Hello, how can I help?', minutesAgo(25)),
+          message('assistant', 'I have asked a staff member to help.', saved),
+        ],
+        saved,
+      ),
+      await waiting([], saved),
+      await waiting([message('customer', 'Hi', minutesAgo(-10))], saved),
+    ];
+    for (const c of chats) expect(await since(c)).toBe(Date.parse(saved));
+    expect(await overdue(15)).toBe(true);
+    expect(await overdue(30)).toBe(false);
   });
 });

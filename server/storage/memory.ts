@@ -118,6 +118,17 @@ const automaticNotice = (m: Message) =>
   m.notice === true || (m.role === 'staff' && STATUS_NOTICE.test(m.text ?? ''));
 const awaitsStaffReply = (messages: Message[]) =>
   messages.filter((m) => !automaticNotice(m)).at(-1)?.role !== 'staff';
+// Mirrors SQL waiting_since: a waiting customer has waited since their latest message, unless a
+// staff reply (not an automatic notice) came after it. Never later than the chat was saved; with
+// no such message, since the chat was saved.
+const waitingSince = (c: Conversation) => {
+  const last = c.messages
+    .filter((m) => !automaticNotice(m) && (m.role === 'customer' || m.role === 'staff'))
+    .at(-1);
+  return last?.role === 'customer' && Date.parse(last.createdAt) < Date.parse(c.updatedAt)
+    ? last.createdAt
+    : c.updatedAt;
+};
 // Mirrors SQL business_time_zone: the business's zone name (or UTC), else Asia/Karachi.
 const businessTimeZone = (company?: Company) => {
   const zone = company?.timezone ?? '';
@@ -476,7 +487,7 @@ export class MemoryRepository implements Repository {
             id: `handoff:${c.id}`,
             kind: 'handoff' as const,
             entityId: c.id,
-            createdAt: c.updatedAt,
+            createdAt: waitingSince(c),
           })),
         ...s.jobs
           .filter((j) => j.companyId === companyId && j.status === 'failed')

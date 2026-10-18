@@ -1,14 +1,18 @@
-// The Orders page's Active filter and the Overview's daily counts by the business's own days
-// (F93), in 202610200001_prelaunch_fixes.sql on the whole migration chain.
+// The Orders page's Active filter, the Overview's daily counts by the business's own days (F93)
+// and how long a customer has waited for staff (G5.1), in 202610200001_prelaunch_fixes.sql on the
+// whole migration chain.
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { createConversation, processTurn } from '../src/domain/engine';
 import { seedCompanies, seedProducts } from '../src/shared/seed';
 import type {
   BotAction,
+  Conversation,
+  Message,
   Order,
   OrderStatus,
   PageResult,
+  StaffAttention,
   WorkspaceSummary,
 } from '../src/shared/types';
 import { migratedDb } from './helpers/migrated-db';
@@ -186,5 +190,134 @@ describe('the Overview counts orders by the business’s own days (F93)', () => 
     for (const zone of ['Asia/Karachi', 'UTC', 'America/Bogota', 'Europe/London', 'Etc/GMT-5'])
       expect(await rpc('business_time_zone', [{ timezone: zone }])).toBe(zone);
     expect(await rpc('business_time_zone', [null])).toBe('Asia/Karachi');
+  });
+});
+
+describe('a customer waiting for staff has waited since their message (G5.1)', () => {
+  const message = (
+    role: Message['role'],
+    text: string,
+    createdAt: string,
+    extra: Partial<Message> = {},
+  ): Message => ({ id: randomUUID(), role, text, createdAt, ...extra });
+  // A chat with staff, saved when its last message was written (or `updatedAt`).
+  async function waiting(messages: Message[], updatedAt = messages.at(-1)?.createdAt ?? now()) {
+    const c: Conversation = {
+      ...createConversation(company.id, nextPhone(), 'whatsapp', updatedAt),
+      mode: 'human',
+      messages,
+      updatedAt,
+      version: 1,
+    };
+    expect(await rpc('save_conversation', [c, 0])).toBe(true);
+    return c;
+  }
+  // A staff message now, the chat saved again with it.
+  async function staffWrites(c: Conversation, text: string, extra: Partial<Message> = {}) {
+    const next = {
+      ...c,
+      version: c.version + 1,
+      updatedAt: now(),
+      messages: [...c.messages, message('staff', text, now(), extra)],
+    };
+    expect(await rpc('save_conversation', [next, c.version])).toBe(true);
+    return next;
+  }
+  // As the order status route adds its notice.
+  const notice = (c: Conversation, text: string) => staffWrites(c, text, { notice: true });
+  const overdue = (minutes: number) => rpc<boolean>('has_overdue_attention', [company.id, minutes]);
+  const since = async (c: Conversation) => {
+    const item = (await rpc<StaffAttention>('staff_attention', [company.id])).items.find(
+      (a) => a.id === `handoff:${c.id}`,
+    );
+    return item && Date.parse(item.createdAt);
+  };
+
+  it('keeps counting through order status notices, so the email alert is not held back', async () => {
+    const user = randomUUID();
+    await t.db.query(
+      "insert into auth.users(id,email,email_confirmed_at) values($1,'staff@example.test',now())",
+      [user],
+    );
+    await t.db.query("insert into company_memberships values($1,$2,'owner')", [company.id, user]);
+    await rpc('configure_alerts', [company.id, user, true, 10]);
+    const asked = minutesAgo(12);
+    let c = await waiting([
+      message('customer', 'Is my order coming?', asked),
+      // The bot's own reply as it handed the chat to staff is not a staff reply.
+      message('assistant', 'A staff member will reply here shortly.', asked),
+    ]);
+    expect(await since(c)).toBe(Date.parse(asked));
+    expect(await overdue(10)).toBe(true);
+    c = await notice(c, 'Order ORD-1 is now preparing.');
+    c = await notice(c, 'Order ORD-1 is now ready.');
+    // Saved before notices were marked.
+    c = await staffWrites(c, 'Order ORD-1 is now out for delivery.');
+    // Each notice saved the chat again.
+    expect(
+      await scalar(
+        "select updated_at>now()-interval '1 minute' as value from conversations where id=$1",
+        [c.id],
+      ),
+    ).toBe(true);
+    expect(await since(c)).toBe(Date.parse(asked));
+    expect(await overdue(10)).toBe(true);
+    expect(await overdue(15)).toBe(false);
+    expect(await rpc('queue_staff_alerts')).toBe(1);
+  });
+
+  it('counts from the customer’s latest message, until a staff member replies', async () => {
+    const c = await waiting([
+      message('customer', 'Hello', minutesAgo(40)),
+      message('customer', 'Anyone there?', minutesAgo(5)),
+    ]);
+    expect(await since(c)).toBe(Date.parse(c.messages[1]!.createdAt));
+    expect(await overdue(10)).toBe(false);
+    const answered = await staffWrites(c, 'Calling you now');
+    expect(await since(answered)).toBeUndefined();
+    expect(await overdue(1)).toBe(false);
+  });
+
+  it('counts from when the chat was saved when no customer message is waiting', async () => {
+    const saved = minutesAgo(20);
+    const chats = [
+      // The bot handed over without the customer writing since a staff reply.
+      await waiting(
+        [
+          message('customer', 'Hi', minutesAgo(30)),
+          message('staff', 'Hello, how can I help?', minutesAgo(25)),
+          message('assistant', 'I have asked a staff member to help.', saved),
+        ],
+        saved,
+      ),
+      await waiting([], saved),
+      // Dated after the chat was saved (a phone clock running fast).
+      await waiting([message('customer', 'Hi', minutesAgo(-10))], saved),
+    ];
+    for (const c of chats) expect(await since(c)).toBe(Date.parse(saved));
+    expect(await overdue(15)).toBe(true);
+    expect(await overdue(30)).toBe(false);
+  });
+
+  it.each(['anon', 'authenticated'])('is for the server only, never %s', async (role) => {
+    for (const signature of [
+      'public.waiting_since(jsonb,timestamp with time zone)',
+      'public.business_time_zone(jsonb)',
+      'public.query_orders(text,jsonb)',
+      'public.workspace_summary(text,boolean)',
+      'public.staff_attention(text)',
+      'public.has_overdue_attention(text,integer)',
+    ]) {
+      expect(
+        await scalar(`select has_function_privilege($1,$2,'EXECUTE') as value`, [role, signature]),
+        signature,
+      ).toBe(false);
+      expect(
+        await scalar(`select has_function_privilege('service_role',$1,'EXECUTE') as value`, [
+          signature,
+        ]),
+        signature,
+      ).toBe(true);
+    }
   });
 });
