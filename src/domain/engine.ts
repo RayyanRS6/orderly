@@ -353,9 +353,9 @@ export function closedText(company: Company, lang: Language, now?: string): stri
 const noChatOrdering = (lang: Language) =>
   say(
     lang,
-    'Ordering in this chat is not available right now. Please ask our staff for help.',
-    'ابھی اس چیٹ میں آرڈر دستیاب نہیں ہے۔ براہ کرم عملے سے رابطہ کریں۔',
-    'Abhi is chat mein order available nahi hai. Meherbani karke staff se baat karein.',
+    'Ordering in this chat is not available right now. Type “staff” to talk to a person.',
+    'ابھی اس چیٹ میں آرڈر دستیاب نہیں ہے۔ کسی انسان سے بات کرنے کے لیے “عملہ” لکھیں۔',
+    'Abhi is chat mein order available nahi hai. Kisi insaan se baat karne ke liye “staff” likhein.',
   );
 // The engine's own refusal of a pickup/delivery choice the restaurant does not offer.
 function fulfillmentRefusal(company: Company, chosen: 'pickup' | 'delivery'): string | undefined {
@@ -363,7 +363,7 @@ function fulfillmentRefusal(company: Company, chosen: 'pickup' | 'delivery'): st
   if (offered === 'both' || offered === chosen) return undefined;
   return offered
     ? `This restaurant currently offers ${offered} only.`
-    : 'Ordering in this chat is not available right now. Please ask our staff for help.';
+    : 'Ordering in this chat is not available right now. Type “staff” to talk to a person.';
 }
 
 function missingDetails(company: Company, cart: Cart, lang: Language): string | undefined {
@@ -625,9 +625,9 @@ function menu(
   if (!all.length)
     return say(
       lang,
-      'Our menu is not available right now. Please ask our staff for help.',
-      'ابھی مینو دستیاب نہیں ہے۔ براہ کرم عملے سے رابطہ کریں۔',
-      'Abhi menu available nahi hai. Meherbani karke staff se baat karein.',
+      'Our menu is not available right now. Type “staff” to talk to a person.',
+      'ابھی مینو دستیاب نہیں ہے۔ کسی انسان سے بات کرنے کے لیے “عملہ” لکھیں۔',
+      'Abhi menu available nahi hai. Kisi insaan se baat karne ke liye “staff” likhein.',
     );
   const words = dishWords(query);
   const textOf = (p: Product) => normalize(`${p.name} ${p.category} ${p.aliases.join(' ')}`);
@@ -2344,12 +2344,12 @@ export function processTurn(
             'آرڈر دیکھ کر بھیجنے کے لیے واضح طور پر “تصدیق” لکھیں۔',
             'Order review kar ke wazeh taur par “confirm” likhein.',
           );
-          // The review again right below, so the next "confirm" places this order. While closed,
-          // the review itself says so instead.
+          // The review again right below, so the next "confirm" places this order: it says how,
+          // so the lead only says nothing was placed. While closed, the review itself says so.
           reply = !cart.items.length
             ? prompt
             : isOpen(company, input.now)
-              ? `${prompt}\n\n${showReview()}`
+              ? `${orderSafetyLine(lang, cart)}\n\n${showReview()}`
               : showReview();
           traces.push('unconfirmed_model_action_rejected');
           continue;
