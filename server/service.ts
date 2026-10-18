@@ -27,6 +27,7 @@ import {
   limitPaused,
   noticeLanguage,
   orderSafetyLine,
+  orderStatusText,
   processTurn,
   resumesAfterLimit,
   resumesAfterPause,
@@ -50,7 +51,7 @@ import {
 import { modelFingerprint } from './integrations/model-catalog.js';
 import { GoogleSheetsAdapter } from './integrations/sheets.js';
 import { WhatsAppAdapter } from './integrations/whatsapp.js';
-import { decryptSecret, PublicError } from './security.js';
+import { decryptSecret, PublicError, redactSecrets } from './security.js';
 import { sanitizeError } from './security.js';
 import { botConfig, configuredCompany } from '../src/shared/bot.js';
 import { dispatchJob, makeJob } from './jobs.js';
@@ -69,6 +70,10 @@ const LATE_AFTER_MS = 10 * 60 * 1000;
 const STALE_AFTER_MS = 2 * 60 * 60 * 1000;
 // While the menu Sheet cannot be read, the menu last read from it is used for this long.
 export const MENU_STALE_LIMIT_MS = 12 * 60 * 60 * 1000;
+// How long a chat waits for another chat's Sheet refresh to finish (the two Sheets calls time
+// out after 10 s and 12 s), checking this often.
+const SHEET_REFRESH_WAIT_MS = 25000;
+const SHEET_REFRESH_POLL_MS = 1000;
 
 export async function integrationAdapter(
   repo: Repository,
@@ -139,8 +144,16 @@ export async function refreshSheetMenu(
       (await repo.listProducts(company.id)).some((p) => p.companyId === company.id)
     );
   };
-  if (!(await repo.consumeRateLimit(`catalog-refresh:${company.id}`, 1).catch(() => true)))
-    return { ok: false, usable: await usable() };
+  if (!(await repo.consumeRateLimit(`catalog-refresh:${company.id}`, 1).catch(() => true))) {
+    // Another chat refreshed this minute. When the menu last read is too old, that refresh may
+    // still be running (reading a Sheet can take ~20 s): wait for it before handing this chat
+    // to staff, so a healthy Sheet after a quiet night never sends a customer away.
+    for (let waited = 0; ; waited += SHEET_REFRESH_POLL_MS) {
+      if (await usable()) return { ok: false, usable: true };
+      if (waited >= SHEET_REFRESH_WAIT_MS) return { ok: false, usable: false };
+      await new Promise((resolve) => setTimeout(resolve, SHEET_REFRESH_POLL_MS));
+    }
+  }
   try {
     await refreshCatalog(repo, company);
   } catch (error) {
@@ -328,12 +341,18 @@ export async function handleTurn(
         },
       });
     // One customer sending many messages at once pauses the bot for them only, for a while.
+    // The minute is measured by when the messages were sent, not when they are answered: a
+    // flood queues up behind slow replies, and counting by answer time would never see it.
+    // Either side of this message, since WhatsApp's times are only to the second. Test chats
+    // never count (they have their own limit).
     const { messagesPerCustomerPerMinute } = effectiveAiLimits(company.aiLimits);
+    const sentAt = Date.parse(input.now);
     if (
+      !sandbox &&
       company.botEnabled &&
       conversation.mode === 'bot' &&
       conversation.messages.filter(
-        (m) => m.role === 'customer' && Date.now() - Date.parse(m.createdAt) < 60000,
+        (m) => m.role === 'customer' && Math.abs(sentAt - Date.parse(m.createdAt)) < 60000,
       ).length +
         1 >=
         messagesPerCustomerPerMinute
@@ -373,7 +392,12 @@ export async function handleTurn(
           company,
           conversation,
           input,
-          'The menu connection needs attention. A staff member will help you complete your order.',
+          pick(
+            noticeLanguage(company, conversation, input.text),
+            'We can’t load our menu right now. A staff member will reply here to help with your order.',
+            'ابھی ہمارا مینو لوڈ نہیں ہو رہا۔ عملے کا ایک رکن یہیں آپ کے آرڈر میں مدد کرے گا۔',
+            'Abhi hamara menu load nahi ho raha. Staff ka koi member yahin aap ke order mein madad karega.',
+          ),
           'menu_sync',
           refresh.error,
         );
@@ -536,11 +560,17 @@ export async function handleTurn(
         c.lastInboundAt = new Date(
           Math.max(Date.parse(c.lastInboundAt), Date.parse(input.now)),
         ).toISOString();
+        const lang = noticeLanguage(company, conversation, input.text);
         const reply = disclosed(
           company,
           conversation,
-          `Order ${order.reference} has been cancelled.`,
-          noticeLanguage(company, conversation, input.text),
+          pick(
+            lang,
+            `Order ${order.reference} has been cancelled.`,
+            `آرڈر ${order.reference} منسوخ کر دیا گیا ہے۔`,
+            `Order ${order.reference} cancel kar diya gaya hai.`,
+          ),
+          lang,
           input.now,
         );
         const explanation = describeTurn({
@@ -581,9 +611,20 @@ export async function handleTurn(
       actions,
       modelResponse,
     );
+    const replyId = `${input.messageId}:reply`;
+    // A refused pickup or delivery choice in the customer's language, on the stored reply too.
+    if (result.reply && result.traces.some((trace) => trace.startsWith('validation_failed:'))) {
+      const localized = localizedRefusals(result.reply, result.conversation.language);
+      const stored = result.conversation.messages.find(
+        (m) => m.id === replyId && m.role === 'assistant',
+      );
+      if (localized !== result.reply && stored?.text === result.reply) {
+        stored.text = localized;
+        result.reply = localized;
+      }
+    }
     // The automated-assistant notice, on the stored reply too (the next turn reads it). A review
     // that would grow past WhatsApp's 1,024 characters for buttons gets it on the next reply.
-    const replyId = `${input.messageId}:reply`;
     const withNotice = result.reply
       ? disclosed(company, conversation, result.reply, result.conversation.language, input.now)
       : result.reply;
@@ -824,6 +865,80 @@ function lateNotice(lang: Language, cart: Cart): string {
 }
 const pick = (lang: Language, en: string, ur: string, roman: string) =>
   lang === 'ur' ? ur : lang === 'roman-ur' ? roman : en;
+/**
+ * The engine words a refused pickup or delivery choice in English only (fulfillmentRefusal in
+ * src/domain/engine.ts), behind the customer's own language. Those exact sentences are said in
+ * the customer's language here, with the same words the engine uses when it asks for the
+ * choice, and the English one loses its "fulfillment choice" jargon. Nothing else is changed.
+ */
+export function localizedRefusals(text: string, lang: Language): string {
+  return text
+    .replace(
+      /This restaurant currently offers (pickup|delivery) only\.( Please update your fulfillment choice\.)?/g,
+      (sentence, offered: 'pickup' | 'delivery', update?: string) =>
+        pick(
+          lang,
+          update
+            ? `This restaurant currently offers ${offered} only. Please choose ${offered}.`
+            : sentence,
+          offered === 'pickup'
+            ? 'ابھی صرف پک اپ دستیاب ہے۔ براہ کرم پک اپ منتخب کریں۔'
+            : 'ابھی صرف ڈیلیوری دستیاب ہے۔ براہ کرم ڈیلیوری منتخب کریں۔',
+          `Abhi sirf ${offered} available hai. Meherbani karke ${offered} chunein.`,
+        ),
+    )
+    .replace(
+      'Ordering in this chat is not available right now. Please ask our staff for help.',
+      pick(
+        lang,
+        'Ordering in this chat is not available right now. Please ask our staff for help.',
+        'ابھی اس چیٹ میں آرڈر دستیاب نہیں ہے۔ براہ کرم عملے سے رابطہ کریں۔',
+        'Abhi is chat mein order available nahi hai. Meherbani karke staff se baat karein.',
+      ),
+    )
+    .replace(
+      'We do not deliver right now.',
+      pick(
+        lang,
+        'We do not deliver right now.',
+        'ابھی ہم ڈیلیوری نہیں کر رہے۔',
+        'Abhi hum delivery nahi kar rahe.',
+      ),
+    )
+    .replace(/We deliver to: ([^\n]+)\./, (sentence, zones: string) =>
+      pick(
+        lang,
+        sentence,
+        `ہم ان علاقوں میں ڈیلیوری کرتے ہیں: ${zones}۔`,
+        `Hum in ilaqon mein delivery karte hain: ${zones}.`,
+      ),
+    );
+}
+/**
+ * The customer's notice for an order status change, in their language. English keeps the
+ * standard "Order X is now …" line; Urdu and Roman Urdu use the engine's own status wording.
+ */
+export function statusNoticeText(
+  company: Company,
+  conversation: Conversation | undefined,
+  order: Order,
+  status: Order['status'],
+  now = new Date().toISOString(),
+): string {
+  const lang = conversation ? noticeLanguage(company, conversation, '') : 'en';
+  if (lang === 'en') return `Order ${order.reference} is now ${status.replaceAll('_', ' ')}.`;
+  return orderStatusText(
+    lang,
+    {
+      reference: order.reference,
+      status,
+      fulfillment: order.fulfillment,
+      createdAt: order.createdAt,
+      updatedAt: now,
+    },
+    now,
+  ).split('\n')[0]!;
+}
 // The automated-assistant notice that starts every chat session, on WhatsApp chats only.
 function disclosed(
   company: Company,
@@ -1004,84 +1119,111 @@ export async function changeOrderStatus(
 }
 // A customer's order is still waiting for the restaurant (the database queues this job 15
 // minutes after it was placed, once per order). They are told once, in their language, while
-// WhatsApp still lets the business write to them; otherwise nothing is sent. Telling them how
-// to cancel only where "cancel" is handled by itself.
+// WhatsApp still lets the business write to them; otherwise nothing is sent. It claims nothing
+// about staff (no one is reminded by it), and says how to cancel only where "cancel" would
+// cancel exactly this order: the bot handles the chat and its current order is this one.
 const FOLLOWUP_WINDOW_MS = 24 * 60 * 60 * 1000 - 5 * 60 * 1000;
 async function sendOrderFollowup(repo: Repository, stored: Company, job: Job) {
   const company = configuredCompany(stored);
-  const order = await repo.getOrder(company.id, String(job.payload.orderId));
-  const conversation =
-    order && order.conversationId === String(job.payload.conversationId)
-      ? await repo.getConversation(company.id, order.conversationId)
-      : undefined;
-  const messageId = `order-followup:${order?.id}`;
+  const due = await repo.getOrder(company.id, String(job.payload.orderId));
+  if (!due || due.conversationId !== String(job.payload.conversationId)) return;
+  // Under the chat's lock like any turn, so it never lands in the middle of one (which would
+  // make that turn start again and pay for its AI call twice). A busy chat is tried later.
+  const lockId = randomUUID();
   if (
-    !order ||
-    order.status !== 'pending' ||
-    order.sandbox ||
-    // Staff already spoke to the customer about this order on the phone.
-    order.phoneConfirmation?.outcome === 'confirmed' ||
-    order.phoneConfirmation?.outcome === 'declined' ||
-    automationPaused() ||
-    conversation?.channel !== 'whatsapp' ||
-    conversation.blocked ||
-    Date.now() - Date.parse(conversation.lastInboundAt) >= FOLLOWUP_WINDOW_MS ||
-    conversation.messages.some((m) => m.id === messageId)
+    !(await repo.acquireConversationLock(
+      company.id,
+      due.conversationId,
+      lockId,
+      new Date(Date.now() + workerLeaseMs()).toISOString(),
+    ))
   )
-    return;
-  const lang = noticeLanguage(company, conversation, '');
-  const cancels = conversation.mode === 'bot' && company.botEnabled;
-  const text = [
-    pick(
-      lang,
-      `Your order ${order.reference} hasn't been confirmed by the restaurant yet. We've flagged it to the restaurant.`,
-      `آپ کے آرڈر ${order.reference} کی ابھی ریسٹورنٹ نے تصدیق نہیں کی۔ ہم نے ریسٹورنٹ کو اس کی اطلاع دے دی ہے۔`,
-      `Aap ke order ${order.reference} ko abhi restaurant ne confirm nahi kiya. Humne restaurant ko iski ittela de di hai.`,
-    ),
-    ...(cancels
-      ? [
-          pick(
-            lang,
-            'Reply “cancel” if you want to cancel.',
-            'اگر آپ آرڈر منسوخ کرنا چاہتے ہیں تو “cancel” لکھیں۔',
-            'Order cancel karna ho to “cancel” likhein.',
-          ),
-        ]
-      : []),
-  ].join(' ');
-  const next: Conversation = {
-    ...conversation,
-    version: conversation.version + 1,
-    updatedAt: new Date().toISOString(),
-    messages: [
-      ...conversation.messages,
-      // Automatic, so a chat staff answered last does not look as if it waits for them again.
-      { id: messageId, role: 'assistant', text, createdAt: new Date().toISOString(), notice: true },
-    ],
-  };
-  // The order and status let the send drop the reminder if staff act on the order first.
-  const send = makeJob(company.id, 'whatsapp_send', {
-    ...jobAddress(conversation),
-    conversationId: conversation.id,
-    messageId,
-    text,
-    orderId: order.id,
-    status: 'pending',
-    source: 'notice',
-  });
-  if (!(await repo.commitTurn(company.id, next, conversation.version, undefined, [send])))
-    throw new PublicError('The conversation changed while processing. Retrying.', 409);
-  await repo
-    .addTrace({
-      id: randomUUID(),
-      companyId: company.id,
+    throw new PublicError('The conversation is busy. The reminder is tried again later.', 409);
+  try {
+    const order = await repo.getOrder(company.id, due.id);
+    const conversation = await repo.getConversation(company.id, due.conversationId);
+    const messageId = `order-followup:${due.id}`;
+    if (
+      !order ||
+      order.status !== 'pending' ||
+      order.sandbox ||
+      // Staff already spoke to the customer about this order on the phone.
+      order.phoneConfirmation?.outcome === 'confirmed' ||
+      order.phoneConfirmation?.outcome === 'declined' ||
+      automationPaused() ||
+      conversation?.channel !== 'whatsapp' ||
+      conversation.blocked ||
+      Date.now() - Date.parse(conversation.lastInboundAt) >= FOLLOWUP_WINDOW_MS ||
+      conversation.messages.some((m) => m.id === messageId)
+    )
+      return;
+    const lang = noticeLanguage(company, conversation, '');
+    const ref = order.reference;
+    const cancels =
+      conversation.mode === 'bot' &&
+      company.botEnabled &&
+      conversation.cart.orderId === order.id &&
+      conversation.cart.status === 'submitted';
+    const text = [
+      pick(
+        lang,
+        `Your order ${ref} is still waiting for the restaurant to accept it. You’ll get a message here when they accept or decline it.`,
+        `آپ کا آرڈر ${ref} ابھی ریسٹورنٹ کی منظوری کا منتظر ہے۔ ریسٹورنٹ کے منظور یا مسترد کرنے پر آپ کو یہیں پیغام مل جائے گا۔`,
+        `Aap ka order ${ref} abhi restaurant ki manzoori ka intezar kar raha hai. Restaurant ke accept ya decline karne par aap ko yahin message mil jayega.`,
+      ),
+      ...(cancels
+        ? [
+            pick(
+              lang,
+              `Reply “cancel” to cancel order ${ref}.`,
+              `آرڈر ${ref} منسوخ کرنا ہو تو “منسوخ” یا “cancel” لکھیں۔`,
+              `Order ${ref} cancel karna ho to “cancel” likhein.`,
+            ),
+          ]
+        : []),
+    ].join(' ');
+    const next: Conversation = {
+      ...conversation,
+      version: conversation.version + 1,
+      updatedAt: new Date().toISOString(),
+      messages: [
+        ...conversation.messages,
+        // Automatic, so a chat staff answered last does not look as if it waits for them again.
+        {
+          id: messageId,
+          role: 'assistant',
+          text,
+          createdAt: new Date().toISOString(),
+          notice: true,
+        },
+      ],
+    };
+    // The order and status let the send drop the reminder if staff act on the order first.
+    const send = makeJob(company.id, 'whatsapp_send', {
+      ...jobAddress(conversation),
       conversationId: conversation.id,
-      action: 'order_followup',
-      detail: `Told the customer that order ${order.reference} is still waiting for the restaurant.`,
-      createdAt: new Date().toISOString(),
-    })
-    .catch(() => undefined);
-  await dispatchJob(repo, send);
+      messageId,
+      text,
+      orderId: order.id,
+      status: 'pending',
+      source: 'notice',
+    });
+    if (!(await repo.commitTurn(company.id, next, conversation.version, undefined, [send])))
+      throw new PublicError('The conversation changed while processing. Retrying.', 409);
+    await repo
+      .addTrace({
+        id: randomUUID(),
+        companyId: company.id,
+        conversationId: conversation.id,
+        action: 'order_followup',
+        detail: `Told the customer that order ${ref} is still waiting for the restaurant.`,
+        createdAt: new Date().toISOString(),
+      })
+      .catch(() => undefined);
+    await dispatchJob(repo, send);
+  } finally {
+    await repo.releaseConversationLock(company.id, due.conversationId, lockId);
+  }
 }
 export async function queueReply(
   repo: Repository,
@@ -1103,6 +1245,8 @@ export async function queueReply(
 // a second or two. Waiting here is far faster than a retry, which runs only on the next
 // minute's recovery pass and let later replies overtake earlier ones.
 const CONNECTION_LOCK_WAIT_MS = 30000;
+// A reply younger than this keeps its tries while the connection is busy (ai-pipeline-7).
+const BUSY_SEND_GRACE_MS = 15 * 60 * 1000;
 // A send finishes well within this (the gateway call times out after 20 s), so a worker
 // killed mid-send blocks the business's other sends for 90 s at most, never the full worker
 // lease: half of it when the lease is short (Supabase Free).
@@ -1203,7 +1347,7 @@ function logJobFailure(job: Job, permanent: boolean, error: unknown) {
   const name = error instanceof Error ? error.name : typeof error;
   const code = (error as { code?: unknown } | undefined)?.code;
   const status = error instanceof PublicError ? error.status : undefined;
-  const message = (error instanceof Error ? error.message : String(error))
+  const message = redactSecrets(error instanceof Error ? error.message : String(error))
     .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
     .replace(/\b(?:sk-[\w-]{8,}|eyJ[\w-]+\.[\w-]+\.[\w-]+)\b/g, '[redacted]')
     .replace(/\+?\d[\d\s-]{6,}\d/g, '[number]');
@@ -1261,15 +1405,21 @@ export async function processJob(repo: Repository, id: string) {
           return !waitingForEarlier;
         },
       });
-      if (!connectionLocked && waitingForEarlier) {
-        // Waiting for an earlier reply is not this reply failing: keep its retries.
+      // Waiting for an earlier reply, or for a connection busy with other sends or a pairing,
+      // is not this reply failing: it keeps its retries for real failures. A busy connection
+      // only while the reply is young, so a connection that stays busy still ends the reply.
+      const busyGrace =
+        !connectionLocked && Date.now() - Date.parse(job.createdAt) < BUSY_SEND_GRACE_MS;
+      if (!connectionLocked && (waitingForEarlier || busyGrace)) {
         await repo.saveJob({
           ...job,
           status: 'pending',
           attempts: job.attempts - 1,
           leaseUntil: undefined,
           nextRunAt: new Date(Date.now() + 10000).toISOString(),
-          error: 'Waiting for an earlier reply to this customer to be sent.',
+          error: waitingForEarlier
+            ? 'Waiting for an earlier reply to this customer to be sent.'
+            : 'Waiting for the WhatsApp connection, which is busy.',
         });
         return;
       }

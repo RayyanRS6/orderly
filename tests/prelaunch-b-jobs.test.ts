@@ -272,11 +272,13 @@ describe('G7.1: a customer whose order is still waiting is told so once', () => 
       action,
       now: new Date().toISOString(),
     });
+  // Each order's customer has their own number: two chats with one number cannot both be saved.
+  let orderPhones = 0;
   async function waitingOrder(change: Partial<Conversation> = {}) {
     let c: Conversation = {
       ...createConversation(
         company.id,
-        `92300660${randomUUID().slice(0, 4).replace(/\D/g, '1')}`,
+        `92300660${String(++orderPhones).padStart(4, '0')}`,
         'whatsapp',
         new Date().toISOString(),
       ),
@@ -321,7 +323,7 @@ describe('G7.1: a customer whose order is still waiting is told so once', () => 
     expect(reminder).toMatchObject({
       id: `order-followup:${order.id}`,
       role: 'assistant',
-      text: `Your order ${order.reference} hasn't been confirmed by the restaurant yet. We've flagged it to the restaurant. Reply “cancel” if you want to cancel.`,
+      text: `Your order ${order.reference} is still waiting for the restaurant to accept it. You’ll get a message here when they accept or decline it. Reply “cancel” to cancel order ${order.reference}.`,
       // Automatic: it never makes a chat staff answered look unanswered.
       notice: true,
     });
@@ -408,21 +410,25 @@ describe('G7.1: a customer whose order is still waiting is told so once', () => 
     await run(followup(staff.order));
     const [reminder] = await reminders(staff.conversation);
     expect(reminder!.text).toBe(
-      `Your order ${staff.order.reference} hasn't been confirmed by the restaurant yet. We've flagged it to the restaurant.`,
+      `Your order ${staff.order.reference} is still waiting for the restaurant to accept it. You’ll get a message here when they accept or decline it.`,
     );
     const roman = await waitingOrder({ language: 'roman-ur' });
     await run(followup(roman.order));
+    const ref = roman.order.reference;
     expect((await reminders(roman.conversation))[0]!.text).toBe(
-      `Aap ke order ${roman.order.reference} ko abhi restaurant ne confirm nahi kiya. Humne restaurant ko iski ittela de di hai. Order cancel karna ho to “cancel” likhein.`,
+      `Aap ka order ${ref} abhi restaurant ki manzoori ka intezar kar raha hai. Restaurant ke accept ya decline karne par aap ko yahin message mil jayega. Order ${ref} cancel karna ho to “cancel” likhein.`,
     );
     const urdu = await waitingOrder({ language: 'ur' });
     await run(followup(urdu.order));
+    const urduRef = urdu.order.reference;
     expect((await reminders(urdu.conversation))[0]!.text).toBe(
-      `آپ کے آرڈر ${urdu.order.reference} کی ابھی ریسٹورنٹ نے تصدیق نہیں کی۔ ہم نے ریسٹورنٹ کو اس کی اطلاع دے دی ہے۔ اگر آپ آرڈر منسوخ کرنا چاہتے ہیں تو “cancel” لکھیں۔`,
+      `آپ کا آرڈر ${urduRef} ابھی ریسٹورنٹ کی منظوری کا منتظر ہے۔ ریسٹورنٹ کے منظور یا مسترد کرنے پر آپ کو یہیں پیغام مل جائے گا۔ آرڈر ${urduRef} منسوخ کرنا ہو تو “منسوخ” یا “cancel” لکھیں۔`,
     );
-    // Nothing in any language claims staff were reminded.
+    // Nothing in any language claims staff were reminded or the order was flagged to them.
     for (const c of [staff, roman, urdu])
-      expect((await reminders(c.conversation))[0]!.text).not.toMatch(/remind|yaad|یاد/i);
+      expect((await reminders(c.conversation))[0]!.text).not.toMatch(
+        /remind|yaad|یاد|flag|ittela|اطلاع/i,
+      );
   });
 
   it('drops the queued reminder if staff accepted the order first', async () => {

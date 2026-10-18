@@ -70,9 +70,39 @@ export function sanitizeError(error: unknown): string {
   if (error instanceof PublicError) return error.message;
   return 'The service could not complete this request. Check the connection and try again.';
 }
+// The server's own secrets, wherever an upstream error message repeats one.
+const SECRET_SETTINGS = [
+  'META_APP_SECRET',
+  'META_VERIFY_TOKEN',
+  'CRON_SECRET',
+  'SUPABASE_SERVICE_ROLE_KEY',
+  'CREDENTIAL_ENCRYPTION_KEY',
+  'MENU_LINK_SECRET',
+  'WHATSAPP_GATEWAY_SECRET',
+  'HEALTH_CHECK_TOKEN',
+  'RESEND_API_KEY',
+];
+/**
+ * For log lines: hides the server's secrets, the query string of any URL (a network error can
+ * quote the whole request URL, such as Meta's signup code exchange with the app secret) and
+ * secret-looking parameters. Paths and hosts stay, so the log still says what failed.
+ */
+export function redactSecrets(text: string): string {
+  let out = text;
+  for (const name of SECRET_SETTINGS) {
+    const value = env(name)?.trim();
+    if (value && value.length >= 6) out = out.split(value).join('[hidden]');
+  }
+  return out
+    .replace(/(\bhttps?:\/\/[^\s?#"'<>()]*)\?[^\s#"'<>()]*/gi, '$1?[hidden]')
+    .replace(
+      /\b(client_secret|access_token|refresh_token|fb_exchange_token|code|key|api_key|apikey|token|secret|password|signature)=[^&\s"'<>()]+/gi,
+      '$1=[hidden]',
+    );
+}
 // Tokens and keys that can appear inside an upstream error message.
 const scrub = (text: string) =>
-  text
+  redactSecrets(text)
     .replace(/Bearer\s+\S+/gi, 'Bearer [hidden]')
     .replace(/\beyJ[\w-]*\.[\w-]+(?:\.[\w-]+)?/g, '[token]')
     .replace(/\b(?:sk|rk|pk)-[\w-]{8,}/g, '[key]')

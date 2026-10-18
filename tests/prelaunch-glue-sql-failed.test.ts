@@ -151,7 +151,10 @@ describe('a message that failed for good goes into its chat (F17)', () => {
     expect(saved.mode).toBe('human');
   });
 
-  it('keeps the job failed for a blocked number or a chat that does not exist', async () => {
+  // As the worker (recordFailedMessage): a blocked number's message is dropped and its job ends,
+  // and a customer's first message starts their chat, so neither holds back later messages.
+  it('drops a blocked number’s message and starts the chat for a first message, as the worker does', async () => {
+    await configure();
     const phone = nextPhone();
     const c = await chat(phone);
     await scalar(
@@ -160,14 +163,42 @@ describe('a message that failed for good goes into its chat (F17)', () => {
     );
     const before = await conversation(c.id);
     const blocked = await exhausted({ phone, messageId: 'wamid-b', text: 'spam' });
-    const nowhere = await exhausted({ phone: nextPhone(), messageId: 'wamid-n', text: 'hi' });
+    const first = nextPhone();
+    const nowhere = await exhausted({ phone: first, messageId: 'wamid-n', text: 'hi' });
+    const later = makeJob(company.id, 'incoming', {
+      phone: first,
+      messageId: 'wamid-l',
+      text: 'hello?',
+    });
+    await rpc('insert_job', [later, null]);
     expect(await rpc('fail_exhausted_orderly_jobs', [20])).toBe(2);
-    for (const job of [blocked, nowhere]) {
-      expect(await jobData(job.id)).toMatchObject({ status: 'failed' });
-      expect((await jobData(job.id)).payload).not.toHaveProperty('failedPermanently');
-    }
+    for (const job of [blocked, nowhere])
+      expect(await jobData(job.id)).toMatchObject({
+        status: 'done',
+        payload: { failedPermanently: true },
+      });
+    expect((await jobData(blocked.id)).error).toContain('blocked');
+    // The blocked chat stays exactly as it was.
     expect(await conversation(c.id)).toEqual(before);
-    expect(await attention()).toMatchObject({ failures: 2 });
+    // The new customer's chat holds their message, for staff.
+    const started = await scalar<Conversation>(
+      "select data as value from conversations where customer_phone=$1 and channel='whatsapp'",
+      [first],
+    );
+    expect(started).toMatchObject({
+      customerPhone: first,
+      mode: 'human',
+      version: 1,
+      lastInboundAt: nowhere.createdAt,
+      cart: { items: [], revision: 0, status: 'building' },
+    });
+    expect(started.messages).toEqual([
+      { id: 'wamid-n', role: 'customer', text: 'hi', createdAt: nowhere.createdAt },
+    ]);
+    // Their next message is sent to the worker straight away, and staff see the chat, not a
+    // failed job.
+    expect(await dispatched()).toContain(later.id);
+    expect(await attention()).toMatchObject({ failures: 0, handoffs: 1 });
   });
 
   it.each(['anon', 'authenticated'])('is for the server only, never %s', async (role) => {

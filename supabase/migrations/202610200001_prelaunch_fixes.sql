@@ -1,14 +1,17 @@
 -- Pre-launch fixes: staff email alerts reach the person who asked for them, erasing a customer
--- finds every format of their number and clears their blocked-number label, a customer export
--- finds every chat erasing would remove, automatic order notices no longer hide a customer waiting
--- for staff or restart how long they have waited, a linked phone that stopped working alerts
--- staff, a message that failed for good goes into its chat instead of holding back the customer's
--- later ones, the spam safety net is 1,500 AI replies an hour (100 per customer) with a warning
--- at 80%, the Active orders filter leaves out pending orders, the daily orders chart counts the
--- business's own days, a pipeline health check, a daily purge of old operational rows, and a
--- ledger of applied migrations.
+-- finds every format of their number and clears their blocked-number label, a customer known
+-- only by a chat (a privacy ID) can be exported and erased too, a customer export finds every
+-- chat erasing would remove, automatic order notices no longer hide a customer waiting for staff
+-- or restart how long they have waited, a chat staff took over waits from the takeover, a linked
+-- phone that stopped working alerts staff, a message that failed for good goes into its chat
+-- (a new one for a customer's first message) instead of holding back the customer's later ones,
+-- the spam safety net is 1,500 AI replies an hour (100 per customer) with a warning at 80%, the
+-- Active orders filter leaves out pending orders, the daily orders chart counts the business's
+-- own days, a pipeline health check, a daily purge of old operational rows, and a ledger of
+-- applied migrations.
 -- Apply after 202610190003_menu_purge_schedule.sql and before deploying the backend that calls
--- orderly_pipeline_health and customer_records. The backend and dashboard running now keep
+-- orderly_pipeline_health, customer_records, conversation_records and erase_conversation. The
+-- backend and dashboard running now keep
 -- working: every function keeps its signature and result shape (staff_attention only adds a
 -- 'whatsapp' count and items), and the only new column has a default.
 -- Safe to rerun while no later file redefines these functions. It replaces, starting from their
@@ -38,6 +41,40 @@ language sql stable security definer set search_path=public as $$
       or exists(select 1 from platform_admins a where a.user_id=u.id));
 $$;
 
+-- What erasing some of one customer's chats removes, for erase_customer and erase_conversation,
+-- which lock the business and check that nothing is running first: the chats, their orders, the
+-- content of their jobs (found by chat, order, WhatsApp address and message stream, and by the
+-- customer's number when it is known; p_phone is '' for a privacy ID), their traces and usage
+-- links, the name and chat link on their blocks, and receipts never linked to any chat. Not
+-- callable on its own (no grants).
+create or replace function public.erase_customer_chats(p_company_id text,p_ids text[],p_phone text) returns integer
+language plpgsql set search_path=public as $$
+declare order_ids text[]; addresses jsonb[]; streams text[]; marks text[]; block_ids text[];
+  known boolean := btrim(coalesce(p_phone,''))<>'';
+  digits text := regexp_replace(coalesce(p_phone,''),'[^0-9]','','g');
+  by_digits boolean := digits ~ '^[1-9][0-9]{9,14}$';
+begin
+  select array_agg(id) into order_ids from orders where company_id=p_company_id and conversation_id=any(p_ids);
+  select array_agg(data->'whatsappAddress'),
+      array_agg((data->'whatsappAddress'->>'connectionId')||':'||(data->'whatsappAddress'->>'generation')||':'||(data->'whatsappAddress'->>'peer')),
+      array_agg(data->'blocked'->>'blockId')
+    into addresses, streams, marks from conversations where company_id=p_company_id and id=any(p_ids);
+  -- Before the chats go: the blocks marked on them, pointing at them, or holding this number.
+  select array_agg(distinct block_id) into block_ids from blocked_customers where company_id=p_company_id
+    and (conversation_id=any(p_ids) or block_id=any(marks) or (by_digits and key='pn:'||digits));
+  -- Keep dedupe tombstones, remove payloads so webhook retries cannot restore deleted data.
+  update jobs set status='done',lease_until=null,data=(data-'leaseUntil'-'lastError'-'error')||'{"status":"done","payload":{}}'::jsonb where company_id=p_company_id
+    and ((known and data->'payload'->>'phone'=p_phone) or (by_digits and regexp_replace(data->'payload'->>'phone','[^0-9]','','g')=digits)
+      or data->'payload'->>'conversationId'=any(p_ids) or data->'payload'->>'orderId'=any(order_ids)
+      or data->'payload'->>'streamKey'=any(streams) or data->'payload'->'whatsappAddress'=any(addresses));
+  delete from traces where company_id=p_company_id and conversation_id=any(p_ids);
+  update usage_events set data=data-'conversationId' where company_id=p_company_id and data->>'conversationId'=any(p_ids);
+  update blocked_customers set label='Erased customer',conversation_id=null where company_id=p_company_id and block_id=any(block_ids);
+  delete from message_deliveries where company_id=p_company_id and conversation_id is null;
+  delete from orders where company_id=p_company_id and conversation_id=any(p_ids);
+  delete from conversations where company_id=p_company_id and id=any(p_ids);
+  return coalesce(cardinality(p_ids),0);
+end $$;
 -- Latest body from 202609170001_retention.sql. Changed:
 -- * A whole international number matches every WhatsApp chat with the same digits, so
 --   '+92 300 1234567' finds '923001234567' (Cloud API) and '+923001234567' (linked phone). A
@@ -48,8 +85,9 @@ $$;
 -- * A block of this customer keeps its keys (it still applies) but loses the name and the chat
 --   link; receipts of messages never linked to any chat go.
 -- * An empty number is refused.
+-- * The removal itself is erase_customer_chats (above), shared with erase_conversation.
 create or replace function public.erase_customer(p_company_id text,p_phone text) returns integer language plpgsql security definer set search_path=public as $$
-declare ids text[]; order_ids text[]; addresses jsonb[]; streams text[]; marks text[]; block_ids text[];
+declare ids text[];
   digits text := regexp_replace(coalesce(p_phone,''),'[^0-9]','','g');
   by_digits boolean := digits ~ '^[1-9][0-9]{9,14}$';
 begin
@@ -58,26 +96,37 @@ begin
   if btrim(coalesce(p_phone,''))='' then raise exception 'Customer phone number required'; end if;
   select array_agg(id) into ids from conversations where company_id=p_company_id
     and (customer_phone=p_phone or (by_digits and channel='whatsapp' and regexp_replace(customer_phone,'[^0-9]','','g')=digits));
-  select array_agg(id) into order_ids from orders where company_id=p_company_id and conversation_id=any(ids);
-  select array_agg(data->'whatsappAddress'),
-      array_agg((data->'whatsappAddress'->>'connectionId')||':'||(data->'whatsappAddress'->>'generation')||':'||(data->'whatsappAddress'->>'peer')),
-      array_agg(data->'blocked'->>'blockId')
-    into addresses, streams, marks from conversations where company_id=p_company_id and id=any(ids);
-  -- Before the chats go: the blocks marked on them, pointing at them, or holding this number.
-  select array_agg(distinct block_id) into block_ids from blocked_customers where company_id=p_company_id
-    and (conversation_id=any(ids) or block_id=any(marks) or (by_digits and key='pn:'||digits));
-  -- Keep dedupe tombstones, remove payloads so webhook retries cannot restore deleted data.
-  update jobs set status='done',lease_until=null,data=(data-'leaseUntil'-'lastError'-'error')||'{"status":"done","payload":{}}'::jsonb where company_id=p_company_id
-    and (data->'payload'->>'phone'=p_phone or (by_digits and regexp_replace(data->'payload'->>'phone','[^0-9]','','g')=digits)
-      or data->'payload'->>'conversationId'=any(ids) or data->'payload'->>'orderId'=any(order_ids)
-      or data->'payload'->>'streamKey'=any(streams) or data->'payload'->'whatsappAddress'=any(addresses));
-  delete from traces where company_id=p_company_id and conversation_id=any(ids);
-  update usage_events set data=data-'conversationId' where company_id=p_company_id and data->>'conversationId'=any(ids);
-  update blocked_customers set label='Erased customer',conversation_id=null where company_id=p_company_id and block_id=any(block_ids);
-  delete from message_deliveries where company_id=p_company_id and conversation_id is null;
-  delete from orders where company_id=p_company_id and conversation_id=any(ids);
-  delete from conversations where company_id=p_company_id and id=any(ids);
-  return coalesce(cardinality(ids),0);
+  return erase_customer_chats(p_company_id,ids,p_phone);
+end $$;
+
+-- A customer known by one of their chats, for one whose number WhatsApp never shared (a privacy
+-- ID on the linked phone): that chat, every chat with its number when it has one (as
+-- erase_customer matches a number) and every WhatsApp chat with the same peer (the same privacy
+-- ID or linked-phone number, on any connection). Not callable on its own (no grants).
+create or replace function public.conversation_customer_ids(p_company_id text,p_conversation_id text) returns text[]
+language sql stable set search_path=public as $$
+  with target as (
+    select id, customer_phone phone, regexp_replace(customer_phone,'[^0-9]','','g') digits,
+      nullif(data->'whatsappAddress'->>'peer','') peer
+    from conversations where company_id=p_company_id and id=p_conversation_id)
+  select array_agg(c.id order by c.id) from conversations c, target t
+  where c.company_id=p_company_id
+    and (c.id=t.id
+      or (btrim(t.phone)<>'' and (c.customer_phone=t.phone
+        or (t.digits ~ '^[1-9][0-9]{9,14}$' and c.channel='whatsapp' and regexp_replace(c.customer_phone,'[^0-9]','','g')=t.digits)))
+      or (t.peer is not null and c.channel='whatsapp' and c.data->'whatsappAddress'->>'peer'=t.peer));
+$$;
+-- Erases a customer known by one of their chats (conversation_customer_ids), from the Inbox, with
+-- the same checks and the same removal as erase_customer. 0 when the chat no longer exists.
+create or replace function public.erase_conversation(p_company_id text,p_conversation_id text) returns integer language plpgsql security definer set search_path=public as $$
+declare ids text[];
+begin
+  perform 1 from companies where id=p_company_id for update;
+  if exists(select 1 from companies where id=p_company_id and data->>'botEnabled'='true') or exists(select 1 from jobs where company_id=p_company_id and status='processing' and lease_until>now()) or exists(select 1 from conversation_locks where company_id=p_company_id and lease_until>now()) then raise exception 'Pause automation and wait for running work before deleting customer data'; end if;
+  ids := conversation_customer_ids(p_company_id,p_conversation_id);
+  if ids is null then return 0; end if;
+  return erase_customer_chats(p_company_id,ids,
+    (select customer_phone from conversations where company_id=p_company_id and id=p_conversation_id));
 end $$;
 
 -- Latest body from 202609170001_retention.sql. Changed: a chat whose number is unknown ('') no
@@ -135,17 +184,19 @@ $$;
 
 -- Since when a customer waiting for staff has waited, for the bell and email alerts: their latest
 -- message, unless a staff reply came after it. Automatic notices count as nothing, as in
--- awaits_staff_reply, so an order status change no longer restarts the wait. Never later than
--- the chat was last saved; with no such message, when the chat was last saved, as before.
-create or replace function public.waiting_since(p_messages jsonb,p_updated_at timestamptz) returns timestamptz
+-- awaits_staff_reply, so an order status change no longer restarts the wait. When staff took the
+-- chat over from the bot later than that message (p_human_since, the chat's humanSince), since
+-- then: the bot had answered, so a takeover hours later is not overdue at once. Never later than
+-- the chat was last saved; with neither, when the chat was last saved, as before.
+create or replace function public.waiting_since(p_messages jsonb,p_updated_at timestamptz,p_human_since timestamptz default null) returns timestamptz
 language sql stable set search_path = public as $$
-  select least(p_updated_at,(
+  select least(p_updated_at,greatest(p_human_since,(
     select case when m->>'role'='customer' then (m->>'createdAt')::timestamptz end
     from jsonb_array_elements(case when jsonb_typeof(p_messages)='array' then p_messages else '[]'::jsonb end) with ordinality a(m,n)
     where m->>'notice' is distinct from 'true'
       and (m->>'role'='customer' or (m->>'role'='staff'
         and coalesce(m->>'text','') !~ '^Order [^ ]+ is now (pending|accepted|preparing|ready|out for delivery|completed|rejected|cancelled)\.$'))
-    order by n desc limit 1));
+    order by n desc limit 1)));
 $$;
 
 -- Keep in step with AI_LIMIT_DEFAULTS and AI_LIMIT_RANGES in src/shared/models.ts. Changed: the
@@ -189,13 +240,13 @@ language sql stable security definer set search_path=public as $$
 $$;
 
 -- Latest body from 202610180001_spam_protection.sql. Changed: an automatic notice is not a staff
--- reply, a customer has waited since their message (waiting_since), an order waiting 15 minutes
--- counts whatever the alert delay, the 80% warning counts, and so does a linked phone that
--- stopped working (one still reconnecting after the alert delay).
+-- reply, a customer has waited since their message or staff's takeover (waiting_since), an order
+-- waiting 15 minutes counts whatever the alert delay, the 80% warning counts, and so does a
+-- linked phone that stopped working (one still reconnecting after the alert delay).
 create or replace function public.has_overdue_attention(p_company_id text,p_minutes integer) returns boolean
 language sql stable security definer set search_path=public as $$
   select exists(select 1 from orders where company_id=p_company_id and data->>'status'='pending' and data->>'sandbox'='false' and created_at<now()-make_interval(mins=>least(p_minutes,15)))
-    or exists(select 1 from conversations where company_id=p_company_id and channel='whatsapp' and data->>'mode'='human' and awaits_staff_reply(data->'messages') and jsonb_typeof(data->'blocked') is distinct from 'object' and waiting_since(data->'messages',updated_at)<now()-make_interval(mins=>p_minutes))
+    or exists(select 1 from conversations where company_id=p_company_id and channel='whatsapp' and data->>'mode'='human' and awaits_staff_reply(data->'messages') and jsonb_typeof(data->'blocked') is distinct from 'object' and waiting_since(data->'messages',updated_at,(data->>'humanSince')::timestamptz)<now()-make_interval(mins=>p_minutes))
     or exists(select 1 from jobs where company_id=p_company_id and status='failed' and data->>'kind'<>'staff_alert' and created_at<now()-make_interval(mins=>p_minutes))
     or company_budget_warning(p_company_id)
     or exists(select 1 from ai_limit_hits where company_id=p_company_id and last_hit_at>now()-interval '1 hour')
@@ -203,8 +254,8 @@ language sql stable security definer set search_path=public as $$
     or exists(select 1 from whatsapp_down(p_company_id,p_minutes));
 $$;
 -- Latest body from 202610180001_spam_protection.sql. Changed: an automatic notice is not a staff
--- reply, a waiting customer's item is dated from their message (waiting_since) as email alerts
--- count it, and the 80% warning is a 'limit' item with scope 'hourly_near' (dashboards that do not
+-- reply, a waiting customer's item is dated from their message or staff's takeover
+-- (waiting_since) as email alerts count it, and the 80% warning is a 'limit' item with scope 'hourly_near' (dashboards that do not
 -- know it show "AI limit reached"). It is not counted in "limits", which are limits reached. A
 -- linked phone that stopped working is a 'whatsapp' item (counted in "whatsapp"; dashboards that do
 -- not know it show "Something needs attention"); one reconnecting shows after 3 minutes, when
@@ -223,7 +274,7 @@ language sql stable security definer set search_path=public as $$
     select 'order:'||id as id,'order'::text as kind,id as "entityId",created_at as "createdAt",null::text as scope,null::timestamptz as "resetsAt"
       from orders where company_id=p_company_id and data->>'status'='pending' and data->>'sandbox'='false'
     union all
-    select 'handoff:'||id,'handoff',id,waiting_since(data->'messages',updated_at),null,null from conversations
+    select 'handoff:'||id,'handoff',id,waiting_since(data->'messages',updated_at,(data->>'humanSince')::timestamptz),null,null from conversations
       where company_id=p_company_id and channel='whatsapp' and data->>'mode'='human' and awaits_staff_reply(data->'messages')
         and jsonb_typeof(data->'blocked') is distinct from 'object'
     union all
@@ -262,6 +313,21 @@ language sql stable security definer set search_path=public as $$
     where c.company_id=p_company_id and btrim(coalesce(p_phone,''))<>''
       and (c.customer_phone=p_phone or (p.digits ~ '^[1-9][0-9]{9,14}$' and c.channel='whatsapp'
         and regexp_replace(c.customer_phone,'[^0-9]','','g')=p.digits))
+    order by c.updated_at desc, c.id limit 200
+  )
+  select jsonb_build_object(
+    'conversations',coalesce((select jsonb_agg(data order by updated_at desc, id) from matched),'[]'::jsonb),
+    'orders',coalesce((select jsonb_agg(o.data order by o.created_at desc, o.id) from orders o
+      where o.company_id=p_company_id and o.conversation_id in (select id from matched)),'[]'::jsonb));
+$$;
+-- What erase_conversation would remove for a customer known by one of their chats, as
+-- customer_records for a number: the chats (conversation_customer_ids), newest first, at most 200,
+-- and the orders placed in them. Nothing when the chat no longer exists.
+create or replace function public.conversation_records(p_company_id text,p_conversation_id text) returns jsonb
+language sql stable security definer set search_path=public as $$
+  with matched as (
+    select c.id, c.data, c.updated_at from conversations c
+    where c.company_id=p_company_id and c.id=any(conversation_customer_ids(p_company_id,p_conversation_id))
     order by c.updated_at desc, c.id limit 200
   )
   select jsonb_build_object(
@@ -311,14 +377,17 @@ create or replace function public.workspace_summary(p_company_id text,p_sandbox 
 $$;
 
 -- Latest body from 202610180001_spam_protection.sql. Changed, as the worker does since these
--- fixes: an incoming message that failed for good goes into its chat (unless it is there already)
--- and the chat goes to staff, then the job ends as done with payload.failedPermanently, so the
--- customer's later messages are no longer held back behind it. A message whose chat does not
--- exist or is blocked keeps its job failed, as before.
+-- fixes (recordFailedMessage in server/service.ts): an incoming message that failed for good goes
+-- into its chat (unless it is there already) and the chat goes to staff, then the job ends as
+-- done with payload.failedPermanently, so the customer's later messages are no longer held back
+-- behind it. A customer's first message, with no chat yet, starts one for staff, unless it
+-- belongs to a previous WhatsApp connection. A blocked number's message is dropped as on arrival:
+-- its job ends too and its chat stays as it is.
 create or replace function public.fail_exhausted_orderly_jobs(p_limit integer default 20) returns integer
 language plpgsql security definer set search_path = '' as $$
 declare target record; failed_conversation_id text; trace_id text; affected integer := 0;
   conversation_blocked boolean; message_id text; echo boolean; present boolean; released boolean;
+  new_id text;
   failed_at timestamptz := now();
   stamp text := to_char(failed_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"');
   failure_message text := 'Worker stopped after the retry limit. Review this job before retrying.';
@@ -352,9 +421,37 @@ begin
       end if;
       message_id := target.data->'payload'->>'messageId';
       echo := coalesce(target.data->'payload'->>'echo', '') = 'true';
-      released := failed_conversation_id is not null and not coalesce(conversation_blocked, false)
-        and message_id is not null;
-      present := released and exists (select 1 from public.conversation_messages m
+      -- No chat yet: start one, as the worker does, when the message is for the business's
+      -- current WhatsApp connection (or, without an address, when it has none).
+      if failed_conversation_id is null and message_id is not null and (case
+          when target.data->'payload' ? 'whatsappAddress' then exists (
+            select 1 from public.whatsapp_connections w where w.company_id = target.company_id
+              and w.id = target.data->'payload'->'whatsappAddress'->>'connectionId'
+              and w.data->>'generation' = target.data->'payload'->'whatsappAddress'->>'generation'
+              and w.data->>'provider' = target.data->'payload'->'whatsappAddress'->>'provider'
+              and coalesce(w.data->>'status', '') not in ('disconnected', 'logged_out'))
+          else not exists (select 1 from public.whatsapp_connections w where w.company_id = target.company_id)
+          end) then
+        new_id := gen_random_uuid()::text;
+        insert into public.conversations(id, company_id, customer_phone, channel, version, updated_at, data)
+          values (new_id, target.company_id, coalesce(target.data->'payload'->>'phone', ''), 'whatsapp', 0, failed_at,
+            jsonb_build_object('id', new_id, 'companyId', target.company_id,
+              'customerPhone', coalesce(target.data->'payload'->>'phone', ''), 'customerName', 'Guest',
+              'channel', 'whatsapp', 'language', 'en', 'mode', 'human', 'messages', '[]'::jsonb,
+              'cart', jsonb_build_object('items', '[]'::jsonb, 'revision', 0, 'status', 'building'),
+              'version', 0, 'updatedAt', stamp,
+              'lastInboundAt', coalesce(target.data->'createdAt', to_jsonb(stamp)))
+              || case when target.data->'payload' ? 'whatsappAddress'
+                then jsonb_build_object('whatsappAddress', target.data->'payload'->'whatsappAddress')
+                else '{}'::jsonb end)
+          -- A worker that started the chat meanwhile wins; the job stays failed for a retry.
+          on conflict do nothing
+          returning id into failed_conversation_id;
+        conversation_blocked := false;
+      end if;
+      released := failed_conversation_id is not null
+        and (coalesce(conversation_blocked, false) or message_id is not null);
+      present := released and not coalesce(conversation_blocked, false) and exists (select 1 from public.conversation_messages m
         where m.company_id = target.company_id and m.conversation_id = failed_conversation_id and m.id = message_id);
       -- Preserve every other field and advance both representations of version. A customer's
       -- message also reopens the reply window, as when it is processed.
@@ -400,7 +497,9 @@ begin
     if released then
       update public.jobs set status = 'done', lease_until = null,
         data = (data - 'leaseUntil') || jsonb_build_object('status', 'done',
-          'error', 'Worker stopped after the retry limit. The message is in the chat for staff.',
+          'error', case when conversation_blocked
+            then 'Worker stopped after the retry limit. The number is blocked, so the message was dropped.'
+            else 'Worker stopped after the retry limit. The message is in the chat for staff.' end,
           'payload', coalesce(data->'payload', '{}'::jsonb) || '{"failedPermanently":true}'::jsonb)
         where id = target.id;
     else
@@ -413,8 +512,11 @@ begin
       values (trace_id, target.company_id, failed_conversation_id, failed_at,
         jsonb_strip_nulls(jsonb_build_object('id', trace_id, 'companyId', target.company_id,
           'conversationId', failed_conversation_id, 'action', 'job.failed',
-          'detail', 'Job ' || target.id || case when released
-            then ' stopped after the retry limit. Its message is in the chat for staff.'
+          'detail', 'Job ' || target.id || case
+            when released and conversation_blocked
+              then ' stopped after the retry limit. The number is blocked, so its message was dropped.'
+            when released
+              then ' stopped after the retry limit. Its message is in the chat for staff.'
             else ' stopped after the retry limit. Review saved work before retrying.' end,
           'createdAt', stamp)));
     affected := affected + 1;
@@ -534,9 +636,15 @@ do $$ declare f record; begin
     and proname=any(array['alert_recipient','erase_customer','run_retention','awaits_staff_reply','waiting_since',
       'ai_limit_settings','ai_hourly_warning','whatsapp_down','has_overdue_attention','staff_attention',
       'customer_records','query_orders','business_time_zone','workspace_summary','fail_exhausted_orderly_jobs',
-      'orderly_pipeline_health','purge_orderly_operations','prune_orderly_cron_history']) loop
+      'orderly_pipeline_health','purge_orderly_operations','prune_orderly_cron_history',
+      'erase_conversation','conversation_records']) loop
     execute format('revoke all on function %s from public,anon,authenticated',f.signature);
     execute format('grant execute on function %s to service_role',f.signature);
+  end loop;
+  -- Parts of the functions above, never called on their own: erasing without its checks.
+  for f in select oid::regprocedure signature from pg_proc where pronamespace='public'::regnamespace
+    and proname=any(array['erase_customer_chats','conversation_customer_ids']) loop
+    execute format('revoke all on function %s from public,anon,authenticated,service_role',f.signature);
   end loop;
 end $$;
 

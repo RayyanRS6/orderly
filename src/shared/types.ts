@@ -68,6 +68,11 @@ export interface Company {
   modelVerification?: { fingerprint: string; checkedAt: string };
   /** Set only by the Orderly admin: this business may pair a new linked phone. */
   linkedDeviceAllowed?: boolean;
+  /**
+   * Counts settings saves (PUT /api/companies/:id and Connect and test), so a save sent from an
+   * older copy of the settings is refused instead of undoing a newer change. Missing means 0.
+   */
+  settingsRevision?: number;
 }
 /** Who accepted the AI data terms, for which provider, and what they confirmed. */
 export interface AiDataApproval {
@@ -227,6 +232,9 @@ export interface Conversation {
   // When staff last handed the chat back to the bot. A staff phone message older than this
   // (replayed after the gateway reconnects) is recorded but does not take the chat back.
   botResumedAt?: string;
+  // When staff last took the chat over themselves (Inbox → Take over). A customer waiting for
+  // staff counts as waiting from then at the earliest, not from an older message the bot answered.
+  humanSince?: string;
   // Set when an AI limit stopped the bot answering this chat. Staff see it under "Needs staff";
   // the bot takes the chat back after `until`, or once the limit is raised, unless staff wrote.
   // 'burst' (too many messages at once), 'ai_error' (the AI could not answer) and 'late' (the

@@ -14,7 +14,7 @@ import type {
 } from '../src/shared/types';
 import type { Repository } from './repository';
 import { PublicError } from './security';
-import { AI_TERMS_VERSION, botSchema } from './validation';
+import { AI_TERMS_VERSION, botSchema, settingsRevision } from './validation';
 import { normalizeTypedPhone } from '../src/shared/menu';
 import { defaultBot, configuredCompany } from '../src/shared/bot';
 import { availableModels, modelFingerprint, verifyProviderKey } from './integrations/model-catalog';
@@ -278,6 +278,8 @@ export function managementRoutes(repo: Repository) {
     const latest = (await repo.getCompany(company.id)) ?? company;
     await repo.saveCompany({
       ...latest,
+      // A settings copy from before this switch must not save the old model back.
+      settingsRevision: settingsRevision(latest) + 1,
       ai: candidate.ai,
       privacy: {
         aiDataApproved: true,
@@ -484,19 +486,47 @@ export function managementRoutes(repo: Repository) {
   };
   const NO_RECORDS =
     'No records found for this number. Copy the number exactly as shown in the Inbox.';
+  const NO_CHAT = 'No records found for this chat. It may have been deleted already.';
+  // A customer is named by their number or, for a chat where WhatsApp never shared the number
+  // (a privacy ID), by one of their chats: exactly one of the two.
+  const conversationIdSchema = z.string().trim().min(1).max(200);
+  const oneCustomer = (phone: unknown, conversationId: unknown) => {
+    if ((phone === undefined) === (conversationId === undefined))
+      throw new PublicError(
+        'Give the customer’s number or one of their chats (one of the two).',
+        400,
+      );
+  };
   app.get('/privacy/customer', async (c) => {
     owner(c.get('role'));
-    const { raw, stored } = phoneForms(z.string().min(4).max(80).parse(c.req.query('phone')));
-    const forms = [...new Set([...stored, raw])];
     const companyId = c.get('company').id;
-    // Every chat erasing this number would remove (not only the newest per channel), and
+    oneCustomer(c.req.query('phone'), c.req.query('conversationId'));
+    const conversationId =
+      c.req.query('conversationId') === undefined
+        ? undefined
+        : conversationIdSchema.parse(c.req.query('conversationId'));
+    // Every chat erasing this customer would remove (not only the newest per channel), and
     // their orders.
     const found = new Map<string, Conversation>();
     const matched = new Map<string, Order>();
-    for (const phone of forms) {
-      const records = await repo.customerRecords(companyId, phone);
+    let forms: string[];
+    if (conversationId) {
+      const records = await repo.conversationRecords(companyId, conversationId);
+      const chat = records.conversations.find((r) => r.id === conversationId);
+      if (!chat) throw new PublicError(NO_CHAT, 404);
       for (const conversation of records.conversations) found.set(conversation.id, conversation);
       for (const order of records.orders) matched.set(order.id, order);
+      // The chat's number, when known, also finds orders placed under it (below).
+      const phone = chat.customerPhone.trim();
+      forms = phone ? [...new Set([...phoneForms(phone).stored, phone])] : [];
+    } else {
+      const { raw, stored } = phoneForms(z.string().min(4).max(80).parse(c.req.query('phone')));
+      forms = [...new Set([...stored, raw])];
+      for (const phone of forms) {
+        const records = await repo.customerRecords(companyId, phone);
+        for (const conversation of records.conversations) found.set(conversation.id, conversation);
+        for (const order of records.orders) matched.set(order.id, order);
+      }
     }
     const conversations = [...found.values()];
     for (const phone of forms)
@@ -531,23 +561,30 @@ export function managementRoutes(repo: Repository) {
   });
   app.post('/privacy/erase', async (c) => {
     owner(c.get('role'));
-    const { phone } = z
+    const { phone, conversationId } = z
       .object({
-        phone: z.string().trim().min(4).max(80),
+        phone: z.string().trim().min(4).max(80).optional(),
+        conversationId: conversationIdSchema.optional(),
         externalCopiesAcknowledged: z.literal(true),
       })
       .parse(await c.req.json());
+    oneCustomer(phone, conversationId);
     const companyId = c.get('company').id;
-    // The number's digits first (the database matches every stored form of them), then +digits
-    // for a database that still matches exact text, and the number as typed only if neither
-    // found anything.
-    const { raw, stored } = phoneForms(phone);
     let deleted = 0;
-    for (const form of stored) deleted += await repo.eraseCustomer(companyId, form);
-    if (!deleted && !stored.includes(raw)) deleted += await repo.eraseCustomer(companyId, raw);
+    if (conversationId) {
+      // The chat, every other chat with its number, and every chat with its privacy ID.
+      deleted = await repo.eraseConversation(companyId, conversationId);
+    } else {
+      // The number's digits first (the database matches every stored form of them), then
+      // +digits for a database that still matches exact text, and the number as typed only if
+      // neither found anything.
+      const { raw, stored } = phoneForms(phone!);
+      for (const form of stored) deleted += await repo.eraseCustomer(companyId, form);
+      if (!deleted && !stored.includes(raw)) deleted += await repo.eraseCustomer(companyId, raw);
+    }
     // The count shows afterwards whether a request really removed anything.
     await repo.audit(companyId, c.get('userId'), `privacy.customer_erased.${deleted}`);
-    if (!deleted) throw new PublicError(NO_RECORDS, 404);
+    if (!deleted) throw new PublicError(conversationId ? NO_CHAT : NO_RECORDS, 404);
     return c.json({ deleted });
   });
   // The public menu page: anyone on the team sees it, owners switch it on or off.

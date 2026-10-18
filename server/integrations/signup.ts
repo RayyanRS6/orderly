@@ -33,8 +33,12 @@ export async function finishSignup(
     client_secret: requiredEnv('META_APP_SECRET'),
     code: body.code,
   });
+  // The exchange URL carries the app secret: a network error quoting it must never reach a
+  // log or the dashboard, so it is replaced by a public error with no cause attached.
   const response = await fetch(`${base}/oauth/access_token?${query}`, {
     signal: AbortSignal.timeout(10000),
+  }).catch(() => {
+    throw new PublicError('Meta could not be reached to finish the signup. Try again.', 502);
   });
   if (!response.ok)
     throw new PublicError(
@@ -47,6 +51,8 @@ export async function finishSignup(
   const verified = await fetch(`${base}/${body.wabaId}/phone_numbers?fields=id&limit=100`, {
     headers: { Authorization: `Bearer ${result.access_token}` },
     signal: AbortSignal.timeout(10000),
+  }).catch(() => {
+    throw new PublicError('Meta could not be reached to finish the signup. Try again.', 502);
   });
   if (!verified.ok)
     throw new PublicError('The granted token cannot access this WhatsApp account.', 403);

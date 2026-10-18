@@ -5,10 +5,12 @@ import type {
   Conversation,
   Job,
   Language,
+  Order,
   Product,
   TurnInput,
   TurnResult,
 } from '../src/shared/types.js';
+import { money } from '../src/shared/types.js';
 import {
   draftMessage,
   formatMenuCode,
@@ -664,6 +666,30 @@ const CODE_ENDED = (lang: Language) =>
     'یہ آرڈر کوڈ ختم ہو چکا ہے یا پہلے استعمال ہو چکا ہے۔ آرڈر دینے کے لیے مینو لنک دوبارہ کھولیں۔',
     'Yeh order code expire ho chuka hai ya pehle use ho chuka hai. Order dene ke liye menu link dobara kholein.',
   );
+// The order behind a code that reached Orderly late, and how to place it now.
+const lateCodeText = (lang: Language, order: Order, code: string) =>
+  [
+    say(
+      lang,
+      'Sorry for the delay. Your message reached us late, so this order has not been placed yet:',
+      'تاخیر کے لیے معذرت۔ آپ کا پیغام ہمیں دیر سے ملا، اس لیے یہ آرڈر ابھی نہیں دیا گیا:',
+      'Der ke liye maazrat. Aap ka message hamein der se mila, is liye yeh order abhi place nahi hua:',
+    ),
+    order.items
+      .map(
+        (item) =>
+          `${item.quantity} × ${item.name}${item.variant ? ` (${item.variant})` : ''}${item.modifiers.length ? ` + ${item.modifiers.join(', ')}` : ''} — ${money(item.total)}`,
+      )
+      .join('\n'),
+    `${say(lang, 'Total', 'کل رقم', 'Total')}: ${money(order.total)}`,
+    '',
+    say(
+      lang,
+      `To place it, send this code again: ${formatMenuCode(code)}`,
+      `آرڈر دینے کے لیے یہ کوڈ دوبارہ بھیجیں: ${formatMenuCode(code)}`,
+      `Order dene ke liye yeh code dobara bhejein: ${formatMenuCode(code)}`,
+    ),
+  ].join('\n');
 /** A reply to a code message that places no order. The chat stays with the bot. */
 async function saveCodeReply(
   repo: Repository,
@@ -742,8 +768,11 @@ export async function redeemMenuDraft(
   const lang = noticeLanguage(company, conversation, input.text);
   const refuse = (reply: string, reason: string) =>
     saveCodeReply(repo, company, conversation, input, reply, reason);
+  // A code that reached Orderly late (10 minutes to 2 hours, after an outage) is checked as of
+  // now, as the database checks it: whether it has expired, the opening hours and the prices.
+  const now = input.late ? new Date().toISOString() : input.now;
   const draft = await repo.findMenuDraft(company.id, codeHash(company.id, code));
-  if (!draft || Date.parse(draft.expiresAt) <= Date.parse(input.now))
+  if (!draft || Date.parse(draft.expiresAt) <= Date.parse(now))
     return refuse(CODE_ENDED(lang), 'Order code not found or expired.');
   if (draft.usedAt) {
     const placed =
@@ -777,7 +806,7 @@ export async function redeemMenuDraft(
   let built: ReturnType<typeof buildWebOrder>;
   try {
     built = buildWebOrder(company, products, conversation, draft.cart, {
-      now: input.now,
+      now,
       submissionKey: `${company.id}:${conversation.id}:menu-draft:${draft.id}`,
       expectedTotal: draft.quotedTotal,
       customerMessage: { id: input.messageId, text: input.text },
@@ -808,6 +837,13 @@ export async function redeemMenuDraft(
       `Order code refused: ${error.code}.`,
     );
   }
+  // A late code is never placed by itself, as a late "confirm" is not: the customer sees the
+  // order again and sends the code once more (a fresh message) to place it.
+  if (input.late)
+    return refuse(
+      lateCodeText(lang, built.order, code),
+      'Order code reached Orderly late: the customer was asked to send it again.',
+    );
   const { order, replyId } = built;
   const reply = disclosed(company, conversation, input, built.reply);
   const stored = built.conversation.messages.find((m) => m.id === replyId);
