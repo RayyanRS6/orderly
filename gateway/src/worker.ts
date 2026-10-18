@@ -25,7 +25,7 @@ import {
   TICK_MS,
 } from './policy.js';
 import { sendOnce, recoverUncertainSends } from './sender.js';
-import { drainOnce, EVENT_BATCH, retryDeadEvents } from './drain.js';
+import { drainOnce, EVENT_BATCH, retryDeadEvents, SESSION_RETIRED } from './drain.js';
 import { endSocket, logsOut } from './shutdown.js';
 import { chatContent, messageText, receiptStatus, upsertedMessages } from './upserts.js';
 import { mapIdentity, messageIdentity } from './routing.js';
@@ -58,6 +58,8 @@ let phone: string | undefined;
 let stopped = false;
 // Set once fail() has reported a fatal code; the close it causes must not overwrite it.
 let failed = false;
+// Set once Orderly answered that it no longer uses this session; the supervisor then ends it.
+let retired = false;
 // Whether a pairing nobody finished has had its one retry (see retryPairing).
 let pairingRetried = false;
 let retries = 0;
@@ -138,7 +140,7 @@ function setStatus(next: typeof status, code?: string) {
   report();
 }
 async function drain() {
-  if (!store || stopped) return;
+  if (!store || stopped || retired) return;
   if (draining) {
     // An event saved during a pass is sent right after it, not on the next 15 s tick.
     drainAgain = true;
@@ -165,6 +167,10 @@ async function postEvent(raw: string) {
     redirect: 'error',
   });
   await response.body?.cancel().catch(() => undefined);
+  if (response.status === SESSION_RETIRED && !retired) {
+    retired = true;
+    process.send?.({ type: 'stale' });
+  }
   return response.status;
 }
 function receipt(key: proto.IMessageKey, status?: number | null) {
@@ -526,8 +532,8 @@ process.on('message', (message: any) => {
     stopped = true;
     clearTimeout(reconnectTimer);
     pairing = {};
-    // Only the supervisor's disconnect and new-pairing commands ask for a logout, and only a
-    // finished pairing can be logged out (see shutdown.ts).
+    // Only the supervisor's disconnect, new-pairing and retire steps ask for a logout, and only
+    // a finished pairing can be logged out (see shutdown.ts).
     void endSocket(socket, logsOut(message.logout === true, auth?.creds))
       .catch(() => false)
       .then(() => setImmediate(() => process.exit(0)));
@@ -539,7 +545,7 @@ process.on('message', (message: any) => {
 setInterval(
   () =>
     guard(async () => {
-      if (!store || stopped) return;
+      if (!store || stopped || retired) return;
       if (status === 'connected' && heartbeatDue(lastStatusAt, Date.now(), GATEWAY_HEARTBEAT_MS))
         setStatus('connected');
       pruneSent();

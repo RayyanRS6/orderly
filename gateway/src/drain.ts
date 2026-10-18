@@ -6,6 +6,10 @@ export const EVENT_BATCH = 50;
 // Responses Orderly gives for an event it can never accept (a schema or size problem). Any
 // other failure (network, 401, 409, 429, 5xx) is retried with the event kept in place.
 const REJECTED = [400, 413, 422];
+// Orderly no longer uses this session: the business moved to another route or disconnected
+// after this generation, maybe while the gateway could not be told. Nothing more is posted; the
+// supervisor ends the session as a disconnect would (see Supervisor.retire).
+export const SESSION_RETIRED = 410;
 const DEAD_LIMIT = 500;
 const DEAD_RETRY_MS = 3600000;
 const REPLY_WINDOW_MS = 86400000;

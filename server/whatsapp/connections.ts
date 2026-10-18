@@ -124,7 +124,8 @@ export type SwitchResult = StoredConnection & { gatewayCleanupPending?: true };
 // Ends the gateway session of a connection Orderly no longer uses. Best effort: the database
 // already fences it (its events are dropped and its sends refused), so a gateway that is down
 // or switched off never stops a business going back to its official route. False when the
-// session may still run on the gateway, linked to the phone.
+// session may still run on the gateway, linked to the phone: its next event or heartbeat is then
+// answered 410 (see retiredSession) and the gateway ends it itself once it is reachable.
 async function releaseGatewaySession(connection: WhatsAppConnection): Promise<boolean> {
   if (!gatewayAvailable()) return false;
   try {
@@ -316,6 +317,17 @@ export async function selectMeta(repo: Repository, companyId: string) {
     return next;
   });
 }
+// A linked-phone session Orderly no longer uses: after its generation the business moved to
+// another route or disconnected, maybe while the gateway could not be told. Its events are
+// answered 410, and the gateway then ends it as a disconnect would (logs the device out, wipes
+// it). Never while a newer linked-phone pairing may be starting, nor for an unknown connection.
+function retiredSession(current: StoredConnection | undefined, event: GatewayEvent): boolean {
+  return (
+    !!current &&
+    event.generation < current.generation &&
+    (current.provider !== 'baileys' || ['disconnected', 'logged_out'].includes(current.status))
+  );
+}
 // The gateway's notice for a customer message whose content never reached the linked device:
 // its message ID is the original's with this suffix (see gateway/src/inbound.ts), so the real
 // message still gets through if it arrives later.
@@ -333,6 +345,8 @@ export async function receiveGatewayEvent(repo: Repository, event: GatewayEvent)
   const current: StoredConnection | undefined = await repo.findWhatsAppConnection(
     event.connectionId,
   );
+  if (retiredSession(current, event))
+    throw new PublicError('Orderly no longer uses this linked-phone session.', 410);
   if (
     !current ||
     current.provider !== 'baileys' ||

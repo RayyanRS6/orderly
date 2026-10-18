@@ -176,6 +176,13 @@ restarts and a lost lease only close the socket and keep the pairing. If the ses
 at the time, the logout cannot happen: the owner should still check WhatsApp → Linked devices
 and remove the old session. Orders and Orderly chat history remain.
 
+If the owner switches to the official route or disconnects while the gateway cannot be reached,
+Orderly saves the change anyway and the old session keeps running here, linked to the phone.
+Orderly answers its next event or heartbeat (within a minute while it is connected) with 410,
+and the gateway then ends it as a disconnect would: logout, then wipe (logged as
+`SESSION_RETIRED`). Until the gateway is reachable again, removing the device under Linked
+devices on the phone is the immediate remedy.
+
 ## Protocol updates and rollback
 
 Dependencies are pinned by `gateway/package-lock.json`. Install with `npm ci`. Do not use a

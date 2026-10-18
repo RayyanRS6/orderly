@@ -30,6 +30,8 @@ process.on('message', (message: any) => {
       );
       return;
     }
+    // Orderly answered an event with 410: it no longer uses this session.
+    if (message.body.text === 'simulate-stale') process.send?.({ type: 'stale' });
     process.send?.({
       type: 'result',
       requestId: message.requestId,

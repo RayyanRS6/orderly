@@ -12,6 +12,24 @@ import { Store } from './store.js';
 import type { GatewayConfig } from './config.js';
 import { signedHeaders } from '../../server/whatsapp/signing.js';
 import { crashRestartDelay, HEALTHY_AFTER_MS, restorable } from './policy.js';
+import { SESSION_RETIRED } from './drain.js';
+
+// Everything a session keeps about the restaurant's WhatsApp, wiped on disconnect and new pairing.
+const SESSION_NAMESPACES = [
+  'auth',
+  'events',
+  'dead-events',
+  'status-event',
+  'identity',
+  'route',
+  'seen',
+  'seen-id',
+  'placeholder',
+  'own',
+  'receipts',
+  'sent',
+  'receipt-events',
+];
 
 type Session = {
   connectionId: string;
@@ -142,6 +160,42 @@ export class Supervisor {
   private update(session: Session) {
     this.store.set('sessions', session.connectionId, session);
   }
+  private wipe(connectionId: string) {
+    const sessionStore = new Store(
+      join(this.config.dataDir, `${connectionId}.sqlite`),
+      this.config.key,
+    );
+    try {
+      for (const namespace of SESSION_NAMESPACES) sessionStore.clear(namespace);
+    } finally {
+      sessionStore.close();
+    }
+  }
+  // Orderly answered an event of this session with SESSION_RETIRED: the business moved to the
+  // official route or disconnected, maybe while the gateway could not be told. The session is
+  // ended as a disconnect would end it: the linked device is logged out and its credentials,
+  // queues and chat mappings are wiped. A command for the session in progress wins.
+  private async retire(connectionId: string, generation: number) {
+    const current = this.store.get<Session>('sessions', connectionId);
+    if (
+      this.stopping ||
+      !current ||
+      current.generation !== generation ||
+      current.status === 'disconnected' ||
+      this.operations.has(connectionId)
+    )
+      return;
+    this.operations.add(connectionId);
+    try {
+      this.update({ ...current, status: 'disconnected', errorCode: undefined, crashes: 0 });
+      await this.stopChild(connectionId, true);
+      this.wipe(connectionId);
+      this.log('SESSION_RETIRED', connectionId);
+    } finally {
+      this.operations.delete(connectionId);
+    }
+    this.admitWaiting();
+  }
   private spawn(session: Session) {
     if (this.stopping || this.children.has(session.connectionId)) return;
     const child = fork(this.workerUrl, [], {
@@ -199,6 +253,10 @@ export class Supervisor {
           this.log(message.errorCode, session.connectionId);
         }
         if (message.type === 'warning') this.log(message.code, session.connectionId);
+        if (message.type === 'stale')
+          void this.retire(session.connectionId, session.generation).catch(() =>
+            this.log('SESSION_RETIRE_FAILED', session.connectionId),
+          );
       } catch {
         this.log('SUPERVISOR_MESSAGE_FAILURE', session.connectionId);
         child.kill();
@@ -284,8 +342,15 @@ export class Supervisor {
             redirect: 'error',
             signal: AbortSignal.timeout(10000),
           });
-          if (response.ok && this.store.get<any>('events', row.id)?.eventId === row.value.eventId)
+          const current = this.store.get<any>('events', row.id)?.eventId === row.value.eventId;
+          if (response.ok && current) this.store.delete('events', row.id);
+          else if (response.status === SESSION_RETIRED && current) {
+            // Orderly no longer uses this session; end it even though no worker runs now.
             this.store.delete('events', row.id);
+            void this.retire(row.value.connectionId, row.value.generation).catch(() =>
+              this.log('SESSION_RETIRE_FAILED', row.value.connectionId),
+            );
+          }
         } catch {
           break;
         }
@@ -294,9 +359,10 @@ export class Supervisor {
       this.flushing = false;
     }
   }
-  // logout is true only for an owner's disconnect or new pairing: the worker then removes this
-  // linked device from the phone before its credentials are wiped. Redeploys, restarts and a
-  // lost lease close without logging out, so restaurants keep their pairing.
+  // logout is true only for an owner's disconnect or new pairing, or a session Orderly retired:
+  // the worker then removes this linked device from the phone before its credentials are wiped.
+  // Redeploys, restarts and a lost lease close without logging out, so restaurants keep their
+  // pairing.
   async stopChild(id: string, logout = false) {
     const child = this.children.get(id);
     if (!child) return;
@@ -362,29 +428,7 @@ export class Supervisor {
       this.update(next);
       const revoke = body.action === 'pair' || body.action === 'disconnect';
       await this.stopChild(body.connectionId, revoke);
-      if (revoke) {
-        const sessionStore = new Store(
-          join(this.config.dataDir, `${body.connectionId}.sqlite`),
-          this.config.key,
-        );
-        for (const namespace of [
-          'auth',
-          'events',
-          'dead-events',
-          'status-event',
-          'identity',
-          'route',
-          'seen',
-          'seen-id',
-          'placeholder',
-          'own',
-          'receipts',
-          'sent',
-          'receipt-events',
-        ])
-          sessionStore.clear(namespace);
-        sessionStore.close();
-      }
+      if (revoke) this.wipe(body.connectionId);
       if (body.action !== 'disconnect') this.spawn(next);
       return this.status(body);
     } finally {

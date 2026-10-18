@@ -210,6 +210,15 @@ treats WhatsApp as offline.
   the watch paths, variable edits and backup restores: Railway stops the old container before
   mounting the volume on the new one. Sends during the gap fail as unreachable; a send cut off
   mid-way reports `SEND_UNCERTAIN` and staff must check the phone. Redeploy in quiet hours.
+- **Backend first, then the gateway.** A push to the watch paths redeploys the gateway at once,
+  while the backend deploy can take longer; either order is safe. An older gateway keeps a
+  session Orderly answers with 410 (no longer used) queued until it is redeployed; this version
+  ends it. An older backend never answers 410, so nothing is ended before it is deployed.
+- **Switched or disconnected while the gateway was down.** Orderly saves the change anyway and
+  the old session keeps running here, linked to the phone, until the gateway reaches Orderly
+  again: its next event or heartbeat is answered 410 and the gateway logs it out and wipes it
+  (`SESSION_RETIRED` in the logs). Until then, remove the device on the phone under WhatsApp →
+  **Linked devices**.
 - **Never two instances on one volume.** Keep replicas at 1, PR environments off, and don't
   duplicate the service or environment with these secrets. A lease blocks a second gateway on
   the same volume, but cannot detect copies elsewhere.
