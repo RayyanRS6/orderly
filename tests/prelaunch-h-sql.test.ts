@@ -301,7 +301,7 @@ describe('a customer waiting for staff has waited since their message (G5.1)', (
 
   it.each(['anon', 'authenticated'])('is for the server only, never %s', async (role) => {
     for (const signature of [
-      'public.waiting_since(jsonb,timestamp with time zone)',
+      'public.waiting_since(jsonb,timestamp with time zone,timestamp with time zone)',
       'public.business_time_zone(jsonb)',
       'public.query_orders(text,jsonb)',
       'public.workspace_summary(text,boolean)',

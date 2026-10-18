@@ -119,15 +119,18 @@ const automaticNotice = (m: Message) =>
 const awaitsStaffReply = (messages: Message[]) =>
   messages.filter((m) => !automaticNotice(m)).at(-1)?.role !== 'staff';
 // Mirrors SQL waiting_since: a waiting customer has waited since their latest message, unless a
-// staff reply (not an automatic notice) came after it. Never later than the chat was saved; with
-// no such message, since the chat was saved.
+// staff reply (not an automatic notice) came after it, and since staff took the chat over from
+// the bot (humanSince) when that is later. Never later than the chat was saved; with neither,
+// since the chat was saved.
 const waitingSince = (c: Conversation) => {
   const last = c.messages
     .filter((m) => !automaticNotice(m) && (m.role === 'customer' || m.role === 'staff'))
     .at(-1);
-  return last?.role === 'customer' && Date.parse(last.createdAt) < Date.parse(c.updatedAt)
-    ? last.createdAt
-    : c.updatedAt;
+  const since = [last?.role === 'customer' ? last.createdAt : undefined, c.humanSince]
+    .filter((at): at is string => !!at && !Number.isNaN(Date.parse(at)))
+    .sort((a, b) => Date.parse(a) - Date.parse(b))
+    .at(-1);
+  return since && Date.parse(since) < Date.parse(c.updatedAt) ? since : c.updatedAt;
 };
 // Mirrors SQL business_time_zone: the business's zone name (or UTC), else Asia/Karachi.
 const businessTimeZone = (company?: Company) => {

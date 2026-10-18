@@ -1,14 +1,17 @@
 -- Pre-launch fixes: staff email alerts reach the person who asked for them, erasing a customer
--- finds every format of their number and clears their blocked-number label, a customer export
--- finds every chat erasing would remove, automatic order notices no longer hide a customer waiting
--- for staff or restart how long they have waited, a linked phone that stopped working alerts
--- staff, a message that failed for good goes into its chat instead of holding back the customer's
--- later ones, the spam safety net is 1,500 AI replies an hour (100 per customer) with a warning
--- at 80%, the Active orders filter leaves out pending orders, the daily orders chart counts the
--- business's own days, a pipeline health check, a daily purge of old operational rows, and a
--- ledger of applied migrations.
+-- finds every format of their number and clears their blocked-number label, a customer known
+-- only by a chat (a privacy ID) can be exported and erased too, a customer export finds every
+-- chat erasing would remove, automatic order notices no longer hide a customer waiting for staff
+-- or restart how long they have waited, a chat staff took over waits from the takeover, a linked
+-- phone that stopped working alerts staff, a message that failed for good goes into its chat
+-- (a new one for a customer's first message) instead of holding back the customer's later ones,
+-- the spam safety net is 1,500 AI replies an hour (100 per customer) with a warning at 80%, the
+-- Active orders filter leaves out pending orders, the daily orders chart counts the business's
+-- own days, a pipeline health check, a daily purge of old operational rows, and a ledger of
+-- applied migrations.
 -- Apply after 202610190003_menu_purge_schedule.sql and before deploying the backend that calls
--- orderly_pipeline_health and customer_records. The backend and dashboard running now keep
+-- orderly_pipeline_health, customer_records, conversation_records and erase_conversation. The
+-- backend and dashboard running now keep
 -- working: every function keeps its signature and result shape (staff_attention only adds a
 -- 'whatsapp' count and items), and the only new column has a default.
 -- Safe to rerun while no later file redefines these functions. It replaces, starting from their
@@ -181,17 +184,19 @@ $$;
 
 -- Since when a customer waiting for staff has waited, for the bell and email alerts: their latest
 -- message, unless a staff reply came after it. Automatic notices count as nothing, as in
--- awaits_staff_reply, so an order status change no longer restarts the wait. Never later than
--- the chat was last saved; with no such message, when the chat was last saved, as before.
-create or replace function public.waiting_since(p_messages jsonb,p_updated_at timestamptz) returns timestamptz
+-- awaits_staff_reply, so an order status change no longer restarts the wait. When staff took the
+-- chat over from the bot later than that message (p_human_since, the chat's humanSince), since
+-- then: the bot had answered, so a takeover hours later is not overdue at once. Never later than
+-- the chat was last saved; with neither, when the chat was last saved, as before.
+create or replace function public.waiting_since(p_messages jsonb,p_updated_at timestamptz,p_human_since timestamptz default null) returns timestamptz
 language sql stable set search_path = public as $$
-  select least(p_updated_at,(
+  select least(p_updated_at,greatest(p_human_since,(
     select case when m->>'role'='customer' then (m->>'createdAt')::timestamptz end
     from jsonb_array_elements(case when jsonb_typeof(p_messages)='array' then p_messages else '[]'::jsonb end) with ordinality a(m,n)
     where m->>'notice' is distinct from 'true'
       and (m->>'role'='customer' or (m->>'role'='staff'
         and coalesce(m->>'text','') !~ '^Order [^ ]+ is now (pending|accepted|preparing|ready|out for delivery|completed|rejected|cancelled)\.$'))
-    order by n desc limit 1));
+    order by n desc limit 1)));
 $$;
 
 -- Keep in step with AI_LIMIT_DEFAULTS and AI_LIMIT_RANGES in src/shared/models.ts. Changed: the
@@ -235,13 +240,13 @@ language sql stable security definer set search_path=public as $$
 $$;
 
 -- Latest body from 202610180001_spam_protection.sql. Changed: an automatic notice is not a staff
--- reply, a customer has waited since their message (waiting_since), an order waiting 15 minutes
--- counts whatever the alert delay, the 80% warning counts, and so does a linked phone that
--- stopped working (one still reconnecting after the alert delay).
+-- reply, a customer has waited since their message or staff's takeover (waiting_since), an order
+-- waiting 15 minutes counts whatever the alert delay, the 80% warning counts, and so does a
+-- linked phone that stopped working (one still reconnecting after the alert delay).
 create or replace function public.has_overdue_attention(p_company_id text,p_minutes integer) returns boolean
 language sql stable security definer set search_path=public as $$
   select exists(select 1 from orders where company_id=p_company_id and data->>'status'='pending' and data->>'sandbox'='false' and created_at<now()-make_interval(mins=>least(p_minutes,15)))
-    or exists(select 1 from conversations where company_id=p_company_id and channel='whatsapp' and data->>'mode'='human' and awaits_staff_reply(data->'messages') and jsonb_typeof(data->'blocked') is distinct from 'object' and waiting_since(data->'messages',updated_at)<now()-make_interval(mins=>p_minutes))
+    or exists(select 1 from conversations where company_id=p_company_id and channel='whatsapp' and data->>'mode'='human' and awaits_staff_reply(data->'messages') and jsonb_typeof(data->'blocked') is distinct from 'object' and waiting_since(data->'messages',updated_at,(data->>'humanSince')::timestamptz)<now()-make_interval(mins=>p_minutes))
     or exists(select 1 from jobs where company_id=p_company_id and status='failed' and data->>'kind'<>'staff_alert' and created_at<now()-make_interval(mins=>p_minutes))
     or company_budget_warning(p_company_id)
     or exists(select 1 from ai_limit_hits where company_id=p_company_id and last_hit_at>now()-interval '1 hour')
@@ -249,8 +254,8 @@ language sql stable security definer set search_path=public as $$
     or exists(select 1 from whatsapp_down(p_company_id,p_minutes));
 $$;
 -- Latest body from 202610180001_spam_protection.sql. Changed: an automatic notice is not a staff
--- reply, a waiting customer's item is dated from their message (waiting_since) as email alerts
--- count it, and the 80% warning is a 'limit' item with scope 'hourly_near' (dashboards that do not
+-- reply, a waiting customer's item is dated from their message or staff's takeover
+-- (waiting_since) as email alerts count it, and the 80% warning is a 'limit' item with scope 'hourly_near' (dashboards that do not
 -- know it show "AI limit reached"). It is not counted in "limits", which are limits reached. A
 -- linked phone that stopped working is a 'whatsapp' item (counted in "whatsapp"; dashboards that do
 -- not know it show "Something needs attention"); one reconnecting shows after 3 minutes, when
@@ -269,7 +274,7 @@ language sql stable security definer set search_path=public as $$
     select 'order:'||id as id,'order'::text as kind,id as "entityId",created_at as "createdAt",null::text as scope,null::timestamptz as "resetsAt"
       from orders where company_id=p_company_id and data->>'status'='pending' and data->>'sandbox'='false'
     union all
-    select 'handoff:'||id,'handoff',id,waiting_since(data->'messages',updated_at),null,null from conversations
+    select 'handoff:'||id,'handoff',id,waiting_since(data->'messages',updated_at,(data->>'humanSince')::timestamptz),null,null from conversations
       where company_id=p_company_id and channel='whatsapp' and data->>'mode'='human' and awaits_staff_reply(data->'messages')
         and jsonb_typeof(data->'blocked') is distinct from 'object'
     union all

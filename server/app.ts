@@ -745,6 +745,11 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
       botPausedAt: undefined,
       limitPause: undefined,
       botResumedAt: mode === 'bot' ? now : conversation.botResumedAt,
+      // Taken over from the bot: the customer waits for staff from now at the earliest, since
+      // the bot answered them before, so a takeover hours later is not overdue at once. A chat
+      // already with staff (handed over, or paused) keeps its clock.
+      humanSince:
+        mode === 'bot' ? undefined : conversation.mode === 'bot' ? now : conversation.humanSince,
       version: conversation.version + 1,
       updatedAt: now,
     };
