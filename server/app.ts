@@ -6,11 +6,11 @@ import { cors } from 'hono/cors';
 import { requestId } from 'hono/request-id';
 import { createClient } from '@supabase/supabase-js';
 import { z, ZodError } from 'zod';
-import type { Repository } from './repository.js';
+import type { PipelineHealth, Repository } from './repository.js';
 import type { Company, Integration, IntegrationKind, Role } from '../src/shared/types.js';
 import { createConversation, transitionOrder } from '../src/domain/engine.js';
 import { slugify } from '../src/shared/slug.js';
-import { appMode, env } from './config.js';
+import { appMode, automationPaused, env } from './config.js';
 import {
   PublicError,
   encryptSecret,
@@ -149,9 +149,41 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
       mode: appMode(),
       supabaseUrl: process.env.SUPABASE_URL || '',
       supabaseAnonKey: process.env.SUPABASE_ANON_KEY || '',
+      // The platform-wide emergency stop (ORDERLY_PAUSE_AUTOMATION), for a dashboard notice.
+      automationPaused: automationPaused(),
     }),
   );
   app.get('/api/health', (c) => c.json({ ok: true, mode: appMode() }));
+  // For an outside uptime monitor: whether saved work is being sent. Off (404, like any unknown
+  // route) unless HEALTH_CHECK_TOKEN is set and sent as a bearer token. Coarse counts only, never
+  // a business, a number or a message.
+  app.get('/api/health/pipeline', async (c) => {
+    const token = env('HEALTH_CHECK_TOKEN');
+    if (!token || !safeEqual(c.req.header('authorization') || '', `Bearer ${token}`))
+      return c.json({ error: 'API route not found.' }, 404);
+    c.header('Cache-Control', 'no-store');
+    let health: PipelineHealth;
+    try {
+      health = await repo.pipelineHealth();
+    } catch (error) {
+      // A missing migration (503) or a database that cannot answer: never reported healthy.
+      if (!(error instanceof PublicError))
+        logFailure('pipeline_health_failed', { route: '/api/health/pipeline' }, error);
+      return c.json({ status: 'unavailable' }, 503);
+    }
+    const {
+      status,
+      stalledJobs,
+      oldestDueAt,
+      schedulerConfigured,
+      recoveryScheduled,
+      dbSizeBytes,
+    } = health;
+    return c.json(
+      { status, stalledJobs, oldestDueAt, schedulerConfigured, recoveryScheduled, dbSizeBytes },
+      status === 'ok' ? 200 : 503,
+    );
+  });
   app.post('/api/whatsapp/gateway/events', async (c) => {
     const raw = await c.req.text();
     const nonce = verifySigned(
@@ -533,6 +565,13 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
     const tested = (ai: Company['ai']) =>
       JSON.stringify([ai.provider, ai.model, ai.pricing ?? null]);
     if (tested(company.ai) !== tested(stored.ai)) company.modelVerification = undefined;
+    // During the platform-wide stop a bot cannot be switched on; one already on stays as it is,
+    // so its other settings still save.
+    if (company.botEnabled && !stored.botEnabled && automationPaused())
+      throw new PublicError(
+        'Automatic replies are paused across Orderly right now, so automation cannot be switched on. Nothing was saved: save your other changes with automation off, or try again later.',
+        409,
+      );
     if (appMode() === 'live' && company.botEnabled) {
       const missing = (await readiness(repo, company)).filter((check) => !check.ready);
       if (missing.length)
