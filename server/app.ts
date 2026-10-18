@@ -113,6 +113,9 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
       origin: allowedOrigin,
       allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
       allowHeaders: ['Content-Type', 'Authorization', 'x-company-id'],
+      // The dashboard runs on another origin: it reads how long to wait after a 429 or 503,
+      // and the reference that matches a failure to its log line.
+      exposeHeaders: ['Retry-After', 'X-Request-Id'],
       maxAge: 3600,
     })(c, next);
   });
