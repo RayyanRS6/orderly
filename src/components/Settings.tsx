@@ -19,6 +19,13 @@ import { money } from '../shared/types';
 import { MODEL_DEFAULTS } from '../shared/models';
 import { useAction, useWorkspace } from '../lib/workspace';
 import { pausedOnly, savedCompany } from '../lib/settings';
+import {
+  PAYMENT_METHODS,
+  PAYMENT_METHODS_HINT,
+  paymentMethodsOf,
+  togglePaymentMethod,
+  type WithPaymentMethods,
+} from '../lib/payments';
 import { workspacePath } from '../lib/routes';
 import { cn, initials, shortDate } from '../lib/utils';
 import {
@@ -42,7 +49,8 @@ const providers: Record<Provider, { name: string; model: string }> = {
 };
 
 // The form's own copy of the settings, with its settingsRevision (sent back with each save).
-type SettingsDraft = Company;
+// paymentMethods is typed here until the shared Company type declares it.
+type SettingsDraft = Company & WithPaymentMethods;
 export function draftFrom(company: Company): SettingsDraft {
   const c = structuredClone(company || {}) as SettingsDraft;
   return {
@@ -90,6 +98,9 @@ export function Settings() {
     setDirty(false);
   }, [settingsReloads]);
   const daysLabel = useId();
+  const paymentsLabel = useId();
+  // Missing (a business from before the setting) means cash only, as before.
+  const payments = paymentMethodsOf(draft);
   const canEdit = data.role !== 'staff';
   // With no Sheet saved, a Sheet menu source sends every bot turn to staff. A saved but
   // untested one works, so this checks configured, not connected.
@@ -272,8 +283,8 @@ export function Settings() {
               </button>
             </div>
             <p className="mb-5 text-sm text-stone-500">
-              Fulfillment follows your published bot settings. Delivery is limited to these areas,
-              with cash payment.
+              Fulfillment follows your published bot settings. Delivery is limited to these areas
+              {payments.length === 1 && payments[0] === 'cash' ? ', with cash payment' : ''}.
             </p>
             {!(draft.deliveryZones || []).length && (
               <p className="step-in rounded-2xl border border-dashed border-ink/15 bg-cream/60 p-4 text-[13px] text-stone-500">
@@ -344,6 +355,52 @@ export function Settings() {
                   </div>
                 </div>
               ))}
+            </div>
+          </section>
+          <section className="card p-6">
+            <h2 id={paymentsLabel} className="panel-title">
+              Payment methods customers can use
+            </h2>
+            <p className="mb-5 mt-2 text-sm text-stone-500">
+              Choose at least one. {PAYMENT_METHODS_HINT}
+            </p>
+            <div
+              role="group"
+              aria-labelledby={paymentsLabel}
+              className="stagger flex flex-wrap gap-2"
+            >
+              {PAYMENT_METHODS.map(({ id, label: name }) => {
+                const on = payments.includes(id);
+                // Customers need at least one way to pay.
+                const last = on && payments.length === 1;
+                return (
+                  <label
+                    key={id}
+                    title={last ? 'Customers need at least one way to pay.' : undefined}
+                    className={cn(
+                      'flex min-h-11 md:min-h-9 cursor-pointer items-center gap-2 rounded-full border px-3.5 text-xs font-semibold transition-[background-color,border-color,color,box-shadow,scale] duration-200 ease-[var(--ease-soft)] active:scale-95',
+                      on
+                        ? 'border-ink bg-ink text-cream shadow-[0_8px_18px_-8px_rgb(14_6_4/0.7)]'
+                        : 'border-ink/10 bg-white/70 text-stone-600 hover:border-ink/25 hover:bg-white hover:text-ink',
+                      (!canEdit || last) && 'cursor-not-allowed',
+                      !canEdit && 'opacity-60',
+                    )}
+                  >
+                    <input
+                      type="checkbox"
+                      className="size-3.5 accent-brand-500"
+                      checked={on}
+                      disabled={last}
+                      onChange={(e) =>
+                        update({
+                          paymentMethods: togglePaymentMethod(payments, id, e.target.checked),
+                        })
+                      }
+                    />
+                    {name}
+                  </label>
+                );
+              })}
             </div>
           </section>
           <section className="card group p-6">
