@@ -16,9 +16,13 @@ on:
 permissions:
   contents: read
 
-# Whole runs queue in push order, so an older commit can never deploy after a newer one.
+# One run per branch at a time. GitHub keeps only the newest waiting run of a group, so a newer
+# push to main replaces an older waiting one (it holds the same changes and more), and a run
+# started by hand on another branch, which has its own group, can never replace a waiting main
+# deploy. Re-running an older run deploys that older commit over newer code: re-run only the
+# newest run, or push.
 concurrency:
-  group: supabase-production
+  group: supabase-backend-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -61,6 +65,10 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production
+    # Only one deploy reaches production at a time, whatever started it.
+    concurrency:
+      group: supabase-production
+      cancel-in-progress: false
     steps:
       - name: Check out repository
         uses: actions/checkout@v4

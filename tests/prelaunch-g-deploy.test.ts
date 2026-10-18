@@ -42,7 +42,7 @@ describe('backend deploy waits for the checks', () => {
   it('skips docs, Markdown and gateway-only pushes and keeps the gateway build out', () => {
     for (const path of ["'docs/**'", "'**/*.md'", "'gateway/**'"]) expect(workflow).toContain(path);
     expect(workflow).not.toMatch(/docker/i);
-    // Runs queue in push order, so an older commit never deploys after a newer one.
+    // A running deploy is never cancelled half-way; prelaunch-fx4-ci checks the groups.
     expect(workflow).toContain('cancel-in-progress: false');
   });
 });
