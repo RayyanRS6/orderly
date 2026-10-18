@@ -133,3 +133,27 @@ describe('F36: “order cancel karein” cancels a waiting order', () => {
     },
   );
 });
+
+describe('A returning customer’s “how long” question is not answered with an old order', () => {
+  it('asks the AI about a fresh cart when the last order finished days ago', async () => {
+    const old = new Date(Date.now() - 3 * 24 * 3600000).toISOString();
+    const { conversation, order } = await placedOrder('completed', old);
+    const { result, saved: after } = await message(
+      conversation,
+      'kitni der mein delivery hoti hai?',
+    );
+    expect(result.traces).not.toContain('order_status');
+    expect(result.reply).toContain('Delivery usually takes about 40 minutes.');
+    expect(result.reply).not.toContain(order.reference);
+    expect(generate).toHaveBeenCalledOnce();
+    expect(after.cart.status).toBe('building');
+  });
+
+  it('still answers “kitni der?” about an order in progress without the AI', async () => {
+    const { conversation, order } = await placedOrder('accepted');
+    const { result } = await message(conversation, 'kitni der?');
+    expect(result.traces).toContain('order_status');
+    expect(result.reply).toContain(`The restaurant has accepted order ${order.reference}.`);
+    expect(generate).not.toHaveBeenCalled();
+  });
+});

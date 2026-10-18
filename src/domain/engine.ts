@@ -1348,10 +1348,49 @@ const allergyNotice = (company: Company, lang: Language) =>
     `Hum is chat mein allergy ya ingredients confirm nahi kar sakte. Staff ka koi member yahin aap ko jawab dega.${company.phone ? ` Aap hamein ${company.phone} par call bhi kar sakte hain.` : ''}`,
   );
 
-// A question about the order this chat placed: "where is my order?", "kitni der?", "آرڈر کہاں ہے؟".
+// A question about the order this chat placed. Wording that names the order ("where is my
+// order?", "order kahan hai?", "آرڈر کہاں ہے؟", "order status") is always about it, and so is a
+// bare "kitni der?" or "any update?".
 const ORDER_STATUS_QUESTION =
-  /\bwhere(?:'s| is)? (?:is )?(?:my |the |our )?(?:order|food|rider|delivery)\b|\border status\b|^status\b|\bstatus of (?:my |the )?order\b|\btrack(?:ing)? (?:my |the )?order\b|\bhow (?:much )?long(?:er)?\b|\bwhen will (?:it|my order|the order|the food) (?:come|arrive|be ready|reach|be delivered)\b|\bis (?:it|my order|the order) (?:ready|coming|on the way|confirmed|accepted)\b|\bany update\b|\beta\b|\b(?:order|khana|rider)\s+(?:abhi tak\s+)?(?:kahan|kidhar|kab)\b|\bkahan (?:hai|reh gaya|pohncha)\b|\bkitni der\b|\bkitna (?:time|waqt)\b|\bkab (?:tak )?(?:aaye?ga|aayega|ayega|milega|pohnche?ga|ready hoga|aaega)\b|\border ka (?:kya )?status\b|\bstatus (?:kya hai|batao|bata dein|batayein)\b|(?:آرڈر|کھانا|رائیڈر)\s(?:\S+\s){0,3}?کہاں|کہاں (?:ہے|رہ گیا|پہنچا)|کتنی دیر|کب (?:تک )?(?:آئے گا|ملے گا|پہنچے گا)|آرڈر کی (?:صورتحال|حالت)|اسٹیٹس|سٹیٹس/u;
-export const asksOrderStatus = (text: string) => ORDER_STATUS_QUESTION.test(normalize(text));
+  /\bwhere(?:'s| is)? (?:is )?(?:my |the |our )?(?:order|food|rider|delivery)\b|\border status\b|^status\b|\bstatus of (?:my |the )?order\b|\btrack(?:ing)? (?:my |the )?order\b|\bwhen will (?:my order|the order|the food) (?:come|arrive|be ready|reach|be delivered)\b|\bis (?:my order|the order) (?:ready|coming|on the way|confirmed|accepted)\b|\b(?:order|rider)\s+(?:abhi tak\s+)?(?:kahan|kidhar|kab)\b|\border ka (?:kya )?status\b|\bstatus (?:kya hai|batao|bata dein|batayein)\b|(?:آرڈر|رائیڈر)\s(?:\S+\s){0,3}?کہاں|آرڈر کی (?:صورتحال|حالت)|اسٹیٹس|سٹیٹس/u;
+// "How long?" wording that may also be asked before ordering ("kitni der mein delivery hoti
+// hai?", "how long does delivery take?"): about the order only while it is current.
+const GENERAL_STATUS =
+  /\bhow (?:much )?long(?:er)?\b(?! (?:is|are|was|were) (?!it\b)\p{L}| (?:are|r|do|does) (?:you|u) (?:stay )?open)|\bwhen will it (?:come|arrive|be ready|reach|be delivered)\b|\bis it (?:ready|coming|on the way|confirmed|accepted)\b|\bany updates?\b(?! (?:on|to|in|about) (?:the |your |ur )?(?:menu|prices?|rates?|deals?|timings?|hours)\b)|\beta\b|\bkhana\s+(?:abhi tak\s+)?(?:kahan|kidhar|kab)\b|\bkahan (?:hai|reh gaya|pohncha)\b|\bkitni der\b|\bkitna (?:time|waqt)\b|\bkab (?:tak )?(?:aaye?ga|aayega|ayega|milega|pohnche?ga|ready hoga|aaega)\b|کھانا\s(?:\S+\s){0,3}?کہاں|کہاں (?:ہے|رہ گیا|پہنچا)|کتنی دیر|کب (?:تک )?(?:آئے گا|ملے گا|پہنچے گا)/u;
+// The whole message is such a question ("kitni der?", "any update?", "how much longer?").
+const BARE_STATUS =
+  /^(?:(?:bhai|bhaiya|sir|ji|yaar|yar|please|pls|aur|or|and|so|abhi|ab|بھائی|جی|اور) )*(?:how (?:much )?long(?:er)?(?: (?:will it take|now|more))?|any updates?|eta|kitni der(?: aur| or| hai| lagegi| lage gi| hogi| aur lagegi)?|kitna (?:time|waqt)(?: aur| lagega| or)?|kab (?:tak )?(?:aaye?ga|aayega|ayega|milega|aaega)|kahan (?:hai|reh gaya)|کتنی دیر(?: اور| ہے| لگے گی)?|کب (?:تک )?(?:آئے گا|ملے گا))(?: (?:bhai|bhaiya|sir|ji|yaar|yar|please|pls|بھائی|جی))*[\s.!?؟۔]*$/u;
+const FINISHED_STATUSES: OrderStatus[] = ['completed', 'rejected', 'cancelled'];
+/**
+ * Whether general wording ("kitni der?") can be about this order: it is still with the
+ * restaurant and changed in the last 24 hours, or it finished in the last 2 hours.
+ */
+export function orderStillCurrent(
+  order: Pick<Order, 'status' | 'updatedAt'>,
+  now: string,
+): boolean {
+  const age = Date.parse(now) - Date.parse(order.updatedAt);
+  if (!Number.isFinite(age)) return false;
+  return age <= (FINISHED_STATUSES.includes(order.status) ? 2 : 24) * 60 * 60 * 1000;
+}
+/**
+ * Whether the message asks about the order this chat placed. Without the order, only wording
+ * that is about an order whatever its age counts; with it, "how long" wording counts too while
+ * the order is current (see orderStillCurrent), so a returning customer's "kitni der mein
+ * delivery hoti hai?" is not answered with last week's order.
+ */
+export function asksOrderStatus(
+  text: string,
+  order?: Pick<Order, 'status' | 'updatedAt'>,
+  now?: string,
+): boolean {
+  const value = normalize(text);
+  return (
+    ORDER_STATUS_QUESTION.test(value) ||
+    BARE_STATUS.test(value) ||
+    (!!order && !!now && orderStillCurrent(order, now) && GENERAL_STATUS.test(value))
+  );
+}
 /** The engine's status line for a placed order: its status and how long since it last changed. */
 export function orderStatusText(
   lang: Language,
@@ -1421,16 +1460,33 @@ export function orderStatusText(
         `Order ${ref} cancel ho chuka hai.`,
       ) + again,
   };
+  // Minutes for the first hour, then about how many hours, then days.
   const minutes = Math.floor((Date.parse(now) - Date.parse(order.updatedAt)) / 60000);
+  const hours = Math.round(minutes / 60);
+  const days = Math.round(minutes / 1440);
   const updated =
     !Number.isFinite(minutes) || minutes < 1
       ? say(lang, 'Last update: just now.', 'آخری اپڈیٹ: ابھی ابھی۔', 'Aakhri update: abhi abhi.')
-      : say(
-          lang,
-          `Last update: ${minutes} minute${minutes === 1 ? '' : 's'} ago.`,
-          `آخری اپڈیٹ: ${minutes} منٹ پہلے۔`,
-          `Aakhri update: ${minutes} minute pehle.`,
-        );
+      : minutes < 60
+        ? say(
+            lang,
+            `Last update: ${minutes} minute${minutes === 1 ? '' : 's'} ago.`,
+            `آخری اپڈیٹ: ${minutes} منٹ پہلے۔`,
+            `Aakhri update: ${minutes} minute pehle.`,
+          )
+        : hours < 24
+          ? say(
+              lang,
+              `Last update: about ${hours === 1 ? 'an hour' : `${hours} hours`} ago.`,
+              `آخری اپڈیٹ: تقریباً ${hours === 1 ? 'ایک گھنٹہ' : `${hours} گھنٹے`} پہلے۔`,
+              `Aakhri update: taqreeban ${hours === 1 ? 'ek ghanta' : `${hours} ghante`} pehle.`,
+            )
+          : say(
+              lang,
+              `Last update: about ${days === 1 ? 'a day' : `${days} days`} ago.`,
+              `آخری اپڈیٹ: تقریباً ${days === 1 ? 'ایک' : days} دن پہلے۔`,
+              `Aakhri update: taqreeban ${days === 1 ? 'ek' : days} din pehle.`,
+            );
   return `${status[order.status] ?? say(lang, `Order ${ref} has been received.`, `آرڈر ${ref} موصول ہوا۔`, `Order ${ref} receive ho gaya.`)}\n${updated}`;
 }
 
@@ -1912,13 +1968,13 @@ export function processTurn(
     return finish();
   }
   // "Where is my order?" about the order this chat placed: the engine states its real status,
-  // never the AI, whatever the AI proposed.
+  // never the AI, whatever the AI proposed. "How long" wording only while the order is current.
   if (
     !input.action &&
     input.latestOrder &&
     cart.orderId &&
     (cart.status === 'submitted' || cart.status === 'cancelled') &&
-    asksOrderStatus(input.text)
+    asksOrderStatus(input.text, input.latestOrder, input.now)
   ) {
     traces.push('order_status');
     reply = orderStatusText(lang, input.latestOrder, input.now);
@@ -2127,9 +2183,9 @@ export function processTurn(
       if (cart.status === 'submitted') {
         reply = say(
           lang,
-          'This cart has already been submitted. Check the order status with staff, or send “new order” to start another.',
-          'یہ آرڈر پہلے بھیجا جا چکا ہے۔ حالت کے لیے عملے سے پوچھیں، یا “نیا آرڈر” لکھیں۔',
-          'Yeh cart pehle submit ho chuka hai. Status staff se poochein, ya “new order” likhein.',
+          'This order has already been submitted. Ask “where is my order?” for its status, or send “new order” to start another.',
+          'یہ آرڈر پہلے بھیجا جا چکا ہے۔ اس کی حالت جاننے کے لیے “میرا آرڈر کہاں ہے؟” لکھیں، یا نیا آرڈر شروع کرنے کے لیے “نیا آرڈر” لکھیں۔',
+          'Yeh order pehle submit ho chuka hai. Status ke liye “mera order kahan hai?” likhein, ya “new order” likhein.',
         );
         traces.push('duplicate_submission_prevented');
         continue;

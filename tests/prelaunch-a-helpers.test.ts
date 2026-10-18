@@ -190,7 +190,9 @@ describe('G3.10/G7.9: the engine answers “where is my order?”', () => {
   });
 
   it('leaves other questions, and chats without a placed order, to the usual flow', () => {
-    expect(asksOrderStatus('kitni der mein delivery hoti hai?')).toBe(true);
+    // "How long" wording is about the order only while it is current (fx-1).
+    expect(asksOrderStatus('kitni der mein delivery hoti hai?', latest('pending'), now)).toBe(true);
+    expect(asksOrderStatus('kitni der mein delivery hoti hai?')).toBe(false);
     const building = fresh();
     building.cart.items = [{ productId: products[0]!.id, quantity: 1, modifierIds: [], notes: '' }];
     const preOrder = ask('kitni der mein delivery hoti hai?', 'completed', undefined, building);
