@@ -21,7 +21,8 @@ import { money } from '../shared/types';
 import { effectiveAiLimits, MODEL_LIMITS } from '../shared/models';
 import {
   mentionsQuantity,
-  quantityBefore,
+  quantityNear,
+  quantityOfMention,
   resolveItemMention,
   resolvePendingItemChoice,
 } from './menu-resolver';
@@ -986,10 +987,10 @@ export function parseActions(
         ...conversation.pendingItemChoice.requestedOptionNames,
         ...requestedOptions([selected], text),
       ];
-      // Only a count written right before the chosen dish changes the one asked about: "3 naan"
-      // or "house 12" in the same message is not this dish's count.
+      // Only a count written next to the chosen dish, in its own part of the message, changes
+      // the one asked about: "3 naan", "naan 3, chicken wali" or "house 12" is not its count.
       const explicitQuantity = !/^option\b/u.test(value)
-        ? quantityBefore(selected, text)
+        ? quantityNear(selected, text, products)
         : undefined;
       return [
         {
@@ -1120,7 +1121,13 @@ export function parseActions(
       {
         type: 'clarify_item',
         candidateProductIds: sameMention.slice(0, 12).map((match) => match.product.id),
-        quantity: resolveItemMention(products, company.id, text).quantity,
+        quantity: Math.max(
+          1,
+          Math.min(
+            50,
+            quantityOfMention(sameMention[0]!.product, sameMention[0]!.alias, text, products) ?? 1,
+          ),
+        ),
         requestedOptionNames: requestedOptions(
           sameMention.map((match) => match.product),
           text,
@@ -1143,31 +1150,6 @@ export function parseActions(
   for (const { product, alias } of matches) {
     const at = value.indexOf(normalize(alias));
     const prefix = value.slice(Math.max(0, at - 24), at);
-    const number = prefix.match(/(\d+)\s*(?:x|×)?\s*$/u)?.[1];
-    const word = prefix.match(
-      /\b(one|two|three|four|five|a|an|ek|aik|do|teen|char|panch)\s*$/u,
-    )?.[1];
-    const urduWord = prefix.match(/(ایک|دو|تین|چار|پانچ)\s*$/u)?.[1];
-    const quantityWords: Record<string, number> = {
-      one: 1,
-      two: 2,
-      three: 3,
-      four: 4,
-      five: 5,
-      a: 1,
-      an: 1,
-      ek: 1,
-      aik: 1,
-      do: 2,
-      teen: 3,
-      char: 4,
-      panch: 5,
-      ایک: 1,
-      دو: 2,
-      تین: 3,
-      چار: 4,
-      پانچ: 5,
-    };
     if (/\b(remove|delete|hatao)\b|نکال|ہٹا/u.test(prefix)) {
       actions.push({ type: 'remove_item', productId: product.id });
       continue;
@@ -1186,7 +1168,9 @@ export function parseActions(
     actions.push({
       type: 'add_item',
       productId: product.id,
-      quantity: number ? Number(number) : (quantityWords[word ?? urduWord ?? ''] ?? 1),
+      // The count next to this mention, in its own part of the message: "naan 3, chicken
+      // biryani" and "naan 3 chicken biryani" give the biryani 1 and the naan 3.
+      quantity: quantityOfMention(product, alias, text, products) ?? 1,
       variantId: variant?.id,
       modifierIds: modifiers.map((m) => m.id),
     });
@@ -1825,14 +1809,15 @@ export function processTurn(
       (requested.some((action) => action.type === 'clarify_item') || next.pendingItemChoice)
     ) {
       // A specific name/ordinal resolves the outstanding choice; keep its options and quantity.
-      // The count: one written right before the dish (the parser's); else the AI's when the
-      // customer wrote that number ("chicken biryani, make it 3"); else the pending choice's,
-      // so an AI that forgot "2 chicken" still adds 2, and "aur 3 naan" stays the naan's.
+      // The count: one written next to the dish in its own part (the parser's); else the AI's
+      // when the customer wrote that number ("chicken biryani, make it 3"); else the pending
+      // choice's, so an AI that forgot "2 chicken" still adds 2, and "aur 3 naan" or "naan 3,
+      // chicken wali" stays the naan's.
       const pending = next.pendingItemChoice?.candidateProductIds.includes(first.productId)
         ? next.pendingItemChoice
         : undefined;
       const product = products.find((p) => p.id === first.productId);
-      const explicit = !!product && quantityBefore(product, input.text) !== undefined;
+      const explicit = !!product && quantityNear(product, input.text, products) !== undefined;
       const quantityFor = (proposed: number) =>
         !pending || explicit
           ? first.quantity
