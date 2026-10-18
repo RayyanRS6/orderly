@@ -4,17 +4,17 @@
 -- for staff, a linked phone that stopped working alerts staff, a message that failed for good goes
 -- into its chat instead of holding back the customer's later ones, the spam safety net is 1,500
 -- AI replies an hour (100 per customer) with a warning at 80%, the Active orders filter leaves out
--- pending orders, a pipeline health check, a daily purge of old operational rows, and a ledger of
--- applied migrations.
+-- pending orders, the daily orders chart counts the business's own days, a pipeline health check,
+-- a daily purge of old operational rows, and a ledger of applied migrations.
 -- Apply after 202610190003_menu_purge_schedule.sql and before deploying the backend that calls
 -- orderly_pipeline_health and customer_records. The backend and dashboard running now keep
 -- working: every function keeps its signature and result shape (staff_attention only adds a
 -- 'whatsapp' count and items), and the only new column has a default.
 -- Safe to rerun while no later file redefines these functions. It replaces, starting from their
 -- latest bodies: alert_recipient (202609180001), erase_customer and run_retention (202609170001),
--- query_orders (202609160001), prune_orderly_cron_history (202609110001), and ai_limit_settings,
--- has_overdue_attention, staff_attention and fail_exhausted_orderly_jobs (202610180001). After it,
--- 202610180001 refuses to run again.
+-- query_orders and workspace_summary (202609160001), prune_orderly_cron_history (202609110001),
+-- and ai_limit_settings, has_overdue_attention, staff_attention and fail_exhausted_orderly_jobs
+-- (202610180001). After it, 202610180001 refuses to run again.
 set lock_timeout = '5s';
 
 -- Which migrations were applied, and when. Each migration from this one on records itself last.
@@ -266,6 +266,32 @@ create or replace function public.query_orders(p_company_id text,p_filter jsonb)
   select jsonb_build_object('items',coalesce((select jsonb_agg(data) from page_rows),'[]'),'total',(select count(*) from matching),'page',page,'pageSize',size) from opts;
 $$;
 
+-- A business's time zone (companies.data->>'timezone'), for counting its orders by its own days:
+-- a zone name such as 'Asia/Karachi', or UTC. Anything else means Asia/Karachi, so a bad setting
+-- never breaks the Overview: a missing zone, an offset or a POSIX rule (Postgres reads '+05:00'
+-- and 'UTC+5' as 5 hours west of UTC), an abbreviation, and a name Postgres does not know.
+create or replace function public.business_time_zone(p_data jsonb) returns text
+language plpgsql stable set search_path = public as $$
+declare zone text := p_data->>'timezone';
+begin
+  if coalesce(zone,'') !~ '^(UTC|GMT|[A-Za-z][A-Za-z0-9_+-]*(/[A-Za-z][A-Za-z0-9_+-]*)+)$' then return 'Asia/Karachi'; end if;
+  perform now() at time zone zone;
+  return zone;
+exception when others then return 'Asia/Karachi';
+end $$;
+
+-- Latest body from 202609160001_launch_hardening.sql. Changed: the daily counts are the business's
+-- own days (business_time_zone), as the Overview chart labels them, not UTC days, so an order at
+-- 00:30 in Karachi counts on that day, not the day before. Oldest first, today last, as before.
+create or replace function public.workspace_summary(p_company_id text,p_sandbox boolean) returns jsonb language sql stable security definer set search_path=public as $$
+  with zone as (select business_time_zone((select data from companies where id=p_company_id)) tz),
+  conv as (select * from conversations where company_id=p_company_id and (channel='demo')=p_sandbox),
+  ord as (select o.*,(o.created_at at time zone (select tz from zone))::date as local_day from orders o join conv c on c.id=o.conversation_id where o.company_id=p_company_id),
+  days as (select (now() at time zone (select tz from zone))::date-i as day_date from generate_series(0,29) i)
+  select jsonb_build_object('orders',(select count(*) from ord),'pending',(select count(*) from ord where data->>'status'='pending'),'value',(select coalesce(sum((data->>'total')::numeric),0) from ord where data->>'status' not in ('cancelled','rejected')),'conversations',(select count(*) from conv),'needsStaff',(select count(*) from conv where data->>'mode'='human'),'monthlySpend',(select coalesce(sum(cost_usd),0) from usage_events where company_id=p_company_id and created_at>=date_trunc('month',now())),
+    'daily',(select jsonb_agg(jsonb_build_object('date',day_date,'count',(select count(*) from ord where local_day=day_date)) order by day_date) from days));
+$$;
+
 -- Latest body from 202610180001_spam_protection.sql. Changed, as the worker does since these
 -- fixes: an incoming message that failed for good goes into its chat (unless it is there already)
 -- and the chat goes to staff, then the job ends as done with payload.failedPermanently, so the
@@ -489,8 +515,8 @@ do $$ declare f record; begin
   for f in select oid::regprocedure signature from pg_proc where pronamespace='public'::regnamespace
     and proname=any(array['alert_recipient','erase_customer','run_retention','awaits_staff_reply','ai_limit_settings',
       'ai_hourly_warning','whatsapp_down','has_overdue_attention','staff_attention','customer_records',
-      'query_orders','fail_exhausted_orderly_jobs','orderly_pipeline_health','purge_orderly_operations',
-      'prune_orderly_cron_history']) loop
+      'query_orders','business_time_zone','workspace_summary','fail_exhausted_orderly_jobs',
+      'orderly_pipeline_health','purge_orderly_operations','prune_orderly_cron_history']) loop
     execute format('revoke all on function %s from public,anon,authenticated',f.signature);
     execute format('grant execute on function %s to service_role',f.signature);
   end loop;
