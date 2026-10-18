@@ -113,7 +113,9 @@ export function adminRoutes(repo: Repository) {
     return c.json({ ok: true });
   });
   // Whether this business may pair a new linked phone (the unofficial route). Only the admin
-  // sets it; owners cannot. A business already on a linked phone keeps it either way.
+  // sets it; owners cannot. A revoke stops every further pairing, including for a business from
+  // before approvals existed; its current session keeps running until it is disconnected or the
+  // business switches to the official Meta route (see pairingAllowed in whatsapp/routes.ts).
   app.put('/businesses/:companyId/linked-device', async (c) => {
     const id = companyId.parse(c.req.param('companyId'));
     const { allowed } = z

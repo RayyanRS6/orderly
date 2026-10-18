@@ -15,9 +15,22 @@ import {
 } from './connections';
 
 // A new linked-phone pairing needs the Orderly admin's approval for this business. A business
-// already on a linked phone keeps it, and every other action on its connection stays open.
-const pairingAllowed = (company: Company, connection?: WhatsAppConnection) =>
-  !!company.linkedDeviceAllowed || connection?.provider === 'baileys';
+// from before approvals existed whose linked phone is still in use (connected, connecting,
+// reconnecting or waiting for its pairing to finish) may pair it again; one that disconnected,
+// was logged out or failed needs approval like any other. The admin's revoke always wins. Every
+// other action on an existing connection (status, reconnect, disconnect, switch to Meta) stays
+// open, so a revoked business keeps its current session until it ends.
+const GRANDFATHERED_STATUSES: WhatsAppConnection['status'][] = [
+  'connected',
+  'connecting',
+  'reconnecting',
+  'awaiting_pairing',
+];
+export const pairingAllowed = (company: Company, connection?: WhatsAppConnection) =>
+  company.linkedDeviceAllowed === true ||
+  (company.linkedDeviceAllowed !== false &&
+    connection?.provider === 'baileys' &&
+    GRANDFATHERED_STATUSES.includes(connection.status));
 
 export function whatsappRoutes(repo: Repository) {
   const app = new Hono<AppEnv>();
@@ -56,17 +69,18 @@ export function whatsappRoutes(repo: Repository) {
       })
       .strict()
       .parse(await c.req.json());
-    // A page open from before the current risk notice must show it before pairing.
-    if (body.consent?.version !== LINKED_DEVICE_CONSENT_VERSION)
-      throw new PublicError('Please reload the page to continue.', 400);
-    if (body.method === 'code' && !body.phone)
-      throw new PublicError('Enter your number including country code.', 400);
+    // Approval first: a business without it is told so, whichever page it has open.
     const company = c.get('company');
     if (!pairingAllowed(company, await repo.getWhatsAppConnection(company.id)))
       throw new PublicError(
         'Linked-phone pairing needs approval from Orderly support. Use the official WhatsApp Business Platform instead.',
         403,
       );
+    // A page open from before the current risk notice must show it before pairing.
+    if (body.consent?.version !== LINKED_DEVICE_CONSENT_VERSION)
+      throw new PublicError('Please reload the page to continue.', 400);
+    if (body.method === 'code' && !body.phone)
+      throw new PublicError('Enter your number including country code.', 400);
     if (!(await repo.consumeRateLimit(`wa-pair:${company.id}`, 3)))
       throw new PublicError('Too many pairing attempts. Wait a minute.', 429);
     const consent = {
