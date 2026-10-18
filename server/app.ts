@@ -3,24 +3,19 @@ import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { secureHeaders } from 'hono/secure-headers';
 import { cors } from 'hono/cors';
+import { requestId } from 'hono/request-id';
 import { createClient } from '@supabase/supabase-js';
 import { z, ZodError } from 'zod';
 import type { Repository } from './repository.js';
-import type {
-  BotAction,
-  Company,
-  Integration,
-  IntegrationKind,
-  Role,
-  OrderStatus,
-} from '../src/shared/types.js';
-import { createConversation } from '../src/domain/engine.js';
+import type { Company, Integration, IntegrationKind, Role } from '../src/shared/types.js';
+import { createConversation, transitionOrder } from '../src/domain/engine.js';
 import { slugify } from '../src/shared/slug.js';
 import { appMode, env } from './config.js';
 import {
   PublicError,
   encryptSecret,
   decryptSecret,
+  logFailure,
   safeEqual,
   sanitizeError,
   verifyMetaSignature,
@@ -79,11 +74,24 @@ const owner = (role: Role) => {
   if (!['owner', 'admin'].includes(role))
     throw new PublicError('Only the restaurant owner can change these settings.', 403);
 };
+// A request path with its record IDs replaced, for audit entries and failure logs.
+const routePattern = (path: string) => path.replace(/\/[a-f0-9-]{36}(?=\/|$)/g, '/:id');
+// Only a rejected token means signing in again. When Supabase Auth cannot be reached or is
+// failing, the session may be fine, so the dashboard is told to retry instead.
+const authUnavailable = (error: unknown) => {
+  const e = error as { name?: unknown; status?: unknown } | null;
+  return (
+    e?.name === 'AuthRetryableFetchError' ||
+    (typeof e?.status === 'number' && (e.status === 0 || e.status === 429 || e.status >= 500))
+  );
+};
 
 export type AppOptions = { waitUntil?: (task: Promise<unknown>) => void };
 
 export function createApp(repo: Repository, options: AppOptions = {}) {
   const app = new Hono<Env>();
+  // First, so even a refused origin has a reference that matches its log line.
+  app.use('/api/*', requestId());
   app.use('/api/*', secureHeaders());
   app.use('/api/*', async (c, next) => {
     // The split frontend may access only this exact origin; webhooks and workers
@@ -118,8 +126,21 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
         },
         400,
       );
+    // c.req.json() on a body that is not JSON.
+    if (error instanceof SyntaxError)
+      return c.json({ error: 'Request body must be valid JSON.' }, 400);
+    if (error instanceof PublicError && !error.cause)
+      return c.json({ error: error.message }, error.status as 400);
+    // Unexpected, or a public message hiding its real cause: log one line and return its
+    // reference, so a report from the dashboard can be matched to the log.
+    const reference = c.get('requestId');
+    logFailure(
+      'request_failed',
+      { method: c.req.method, route: routePattern(c.req.path).slice(0, 120), requestId: reference },
+      error,
+    );
     return c.json(
-      { error: sanitizeError(error) },
+      { error: sanitizeError(error), requestId: reference },
       (error instanceof PublicError ? error.status : 500) as 400,
     );
   });
@@ -305,8 +326,24 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
       if (!bearer) throw new PublicError('Sign in to continue.', 401);
       const client = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_ANON_KEY!, {
         auth: { persistSession: false, autoRefreshToken: false },
+        // A hanging sign-in check becomes a retryable error, well before the browser gives up.
+        global: {
+          fetch: (input, init) =>
+            fetch(input, {
+              ...init,
+              signal: init?.signal
+                ? AbortSignal.any([init.signal, AbortSignal.timeout(10000)])
+                : AbortSignal.timeout(10000),
+            }),
+        },
       });
-      const { data, error } = await client.auth.getUser(bearer);
+      const { data, error } = await client.auth
+        .getUser(bearer)
+        .catch(() => ({ data: { user: null }, error: { name: 'AuthRetryableFetchError' } }));
+      if (error && authUnavailable(error)) {
+        c.header('Retry-After', '5');
+        throw new PublicError('Sign-in service is busy, please retry.', 503);
+      }
       if (error || !data.user) throw new PublicError('Your session expired. Sign in again.', 401);
       if (data.user.factors?.some((f) => f.status === 'verified')) {
         let assurance = '';
@@ -364,11 +401,7 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
       c.req.path !== '/api/chat' &&
       !c.req.path.startsWith('/api/admin/')
     )
-      await repo.audit(
-        company.id,
-        userId,
-        `${c.req.method} ${c.req.path.replace(/\/[a-f0-9-]{36}(?=\/|$)/g, '/:id')}`,
-      );
+      await repo.audit(company.id, userId, `${c.req.method} ${routePattern(c.req.path)}`);
   });
   app.route('/api', managementRoutes(repo));
   app.route('/api/admin', adminRoutes(repo));
@@ -546,8 +579,14 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
     return c.json({ count: await refreshCatalog(repo, c.get('company')) });
   });
   app.post('/api/chat', async (c) => {
-    const body = chatSchema.parse(await c.req.json());
     const company = c.get('company');
+    // Test chats spend the business's own AI budget, which live customers also need. One
+    // business gets 15 a minute however many people test, checked before any AI work.
+    if (!(await repo.consumeRateLimit(`chat:${company.id}`, 15))) {
+      c.header('Retry-After', '60');
+      throw new PublicError('Too many test messages. Please wait a minute.', 429);
+    }
+    const body = chatSchema.parse(await c.req.json());
     let conversation = body.conversationId
       ? await repo.getConversation(company.id, body.conversationId)
       : undefined;
@@ -581,13 +620,14 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
       .parse(await c.req.json());
     const order = await repo.getOrder(c.get('company').id, c.req.param('id'));
     if (!order) throw new PublicError('Order not found.', 404);
-    let updated;
+    // Only the order rules' own message reaches staff ("Cannot change …"). Anything else, such
+    // as a database failure, is logged and answered with the general error.
     try {
-      updated = await changeOrderStatus(repo, order, status);
+      transitionOrder(order, status, new Date().toISOString());
     } catch (error) {
-      if (error instanceof PublicError) throw error;
       throw new PublicError(error instanceof Error ? error.message : 'Invalid order transition.');
     }
+    const updated = await changeOrderStatus(repo, order, status);
     const conversation = await repo.getConversation(order.companyId, order.conversationId);
     if (conversation) {
       const text = `Order ${order.reference} is now ${status.replaceAll('_', ' ')}.`;

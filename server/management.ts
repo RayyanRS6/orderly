@@ -254,6 +254,8 @@ export function managementRoutes(repo: Repository) {
             : 'Check the model name and your account credit.'
         }`,
         422,
+        // Kept so the failure log shows the provider's error name and status.
+        { cause: error },
       );
     }
     const checkedAt = new Date().toISOString();

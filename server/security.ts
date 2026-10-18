@@ -70,6 +70,43 @@ export function sanitizeError(error: unknown): string {
   if (error instanceof PublicError) return error.message;
   return 'The service could not complete this request. Check the connection and try again.';
 }
+// Tokens and keys that can appear inside an upstream error message.
+const scrub = (text: string) =>
+  text
+    .replace(/Bearer\s+\S+/gi, 'Bearer [hidden]')
+    .replace(/\beyJ[\w-]*\.[\w-]+(?:\.[\w-]+)?/g, '[token]')
+    .replace(/\b(?:sk|rk|pk)-[\w-]{8,}/g, '[key]')
+    .replace(/\bAIza[\w-]{20,}/g, '[key]');
+const label = (value: unknown) =>
+  typeof value === 'string' || typeof value === 'number' ? String(value).slice(0, 80) : undefined;
+/**
+ * One log line for a failure nobody planned for: what failed, where, and a reference to quote.
+ * Only the error's name, code and a short cleaned message are kept, never request headers,
+ * bodies, query strings or the error object itself (SDK errors can carry prompts and keys).
+ */
+export function logFailure(
+  event: string,
+  context: Record<string, string | number | boolean | undefined>,
+  error: unknown,
+) {
+  const e = (error ?? {}) as { name?: unknown; code?: unknown; message?: unknown; cause?: unknown };
+  const cause = (e.cause ?? undefined) as
+    { name?: unknown; code?: unknown; statusCode?: unknown; status?: unknown } | undefined;
+  console.error(
+    JSON.stringify({
+      event,
+      ...context,
+      name: label(e.name) ?? typeof error,
+      code: label(e.code),
+      message: scrub(String(e.message ?? error)).slice(0, 300),
+      ...(cause && {
+        causeName: label(cause.name),
+        causeCode: label(cause.code),
+        causeStatus: label(cause.statusCode ?? cause.status),
+      }),
+    }),
+  );
+}
 export class PublicError extends Error {
   constructor(
     message: string,

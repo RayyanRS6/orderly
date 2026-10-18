@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { Repository } from './repository.js';
 import { MENU_SLUG_RE } from '../src/shared/menu.js';
 import { createMenuDraftFor, MenuError, menuSession, placeLinkOrder, publicMenu } from './menu.js';
-import { PublicError } from './security.js';
+import { PublicError, logFailure } from './security.js';
 import { webCartSchema } from './validation.js';
 
 // Routes for the public menu page (/m/<slug>), mounted before sign-in. Every handler answers
@@ -49,8 +49,15 @@ function failure(c: Context, error: unknown) {
     );
   if (error instanceof PublicError)
     return c.json({ error: error.message, code: 'error' }, error.status as 400);
+  // Logged without the cart, phone or token; the slug in the path names the restaurant.
+  const requestId = c.get('requestId');
+  logFailure(
+    'request_failed',
+    { method: c.req.method, route: c.req.path.slice(0, 120), requestId },
+    error,
+  );
   return c.json(
-    { error: 'Something went wrong. Please try again in a moment.', code: 'error' },
+    { error: 'Something went wrong. Please try again in a moment.', code: 'error', requestId },
     500,
   );
 }
