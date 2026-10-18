@@ -314,6 +314,7 @@ export class Supervisor {
         for (const namespace of [
           'auth',
           'events',
+          'dead-events',
           'status-event',
           'identity',
           'route',

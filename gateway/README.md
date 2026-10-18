@@ -114,7 +114,11 @@ passing failure code (`RECONNECT_EXHAUSTED`, `SESSION_CRASH`, `DISCONNECT_0/408/
 Heartbeats reach Orderly once a minute (the 15-second tick still retries undelivered events); a
 heartbeat older than 3 minutes is not ready to send. The gateway must also report a verified
 account identity. Backend callback failure keeps inbound events encrypted on disk, capped at
-10,000 per session; a full queue stops the session until it drains. Monitor disk, stale
+10,000 per session; a full queue stops the session until it drains. A message Orderly rejects
+outright (400/413/422) no longer blocks the ones behind it: it is set aside (at most 500, cleared
+on new pairing), offered again hourly while under 24 hours old, and meanwhile the connected status
+carries `INBOUND_EVENT_REJECTED` (check the restaurant phone for that customer). Message IDs over
+150 characters are hashed before queueing. Monitor disk, stale
 heartbeats, crash codes, queue failures and failed Orderly jobs. `/healthz` indicates process
 liveness, not every number's readiness.
 

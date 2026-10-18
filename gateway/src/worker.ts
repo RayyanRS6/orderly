@@ -17,6 +17,7 @@ import { loadConfig } from './config.js';
 import { Store } from './store.js';
 import { canonicalJid, phoneFromJid, heartbeatDue, reconnectDecision, TICK_MS } from './policy.js';
 import { sendOnce, recoverUncertainSends } from './sender.js';
+import { drainOnce, EVENT_BATCH, retryDeadEvents, safeMessageId } from './drain.js';
 import { chatContent, receiptStatus, upsertedMessages } from './upserts.js';
 import { signedHeaders } from '../../server/whatsapp/signing.js';
 import {
@@ -54,7 +55,6 @@ let sendChain = Promise.resolve();
 // (common for a first message or a new device). Without the original the reply never
 // arrives, although it was accepted. Kept encrypted on disk for three days.
 const SENT_RETENTION_MS = 3 * 86400000;
-const EVENT_BATCH = 50;
 // Baileys has no overall connect timer: a server that never answers the upgrade leaves a
 // socket that neither opens nor closes. Give up on it as a timeout (408) and retry.
 const CONNECT_WATCHDOG_MS = 45000;
@@ -92,7 +92,11 @@ function event(partial: Partial<GatewayEvent> & { type: GatewayEvent['type'] }) 
 }
 function setStatus(next: typeof status, code?: string) {
   status = next;
-  errorCode = code;
+  // While a customer message Orderly rejected is set aside, a connected phone says so: the
+  // message only reached the restaurant's phone. Re-sent with every heartbeat until cleared.
+  errorCode =
+    code ??
+    (next === 'connected' && store.count('dead-events') > 0 ? 'INBOUND_EVENT_REJECTED' : undefined);
   lastStatusAt = Date.now();
   if (next !== 'awaiting_pairing') pairing = {};
   const account = canonicalJid(socket?.user?.id);
@@ -124,56 +128,23 @@ async function drain() {
     let more = true;
     while (more) {
       drainAgain = false;
-      const sent = await drainOnce();
+      const sent = await drainOnce(store, postEvent, () => drainAgain);
       more = sent !== false && (drainAgain || sent >= EVENT_BATCH);
     }
   } finally {
     draining = false;
   }
 }
-// Returns how many messages were sent, or false when the backend could not take them.
-async function drainOnce(): Promise<number | false> {
-  // Status first so the backend knows the account before accepting messages, and
-  // receipts last: they are informational and must never hold up a customer message.
-  const rows = [
-    ...store.list<GatewayEvent>('status-event').map((r) => ({ ...r, namespace: 'status-event' })),
-    ...store.list<GatewayEvent>('events', EVENT_BATCH).map((r) => ({ ...r, namespace: 'events' })),
-    ...store
-      .list<GatewayEvent>('receipt-events', EVENT_BATCH)
-      .map((r) => ({ ...r, namespace: 'receipt-events' })),
-  ];
-  let messages = 0;
-  for (const row of rows) {
-    // A customer message saved meanwhile goes before the remaining ticks.
-    if (row.namespace === 'receipt-events' && drainAgain) break;
-    const raw = JSON.stringify(row.value);
-    let response: Response;
-    try {
-      response = await fetch(config.eventsUrl, {
-        method: 'POST',
-        headers: signedHeaders(config.secret, 'event', '/api/whatsapp/gateway/events', raw),
-        body: raw,
-        signal: AbortSignal.timeout(10000),
-        redirect: 'error',
-      });
-    } catch {
-      return false;
-    }
-    if (!response.ok) {
-      // A rejected receipt is dropped; it is only a tick in the inbox.
-      if (row.namespace === 'receipt-events' && response.status < 500) {
-        store.delete(row.namespace, row.id);
-        continue;
-      }
-      // Never silently discard a message or endlessly grow memory. Backend failures
-      // are retried from encrypted disk; an operator can inspect queue counts.
-      return false;
-    }
-    if (store.get<GatewayEvent>(row.namespace, row.id)?.eventId === row.value.eventId)
-      store.delete(row.namespace, row.id);
-    if (row.namespace === 'events') messages++;
-  }
-  return messages;
+async function postEvent(raw: string) {
+  const response = await fetch(config.eventsUrl, {
+    method: 'POST',
+    headers: signedHeaders(config.secret, 'event', '/api/whatsapp/gateway/events', raw),
+    body: raw,
+    signal: AbortSignal.timeout(10000),
+    redirect: 'error',
+  });
+  await response.body?.cancel().catch(() => undefined);
+  return response.status;
 }
 function receipt(key: proto.IMessageKey, status?: number | null) {
   const value = receiptStatus(status);
@@ -240,7 +211,7 @@ function incoming(message: WAMessage) {
       generation,
       type: 'message',
       peer,
-      messageId: id,
+      messageId: safeMessageId(id),
       text,
       fromMe: !!message.key.fromMe,
       unsupported: !text,
@@ -526,6 +497,7 @@ setInterval(
         setStatus('connected');
       pruneSent();
       await drain();
+      await retryDeadEvents(store, postEvent);
     }),
   TICK_MS,
 ).unref();

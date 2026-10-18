@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { Supervisor } from './supervisor.js';
+import { Store } from './store.js';
 
 const worker = new URL('./fixtures/test-worker.js', import.meta.url);
 async function eventually(check: () => boolean) {
@@ -130,6 +131,30 @@ test('a crashed worker is restarted with its real failure code kept for Orderly'
     assert.equal(queued?.errorCode, 'INBOUND_QUEUE_FULL');
     // ...and the worker comes back by itself.
     await eventually(() => supervisor.status(session).status === 'connected');
+  } finally {
+    await supervisor.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+// F24: set-aside customer messages hold message text, so a disconnect or new pairing wipes
+// them like the rest of the session's queue.
+const SESSION_NAMESPACES = ['events', 'dead-events', 'route', 'identity', 'seen'];
+test('disconnecting clears set-aside messages together with the queue', async () => {
+  const { dataDir, config } = setup();
+  const supervisor = new Supervisor(config, worker);
+  const session = { connectionId: randomUUID(), generation: 1 };
+  try {
+    await supervisor.command({ ...session, action: 'pair', method: 'qr' });
+    await eventually(() => supervisor.status(session).status === 'connected');
+    const path = join(dataDir, `${session.connectionId}.sqlite`);
+    const sessionStore = new Store(path, config.key);
+    for (const namespace of SESSION_NAMESPACES) sessionStore.set(namespace, 'row', { text: 'x' });
+    sessionStore.close();
+    await supervisor.command({ ...session, generation: 2, action: 'disconnect' });
+    const after = new Store(path, config.key);
+    for (const namespace of SESSION_NAMESPACES) assert.equal(after.count(namespace), 0, namespace);
+    after.close();
   } finally {
     await supervisor.close();
     rmSync(dataDir, { recursive: true, force: true });
