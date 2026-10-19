@@ -167,10 +167,10 @@ describe('what owners and the privacy policy are told', () => {
   it('lists the payment options on the Agent flow page', async () => {
     expect(await fixedRules(taking())).toContain('Payment options are cash on pickup or delivery.');
     expect(await fixedRules(taking(['cash', 'jazzcash', 'bank_transfer']))).toContain(
-      'Payment options are cash on pickup or delivery, or JazzCash / bank transfer. For a transfer the restaurant shares its payment details and confirms the transfer itself; Orderly never sends account numbers.',
+      'Payment options are cash on pickup or delivery, or JazzCash / bank transfer. To pay by transfer the customer types “staff” in the chat, and restaurant staff send the payment details and confirm the transfer themselves; Orderly never sends account numbers.',
     );
     expect(await fixedRules(taking(['easypaisa']))).toContain(
-      'Payment options are Easypaisa. For a transfer the restaurant shares its payment details and confirms the transfer itself; Orderly never sends account numbers.',
+      'Payment options are Easypaisa. To pay by transfer the customer types “staff” in the chat, and restaurant staff send the payment details and confirm the transfer themselves; Orderly never sends account numbers.',
     );
   });
 

@@ -35,7 +35,7 @@ function paymentOptions(company: Company): string {
   if (cashOnly(company)) return 'Payment options are cash on pickup or delivery.';
   const methods = paymentMethods(company);
   const transfers = methods.flatMap((method) => (method === 'cash' ? [] : TRANSFER_LABELS[method]));
-  return `Payment options are ${methods.includes('cash') ? 'cash on pickup or delivery, or ' : ''}${transfers.join(' / ')}. For a transfer the restaurant shares its payment details and confirms the transfer itself; Orderly never sends account numbers.`;
+  return `Payment options are ${methods.includes('cash') ? 'cash on pickup or delivery, or ' : ''}${transfers.join(' / ')}. To pay by transfer the customer types “staff” in the chat, and restaurant staff send the payment details and confirm the transfer themselves; Orderly never sends account numbers.`;
 }
 const usd = (value: number) => `$${value.toFixed(value > 0 && value < 0.01 ? 4 : 2)}`;
 const yes = (value: boolean, ok = 'Yes', no = 'No') => (value ? ok : no);
