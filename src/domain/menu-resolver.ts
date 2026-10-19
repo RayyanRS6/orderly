@@ -193,7 +193,8 @@ interface DishWords {
   options: Set<string>;
   // Words naming the restaurant's other dishes.
   others: Set<string>;
-  // The other dishes' option words ("half" in "karahi half 4 naan"), part of their mention.
+  // The other dishes' option words ("half" in "karahi half 4 naan"), part of their mention,
+  // also when this dish has the same option ("karahi half 4 biryani" with a half biryani).
   otherOptions: Set<string>;
   // A count as written ("100 naan", "1000 naan" are refused later), not kept within 1-50.
   exact?: boolean;
@@ -221,9 +222,7 @@ function dishWords(product: Product, catalog: Product[], exact = false): DishWor
     options,
     others: new Set(others.flatMap(labelWords)),
     otherOptions: new Set(
-      others
-        .flatMap(optionWords)
-        .filter((word) => word && !options.has(word) && !own.includes(word)),
+      others.flatMap(optionWords).filter((word) => word && !own.includes(word)),
     ),
     exact,
   };
