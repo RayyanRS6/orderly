@@ -33,9 +33,9 @@ Only the gateway needs Railway. It is the one part that must stay running all th
 
 ## 2. Ship an update
 
-Follow the release order in [DEPLOYMENT.md](DEPLOYMENT.md) §7: backup, any SQL marked "before", the legal placeholders filled in, the backend push, then the gateway push, the dashboard deploy and any SQL marked "after", all at a quiet hour.
+Follow the release order in [DEPLOYMENT.md](DEPLOYMENT.md) §7: backup, any SQL marked "before", the legal placeholders filled in, Railway's **Wait for CI** checked, one push that deploys the backend and then the gateway, the dashboard deploy and any SQL marked "after", all at a quiet hour.
 
-1. **You:** review and approve the commit, then push to `main` at a quiet time. GitHub Actions (`Deploy Supabase backend`) first runs the type check and every test, and deploys only if they pass. Wait in GitHub → Actions until both `verify` and `deploy` are green; `deploy` also checks the live `/api/health`. Pushes that change only docs, Markdown or `gateway/` do not redeploy the backend. A push with a commit that changes `gateway/` (other than Markdown), `src/shared/whatsapp.ts`, `server/whatsapp/signing.ts` or `.dockerignore` rebuilds the gateway on Railway at once, so when a release changes both, push the backend part first (DEPLOYMENT.md §7, steps 5 and 6).
+1. **You:** review and approve the commit, then push to `main` at a quiet time. GitHub Actions (`Deploy Supabase backend`) first runs the type check and every test, and deploys only if they pass. Wait in GitHub → Actions until both `verify` and `deploy` are green; `deploy` also checks the live `/api/health`. Pushes that change only docs, Markdown or `gateway/` do not redeploy the backend; `Check WhatsApp gateway` still runs every test on them, so fix it if it turns red. A push with a commit that changes `gateway/` (other than Markdown), `src/shared/whatsapp.ts`, `server/whatsapp/signing.ts` or `.dockerignore` rebuilds the gateway on Railway; with **Wait for CI** on (required, DEPLOYMENT.md §7, step 5) Railway deploys it only after every check on the commit is green, so after the backend from the same push.
 2. **You:** deploy the dashboard from this folder, signed in to the Cloudflare account that serves `orderly.meerurayyan.workers.dev` (`npx wrangler whoami` shows which account):
 
    ```powershell

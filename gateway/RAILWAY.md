@@ -53,12 +53,14 @@ Open the `gateway` service → **Settings** and set:
 | Deploy → Replicas                  | **1**                                                                                                                  | Never more than one instance per volume.                                                                                      |
 | Deploy → Resource Limits → Memory  | about **1 GB** (if your plan shows it)                                                                                 | Caps cost; one number needs far less.                                                                                         |
 
-A push to `main` with a commit that changes a watch path rebuilds the gateway at once, while the
-backend workflow may still be testing the same push. When a release changes both, push the
-backend part first ([DEPLOYMENT.md §7](../docs/DEPLOYMENT.md), steps 5 and 6). **Wait for CI**
-makes Railway wait for GitHub checks before deploying. It waits for _every_ check on the commit,
-so the gateway never goes live before the backend from the same push, but a failing backend
-workflow (or docs test) also blocks a gateway deploy. Turn it on at least for such a release push.
+A push to `main` with a commit that changes a watch path rebuilds the gateway from that commit,
+while the backend workflow may still be testing the same push. **Wait for CI** (Settings →
+Source) makes Railway wait for GitHub checks before deploying. It waits for _every_ check on the
+commit, including the backend's `deploy` job and **Check WhatsApp gateway**, so the gateway
+never goes live before the backend from the same push; a commit with a red check is not deployed
+at all, so a failing backend workflow (or docs test) also holds a gateway deploy back. Keep it
+on. It is required for the October 2026 release, which goes out as one push
+([DEPLOYMENT.md §7](../docs/DEPLOYMENT.md), steps 5 and 6).
 
 Project-level: **Project Settings → Environments → PR Environments: Off.** A pull-request
 environment would start a second gateway with the same secrets.
@@ -166,9 +168,10 @@ volume storage for changed data. Row values are encrypted, but SQLite metadata i
 backup is useless without the encryption key from your password manager. Restoring a backup
 replaces the volume and redeploys. Never run a restored copy anywhere while the original is live.
 A backup holds working WhatsApp credentials for every number paired at that time. Disconnecting in
-Orderly logs the device out when it is online, which makes those credentials useless; if it was
-offline, remove the device on the phone as well. Restoring an older backup also brings back
-sessions disconnected since. Keep backup retention short.
+Orderly logs the device out when WhatsApp can be reached, also for a session that was stopped,
+which makes those credentials useless; if it could not, remove the device on the phone as well.
+Restoring an older backup also brings back sessions disconnected since. Keep backup retention
+short.
 
 ## 9. Connect Orderly (Supabase side)
 
@@ -220,15 +223,25 @@ treats WhatsApp as offline.
   the watch paths, variable edits and backup restores: Railway stops the old container before
   mounting the volume on the new one. Sends during the gap fail as unreachable; a send cut off
   mid-way reports `SEND_UNCERTAIN` and staff must check the phone. Redeploy in quiet hours.
-- **Backend first, then the gateway.** A push to the watch paths redeploys the gateway at once,
-  while the backend deploy can take longer; either order is safe. An older gateway keeps a
-  session Orderly answers with 410 (no longer used) queued until it is redeployed; this version
-  ends it. An older backend never answers 410, so nothing is ended before it is deployed.
+- **Backend first, then the gateway.** With **Wait for CI** on (§2), a push that changes both
+  deploys the gateway only after the backend from the same push is live. For the October 2026
+  release either order is still safe, with one short window ([DEPLOYMENT.md §7](../docs/DEPLOYMENT.md),
+  step 6, says why). This gateway with the older backend: that backend still refuses
+  linked-phone replies once the last heartbeat is over 90 seconds old, while this gateway reports
+  about once a minute, so replies are refused, and retried a few seconds later, only while
+  heartbeats cannot reach Orderly for about 20 seconds or more; nothing is retired, since an
+  older backend never answers 410. An older gateway with this backend: its 15-second heartbeats
+  stay well inside the 3-minute limit; a session Orderly answers with 410 (no longer used) stays
+  queued there, retried every 15 seconds, until this version starts and ends it.
 - **Switched or disconnected while the gateway was down.** Orderly saves the change anyway and
   the old session keeps running here, linked to the phone, until the gateway reaches Orderly
   again: its next event or heartbeat is answered 410 and the gateway logs it out and wipes it
-  (`SESSION_RETIRED` in the logs). Until then, remove the device on the phone under WhatsApp →
-  **Linked devices**.
+  (`SESSION_RETIRED` in the logs). A session that sends nothing (stopped on a refusal such as
+  `DISCONNECT_405`) is not reached that way: press **Disconnect** again once the gateway is
+  reachable (`SESSION_DISCONNECTED` in the logs). Until then, remove the device on the phone
+  under WhatsApp → **Linked devices**. Never delete the business's rows before one of those
+  lines appears ([incident runbook](../docs/INCIDENT-RUNBOOK.md) §6): Orderly then no longer
+  knows the session, answers its events with 200, and nothing ends it.
 - **Never two instances on one volume.** Keep replicas at 1, PR environments off, and don't
   duplicate the service or environment with these secrets. A lease blocks a second gateway on
   the same volume, but cannot detect copies elsewhere.
