@@ -972,9 +972,9 @@ function contains(text: string, phrase: string): boolean {
 // naam save ho gaya hai" or "ہم کل ۱۲ بجے کھلیں گے" (کل is also tomorrow) pass. Prices need a
 // currency next to the digits ("450/-", "450 rupay", "۴۵۰ روپے", "500 PKR"). After an order is
 // submitted, saying it was placed, submitted or received is true, so those claims are allowed
-// then; confirmed, booked, accepted or delivered never are, nor a payment received or more
-// ordered. A polite request ("کنفرم کر دیں", "تصدیق کر دیجیے", "confirm kar di jiye") or the
-// future ("deliver kar diya jayega", "کر دیا جائے گا") is not a claim.
+// then; confirmed, booked, accepted or delivered never are, nor a payment received, nor more
+// ordered or added. A polite request ("کنفرم کر دیں", "تصدیق کر دیجیے", "confirm kar di jiye")
+// or the future ("deliver kar diya jayega", "کر دیا جائے گا") is not a claim.
 const NOT_DONE =
   '(?!\\s*(?:jiye|jiyega|jiyen|jie|jiey|jye|jiay|jayega|jayegi|jayenge|jaye|jaega|jaegi|jaenge)\\b)';
 const outcomeClaim = (verbs: string) =>
@@ -1002,31 +1002,47 @@ const ENGLISH_PRICE =
   /\b(?:rs\.?|pkr)\s*[\d۰-۹٠-٩]|\b(?:total|price|cost)\s*(?:(?:is|of|:|=)\s*)?[\d۰-۹٠-٩]/iu;
 const ENGLISH_OUTCOME = /\b(?:accepted|approved|confirmed|delivered|dispatched|completed)\b/iu;
 const ENGLISH_PLACED = /\b(?:submitted|placed)\b/iu;
-// After submission, "your order has been placed" is true; placing more of it never is.
+// After submission, "your order has been placed" or "yes, it was submitted" is true; placing or
+// adding more never is.
 const ORDER_PLACED =
-  /\border\b[^.!?\n]{0,30}?\b(?:placed|submitted)\b|\b(?:placed|submitted)\s+(?:your|the)\s+order\b/u;
-const ordersMore = (value: string) =>
-  value
-    .split(/[.!?\n]+/u)
-    .some(
-      (sentence) =>
-        /\b(?:placed|submitted|added)\b/u.test(sentence) &&
-        /\b(?:another|additional|extra|second|separate)\b/u.test(sentence),
-    );
-// A payment said to be received, verified or confirmed: never the AI's to say, before or after
-// the order, since restaurant staff check every transfer themselves. Not a condition ("once we
-// receive the payment").
-const NOT_IF = '(?<!\\b(?:once|when|after|until|till|if|before|jab|agar)\\b[^.!?\\n]{0,40})';
-const PAYMENT_EN = new RegExp(
-  `${NOT_IF}(?:\\b(?:payments?|transfers?|amount|money|jazz ?cash|easy ?paisa)\\b[^.!?\\n]{0,30}?(?<!\\b(?:be|to) )\\b(?:received|verified|cleared|credited|confirmed)\\b|\\b(?:received|got|verified|confirmed)\\s+(?:(?:your|the|aap ki)\\s+)?(?:(?:jazz ?cash|easy ?paisa|bank)\\s+)?(?:payments?|transfers?|money|amount)\\b)`,
+  /\border\b[^.!?\n]{0,30}?\b(?:placed|submitted)\b|\b(?:placed|submitted)\s+(?:your|the)\s+order\b|\bit(?:['’]s| is| was| has)?(?: been)? (?:placed|submitted)\b/u;
+const DONE_FORMS =
+  '(?:gaya|gayi|gya|gyi|gai|gaye|ge|diya|diye|dia|di|liya|liye|lia|li|chuka|chuki|chuke)';
+// "I've added the naan", "added 2 naan to your order", "add kar diye", "شامل کر دیا".
+const ADDED_MORE = new RegExp(
+  `\\b(?:i|we)(?:['’]ve| have)?(?: just| also)? added\\b|\\badded\\b[^.!?\\n]{0,40}?\\b(?:to|in|into) (?:your|the) order\\b|\\badd\\w*\\s*(?:ho|hu|kar|kr)\\s*${DONE_FORMS}\\b${NOT_DONE}|(?:شامل|ایڈ)\\s?${URDU_DONE}`,
   'u',
 );
+// Placed together with "another", "new", "2 more", "naya", "نیا" (not the “new order” command).
+const PLACED_WORDING = new RegExp(
+  `\\b(?:placed|submitted|added)\\b|\\b(?:place|submit|add)\\w*\\s*(?:ho|hu|kar|kr)\\s*${DONE_FORMS}\\b${NOT_DONE}|(?:پلیس|سبمٹ|موصول|شامل|ایڈ)[^۔.!?؟\\n]{0,10}?${URDU_DONE}`,
+  'u',
+);
+const MORE_WORDING =
+  /(?<![“"'‘])\b(?:another|additional|extra|second|separate|new|naya|nayi|naye|doosra|doosri|dusra|dusri)\b|\b(?:\d+|one|two|three|four|five) more\b|(?<![“"'‘\p{L}\p{M}])(?:نیا|نئی|نئے|دوسرا|دوسری)(?![\p{L}\p{M}])/u;
+const ordersMore = (value: string) =>
+  ADDED_MORE.test(value) ||
+  value
+    .split(/[.!?۔؟\n]+/u)
+    .some((sentence) => PLACED_WORDING.test(sentence) && MORE_WORDING.test(sentence));
+// A payment said to be received, verified or confirmed: never the AI's to say, before or after
+// the order, since restaurant staff check every transfer themselves. Not a condition ("once we
+// receive the payment"), unless the condition is in an earlier clause ("after checking, we have
+// received your payment"); not a general statement ("JazzCash payments are verified by our
+// staff") or a process ("your payment is being verified").
+const NOT_IF = '(?<!\\b(?:once|when|after|until|till|if|before|jab|agar)\\b[^.!?,;\\n]{0,40})';
+const PAYMENT_EN = new RegExp(
+  `${NOT_IF}(?:\\b(?:payments?|transfers?|transactions?|amount|money|jazz ?cash|easy ?paisa)\\b[^.!?\\n]{0,30}?(?<!\\b(?:be|to|being) )(?<!\\b(?:payments|transfers) (?:are|get)\\b[^.!?\\n]{0,20})\\b(?:rec(?:ei|ie)ved|verified|cleared|credited|confirmed|successful|went through|gone through|came through)\\b|\\b(?:rec(?:ei|ie)ved|got|verified|confirmed)\\s+(?:(?:your|the|aap ki)\\s+)?(?:(?:jazz ?cash|easy ?paisa|bank)\\s+)?(?:payments?|transfers?|money|amount)\\b)`,
+  'u',
+);
+// Also "wasool/mosool ho gayi", "accept ho gaya" and a bare "payment ho gayi" (not "kya payment
+// ho gayi hai?", a question back).
 const PAYMENT_ROMAN = new RegExp(
-  `${NOT_IF}\\b(?:payment|adaigi|adaegi|paise|paisay|pese|transfer|amount|raqam|jazz ?cash|easy ?paisa)\\b[^.!?\\n]{0,30}?\\b(?:(?:receive|recieve|confirm|verify|clear|submit|place)\\w*\\s*(?:ho|hu|kar|kr)\\s*|(?:mil|aa|pohanch|pahunch)\\s+)(?:gaya|gayi|gya|gyi|gai|gaye|gae|ge|chuka|chuki|chuke|liya|li|lia|diya|di|dia)\\b${NOT_DONE}`,
+  `${NOT_IF}(?:\\b(?:payment|adaigi|adaegi|paise|paisay|pese|transfer|amount|raqam|jazz ?cash|easy ?paisa)\\b[^.!?\\n]{0,30}?\\b(?:(?:receive|recieve|confirm|verify|clear|submit|place|accept|wasool|vasool|wusool|wasul|mosool|mausool|tasdeeq|tasdiq)\\w*\\s*(?:ho|hu|kar|kr)\\s*|(?:mil|aa|pohanch|pahunch)\\s+)(?:gaya|gayi|gya|gyi|gai|gaye|gae|ge|chuka|chuki|chuke|liya|li|lia|diya|di|dia)\\b${NOT_DONE}|\\b(?:payment|adaigi|adaegi|transfer)\\b[^.!?\\n]{0,15}?\\bho\\s*(?:gaya|gayi|gya|gyi|gai|chuka|chuki)\\b${NOT_DONE}(?![^.!?,;\\n]*[?؟]))`,
   'u',
 );
 const PAYMENT_URDU = new RegExp(
-  `(?:ادائیگی|پیمنٹ|رقم|ٹرانسفر|پیسے|جاز ?کیش|ایزی ?پیسہ)[^۔.!?؟\\n]{0,30}?(?:(?:موصول|وصول|تصدیق|کلیئر|کنفرم|پلیس|سبمٹ)[^۔.!?؟\\n]{0,10}?${URDU_DONE}|(?:مل|آ|پہنچ)\\s?(?:گیا|گئی|گئے|چکا|چکی|چکے)(?![\\p{L}\\p{M}]))`,
+  `(?:ادائیگی|پیمنٹ|رقم|ٹرانسفر|پیسے|جاز ?کیش|ایزی ?پیسہ)[^۔.!?؟\\n]{0,30}?(?:(?:موصول|وصول|تصدیق|کلیئر|کنفرم|پلیس|سبمٹ|ریسیو|قبول)[^۔.!?؟\\n]{0,10}?${URDU_DONE}|(?:مل|آ|پہنچ)\\s?(?:گیا|گئی|گئے|چکا|چکی|چکے)(?![\\p{L}\\p{M}]))|(?:ادائیگی|پیمنٹ|ٹرانسفر)\\s?ہو\\s?(?:گیا|گئی|گئے|چکا|چکی|چکے)(?![\\p{L}\\p{M}])(?![^۔.!?؟،,\\n]*[?؟])`,
   'u',
 );
 const METHOD_WORDS: Record<PaymentMethod, string> = {
@@ -1037,16 +1053,18 @@ const METHOD_WORDS: Record<PaymentMethod, string> = {
 };
 // "JazzCash accepted hai", "Yes, Easypaisa payments are accepted": true of a way the restaurant
 // takes payment, not an order outcome, so it is taken out before the check. Only the
-// restaurant's own methods, and never "your JazzCash payment is accepted".
+// restaurant's own methods, said in the present tense of all payments, in a sentence that says
+// nothing about the order: never "JazzCash payment accepted", "your payment via JazzCash is
+// accepted" or "your order with cash on delivery is accepted".
 function withoutAcceptedMethods(text: string, methods: readonly PaymentMethod[]): string {
   if (!methods.length) return text;
   const name = `(?:${methods.map((method) => METHOD_WORDS[method]).join('|')})`;
-  return text.replace(
-    new RegExp(
-      `(?<!\\b(?:your|the|aap ki|aapki|aap ka|aapka) )\\b${name}(?:\\s*(?:,|/|&|and|or|aur|ya)\\s*${name})*(?: payments?| transfers?)?(?: (?:is|are))?(?: (?:also|both|all|bhi))? accepted\\b`,
-      'giu',
-    ),
-    ' ',
+  const general = new RegExp(
+    `(?<!\\b(?:your|the|aap ki|aapki|aap ka|aapka) )(?<!\\b(?:payments?|transfers?|transactions?|money|amount|paise|paisay|raqam|adaigi)\\b[^.!?\\n]{0,20})\\b${name}(?:\\s*(?:,|/|&|and|or|aur|ya)\\s*${name})*(?: payments| transfers)?(?: (?:is|are)(?: (?:also|both|all|bhi))? accepted| accepted (?:hai|hain|hota hai|hote hain|bhi hai|bhi hain))\\b`,
+    'giu',
+  );
+  return text.replace(/[^.!?\n]+/gu, (sentence) =>
+    /\border\b|آرڈر/iu.test(sentence) ? sentence : sentence.replace(general, ' '),
   );
 }
 const RUPEE_PRICE =
@@ -1067,7 +1085,8 @@ function unsafeModelText(
     PAYMENT_EN.test(value) ||
     PAYMENT_ROMAN.test(value) ||
     PAYMENT_URDU.test(value) ||
-    (ENGLISH_PLACED.test(text) && (!submitted || ordersMore(value) || !ORDER_PLACED.test(value))) ||
+    (ENGLISH_PLACED.test(text) && (!submitted || !ORDER_PLACED.test(value))) ||
+    (submitted && ordersMore(value)) ||
     (!submitted &&
       (ROMAN_PLACED.test(value) || URDU_PLACED.test(value) || ENGLISH_RECEIVED.test(value)))
   );
