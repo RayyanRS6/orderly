@@ -72,6 +72,35 @@ export function newAlerts(seen: ReadonlySet<string> | undefined, items: Alert[])
   };
 }
 
+/**
+ * Whether new orders chime. Only the order sound decides: it works without browser
+ * notifications (iPhone and iPad tabs have none, and staff may decline them), since turning
+ * the sound on was itself the tap that allowed it.
+ */
+export function shouldChime(newOrders: number, soundOn: boolean) {
+  return newOrders > 0 && soundOn;
+}
+/** Said where a granted permission still shows no notification (Chrome on Android, for one). */
+export const BROWSER_ALERTS_UNAVAILABLE =
+  'Browser alerts can’t be shown on this phone or browser. Turn on the order sound instead, keep this page open on screen, and set up email alerts below.';
+/**
+ * Shows a short test notification and says whether it could. Chrome on Android grants the
+ * permission but refuses notifications made by a web page, so a granted permission alone does
+ * not mean alerts will appear.
+ */
+export function testNotification() {
+  try {
+    const note = new Notification('Browser alerts are on', {
+      body: 'Orderly will show new orders and other work here.',
+      tag: 'orderly-test',
+    });
+    setTimeout(() => note.close(), 4000);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const preferenceKey = 'orderly-browser-alerts';
 const soundKey = 'orderly-alert-sound';
 function enabledHere(key = preferenceKey) {
@@ -108,11 +137,13 @@ export function StaffAlerts({
   const reportOrders = useRef(onWaitingOrders);
   reportOrders.current = onWaitingOrders;
   // A sound chosen on an earlier visit can play once this page has been tapped or typed in.
+  // Every tap or key press allows it again, since iPhones and iPads silence a page's sound
+  // after the screen locks or the tab goes to the background.
   useEffect(() => {
     if (!sound) return;
     const unlock = () => unlockChime();
-    window.addEventListener('pointerdown', unlock, { once: true, capture: true });
-    window.addEventListener('keydown', unlock, { once: true, capture: true });
+    window.addEventListener('pointerdown', unlock, { capture: true });
+    window.addEventListener('keydown', unlock, { capture: true });
     return () => {
       window.removeEventListener('pointerdown', unlock, { capture: true });
       window.removeEventListener('keydown', unlock, { capture: true });
@@ -140,8 +171,8 @@ export function StaffAlerts({
         reportOrders.current?.(result.orders);
         const { fresh, orders, seen: next } = newAlerts(seen.current, result.items);
         seen.current = next;
-        // Only with browser alerts on: turning them on was the tap that allowed sound.
-        if (orders.length && soundOn.current && browserAlertsOn(enabled)) playChime();
+        // With or without browser alerts: turning the sound on was the tap that allowed it.
+        if (shouldChime(orders.length, soundOn.current)) playChime();
         if (fresh.length && browserAlertsOn(enabled)) {
           try {
             const note = new Notification('Orderly needs your attention', {
@@ -155,9 +186,11 @@ export function StaffAlerts({
               note.close();
             };
           } catch {
-            setPermission(
-              'This browser cannot show background notifications. In-app alerts remain available.',
-            );
+            // Turned on during an earlier visit on a browser that can't show them: say so, and
+            // stop asking in the background for alerts that never appear.
+            setEnabled(false);
+            remember(preferenceKey, false);
+            setPermission(BROWSER_ALERTS_UNAVAILABLE);
           }
         }
       } catch (e) {
@@ -187,14 +220,17 @@ export function StaffAlerts({
       return;
     }
     if (!('Notification' in window)) {
-      setPermission('Browser notifications are unavailable here. In-app alerts still work.');
+      setPermission(BROWSER_ALERTS_UNAVAILABLE);
       return;
     }
     // This click is what lets the order sound play later, if it is turned on.
     unlockChime();
     try {
       const p = await Notification.requestPermission();
-      if (p === 'granted') {
+      if (p === 'granted' && !testNotification()) {
+        // Allowed, yet this browser shows nothing (Chrome on Android): not reported as on.
+        setPermission(BROWSER_ALERTS_UNAVAILABLE);
+      } else if (p === 'granted') {
         setEnabled(true);
         setPermission('');
         remember(preferenceKey, true);
@@ -215,7 +251,7 @@ export function StaffAlerts({
     }
     // This click is what lets the browser play it later.
     if (!unlockChime()) {
-      setPermission('This browser can’t play the order sound. Browser alerts still work.');
+      setPermission('This browser can’t play the order sound. In-app alerts still work.');
       return;
     }
     setSound(true);
@@ -273,15 +309,14 @@ export function StaffAlerts({
                   : 'Checking staff alerts…'}
             </p>
             <div className="flex flex-wrap items-center gap-1">
-              {enabled && (
-                <button
-                  className="min-h-9 rounded-full px-3.5 text-xs font-semibold text-brand-800 transition-colors hover:bg-brand-500/10 hover:text-brand-900"
-                  aria-pressed={sound}
-                  onClick={toggleSound}
-                >
-                  {sound ? 'Turn off order sound' : 'Play a sound for new orders'}
-                </button>
-              )}
+              {/* On its own: phones and tablets without browser alerts can still chime. */}
+              <button
+                className="min-h-9 rounded-full px-3.5 text-xs font-semibold text-brand-800 transition-colors hover:bg-brand-500/10 hover:text-brand-900"
+                aria-pressed={sound}
+                onClick={toggleSound}
+              >
+                {sound ? 'Turn off order sound' : 'Play a sound for new orders'}
+              </button>
               <button
                 className="min-h-9 rounded-full px-3.5 text-xs font-semibold text-brand-800 transition-colors hover:bg-brand-500/10 hover:text-brand-900"
                 onClick={() => void toggle()}
@@ -300,8 +335,10 @@ export function StaffAlerts({
               <p className="text-xs leading-5 text-stone-500">
                 Live work only. Refreshes about once a minute while this page is on screen, and in a
                 background tab only with browser alerts on. Browser alerts depend on browser
-                permissions and background limits; they are not a phone push service. Configure
-                email escalation below for alerts when the app is closed.
+                permissions and background limits; they are not a phone push service, and Chrome on
+                Android and iPhone or iPad tabs can’t show them. The order sound plays while this
+                page is on screen. Configure email escalation below for alerts when the app is
+                closed.
               </p>
               {error && <ErrorNotice message={`${error} Retrying automatically.`} />}
               {attention && (
