@@ -75,10 +75,11 @@ export function withDisclosure(
 }
 
 /**
- * A whole message asking for a person: "staff", "Human!", "insaan please", "عملہ". Anchored, so a
- * sentence that mentions a person ("2 biryani per person", "staff ne kaha tha") is not a request.
+ * A whole message asking for a person: "staff", "Human!", "insaan please", "عملہ", also copied
+ * with its quotation marks (“staff”, "عملہ"). Anchored, so a sentence that mentions a person
+ * ("2 biryani per person", "staff ne kaha tha") is not a request.
  */
 export const isStaffRequest = (text: string) =>
-  /^(?:(?:please|pls|plz|ji|bhai|پلیز) )?(?:staff|human|insaan|insan|عملہ|انسان)(?: (?:please|pls|plz|ji|پلیز))?[\s.!?؟،۔]*$/u.test(
+  /^(?:(?:please|pls|plz|ji|bhai|پلیز) )?["“”'‘’]?(?:staff|human|insaan|insan|عملہ|انسان)["“”'‘’]?(?: (?:please|pls|plz|ji|پلیز))?[\s.!?؟،۔]*$/u.test(
     normalize(text),
   );
