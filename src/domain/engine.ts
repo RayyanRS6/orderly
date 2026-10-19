@@ -984,8 +984,12 @@ const ROMAN_HAS =
   '(?:hai|hain|he|hy|h|hota|hoti|hote|dala|daala|dali|dalta|dalte|dalti|parta|padta|parti|padti|hoga|hogi|honge)';
 // "in the biryani", "in it": not "in stock", "in the menu", "in garlic sauce" (a dish's name).
 const EN_IN =
-  '\\bin (?:it|this|that|them|these|those|(?:the|your|ur|this|that|my|our) (?!(?:menu|stock|evening|morning|night|afternoon|weekend|winter|summer)\\b)\\p{L}+)\\b';
+  '\\bin (?:it|this|that|them|these|those|(?:the|your|ur|this|that|my|our) (?!(?:menu|stock|evening|morning|night|afternoon|weekend|winter|summer|restaurant|shop|branch|outlet)\\b)\\p{L}+)\\b';
 const NOT_MENU = '(?!\\s+(?:in|on) (?:the |our |your |ur )?(?:menu|stock)\\b)';
+// Asking for an ingredient to be added is an order, not a question about a dish: "can I get egg
+// in my paratha?", "extra egg in my burger?", "add prawns in the fried rice".
+const NOT_REQUEST =
+  '(?<!\\b(?:get|add|put|extra|with|want|need|more|give|send|bring) (?:an? |some |more |extra )?)';
 const ALLERGEN_QUESTION = new RegExp(
   [
     `\\b(?:${ALLERGENS})[- ]?free\\b`,
@@ -993,7 +997,10 @@ const ALLERGEN_QUESTION = new RegExp(
     `\\bcontain(?:s|ing)?\\b[^.!?]{0,40}\\b(?:${ALLERGENS})\\b`,
     // "is there any dairy in the korma?", "are there nuts?"; "is there fish in the biryani?".
     `\\b(?:is|are) there (?:any |some )?(?:${INGREDIENT_ALLERGENS})\\b${NOT_MENU}(?=\\s*(?:[?.!؟]|$|in\\b|inside\\b|added\\b|used\\b))`,
-    `\\b(?:${ALLERGENS})(?: (?:used|added|put|mixed|cooked))? ${EN_IN}[^.!]*\\?`,
+    // "is there egg in it", "any milk in the kheer": a food also sold as a dish once a dish it
+    // would be in follows, with or without "?" (not "is there any fish?", "any fish in stock?").
+    `${NOT_REQUEST}\\b(?:(?:is|are) there (?:any |some )?|any )(?:${FOOD_ALLERGENS})(?: (?:used|added|put|mixed|cooked))? ${EN_IN}`,
+    `${NOT_REQUEST}\\b(?:${ALLERGENS})(?: (?:used|added|put|mixed|cooked))? ${EN_IN}[^.!]*\\?`,
     // "any peanuts in the karahi?", "any nuts?"
     `\\bany (?:${INGREDIENT_ALLERGENS})\\b${NOT_MENU}(?=\\s*(?:[?.!؟]|$|in\\b|on\\b|inside\\b|added\\b|used\\b))`,
     `\\b(?:does|do|did|will)\\s+(?!you\\b|u\\b|we\\b|i\\b)(?:\\S+\\s+){0,3}(?:have|has|use|contain)\\s+(?:any\\s+|some\\s+)?(?:${ALLERGENS})\\b`,
@@ -1001,12 +1008,14 @@ const ALLERGEN_QUESTION = new RegExp(
     `\\b(?:made|cooked|fried|prepared)\\s+(?:with|in|using)\\s+(?:any\\s+)?(?:\\S+\\s+)?(?:${ALLERGENS})\\b`,
     `\\b(?:${ALLERGENS})\\b[^.!?]{0,30}\\bsafe\\b|\\bsafe\\b[^.!?]{0,30}\\b(?:${ALLERGENS})\\b`,
     `\\b(?:${INGREDIENT_ALLERGENS}) in (?!(?:the |our |your |ur )?(?:menu|stock)\\b|today\\b)[^.!]*\\?`,
-    // "isme nuts hain?", "kya ismein anda hai?", "biryani mein nuts?", "biryani me koi nuts to nahi?"
-    `(?<!menu |\\b(?:give|send|get|bring|show|tell|for|to|let) )\\b${ROMAN_IN} (?:koi |kuch |bhi )?(?:${ALLERGENS})(?: (?:to |bhi )?(?:nahi |nahin |nai )?${ROMAN_HAS}\\b|(?: (?:to |bhi )?(?:nahi|nahin|nai))?\\s*(?:[?؟]|$))`,
+    // "isme nuts hain?", "kya ismein anda hai?", "biryani mein nuts?", "biryani me koi nuts to
+    // nahi?". A food also sold as a dish needs "hai" or "?": "paratha mein anda" is an order.
+    `(?<!\\b(?:menu|stock|give|send|get|bring|show|tell|for|to|let|suggest|recommend|order|make|serve|add|want|need) )\\b${ROMAN_IN} (?:koi |kuch |bhi )?(?:(?:${ALLERGENS})(?: (?:to |bhi )?(?:nahi |nahin |nai )?${ROMAN_HAS}\\b|(?: (?:to |bhi )?(?:nahi|nahin|nai))?\\s*[?؟])|(?:${INGREDIENT_ALLERGENS})(?: (?:to |bhi )?(?:nahi|nahin|nai))?\\s*$)`,
     // "nuts hain is mein?", "nuts hai isme?", "nuts isme hain?"
     `\\b(?:${ALLERGENS}) (?:(?:hai|hain|h|he|hy) )?(?:to |bhi )?(?:is|us|iss|uss) ?(?:me|mein|main|mai|men|mei)\\b`,
-    // "anda dala hai?", "doodh parta hai?", "peanut oil use hota hai?": put into the dish.
-    `\\b(?:${ALLERGENS}) (?:to |bhi )?(?:nahi |nahin )?(?:dala|daala|dali|dalta|dalte|dalti|parta|padta|parti|padti)\\b`,
+    // "anda dala hai?", "doodh parta hai?", "peanut oil use hota hai?": put into the dish (not
+    // "anda dala hua paratha chahiye", an order).
+    `\\b(?:${ALLERGENS}) (?:to |bhi )?(?:nahi |nahin )?(?:dala|daala|dali|dalta|dalte|dalti|parta|padta|parti|padti)\\b(?=\\s*(?:hai|hain|he|hy|h|hota|hoti|hote|gaya|gayi|kya|na)\\b|\\s*[?؟]|\\s*$)`,
     `\\b(?:${ALLERGENS})(?: oil| ka tel| ki| ka)? (?:use|istemal|istemaal) (?:hota|hoti|hote|karte|karti|kiya|ki)\\b`,
     `\\b(?:${INGREDIENT_ALLERGENS}) (?:to )?(?:nahi |nahin )?(?:hai|hain|hota|hoti) (?:na|kya)\\b`,
     // "nuts?", "any nuts?", "gluten hai?", "koi nuts hain?", "nuts to nahi?"; "koi anda to nahi?"
@@ -1027,23 +1036,46 @@ export const asksAboutAllergens = (text: string) => {
   const value = normalize(text);
   return ALLERGY_WORDS.test(value) || ALLERGEN_QUESTION.test(value);
 };
-// A message that names an allergen at all, as a question, a dish or a request.
-const ALLERGEN_MENTION = new RegExp(`\\b(?:${ALLERGENS})\\b|${urduWord(URDU_ALLERGENS)}`, 'u');
-const mentionsAllergen = (text: string) => {
+// What the customer says they must avoid: an allergy word, or an allergen named outside a dish
+// on the menu. A food also sold as a dish ("anda paratha", "fish tikka", "doodh patti") counts
+// only with words saying they can't have it ("anda nahi kha sakta", "I can't have milk").
+const INGREDIENT_MENTION = new RegExp(
+  `\\b(?:${INGREDIENT_ALLERGENS})\\b|${urduWord(URDU_INGREDIENTS)}`,
+  'u',
+);
+const FOOD_MENTION = new RegExp(
+  `\\b(?:${FOOD_ALLERGENS})\\b|${urduWord('انڈا|انڈے|دودھ|جھینگا|جھینگے|مچھلی')}`,
+  'u',
+);
+const RESTRICTION =
+  /\b(?:can['’]?t|cannot|can not|don['’]?t|do not|shouldn['’]?t|should not|must not) (?:have|eat|take|tolerate)\b|\b(?:avoid\w*|without|intoleran\w*|sensitiv\w*|reaction|masla|masle|masail|problem|issue|parhez|perhez|bina)\b|\b(?:nahi|nahin|nai|nhi) (?:kha|khaa|khana|khani|khata|khati|khate|chahiye|chahye|chaiye|leta|leti|lete)\b|نہیں کھا|نہیں چاہی|مسئل|پرہیز|بغیر/u;
+function namesAvoidedAllergen(text: string, products: Product[], companyId: string): boolean {
   const value = normalize(text);
-  return ALLERGY_WORDS.test(value) || ALLERGEN_MENTION.test(value);
-};
+  if (ALLERGY_WORDS.test(value)) return true;
+  // Dishes on the menu are taken out first, longest names first.
+  const words = (text: string) => normalize(text.replace(/[^\p{L}\p{M}\p{N}]+/gu, ' '));
+  const labels = products
+    .filter((product) => product.companyId === companyId)
+    .flatMap((product) => [product.name, ...product.aliases])
+    .map(words)
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length);
+  let rest = ` ${words(value)} `;
+  for (const label of labels) rest = rest.split(` ${label} `).join('  ');
+  return INGREDIENT_MENTION.test(rest) || (FOOD_MENTION.test(rest) && RESTRICTION.test(value));
+}
 // AI wording that vouches for a dish to someone who named an allergen, beyond the general
 // assurances below: "Bilkul, aap kha sakte hain", "Yes, totally fine for you", "It only has
-// chicken, rice and spices", "Nahi ji, isme nahi hota".
+// chicken, rice and spices", "Nahi ji, isme nahi hota". A question back ("Is that okay for
+// you?") vouches for nothing, and "stock mein nahi hai" is about the menu.
 const ALLERGEN_CONTEXT_ASSURANCE = new RegExp(
   [
     `\\b(?:kha|khaa) ?(?:sakte|sakti|sakta|saktay|skte|skti|lein|len)\\b`,
-    `\\b(?:fine|okay|ok|suitable|alright) (?:for|to) (?:you|your|eat|kids|children|everyone|anyone)\\b`,
+    `\\b(?:fine|okay|ok|suitable|alright) (?:for|to) (?:you|your|eat|kids|children|everyone|anyone)\\b(?![^.!?\\n]*\\?)`,
     `\\b(?:can|could|may) safely (?:eat|have|enjoy|order)\\b|\\b(?:eat|have|enjoy|order) (?:it|this|that|them) (?:safely|without (?:any )?(?:worr(?:y|ies)|problems?|issues?|risk|fear))\\b`,
     `\\bonly (?:has|contains?|uses?|includes?)\\b|\\b(?:contains?|has|includes?|uses) only\\b|\\bmade (?:with|from|of|using) only\\b|\\bnothing but\\b`,
     `\\b(?:nahi|nahin|nai|nhi) (?:dala|daala|dali|dalta|dalte|dalti|parta|padta|parti|padti)\\b`,
-    `(?<!menu )\\b${ROMAN_IN} (?:\\p{L}+ ){0,2}(?:nahi|nahin|nai|nhi) (?:hota|hoti|hote|hai|hain)\\b`,
+    `(?<!\\b(?:menu|stock|cart|deals?|specials?) )\\b${ROMAN_IN} (?:\\p{L}+ ){0,2}(?:nahi|nahin|nai|nhi) (?:hota|hoti|hote|hai|hain)\\b`,
     `\\b(?:sirf|bas) [^.!?\\n]{0,40}\\b(?:dala|daala|dalta|dalte|parta|padta|use)\\b`,
     `کھا سکت|کھا لیں|نہیں (?:ڈالا|ڈالتے|ڈالی|پڑتا|پڑتی)|اس میں (?:\\S+ ){0,2}نہیں (?:ہوتا|ہوتی|ہوتے|ہے|ہیں)|صرف [^۔.!?؟\\n]{0,40}(?:ڈالا|ڈالتے|ڈالی|پڑتا|پڑتی)`,
   ].join('|'),
@@ -1059,6 +1091,10 @@ const SAFETY_ASSURANCE = new RegExp(
     `\\b(?:allerg(?:y|en)|nut|peanut)[- ]?(?:safe|friendly)\\b`,
     `\\bsafe (?:for|to) (?:eat|you|your|people|someone|anyone|those|kids|children|everyone|allerg\\w*|nut\\w*|peanut\\w*|gluten|c(?:o)?eliac|dairy|lactose)\\b`,
     `\\b(?:no|zero|free of|free from|contains no|without any) (?:${AVOIDED})\\b`,
+    // "no milk in it", "made without eggs", "eggless": not "no fish today" or "no fish in stock".
+    `\\b(?:no|zero) (?:${FOOD_ALLERGENS})\\b(?=[^.!?\\n]{0,20}\\b(?:in|inside)\\b(?! (?:stock|the menu|our menu|menu)\\b))`,
+    `\\bmade without (?:any )?(?:${ALLERGENS})\\b`,
+    `\\b(?:eggs?|dairy|milk|nuts?|gluten)[- ]?less\\b`,
     `\\b(?:does ?n[o'’]?t|did ?n[o'’]?t|won['’]t|will not|never) (?:contain|have|include|use) (?:any )?(?:${ALLERGENS})\\b`,
     `\\bdo ?n[o'’]?t (?:contain|include|use) (?:any )?(?:${ALLERGENS})\\b`,
     `\\b(?:${ALLERGENS}) (?:(?:to|bhi|bilkul|koi) )?(?:nahi|nahin|nai|nhi)\\b`,
@@ -1676,8 +1712,8 @@ export function processTurn(
   const allergyQuestion =
     !input.action &&
     (asksAboutAllergens(input.text) ||
-      (mentionsAllergen(input.text) &&
-        aiWording.some((text) => ALLERGEN_CONTEXT_ASSURANCE.test(normalize(text)))) ||
+      (aiWording.some((text) => ALLERGEN_CONTEXT_ASSURANCE.test(normalize(text))) &&
+        namesAvoidedAllergen(input.text, products, company.id)) ||
       (!!lastAsked &&
         asksAboutAllergens(lastAsked.text) &&
         /[?؟]/u.test(input.text) &&
