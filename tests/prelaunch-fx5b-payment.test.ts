@@ -25,7 +25,7 @@ const taking = (methods?: PaymentMethod[]): Company => ({
 });
 const ALL: PaymentMethod[] = ['cash', 'jazzcash', 'easypaisa', 'bank_transfer'];
 const ENGLISH_TRANSFER =
-  'the restaurant will share the payment details and confirm the transfer itself.';
+  'to pay by transfer, type “staff” here and restaurant staff will send the payment details and confirm the transfer themselves.';
 
 let message = 0;
 function placeOrder(restaurant: Company, fulfillment: 'pickup' | 'delivery' = 'pickup') {
@@ -113,13 +113,13 @@ describe('the order confirmation’s payment line', () => {
   it('says the same in Urdu and Roman Urdu', () => {
     const { order } = placeOrder(taking());
     expect(orderReceivedText('ur', order, ALL)).toBe(
-      `آرڈر ${order.reference} موصول ہوا — Rs. 900۔ ریسٹورنٹ کی منظوری کا انتظار ہے۔ ادائیگی نقد، جاز کیش، ایزی پیسہ یا بینک ٹرانسفر سے ہو سکتی ہے۔ ٹرانسفر کے لیے ریسٹورنٹ ادائیگی کی تفصیل خود بھیجے گا اور ٹرانسفر کی تصدیق خود کرے گا۔`,
+      `آرڈر ${order.reference} موصول ہوا — Rs. 900۔ ریسٹورنٹ کی منظوری کا انتظار ہے۔ ادائیگی نقد، جاز کیش، ایزی پیسہ یا بینک ٹرانسفر سے ہو سکتی ہے۔ ٹرانسفر کے لیے ریسٹورنٹ کی ادائیگی کی تفصیل یہاں “عملہ” لکھ کر منگوائیں، عملہ ٹرانسفر کی تصدیق خود کرے گا۔`,
     );
     expect(orderReceivedText('ur', order, ['jazzcash'])).toContain(
       'ادائیگی جاز کیش سے ہوگی۔ ٹرانسفر کے لیے ریسٹورنٹ',
     );
     expect(orderReceivedText('roman-ur', order, ['cash', 'easypaisa'])).toBe(
-      `Order ${order.reference} receive ho gaya — Rs. 900. Restaurant ki manzoori ka intezar hai. Payment cash ya Easypaisa se ho sakti hai. Transfer ke liye restaurant payment details khud bhejega aur transfer khud confirm karega.`,
+      `Order ${order.reference} receive ho gaya — Rs. 900. Restaurant ki manzoori ka intezar hai. Payment cash ya Easypaisa se ho sakti hai. Transfer ke liye yahan “staff” likhein, restaurant ka staff payment details bhejega aur transfer khud confirm karega.`,
     );
     expect(orderReceivedText('roman-ur', order, ['jazzcash', 'bank_transfer'])).toContain(
       'Payment JazzCash ya bank transfer se hogi.',

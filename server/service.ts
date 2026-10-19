@@ -278,6 +278,7 @@ export async function handleTurn(
     // it, and the bot takes the chat back on the customer's next message unless staff wrote.
     // A backlog never takes a paused chat back either.
     const stale = !!input.late && Date.now() - Date.parse(input.now) > STALE_AFTER_MS;
+    const unread = input.action?.type === 'handoff' && input.messageId.endsWith(UNREAD_SUFFIX);
     // The bot is on again: a chat that went to staff only because it was off goes back.
     // Saved first, because order changes (a cancel) check the stored mode.
     if (!sandbox && !stale && company.botEnabled && resumesAfterPause(conversation)) {
@@ -340,6 +341,25 @@ export async function handleTurn(
             'This message reached Orderly more than 2 hours late, so staff were asked to look at it. The bot answers the customer’s next message.',
         },
       });
+    // A linked-phone message whose words never reached Orderly (see server/whatsapp/connections):
+    // the customer is asked to send it again and staff are told. The bot answers the next
+    // message, which is often the same message arriving after all, so it is not a handoff.
+    if (unread) {
+      if (company.botEnabled && conversation.mode === 'bot')
+        return await savePause(repo, company, conversation, input, {
+          reason: 'late',
+          until: { afterMs: 0 },
+          text: unreadNotice,
+          trace: {
+            action: 'staff_attention',
+            code: 'unread',
+            detail:
+              'A message from this customer could not be read on the linked phone, so they were asked to send it again and staff were asked to look at the restaurant phone. The bot answers the customer’s next message.',
+          },
+        });
+      // Otherwise it is saved for staff like any message, without making a pause permanent.
+      input = { ...input, action: undefined };
+    }
     // One customer sending many messages at once pauses the bot for them only, for a while.
     // The minute is measured by when the messages were sent, not when they are answered: a
     // flood queues up behind slow replies, and counting by answer time would never see it.
@@ -534,7 +554,8 @@ export async function handleTurn(
                   : error instanceof StoreUnavailableError
                     ? 'store_unavailable'
                     : 'ai_unavailable',
-              detail: `${sanitizeError(error)} The bot tries again after ${AI_ERROR_PAUSE_MS / 60000} minutes.`,
+              // Nothing answers this message later by itself: staff reply to it.
+              detail: `${sanitizeError(error)} This message needs a staff reply; the bot answers the customer’s next message from ${AI_ERROR_PAUSE_MS / 60000} minutes on.`,
             },
           });
         if (!asksForPerson(input.text))
@@ -855,6 +876,18 @@ function burstNotice(lang: Language, cart: Cart): string {
   const order = orderSafetyLine(lang, cart);
   return order ? `${base} ${order}` : base;
 }
+// The linked phone's notice for a message whose words never reached Orderly.
+const UNREAD_SUFFIX = ':unread';
+function unreadNotice(lang: Language, cart: Cart): string {
+  const base = pick(
+    lang,
+    'Sorry, we couldn’t read your last message. Please send it again, or a staff member will reply here.',
+    'معذرت، ہم آپ کا پچھلا پیغام نہیں پڑھ سکے۔ براہ کرم دوبارہ بھیجیں، یا عملے کا ایک رکن یہیں جواب دے گا۔',
+    'Maazrat, hum aap ka pichhla message nahi parh sake. Meherbani karke dobara bhejein, ya staff ka koi member yahin jawab dega.',
+  );
+  const order = orderSafetyLine(lang, cart);
+  return order ? `${base} ${order}` : base;
+}
 function lateNotice(lang: Language, cart: Cart): string {
   const base = pick(
     lang,
@@ -868,10 +901,10 @@ function lateNotice(lang: Language, cart: Cart): string {
 const pick = (lang: Language, en: string, ur: string, roman: string) =>
   lang === 'ur' ? ur : lang === 'roman-ur' ? roman : en;
 /**
- * The engine words a refused pickup or delivery choice in English only (fulfillmentRefusal in
- * src/domain/engine.ts), behind the customer's own language. Those exact sentences are said in
- * the customer's language here, with the same words the engine uses when it asks for the
- * choice, and the English one loses its "fulfillment choice" jargon. Nothing else is changed.
+ * A refused pickup or delivery choice said in the customer's language. The engine words these
+ * itself now (fulfillmentRefusal in src/domain/engine.ts); this is the safety net for an English
+ * refusal that still reaches a reply, current or earlier wording, with the engine's own words,
+ * and the English one loses its "fulfillment choice" jargon. Nothing else is changed.
  */
 export function localizedRefusals(text: string, lang: Language): string {
   return text
@@ -888,6 +921,15 @@ export function localizedRefusals(text: string, lang: Language): string {
             : 'ابھی صرف ڈیلیوری دستیاب ہے۔ براہ کرم ڈیلیوری منتخب کریں۔',
           `Abhi sirf ${offered} available hai. Meherbani karke ${offered} chunein.`,
         ),
+    )
+    .replace(
+      'Ordering in this chat is not available right now. Type “staff” to talk to a person.',
+      pick(
+        lang,
+        'Ordering in this chat is not available right now. Type “staff” to talk to a person.',
+        'ابھی اس چیٹ میں آرڈر دستیاب نہیں ہے۔ کسی انسان سے بات کرنے کے لیے “عملہ” لکھیں۔',
+        'Abhi is chat mein order available nahi hai. Kisi insaan se baat karne ke liye “staff” likhein.',
+      ),
     )
     .replace(
       'Ordering in this chat is not available right now. Please ask our staff for help.',
