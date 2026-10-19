@@ -27,6 +27,24 @@ const { renderPublic, supportEmail } = await import(
 );
 if (!/^[^\s@<>]+@[^\s@<>]+\.[a-z]{2,}$/i.test(supportEmail ?? ''))
   throw new Error('The support email (src/components/Public.tsx) is missing or invalid.');
+// The legal pages must not go live with an "[OWNER TO CONFIRM: …]" placeholder (the operator's
+// legal name and address, the backup period; src/components/Legal.tsx). The build stops before
+// anything is published, and removes the half-built dist folder, so a deploy run straight after
+// a failed build has nothing to upload. Only for a build that will not be published (a local
+// preview), set ALLOW_LEGAL_PLACEHOLDERS=1 to build anyway.
+const unconfirmed = ['/privacy', '/terms', '/data-deletion'].filter((path) =>
+  renderPublic(path).includes('OWNER TO CONFIRM'),
+);
+if (unconfirmed.length && process.env.ALLOW_LEGAL_PLACEHOLDERS !== '1') {
+  await rm('dist', { recursive: true, force: true });
+  throw new Error(
+    `The legal pages (${unconfirmed.join(', ')}) still contain [OWNER TO CONFIRM: …] placeholders. Fill them in src/components/Legal.tsx before publishing. For a build that will not be published, set ALLOW_LEGAL_PLACEHOLDERS=1.`,
+  );
+}
+if (unconfirmed.length)
+  console.warn(
+    `ALLOW_LEGAL_PLACEHOLDERS=1: the legal pages (${unconfirmed.join(', ')}) still contain [OWNER TO CONFIRM: …] placeholders. Do not publish this build.`,
+  );
 const shell = await readFile('dist/index.html', 'utf8');
 // The workspace is a separately loaded chunk (src/main.tsx), so public pages skip it.
 // App pages fetch it, the chunks it imports and the sign-in client alongside the entry

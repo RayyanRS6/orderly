@@ -8,6 +8,9 @@ if (!base)
 const url = new URL(base);
 if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash)
   throw new Error('The hosted API base must be a plain HTTPS URL.');
+// The prerender step below refuses to build while the legal pages still contain
+// "[OWNER TO CONFIRM: …]" placeholders. ALLOW_LEGAL_PLACEHOLDERS=1 builds anyway, only for a
+// build that will not be published.
 // Invoke Node directly so paths with spaces work without shell interpolation.
 for (const script of ['node_modules/typescript/bin/tsc', 'node_modules/vite/bin/vite.js']) {
   const args = script.includes('typescript') ? ['--noEmit'] : ['build'];
