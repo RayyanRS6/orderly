@@ -1,4 +1,4 @@
-// FX-8: wording and small dashboard fixes. Transfer customers are told to ask the restaurant in
+// FX-8: wording and small dashboard fixes. Transfer customers are told to type “staff” in
 // WhatsApp (cash-only wording unchanged), Excel reads Urdu in the orders export, the example CSV
 // can't replace a live menu, the Inbox names each kind of pause, and smaller fixes.
 import { describe, expect, it } from 'vitest';
@@ -16,6 +16,7 @@ import {
 import { csvCell, orderItems, ordersCsv, UTF8_BOM } from '../src/lib/orders-csv';
 import { replaceMenuWarning } from '../src/components/Catalog';
 import { describeCorrection } from '../src/shared/explain';
+import { isStaffRequest } from '../src/domain/disclosure';
 import { Inbox, pauseBadge } from '../src/components/Inbox';
 import { ItemCard } from '../src/components/MenuPage';
 import { Workspace } from '../src/lib/workspace';
@@ -28,16 +29,21 @@ const source = (file: string) => readFileSync(join(process.cwd(), file), 'utf8')
 const all: PaymentMethod[] = ['cash', 'jazzcash', 'easypaisa', 'bank_transfer'];
 
 describe('transfer wording on the menu page and the order cards', () => {
-  it('tells the customer to ask the restaurant in WhatsApp for the details', () => {
+  it('tells the customer to type “staff” in WhatsApp, as the chat does', () => {
     expect(paymentSentence(all, true)).toBe(
-      'Pay cash on delivery, or by JazzCash, Easypaisa or bank transfer — ask the restaurant in WhatsApp for the details.',
+      'Pay cash on delivery, or by JazzCash, Easypaisa or bank transfer — type “staff” in WhatsApp and restaurant staff will send the details.',
     );
     expect(paymentSentence(['easypaisa', 'bank_transfer'], false)).toBe(
-      'Pay by Easypaisa or bank transfer — ask the restaurant in WhatsApp for the details.',
+      'Pay by Easypaisa or bank transfer — type “staff” in WhatsApp and restaurant staff will send the details.',
     );
     expect(transferAsk(all)).toBe(
-      'To pay by transfer, ask the restaurant in WhatsApp for the details.',
+      'To pay by transfer, type “staff” in WhatsApp and restaurant staff will send the details.',
     );
+    // The word the chat's order confirmation names, which reaches a person before any AI call.
+    expect(source('src/domain/engine.ts')).toContain(
+      'to pay by transfer, type “staff” here and restaurant staff will send the payment details',
+    );
+    expect(isStaffRequest('staff')).toBe(true);
     expect(staffTransferNote(['cash', 'jazzcash'])).toMatch(
       /^A customer paying by transfer asks you for the payment details in WhatsApp\. Check each transfer yourself/,
     );

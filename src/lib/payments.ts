@@ -1,6 +1,6 @@
 // Payment methods customers can use (Company.paymentMethods). Orderly never collects or sends
-// account numbers: for a transfer the customer asks the restaurant in WhatsApp for its payment
-// details, and the restaurant confirms the transfer itself.
+// account numbers: for a transfer the customer types "staff" in WhatsApp, restaurant staff send
+// their payment details, and the restaurant confirms the transfer itself.
 
 import type { PaymentMethod } from '../shared/types';
 
@@ -30,12 +30,13 @@ const orList = (names: string[]) =>
   names.length > 1 ? `${names.slice(0, -1).join(', ')} or ${names[names.length - 1]}` : names[0]!;
 const transfersOf = (methods: PaymentMethod[]) =>
   methods.filter((m): m is Exclude<PaymentMethod, 'cash'> => m !== 'cash');
-// The one thing that reaches a person: the customer writes to the restaurant.
-const TRANSFER_ASK = 'ask the restaurant in WhatsApp for the details.';
+// The same words as the chat's order confirmation: "staff" hands the chat to a person before any
+// AI reply, whereas a request in the customer's own words would reach the AI.
+const TRANSFER_ASK = 'type “staff” in WhatsApp and restaurant staff will send the details.';
 /**
  * How the customer pays, for the menu page. Cash only keeps the sentence the page always had;
- * for a transfer the customer asks the restaurant for its details in WhatsApp (nothing on the
- * restaurant's side is prompted to send them), so no account number is ever shown.
+ * for a transfer the customer types "staff" in WhatsApp and restaurant staff send their details,
+ * so no account number is ever shown.
  */
 export function paymentSentence(methods: PaymentMethod[], delivery: boolean): string {
   const cash = `cash ${delivery ? 'on delivery' : 'at pickup'}`;
