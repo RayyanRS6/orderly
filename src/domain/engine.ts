@@ -918,17 +918,21 @@ function contains(text: string, phrase: string): boolean {
 // naam save ho gaya hai" or "ہم کل ۱۲ بجے کھلیں گے" (کل is also tomorrow) pass. Prices need a
 // currency next to the digits ("450/-", "450 rupay", "۴۵۰ روپے", "500 PKR"). After an order is
 // submitted, saying it was placed, submitted or received is true, so those claims are allowed
-// then; confirmed, booked, accepted or delivered never are. A polite request ("کنفرم کر دیں",
-// "تصدیق کر دیجیے", "confirm kar di jiye") is not a claim.
+// then; confirmed, booked, accepted or delivered never are, nor a payment received or more
+// ordered. A polite request ("کنفرم کر دیں", "تصدیق کر دیجیے", "confirm kar di jiye") or the
+// future ("deliver kar diya jayega", "کر دیا جائے گا") is not a claim.
+const NOT_DONE =
+  '(?!\\s*(?:jiye|jiyega|jiyen|jie|jiey|jye|jiay|jayega|jayegi|jayenge|jaye|jaega|jaegi|jaenge)\\b)';
 const outcomeClaim = (verbs: string) =>
   new RegExp(
-    `\\b(?:order|payment|adaigi)\\b[^.!?\\n]{0,30}?\\b(?:${verbs})\\w*\\s*(?:ho|hu|kar|kr)\\s*(?:gaya|gayi|gya|gyi|gai|gaye|ge|diya|diye|dia|di|liya|liye|lia|li|chuka|chuki|chuke)\\b(?!\\s*(?:jiye|jiyega|jiyen|jie|jiey|jye|jiay)\\b)`,
+    `\\b(?:order|payment|adaigi)\\b[^.!?\\n]{0,30}?\\b(?:${verbs})\\w*\\s*(?:ho|hu|kar|kr)\\s*(?:gaya|gayi|gya|gyi|gai|gaye|ge|diya|diye|dia|di|liya|liye|lia|li|chuka|chuki|chuke)\\b${NOT_DONE}`,
     'u',
   );
 const ROMAN_OUTCOME = outcomeClaim('confirm|book|accept|approve|deliver|dispatch|rawana|complete');
 const ROMAN_PLACED = outcomeClaim('place|submit|receive');
-// Past forms only: "کر دیا", "ہو گیا", not "کر دیں", "کر دیجیے" or "کر لیں".
-const URDU_DONE = '(?:ہو|کر)\\s?(?:گیا|گئی|گئے|دیا|دی|دیے|لیا|لی|چکا|چکی|چکے)(?![\\p{L}\\p{M}])';
+// Past forms only: "کر دیا", "ہو گیا", not "کر دیں", "کر دیجیے", "کر لیں" or "کر دیا جائے گا".
+const URDU_DONE =
+  '(?:ہو|کر)\\s?(?:گیا|گئی|گئے|دیا|دی|دیے|لیا|لی|چکا|چکی|چکے)(?![\\p{L}\\p{M}])(?!\\s?(?:جائے|جاۓ|جائیں|جائےگا))';
 const URDU_OUTCOME = new RegExp(
   `(?:آرڈر|ادائیگی)[^۔.!?؟\\n]{0,30}?(?:کنفرم|بک|منظور|روانہ|تصدیق|ڈیلیور|قبول)[^۔.!?؟\\n]{0,10}?${URDU_DONE}`,
   'u',
@@ -944,21 +948,74 @@ const ENGLISH_PRICE =
   /\b(?:rs\.?|pkr)\s*[\d۰-۹٠-٩]|\b(?:total|price|cost)\s*(?:(?:is|of|:|=)\s*)?[\d۰-۹٠-٩]/iu;
 const ENGLISH_OUTCOME = /\b(?:accepted|approved|confirmed|delivered|dispatched|completed)\b/iu;
 const ENGLISH_PLACED = /\b(?:submitted|placed)\b/iu;
+// After submission, "your order has been placed" is true; placing more of it never is.
+const ORDER_PLACED =
+  /\border\b[^.!?\n]{0,30}?\b(?:placed|submitted)\b|\b(?:placed|submitted)\s+(?:your|the)\s+order\b/u;
+const ordersMore = (value: string) =>
+  value
+    .split(/[.!?\n]+/u)
+    .some(
+      (sentence) =>
+        /\b(?:placed|submitted|added)\b/u.test(sentence) &&
+        /\b(?:another|additional|extra|second|separate)\b/u.test(sentence),
+    );
+// A payment said to be received, verified or confirmed: never the AI's to say, before or after
+// the order, since restaurant staff check every transfer themselves. Not a condition ("once we
+// receive the payment").
+const NOT_IF = '(?<!\\b(?:once|when|after|until|till|if|before|jab|agar)\\b[^.!?\\n]{0,40})';
+const PAYMENT_EN = new RegExp(
+  `${NOT_IF}(?:\\b(?:payments?|transfers?|amount|money|jazz ?cash|easy ?paisa)\\b[^.!?\\n]{0,30}?(?<!\\b(?:be|to) )\\b(?:received|verified|cleared|credited|confirmed)\\b|\\b(?:received|got|verified|confirmed)\\s+(?:(?:your|the|aap ki)\\s+)?(?:(?:jazz ?cash|easy ?paisa|bank)\\s+)?(?:payments?|transfers?|money|amount)\\b)`,
+  'u',
+);
+const PAYMENT_ROMAN = new RegExp(
+  `${NOT_IF}\\b(?:payment|adaigi|adaegi|paise|paisay|pese|transfer|amount|raqam|jazz ?cash|easy ?paisa)\\b[^.!?\\n]{0,30}?\\b(?:(?:receive|recieve|confirm|verify|clear|submit|place)\\w*\\s*(?:ho|hu|kar|kr)\\s*|(?:mil|aa|pohanch|pahunch)\\s+)(?:gaya|gayi|gya|gyi|gai|gaye|gae|ge|chuka|chuki|chuke|liya|li|lia|diya|di|dia)\\b${NOT_DONE}`,
+  'u',
+);
+const PAYMENT_URDU = new RegExp(
+  `(?:ادائیگی|پیمنٹ|رقم|ٹرانسفر|پیسے|جاز ?کیش|ایزی ?پیسہ)[^۔.!?؟\\n]{0,30}?(?:(?:موصول|وصول|تصدیق|کلیئر|کنفرم|پلیس|سبمٹ)[^۔.!?؟\\n]{0,10}?${URDU_DONE}|(?:مل|آ|پہنچ)\\s?(?:گیا|گئی|گئے|چکا|چکی|چکے)(?![\\p{L}\\p{M}]))`,
+  'u',
+);
+const METHOD_WORDS: Record<PaymentMethod, string> = {
+  cash: 'cash(?: on delivery| at pickup)?',
+  jazzcash: 'jazz ?cash',
+  easypaisa: 'easy ?paisa',
+  bank_transfer: 'bank transfers?',
+};
+// "JazzCash accepted hai", "Yes, Easypaisa payments are accepted": true of a way the restaurant
+// takes payment, not an order outcome, so it is taken out before the check. Only the
+// restaurant's own methods, and never "your JazzCash payment is accepted".
+function withoutAcceptedMethods(text: string, methods: readonly PaymentMethod[]): string {
+  if (!methods.length) return text;
+  const name = `(?:${methods.map((method) => METHOD_WORDS[method]).join('|')})`;
+  return text.replace(
+    new RegExp(
+      `(?<!\\b(?:your|the|aap ki|aapki|aap ka|aapka) )\\b${name}(?:\\s*(?:,|/|&|and|or|aur|ya)\\s*${name})*(?: payments?| transfers?)?(?: (?:is|are))?(?: (?:also|both|all|bhi))? accepted\\b`,
+      'giu',
+    ),
+    ' ',
+  );
+}
 const RUPEE_PRICE =
   /\d[\d,]*(?:\.\d+)?\s*(?:\/-|(?:rupees?|rupay|rupaye|rupaiye|rupe|rupiya|rs|pkr)\b|روپے|روپیہ|روپئے|روپیے)|(?:\b(?:rupees?|rupay|rupaye)|روپے)\s*\d|(?:\b(?:qeemat|keemat|kimat)\b|قیمت|ٹوٹل)\s*(?:[:=]\s*)?\d/u;
-function unsafeModelText(text: string, submitted = false): boolean {
-  if (ENGLISH_PRICE.test(text) || ENGLISH_OUTCOME.test(text)) return true;
+function unsafeModelText(
+  text: string,
+  submitted = false,
+  methods: readonly PaymentMethod[] = [],
+): boolean {
+  if (ENGLISH_PRICE.test(text) || ENGLISH_OUTCOME.test(withoutAcceptedMethods(text, methods)))
+    return true;
   const value = normalize(text);
   return (
     RUPEE_PRICE.test(value) ||
     ROMAN_OUTCOME.test(value) ||
     URDU_OUTCOME.test(value) ||
     ENGLISH_STATUS.test(value) ||
+    PAYMENT_EN.test(value) ||
+    PAYMENT_ROMAN.test(value) ||
+    PAYMENT_URDU.test(value) ||
+    (ENGLISH_PLACED.test(text) && (!submitted || ordersMore(value) || !ORDER_PLACED.test(value))) ||
     (!submitted &&
-      (ENGLISH_PLACED.test(text) ||
-        ROMAN_PLACED.test(value) ||
-        URDU_PLACED.test(value) ||
-        ENGLISH_RECEIVED.test(value)))
+      (ROMAN_PLACED.test(value) || URDU_PLACED.test(value) || ENGLISH_RECEIVED.test(value)))
   );
 }
 
@@ -1615,11 +1672,13 @@ export function processTurn(
     return [...chatHosts].some((known) => host === known || host.endsWith(`.${known}`));
   };
   const invents = (text: string) => inventsLink(text, hosts, fromChat);
-  // The menu page's own address is not an outcome claim, whatever words its slug holds.
+  // The menu page's own address is not an outcome claim, whatever words its slug holds, and
+  // nor is saying the restaurant takes a payment method it does take.
   const claims = (text: string) =>
     unsafeModelText(
       input.menuLink ? text.replaceAll(input.menuLink, '') : text,
       conversation.cart.status === 'submitted',
+      paymentMethods(company),
     );
   // An allergy reassurance only in the owner's own approved words, quoted exactly.
   const ownerWording = [
