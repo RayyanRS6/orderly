@@ -84,7 +84,8 @@ const DATA_EXCLUDED = [
   '_supavisor',
 ];
 // Live sign-in sessions, refresh tokens and one-time codes stay out of the data, so a leaked
-// backup cannot sign anyone in. Accounts, sign-in records and authenticator apps are kept;
+// backup cannot reuse a live sign-in session. Accounts, password hashes and authenticator
+// secrets are kept, so a leaked backup still means resetting every account (see the runbook);
 // after a restore everyone signs in again.
 export const AUTH_SESSION_TABLES = [
   'auth.sessions',

@@ -15,7 +15,7 @@ describe('what Agent flow says the bot does', () => {
       'put in the chat for staff',
       '25 messages from one customer within a minute pause the bot for that customer for 15 minutes.',
       'used for up to 12 hours',
-      'it tries again after 10 minutes unless staff reply',
+      "after 10 minutes it answers the customer's next message, unless staff reply",
       'tried again up to 2 times',
       'recent messages carry them as the customer wrote them',
       'allergy answers included',

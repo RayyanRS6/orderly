@@ -329,7 +329,7 @@ export async function buildAgentFlow(
     affects: [
       'The model is the main reason replies understand (or misunderstand) English, Urdu and Roman Urdu.',
       'Switching provider or model keeps every order rule the same; only understanding and wording change.',
-      `If the model fails or times out on WhatsApp, the customer gets a short notice and the bot pauses for that chat; it tries again after ${AI_ERROR_PAUSE_MS / 60000} minutes unless staff reply.`,
+      `If the model fails or times out on WhatsApp, the customer gets a short notice and the bot pauses for that chat; after ${AI_ERROR_PAUSE_MS / 60000} minutes it answers the customer's next message, unless staff reply.`,
     ],
     fixed: [
       'It cannot create orders, set prices, invent menu items, approve orders or claim payment.',

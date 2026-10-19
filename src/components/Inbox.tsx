@@ -93,7 +93,7 @@ export function limitNote(
   if (pause.reason === 'burst')
     return `AI paused: this customer sent many messages at once. The bot answers them again${back ? ` from about ${back}` : ' shortly'}.`;
   if (pause.reason === 'ai_error')
-    return `AI paused: the AI model could not answer. The bot tries again${back ? ` from about ${back}` : ' shortly'}.`;
+    return `AI paused: the AI model could not answer. The bot answers this customer’s next message${back ? ` from about ${back}` : ' shortly'}.`;
   return `AI paused: this hour’s AI replies were used up. The bot answers again${back ? ` from about ${back}` : ' next hour'}, or sooner if you raise the limit.`;
 }
 

@@ -64,7 +64,7 @@ export const NOTICE_LABELS: Record<StaffNoticeCause, string> = {
     'Many messages arrived within a minute, so automatic replies to this customer paused for 15 minutes.',
   menu_sync: 'The menu Sheet could not be refreshed, so the chat was handed to staff.',
   ai_error:
-    'The AI model could not answer, so the chat paused; the bot tries again after 10 minutes unless staff reply.',
+    'The AI model could not answer, so the chat paused; after 10 minutes the bot answers the customer’s next message, unless staff reply.',
   // Also describes older handoffs that stay with staff, so it promises no automatic return.
   ai_budget: 'The monthly AI spending limit was reached, so staff were asked to reply.',
   hourly_limit:

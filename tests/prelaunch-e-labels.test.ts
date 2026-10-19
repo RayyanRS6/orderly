@@ -24,7 +24,7 @@ describe('wording for what the bot and the pipeline did', () => {
       'Many messages arrived within a minute, so automatic replies to this customer paused for 15 minutes.',
     );
     expect(NOTICE_LABELS.ai_error).toBe(
-      'The AI model could not answer, so the chat paused; the bot tries again after 10 minutes unless staff reply.',
+      'The AI model could not answer, so the chat paused; after 10 minutes the bot answers the customer’s next message, unless staff reply.',
     );
   });
 
@@ -112,7 +112,7 @@ describe('Inbox notes for the new pauses', () => {
       /^AI paused: this customer sent many messages at once\. The bot answers them again from about \d{1,2}:\d{2}\s(am|pm)\.$/,
     );
     expect(limitNote(paused('ai_error', until), now)).toMatch(
-      /^AI paused: the AI model could not answer\. The bot tries again from about \d{1,2}:\d{2}\s(am|pm)\.$/,
+      /^AI paused: the AI model could not answer\. The bot answers this customer’s next message from about \d{1,2}:\d{2}\s(am|pm)\.$/,
     );
     // A late message pauses only until its own time: the bot answers the next message.
     expect(limitNote(paused('late', '2026-10-18T10:05:00.000Z'), now)).toBe(

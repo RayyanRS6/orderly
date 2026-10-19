@@ -168,12 +168,19 @@ describe('api-security-1, gateway-2: Reconnect never restarts a pairing nobody f
   });
 
   it('allows 6 reconnects a minute per business', async () => {
-    await linkedPhone({ status: 'error', errorCode: 'SESSION_CRASH' });
-    for (let i = 0; i < 6; i++) expect((await reconnect()).status).toBe(200);
-    const limited = await reconnect();
-    expect(limited.status).toBe(429);
-    expect((await limited.json()).error).toBe('Too many reconnect attempts. Wait a minute.');
-    expect(sessionCalls()).toHaveLength(6);
+    // Rate limits count per clock minute: hold the clock mid-minute so the seven calls
+    // cannot straddle two windows.
+    vi.useFakeTimers({ now: new Date('2026-10-19T10:00:30.000Z'), toFake: ['Date'] });
+    try {
+      await linkedPhone({ status: 'error', errorCode: 'SESSION_CRASH' });
+      for (let i = 0; i < 6; i++) expect((await reconnect()).status).toBe(200);
+      const limited = await reconnect();
+      expect(limited.status).toBe(429);
+      expect((await limited.json()).error).toBe('Too many reconnect attempts. Wait a minute.');
+      expect(sessionCalls()).toHaveLength(6);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
