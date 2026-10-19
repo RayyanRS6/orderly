@@ -138,12 +138,15 @@ export function logFailure(
   );
 }
 export class PublicError extends Error {
+  /** A stable code the dashboard can act on, answered as `code` beside `error`. */
+  code?: string;
   constructor(
     message: string,
     public status = 400,
-    options?: ErrorOptions,
+    options?: ErrorOptions & { code?: string },
   ) {
     super(message, options);
+    if (options?.code) this.code = options.code;
   }
 }
 /** A linked phone whose WhatsApp account another business already has connected (409). */

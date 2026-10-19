@@ -139,8 +139,12 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
     // c.req.json() on a body that is not JSON.
     if (error instanceof SyntaxError)
       return c.json({ error: 'Request body must be valid JSON.' }, 400);
+    // code: for the dashboard to act on, such as a linked-phone service code.
     if (error instanceof PublicError && !error.cause)
-      return c.json({ error: error.message }, error.status as 400);
+      return c.json(
+        { error: error.message, ...(error.code && { code: error.code }) },
+        error.status as 400,
+      );
     // Unexpected, or a public message hiding its real cause: log one line and return its
     // reference, so a report from the dashboard can be matched to the log.
     const reference = c.get('requestId');
@@ -150,7 +154,11 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
       error,
     );
     return c.json(
-      { error: sanitizeError(error), requestId: reference },
+      {
+        error: sanitizeError(error),
+        requestId: reference,
+        ...(error instanceof PublicError && error.code && { code: error.code }),
+      },
       (error instanceof PublicError ? error.status : 500) as 400,
     );
   });

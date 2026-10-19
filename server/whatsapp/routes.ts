@@ -19,7 +19,8 @@ import {
 // reconnecting or waiting for its pairing to finish) may pair it again; one that disconnected,
 // was logged out or failed needs approval like any other. The admin's revoke always wins. Every
 // other action on an existing connection (status, reconnect, disconnect, switch to Meta) stays
-// open, so a revoked business keeps its current session until it ends.
+// open, so a revoked business keeps its current session until it ends; only reconnecting a
+// pairing nobody finished counts as pairing (reconnectAllowed).
 const GRANDFATHERED_STATUSES: WhatsAppConnection['status'][] = [
   'connected',
   'connecting',
@@ -31,6 +32,15 @@ export const pairingAllowed = (company: Company, connection?: WhatsAppConnection
   (company.linkedDeviceAllowed !== false &&
     connection?.provider === 'baileys' &&
     GRANDFATHERED_STATUSES.includes(connection.status));
+// Reconnecting resumes a linked phone that finished pairing. A pairing nobody finished would
+// start again (a new QR code), so it needs what a new pairing needs: an expired one always goes
+// through Start pairing (approval, consent, rate limit), and any other unfinished one needs the
+// approval (or, from before approvals, a phone still in use).
+export const reconnectAllowed = (company: Company, connection?: WhatsAppConnection) =>
+  connection?.provider === 'baileys' &&
+  !['logged_out', 'disconnected'].includes(connection.status) &&
+  connection.errorCode !== 'PAIRING_EXPIRED' &&
+  (!!connection.accountJid || pairingAllowed(company, connection));
 
 export function whatsappRoutes(repo: Repository) {
   const app = new Hono<AppEnv>();
@@ -43,11 +53,19 @@ export function whatsappRoutes(repo: Repository) {
   app.get('/connection', async (c) => {
     const connection = await repo.getWhatsAppConnection(c.get('company').id);
     const allowed = pairingAllowed(c.get('company'), connection);
+    const linked = connection?.provider === 'baileys' && connection.status !== 'disconnected';
     return c.json({
       // Dashboards from before the approval show the linked-phone controls only when true.
       enabled: gatewayAvailable() && allowed,
       gatewayEnabled: gatewayAvailable(),
       pairingAllowed: allowed,
+      // Start a new pairing (the method, consent and Start pairing controls).
+      canPair: gatewayAvailable() && allowed,
+      // An existing linked phone the owner may still check and disconnect, approved or not (a
+      // revoke ends no session). Its status is read from the gateway only when gatewayEnabled.
+      canManage: linked,
+      // Reconnect is offered (and POST /reconnect accepted).
+      canReconnect: gatewayAvailable() && reconnectAllowed(c.get('company'), connection),
       consentVersion: LINKED_DEVICE_CONSENT_VERSION,
       connection: connection ?? null,
     });
@@ -127,15 +145,14 @@ export function whatsappRoutes(repo: Repository) {
     );
     return c.json({ connection: current, snapshot });
   });
-  app.post('/reconnect', async (c) =>
-    c.json(
-      await withConnectionLock(repo, c.get('company').id, async () => {
-        const current = await repo.getWhatsAppConnection(c.get('company').id);
-        if (
-          !current ||
-          current.provider !== 'baileys' ||
-          ['logged_out', 'disconnected'].includes(current.status)
-        )
+  app.post('/reconnect', async (c) => {
+    const company = c.get('company');
+    if (!(await repo.consumeRateLimit(`wa-reconnect:${company.id}`, 6)))
+      throw new PublicError('Too many reconnect attempts. Wait a minute.', 429);
+    return c.json(
+      await withConnectionLock(repo, company.id, async () => {
+        const current = await repo.getWhatsAppConnection(company.id);
+        if (!current || !reconnectAllowed(company, current))
           throw new PublicError('Start a new pairing first.', 409);
         return gatewaySnapshotSchema.parse(
           await gatewayRequest('/session', {
@@ -145,8 +162,8 @@ export function whatsappRoutes(repo: Repository) {
           }),
         );
       }),
-    ),
-  );
+    );
+  });
   // gatewayCleanupPending: the switch is saved, but the old session could not be ended on the
   // gateway; the owner should remove Orderly under WhatsApp → Linked devices on the phone.
   app.post('/disconnect', async (c) => {

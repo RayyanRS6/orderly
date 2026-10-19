@@ -34,6 +34,15 @@ export function gatewaySecret(): string {
     );
   return env('WHATSAPP_GATEWAY_SECRET')!;
 }
+// What a refused gateway command means for the owner, by the gateway's errorCode. The code itself
+// also reaches the dashboard (PublicError.code), which may say it in its own words.
+const GATEWAY_REFUSALS: Record<string, string> = {
+  SESSION_CAPACITY_REACHED:
+    'Orderly’s linked-phone service is full right now. Contact Orderly support.',
+  PAIRING_REQUIRED: 'Start a new pairing first.',
+  PAIRING_EXPIRED: 'The pairing code expired. Start pairing again.',
+  STALE_GENERATION: 'This WhatsApp connection changed meanwhile. Reload the page and try again.',
+};
 export async function gatewayRequest(path: string, body: unknown): Promise<unknown> {
   const secret = gatewaySecret();
   const url = new URL(env('WHATSAPP_GATEWAY_URL')!);
@@ -57,21 +66,31 @@ export async function gatewayRequest(path: string, body: unknown): Promise<unkno
       redirect: 'error',
     });
   } catch {
+    // Only a send can be left pending; pairing, status and session commands are simply retried.
     throw new PublicError(
-      'The WhatsApp gateway is unreachable. A send may still be pending; retries reuse the same message identifier.',
+      path === '/send'
+        ? 'The WhatsApp gateway is unreachable. A send may still be pending; retries reuse the same message identifier.'
+        : 'The WhatsApp gateway is unreachable right now. Try again in a few minutes.',
       503,
     );
   }
   if (!response.ok) {
-    const result = (await response.json().catch(() => ({}))) as { errorCode?: string };
-    if (result.errorCode === 'SEND_UNCERTAIN')
+    const result = (await response.json().catch(() => ({}))) as { errorCode?: unknown };
+    const code =
+      typeof result?.errorCode === 'string' && /^[A-Z0-9_]{1,60}$/.test(result.errorCode)
+        ? result.errorCode
+        : undefined;
+    if (code === 'SEND_UNCERTAIN')
       throw new PublicError(
         'WhatsApp send outcome is uncertain. Check the phone before sending again; automatic resend is blocked.',
         422,
+        { code },
       );
     throw new PublicError(
-      `WhatsApp gateway rejected the request (${response.status}). Check the connection status.`,
+      (code && GATEWAY_REFUSALS[code]) ??
+        `WhatsApp gateway rejected the request (${response.status}). Check the connection status.`,
       response.status === 409 ? 409 : 503,
+      { code },
     );
   }
   return response.json();
