@@ -26,6 +26,7 @@ import {
   limitNotice,
   limitPaused,
   noticeLanguage,
+  orderLeftOpen,
   orderSafetyLine,
   orderStatusText,
   processTurn,
@@ -426,9 +427,10 @@ export async function handleTurn(
     if (codeUsable && company.botEnabled && conversation.mode === 'bot')
       return await redeemMenuDraft(repo, company, products, conversation, input, menuCode!);
     // The order this chat placed: its real status answers "where is my order?", and once it is
-    // finished (or the cart was cancelled) the next message starts a fresh cart, as "new order"
-    // would. An order still with the restaurant keeps its cart. A cancel or a status question
-    // is about the old order, so it keeps the cart too.
+    // finished (or the cart was cancelled), or staff never closed it (see orderLeftOpen), the
+    // next message starts a fresh cart, as "new order" would, before the AI sees the chat. An
+    // order still with the restaurant keeps its cart. A cancel or a status question is about
+    // the old order, so it keeps the cart too.
     const cart = conversation.cart;
     const placed =
       cart.orderId && (cart.status === 'submitted' || cart.status === 'cancelled')
@@ -439,7 +441,9 @@ export async function handleTurn(
     const finished =
       cart.status === 'cancelled' ||
       (cart.status === 'submitted' &&
-        (!placed || ['completed', 'rejected', 'cancelled'].includes(placed.status)));
+        (!placed ||
+          ['completed', 'rejected', 'cancelled'].includes(placed.status) ||
+          orderLeftOpen(placed, input.receivedAt ?? input.now)));
     if (
       finished &&
       conversation.mode === 'bot' &&

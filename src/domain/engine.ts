@@ -1805,11 +1805,13 @@ export function processTurn(
   };
   const invents = (text: string) => inventsLink(text, hosts, fromChat);
   // The menu page's own address is not an outcome claim, whatever words its slug holds, and
-  // nor is saying the restaurant takes a payment method it does take.
+  // nor is saying the restaurant takes a payment method it does take. The cart is read when the
+  // text is checked, so a cart this turn started afresh (an order staff never closed) is no
+  // longer the submitted one: "your order has been placed" is not true of it.
   const claims = (text: string) =>
     unsafeModelText(
       input.menuLink ? text.replaceAll(input.menuLink, '') : text,
-      conversation.cart.status === 'submitted',
+      conversation.cart.status === 'submitted' && next.cart.status === 'submitted',
       paymentMethods(company),
     );
   // An allergy reassurance only in the owner's own approved words, quoted exactly.
