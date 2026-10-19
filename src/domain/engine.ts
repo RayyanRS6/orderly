@@ -972,9 +972,9 @@ function contains(text: string, phrase: string): boolean {
 // naam save ho gaya hai" or "ہم کل ۱۲ بجے کھلیں گے" (کل is also tomorrow) pass. Prices need a
 // currency next to the digits ("450/-", "450 rupay", "۴۵۰ روپے", "500 PKR"). After an order is
 // submitted, saying it was placed, submitted or received is true, so those claims are allowed
-// then; confirmed, booked, accepted or delivered never are, nor a payment received or more
-// ordered. A polite request ("کنفرم کر دیں", "تصدیق کر دیجیے", "confirm kar di jiye") or the
-// future ("deliver kar diya jayega", "کر دیا جائے گا") is not a claim.
+// then; confirmed, booked, accepted or delivered never are, nor a payment received, nor more
+// ordered or added. A polite request ("کنفرم کر دیں", "تصدیق کر دیجیے", "confirm kar di jiye")
+// or the future ("deliver kar diya jayega", "کر دیا جائے گا") is not a claim.
 const NOT_DONE =
   '(?!\\s*(?:jiye|jiyega|jiyen|jie|jiey|jye|jiay|jayega|jayegi|jayenge|jaye|jaega|jaegi|jaenge)\\b)';
 const outcomeClaim = (verbs: string) =>
@@ -1002,31 +1002,47 @@ const ENGLISH_PRICE =
   /\b(?:rs\.?|pkr)\s*[\d۰-۹٠-٩]|\b(?:total|price|cost)\s*(?:(?:is|of|:|=)\s*)?[\d۰-۹٠-٩]/iu;
 const ENGLISH_OUTCOME = /\b(?:accepted|approved|confirmed|delivered|dispatched|completed)\b/iu;
 const ENGLISH_PLACED = /\b(?:submitted|placed)\b/iu;
-// After submission, "your order has been placed" is true; placing more of it never is.
+// After submission, "your order has been placed" or "yes, it was submitted" is true; placing or
+// adding more never is.
 const ORDER_PLACED =
-  /\border\b[^.!?\n]{0,30}?\b(?:placed|submitted)\b|\b(?:placed|submitted)\s+(?:your|the)\s+order\b/u;
-const ordersMore = (value: string) =>
-  value
-    .split(/[.!?\n]+/u)
-    .some(
-      (sentence) =>
-        /\b(?:placed|submitted|added)\b/u.test(sentence) &&
-        /\b(?:another|additional|extra|second|separate)\b/u.test(sentence),
-    );
-// A payment said to be received, verified or confirmed: never the AI's to say, before or after
-// the order, since restaurant staff check every transfer themselves. Not a condition ("once we
-// receive the payment").
-const NOT_IF = '(?<!\\b(?:once|when|after|until|till|if|before|jab|agar)\\b[^.!?\\n]{0,40})';
-const PAYMENT_EN = new RegExp(
-  `${NOT_IF}(?:\\b(?:payments?|transfers?|amount|money|jazz ?cash|easy ?paisa)\\b[^.!?\\n]{0,30}?(?<!\\b(?:be|to) )\\b(?:received|verified|cleared|credited|confirmed)\\b|\\b(?:received|got|verified|confirmed)\\s+(?:(?:your|the|aap ki)\\s+)?(?:(?:jazz ?cash|easy ?paisa|bank)\\s+)?(?:payments?|transfers?|money|amount)\\b)`,
+  /\border\b[^.!?\n]{0,30}?\b(?:placed|submitted)\b|\b(?:placed|submitted)\s+(?:your|the)\s+order\b|\bit(?:['’]s| is| was| has)?(?: been)? (?:placed|submitted)\b/u;
+const DONE_FORMS =
+  '(?:gaya|gayi|gya|gyi|gai|gaye|ge|diya|diye|dia|di|liya|liye|lia|li|chuka|chuki|chuke)';
+// "I've added the naan", "added 2 naan to your order", "add kar diye", "شامل کر دیا".
+const ADDED_MORE = new RegExp(
+  `\\b(?:i|we)(?:['’]ve| have)?(?: just| also)? added\\b|\\badded\\b[^.!?\\n]{0,40}?\\b(?:to|in|into) (?:your|the) order\\b|\\badd\\w*\\s*(?:ho|hu|kar|kr)\\s*${DONE_FORMS}\\b${NOT_DONE}|(?:شامل|ایڈ)\\s?${URDU_DONE}`,
   'u',
 );
+// Placed together with "another", "new", "2 more", "naya", "نیا" (not the “new order” command).
+const PLACED_WORDING = new RegExp(
+  `\\b(?:placed|submitted|added)\\b|\\b(?:place|submit|add)\\w*\\s*(?:ho|hu|kar|kr)\\s*${DONE_FORMS}\\b${NOT_DONE}|(?:پلیس|سبمٹ|موصول|شامل|ایڈ)[^۔.!?؟\\n]{0,10}?${URDU_DONE}`,
+  'u',
+);
+const MORE_WORDING =
+  /(?<![“"'‘])\b(?:another|additional|extra|second|separate|new|naya|nayi|naye|doosra|doosri|dusra|dusri)\b|\b(?:\d+|one|two|three|four|five) more\b|(?<![“"'‘\p{L}\p{M}])(?:نیا|نئی|نئے|دوسرا|دوسری)(?![\p{L}\p{M}])/u;
+const ordersMore = (value: string) =>
+  ADDED_MORE.test(value) ||
+  value
+    .split(/[.!?۔؟\n]+/u)
+    .some((sentence) => PLACED_WORDING.test(sentence) && MORE_WORDING.test(sentence));
+// A payment said to be received, verified or confirmed: never the AI's to say, before or after
+// the order, since restaurant staff check every transfer themselves. Not a condition ("once we
+// receive the payment"), unless the condition is in an earlier clause ("after checking, we have
+// received your payment"); not a general statement ("JazzCash payments are verified by our
+// staff") or a process ("your payment is being verified").
+const NOT_IF = '(?<!\\b(?:once|when|after|until|till|if|before|jab|agar)\\b[^.!?,;\\n]{0,40})';
+const PAYMENT_EN = new RegExp(
+  `${NOT_IF}(?:\\b(?:payments?|transfers?|transactions?|amount|money|jazz ?cash|easy ?paisa)\\b[^.!?\\n]{0,30}?(?<!\\b(?:be|to|being) )(?<!\\b(?:payments|transfers) (?:are|get)\\b[^.!?\\n]{0,20})\\b(?:rec(?:ei|ie)ved|verified|cleared|credited|confirmed|successful|went through|gone through|came through)\\b|\\b(?:rec(?:ei|ie)ved|got|verified|confirmed)\\s+(?:(?:your|the|aap ki)\\s+)?(?:(?:jazz ?cash|easy ?paisa|bank)\\s+)?(?:payments?|transfers?|money|amount)\\b)`,
+  'u',
+);
+// Also "wasool/mosool ho gayi", "accept ho gaya" and a bare "payment ho gayi" (not "kya payment
+// ho gayi hai?", a question back).
 const PAYMENT_ROMAN = new RegExp(
-  `${NOT_IF}\\b(?:payment|adaigi|adaegi|paise|paisay|pese|transfer|amount|raqam|jazz ?cash|easy ?paisa)\\b[^.!?\\n]{0,30}?\\b(?:(?:receive|recieve|confirm|verify|clear|submit|place)\\w*\\s*(?:ho|hu|kar|kr)\\s*|(?:mil|aa|pohanch|pahunch)\\s+)(?:gaya|gayi|gya|gyi|gai|gaye|gae|ge|chuka|chuki|chuke|liya|li|lia|diya|di|dia)\\b${NOT_DONE}`,
+  `${NOT_IF}(?:\\b(?:payment|adaigi|adaegi|paise|paisay|pese|transfer|amount|raqam|jazz ?cash|easy ?paisa)\\b[^.!?\\n]{0,30}?\\b(?:(?:receive|recieve|confirm|verify|clear|submit|place|accept|wasool|vasool|wusool|wasul|mosool|mausool|tasdeeq|tasdiq)\\w*\\s*(?:ho|hu|kar|kr)\\s*|(?:mil|aa|pohanch|pahunch)\\s+)(?:gaya|gayi|gya|gyi|gai|gaye|gae|ge|chuka|chuki|chuke|liya|li|lia|diya|di|dia)\\b${NOT_DONE}|\\b(?:payment|adaigi|adaegi|transfer)\\b[^.!?\\n]{0,15}?\\bho\\s*(?:gaya|gayi|gya|gyi|gai|chuka|chuki)\\b${NOT_DONE}(?![^.!?,;\\n]*[?؟]))`,
   'u',
 );
 const PAYMENT_URDU = new RegExp(
-  `(?:ادائیگی|پیمنٹ|رقم|ٹرانسفر|پیسے|جاز ?کیش|ایزی ?پیسہ)[^۔.!?؟\\n]{0,30}?(?:(?:موصول|وصول|تصدیق|کلیئر|کنفرم|پلیس|سبمٹ)[^۔.!?؟\\n]{0,10}?${URDU_DONE}|(?:مل|آ|پہنچ)\\s?(?:گیا|گئی|گئے|چکا|چکی|چکے)(?![\\p{L}\\p{M}]))`,
+  `(?:ادائیگی|پیمنٹ|رقم|ٹرانسفر|پیسے|جاز ?کیش|ایزی ?پیسہ)[^۔.!?؟\\n]{0,30}?(?:(?:موصول|وصول|تصدیق|کلیئر|کنفرم|پلیس|سبمٹ|ریسیو|قبول)[^۔.!?؟\\n]{0,10}?${URDU_DONE}|(?:مل|آ|پہنچ)\\s?(?:گیا|گئی|گئے|چکا|چکی|چکے)(?![\\p{L}\\p{M}]))|(?:ادائیگی|پیمنٹ|ٹرانسفر)\\s?ہو\\s?(?:گیا|گئی|گئے|چکا|چکی|چکے)(?![\\p{L}\\p{M}])(?![^۔.!?؟،,\\n]*[?؟])`,
   'u',
 );
 const METHOD_WORDS: Record<PaymentMethod, string> = {
@@ -1037,16 +1053,18 @@ const METHOD_WORDS: Record<PaymentMethod, string> = {
 };
 // "JazzCash accepted hai", "Yes, Easypaisa payments are accepted": true of a way the restaurant
 // takes payment, not an order outcome, so it is taken out before the check. Only the
-// restaurant's own methods, and never "your JazzCash payment is accepted".
+// restaurant's own methods, said in the present tense of all payments, in a sentence that says
+// nothing about the order: never "JazzCash payment accepted", "your payment via JazzCash is
+// accepted" or "your order with cash on delivery is accepted".
 function withoutAcceptedMethods(text: string, methods: readonly PaymentMethod[]): string {
   if (!methods.length) return text;
   const name = `(?:${methods.map((method) => METHOD_WORDS[method]).join('|')})`;
-  return text.replace(
-    new RegExp(
-      `(?<!\\b(?:your|the|aap ki|aapki|aap ka|aapka) )\\b${name}(?:\\s*(?:,|/|&|and|or|aur|ya)\\s*${name})*(?: payments?| transfers?)?(?: (?:is|are))?(?: (?:also|both|all|bhi))? accepted\\b`,
-      'giu',
-    ),
-    ' ',
+  const general = new RegExp(
+    `(?<!\\b(?:your|the|aap ki|aapki|aap ka|aapka) )(?<!\\b(?:payments?|transfers?|transactions?|money|amount|paise|paisay|raqam|adaigi)\\b[^.!?\\n]{0,20})\\b${name}(?:\\s*(?:,|/|&|and|or|aur|ya)\\s*${name})*(?: payments| transfers)?(?: (?:is|are)(?: (?:also|both|all|bhi))? accepted| accepted (?:hai|hain|hota hai|hote hain|bhi hai|bhi hain))\\b`,
+    'giu',
+  );
+  return text.replace(/[^.!?\n]+/gu, (sentence) =>
+    /\border\b|آرڈر/iu.test(sentence) ? sentence : sentence.replace(general, ' '),
   );
 }
 const RUPEE_PRICE =
@@ -1067,7 +1085,8 @@ function unsafeModelText(
     PAYMENT_EN.test(value) ||
     PAYMENT_ROMAN.test(value) ||
     PAYMENT_URDU.test(value) ||
-    (ENGLISH_PLACED.test(text) && (!submitted || ordersMore(value) || !ORDER_PLACED.test(value))) ||
+    (ENGLISH_PLACED.test(text) && (!submitted || !ORDER_PLACED.test(value))) ||
+    (submitted && ordersMore(value)) ||
     (!submitted &&
       (ROMAN_PLACED.test(value) || URDU_PLACED.test(value) || ENGLISH_RECEIVED.test(value)))
   );
@@ -1094,9 +1113,18 @@ const ROMAN_IN =
   '(?:mein|me|main|mai|mei|men|andar|(?:is|us|iss|uss|isi|usi|in|un)(?:me|mein|main|mai|men|mei|mn|my))';
 const ROMAN_HAS =
   '(?:hai|hain|he|hy|h|hota|hoti|hote|dala|daala|dali|dalta|dalte|dalti|parta|padta|parti|padti|hoga|hogi|honge)';
-// "in the biryani", "in it": not "in stock", "in the menu", "in garlic sauce" (a dish's name).
-const EN_IN =
-  '\\bin (?:it|this|that|them|these|those|(?:the|your|ur|this|that|my|our) (?!(?:menu|stock|evening|morning|night|afternoon|weekend|winter|summer|restaurant|shop|branch|outlet)\\b)\\p{L}+)\\b';
+// "in the biryani", "inside the naan", "in it": not "in stock", "in the menu", "in the lunch
+// menu", "in this week's deals", "in the evening" or "in garlic sauce" (a dish's name).
+const NOT_IN =
+  'menu|stock|evening|morning|night|afternoon|weekend|winter|summer|restaurant|shop|branch|outlet|today|tonight|tomorrow|season|week|month|deals?|specials?';
+const MENU_NEXT =
+  "(?:\\p{L}+(?:['’]s)? ){1,2}(?:menu|stock|deals?|specials?|restaurant|shop|branch|outlet)\\b";
+const DET = 'the|your|ur|this|that|my|our';
+const IN_WHAT = `it|them|these|those|(?:this|that)(?! \\p{L})|(?:${DET}) (?!(?:${NOT_IN})\\b|${MENU_NEXT})\\p{L}+`;
+const EN_IN = `\\b(?:in|inside) (?:${IN_WHAT})\\b`;
+// Also a bare dish word, as WhatsApp English often has it: "is there egg in naan".
+const BARE_DISH = `(?!(?:${DET}|a|an|${NOT_IN}|lunch|dinner|breakfast)\\b|${MENU_NEXT})\\p{L}+`;
+const EN_IN_BARE = `\\b(?:in|inside) (?:${IN_WHAT}|${BARE_DISH})\\b`;
 const NOT_MENU = '(?!\\s+(?:in|on) (?:the |our |your |ur )?(?:menu|stock)\\b)';
 // Asking for an ingredient to be added is an order, not a question about a dish: "can I get egg
 // in my paratha?", "extra egg in my burger?", "add prawns in the fried rice".
@@ -1109,10 +1137,17 @@ const ALLERGEN_QUESTION = new RegExp(
     `\\bcontain(?:s|ing)?\\b[^.!?]{0,40}\\b(?:${ALLERGENS})\\b`,
     // "is there any dairy in the korma?", "are there nuts?"; "is there fish in the biryani?".
     `\\b(?:is|are) there (?:any |some )?(?:${INGREDIENT_ALLERGENS})\\b${NOT_MENU}(?=\\s*(?:[?.!؟]|$|in\\b|inside\\b|added\\b|used\\b))`,
-    // "is there egg in it", "any milk in the kheer": a food also sold as a dish once a dish it
-    // would be in follows, with or without "?" (not "is there any fish?", "any fish in stock?").
-    `${NOT_REQUEST}\\b(?:(?:is|are) there (?:any |some )?|any )(?:${FOOD_ALLERGENS})(?: (?:used|added|put|mixed|cooked))? ${EN_IN}`,
+    // "is there egg in it", "any milk in kheer", "is there egg or milk in the naan": a food also
+    // sold as a dish once a dish it would be in follows, with or without "?" (not "is there any
+    // fish?", "any fish in stock?").
+    `${NOT_REQUEST}\\b(?:(?:is|are) there (?:any |some )?|any )(?:${FOOD_ALLERGENS})(?: (?:or|and) (?:${FOOD_ALLERGENS}))?(?: (?:used|added|put|mixed|cooked))? ${EN_IN_BARE}`,
     `${NOT_REQUEST}\\b(?:${ALLERGENS})(?: (?:used|added|put|mixed|cooked))? ${EN_IN}[^.!]*\\?`,
+    // "egg in naan?": one bare dish word and the "?" (not "prawns in garlic sauce?").
+    `${NOT_REQUEST}\\b(?:${FOOD_ALLERGENS}) (?:in|inside) ${BARE_DISH}\\s*[?؟]`,
+    // "do you put egg in the naan?", "does it come with egg?": asking, where "can you add egg
+    // in it?" or "I will add egg paratha" orders.
+    `\\b(?:do|does|did|will|would)\\s+(?:[^\\s.!?]+\\s+){1,2}(?:put|add|mix|use)\\s+(?:any\\s+|some\\s+|an?\\s+)?(?:${ALLERGENS})\\b`,
+    `\\bcomes?\\s+with\\s+(?:any\\s+)?(?:${ALLERGENS})\\b[^.!]*\\?`,
     // "any peanuts in the karahi?", "any nuts?"
     `\\bany (?:${INGREDIENT_ALLERGENS})\\b${NOT_MENU}(?=\\s*(?:[?.!؟]|$|in\\b|on\\b|inside\\b|added\\b|used\\b))`,
     `\\b(?:does|do|did|will)\\s+(?!you\\b|u\\b|we\\b|i\\b)(?:\\S+\\s+){0,3}(?:have|has|use|contain)\\s+(?:any\\s+|some\\s+)?(?:${ALLERGENS})\\b`,
@@ -1121,8 +1156,9 @@ const ALLERGEN_QUESTION = new RegExp(
     `\\b(?:${ALLERGENS})\\b[^.!?]{0,30}\\bsafe\\b|\\bsafe\\b[^.!?]{0,30}\\b(?:${ALLERGENS})\\b`,
     `\\b(?:${INGREDIENT_ALLERGENS}) in (?!(?:the |our |your |ur )?(?:menu|stock)\\b|today\\b)[^.!]*\\?`,
     // "isme nuts hain?", "kya ismein anda hai?", "biryani mein nuts?", "biryani me koi nuts to
-    // nahi?". A food also sold as a dish needs "hai" or "?": "paratha mein anda" is an order.
-    `(?<!\\b(?:menu|stock|give|send|get|bring|show|tell|for|to|let|suggest|recommend|order|make|serve|add|want|need) )\\b${ROMAN_IN} (?:koi |kuch |bhi )?(?:(?:${ALLERGENS})(?: (?:to |bhi )?(?:nahi |nahin |nai )?${ROMAN_HAS}\\b|(?: (?:to |bhi )?(?:nahi|nahin|nai))?\\s*[?؟])|(?:${INGREDIENT_ALLERGENS})(?: (?:to |bhi )?(?:nahi|nahin|nai))?\\s*$)`,
+    // nahi?", "naan mein anda to nahi". A food also sold as a dish needs "hai", "to nahi" or
+    // "?": "paratha mein anda" and "paratha mein anda dala hua chahiye" are orders.
+    `(?<!\\b(?:menu|stock|give|send|get|bring|show|tell|for|to|let|suggest|recommend|order|make|serve|add|want|need|cook|find|fry) )\\b${ROMAN_IN} (?:koi |kuch |bhi )?(?:(?:${ALLERGENS})(?: (?:to |bhi )?(?:nahi |nahin |nai )?${ROMAN_HAS}\\b(?! (?:hua|hui|hue|huwa) (?:chahiye|chahye|chaiye|ho|hona|de|do|dein|dena|dijiye|bhejein|bhej)\\b)|(?: (?:to |bhi )?(?:nahi|nahin|nai))?\\s*[?؟]|(?: (?:to|bhi) (?:nahi|nahin|nai))\\s*$)|(?:${INGREDIENT_ALLERGENS})(?: (?:to |bhi )?(?:nahi|nahin|nai))?\\s*$)`,
     // "nuts hain is mein?", "nuts hai isme?", "nuts isme hain?"
     `\\b(?:${ALLERGENS}) (?:(?:hai|hain|h|he|hy) )?(?:to |bhi )?(?:is|us|iss|uss) ?(?:me|mein|main|mai|men|mei)\\b`,
     // "anda dala hai?", "doodh parta hai?", "peanut oil use hota hai?": put into the dish (not
@@ -1159,31 +1195,52 @@ const FOOD_MENTION = new RegExp(
   `\\b(?:${FOOD_ALLERGENS})\\b|${urduWord('انڈا|انڈے|دودھ|جھینگا|جھینگے|مچھلی')}`,
   'u',
 );
-const RESTRICTION =
-  /\b(?:can['’]?t|cannot|can not|don['’]?t|do not|shouldn['’]?t|should not|must not) (?:have|eat|take|tolerate)\b|\b(?:avoid\w*|without|intoleran\w*|sensitiv\w*|reaction|masla|masle|masail|problem|issue|parhez|perhez|bina)\b|\b(?:nahi|nahin|nai|nhi) (?:kha|khaa|khana|khani|khata|khati|khate|chahiye|chahye|chaiye|leta|leti|lete)\b|نہیں کھا|نہیں چاہی|مسئل|پرہیز|بغیر/u;
+// Saying a food is to be avoided, or upsets them: "I can't have", "my son doesn't eat", "suit
+// nahi karta", "hazam nahi hota", "takleef hoti hai", "makes me sick", "ہضم نہیں". "Without" and
+// "bina" count next to the food ("without egg", "anday ke bina"), not "without sugar".
+const RESTRICTION = new RegExp(
+  [
+    `\\b(?:can['’]?t|cannot|can not|don['’]?t|do not|does ?n['’]?t|does not|won['’]?t|will not|shouldn['’]?t|should not|must not) (?:have|eat|take|tolerate|digest|drink)\\b`,
+    `\\b(?:avoid\\w*|intoleran\\w*|sensitiv\\w*|react\\w*|upsets?|masla|masle|masail|problem|issue|parhez|perhez|dikkat|dikat|diqqat|takleef|takleif|takliif|taklif)\\b`,
+    `\\b(?:makes?|made) me (?:sick|ill)\\b|\\b(?:suit|hazam|hazm) (?:nahi|nahin|nai|nhi)\\b`,
+    `\\b(?:without|bina) (?:\\p{L}+ ){0,2}(?:${FOOD_ALLERGENS})\\b|\\b(?:${FOOD_ALLERGENS}) (?:\\p{L}+ ){0,2}bina\\b`,
+    `\\b(?:nahi|nahin|nai|nhi) (?:kha|khaa|khana|khani|khata|khati|khate|chahiye|chahye|chaiye|leta|leti|lete)\\b`,
+    'نہیں کھا|نہیں چاہی|مسئل|پرہیز|بغیر|سوٹ نہیں|ہضم نہیں|تکلیف|دقت',
+  ].join('|'),
+  'u',
+);
+// A dish label that is the allergen's own word ("fish" for Fish Tikka).
+const ALLERGEN_LABEL = new RegExp(`^(?:${ALLERGENS}|${URDU_ALLERGENS})$`, 'u');
 function namesAvoidedAllergen(text: string, products: Product[], companyId: string): boolean {
   const value = normalize(text);
   if (ALLERGY_WORDS.test(value)) return true;
-  // Dishes on the menu are taken out first, longest names first.
+  const restricted = RESTRICTION.test(value);
+  // Dishes on the menu are taken out first, longest names first, also as a plural ("badam
+  // shakes", "anda parathay"). A label that is the allergen's own word stays when the customer
+  // says they can't have it: "I cannot eat fish" names fish, whatever the menu calls "fish".
   const words = (text: string) => normalize(text.replace(/[^\p{L}\p{M}\p{N}]+/gu, ' '));
   const labels = products
     .filter((product) => product.companyId === companyId)
     .flatMap((product) => [product.name, ...product.aliases])
     .map(words)
-    .filter(Boolean)
+    .filter((label) => label && !(restricted && ALLERGEN_LABEL.test(label)))
     .sort((a, b) => b.length - a.length);
   let rest = ` ${words(value)} `;
-  for (const label of labels) rest = rest.split(` ${label} `).join('  ');
-  return INGREDIENT_MENTION.test(rest) || (FOOD_MENTION.test(rest) && RESTRICTION.test(value));
+  for (const label of labels) {
+    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    rest = rest.replace(new RegExp(` ${escaped}(?:s|es|y|ay|e)?(?= )`, 'gu'), ' ');
+  }
+  return INGREDIENT_MENTION.test(rest) || (FOOD_MENTION.test(rest) && restricted);
 }
 // AI wording that vouches for a dish to someone who named an allergen, beyond the general
 // assurances below: "Bilkul, aap kha sakte hain", "Yes, totally fine for you", "It only has
 // chicken, rice and spices", "Nahi ji, isme nahi hota". A question back ("Is that okay for
-// you?") vouches for nothing, and "stock mein nahi hai" is about the menu.
+// you?", "Would pickup be fine for you?") vouches for nothing, but "Yes, it is totally fine for
+// you, shall I add one?" does; and "stock mein nahi hai" is about the menu.
 const ALLERGEN_CONTEXT_ASSURANCE = new RegExp(
   [
     `\\b(?:kha|khaa) ?(?:sakte|sakti|sakta|saktay|skte|skti|lein|len)\\b`,
-    `\\b(?:fine|okay|ok|suitable|alright) (?:for|to) (?:you|your|eat|kids|children|everyone|anyone)\\b(?![^.!?\\n]*\\?)`,
+    `(?<!(?:^|[.!?,;؟،]\\s*)(?:is|are|was|would|will|does|do|did|can|could|shall|should|kya)\\b[^.!?,;\\n]{0,40})\\b(?:fine|okay|ok|suitable|alright) (?:for|to) (?:you|your|eat|kids|children|everyone|anyone)\\b`,
     `\\b(?:can|could|may) safely (?:eat|have|enjoy|order)\\b|\\b(?:eat|have|enjoy|order) (?:it|this|that|them) (?:safely|without (?:any )?(?:worr(?:y|ies)|problems?|issues?|risk|fear))\\b`,
     `\\bonly (?:has|contains?|uses?|includes?)\\b|\\b(?:contains?|has|includes?|uses) only\\b|\\bmade (?:with|from|of|using) only\\b|\\bnothing but\\b`,
     `\\b(?:nahi|nahin|nai|nhi) (?:dala|daala|dali|dalta|dalte|dalti|parta|padta|parti|padti)\\b`,
@@ -1205,10 +1262,11 @@ const SAFETY_ASSURANCE = new RegExp(
     `\\b(?:no|zero|free of|free from|contains no|without any) (?:${AVOIDED})\\b`,
     // "no milk in it", "made without eggs", "eggless": not "no fish today" or "no fish in stock".
     `\\b(?:no|zero) (?:${FOOD_ALLERGENS})\\b(?=[^.!?\\n]{0,20}\\b(?:in|inside)\\b(?! (?:stock|the menu|our menu|menu)\\b))`,
-    `\\bmade without (?:any )?(?:${ALLERGENS})\\b`,
+    `\\b(?:made )?without (?:any )?(?:${ALLERGENS})\\b`,
     `\\b(?:eggs?|dairy|milk|nuts?|gluten)[- ]?less\\b`,
-    `\\b(?:does ?n[o'’]?t|did ?n[o'’]?t|won['’]t|will not|never) (?:contain|have|include|use) (?:any )?(?:${ALLERGENS})\\b`,
-    `\\bdo ?n[o'’]?t (?:contain|include|use) (?:any )?(?:${ALLERGENS})\\b`,
+    // "it doesn't contain eggs", "we don't put egg in our naan"; not "we don't have doodh patti".
+    `\\b(?:does ?n[o'’]?t|did ?n[o'’]?t|won['’]t|will not|never) (?:contain|have|include|use|put|add|mix) (?:any )?(?:${ALLERGENS})\\b`,
+    `\\bdo ?n[o'’]?t (?:contain|include|use|put|add|mix) (?:any )?(?:${ALLERGENS})\\b`,
     `\\b(?:${ALLERGENS}) (?:(?:to|bhi|bilkul|koi) )?(?:nahi|nahin|nai|nhi)\\b`,
     `\\bsafe (?:hai|hain|he|hy|h|hoga|rahega)\\b|\\bbilkul safe\\b`,
     `\\ballerg\\w* (?:ka |ki |ke )?(?:koi )?(?:khatra|masla|problem|issue) nahi`,
@@ -1747,11 +1805,13 @@ export function processTurn(
   };
   const invents = (text: string) => inventsLink(text, hosts, fromChat);
   // The menu page's own address is not an outcome claim, whatever words its slug holds, and
-  // nor is saying the restaurant takes a payment method it does take.
+  // nor is saying the restaurant takes a payment method it does take. The cart is read when the
+  // text is checked, so a cart this turn started afresh (an order staff never closed) is no
+  // longer the submitted one: "your order has been placed" is not true of it.
   const claims = (text: string) =>
     unsafeModelText(
       input.menuLink ? text.replaceAll(input.menuLink, '') : text,
-      conversation.cart.status === 'submitted',
+      conversation.cart.status === 'submitted' && next.cart.status === 'submitted',
       paymentMethods(company),
     );
   // An allergy reassurance only in the owner's own approved words, quoted exactly.

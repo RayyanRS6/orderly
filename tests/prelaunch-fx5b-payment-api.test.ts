@@ -120,7 +120,7 @@ describe('what the AI is told about payment', () => {
     const { system, prompt } = await call(['bank_transfer', 'cash', 'jazzcash', 'easypaisa']);
     expect(system).not.toContain(CASH_RULE);
     expect(system).toContain(
-      'Do not invent payment capabilities: customers may pay only as business.paymentCapabilities lists, never by card links or UPI. For a JazzCash, Easypaisa or bank transfer the restaurant shares its own payment details and confirms the transfer itself: never give, invent or ask for account, card or CNIC numbers, and never say a payment was received.',
+      'Do not invent payment capabilities: customers may pay only as business.paymentCapabilities lists, never by card links or UPI. For a JazzCash, Easypaisa or bank transfer the restaurant shares its own payment details and confirms the transfer itself: never give, invent or ask for account, card or CNIC numbers, and never say a payment was received. If the customer asks for payment, account or transfer details, or says they want to pay by transfer, use handoff.',
     );
     expect(
       (promptObject({ prompt }).business as Record<string, unknown>).paymentCapabilities,

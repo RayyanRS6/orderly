@@ -349,7 +349,7 @@ const paymentCapabilities = (company: Company) =>
 function paymentRule(company: Company): string {
   return cashOnly(company)
     ? 'Do not invent payment capabilities: current checkout records cash at pickup/on delivery, not card links or UPI.'
-    : 'Do not invent payment capabilities: customers may pay only as business.paymentCapabilities lists, never by card links or UPI. For a JazzCash, Easypaisa or bank transfer the restaurant shares its own payment details and confirms the transfer itself: never give, invent or ask for account, card or CNIC numbers, and never say a payment was received.';
+    : 'Do not invent payment capabilities: customers may pay only as business.paymentCapabilities lists, never by card links or UPI. For a JazzCash, Easypaisa or bank transfer the restaurant shares its own payment details and confirms the transfer itself: never give, invent or ask for account, card or CNIC numbers, and never say a payment was received. If the customer asks for payment, account or transfer details, or says they want to pay by transfer, use handoff.';
 }
 function makeModel(provider: Provider, model: string, apiKey: string) {
   if (provider === 'openai') return createOpenAI({ apiKey })(model);
