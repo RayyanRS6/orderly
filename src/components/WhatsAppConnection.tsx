@@ -23,27 +23,43 @@ export type PairingAccess = {
   gatewayEnabled?: boolean;
   pairingAllowed?: boolean;
   /**
-   * The existing linked phone can be managed (status, reconnect), approved or not. Missing from
-   * servers that do not send it: the gateway being on is then what counts.
+   * The server's own decisions (server/whatsapp/routes.ts): a new pairing can start, the
+   * existing linked phone can be checked and disconnected, and POST /reconnect accepts it.
+   * Missing from older servers: the fields above decide then.
    */
-  manageable?: boolean;
+  canPair?: boolean;
+  canManage?: boolean;
+  canReconnect?: boolean;
 };
+/** The fields of GET /whatsapp/connection that decide which linked-phone controls show. */
+export function pairingAccess(result: PairingAccess): PairingAccess {
+  return {
+    enabled: result.enabled,
+    gatewayEnabled: result.gatewayEnabled,
+    pairingAllowed: result.pairingAllowed,
+    canPair: result.canPair,
+    canManage: result.canManage,
+    canReconnect: result.canReconnect,
+  };
+}
 /**
  * Which linked-phone controls show. Only a new pairing needs the admin's approval: an existing
- * linked phone can always be disconnected, and reconnected (and its status checked) while the
- * gateway runs, even after the approval was withdrawn (server/whatsapp/routes.ts).
+ * linked phone can be disconnected, and its status checked while the gateway runs, even after
+ * the approval was withdrawn. Reconnect shows only where the server accepts it: never for a
+ * pairing nobody finished without approval, or one that expired (server/whatsapp/routes.ts).
  */
 export function linkedControls(
   access: PairingAccess | undefined,
   connection: Pick<Connection, 'provider'> | null,
 ) {
   const linked = connection?.provider === 'baileys';
-  const gateway = access?.manageable ?? access?.gatewayEnabled ?? !!access?.enabled;
+  const enabled = !!access?.enabled;
+  const manage = linked && (access?.canManage ?? true);
   return {
-    pair: !!access?.enabled,
-    reconnect: linked && gateway,
-    disconnect: linked,
-    poll: linked && gateway,
+    pair: access?.canPair ?? enabled,
+    reconnect: linked && (access?.canReconnect ?? access?.gatewayEnabled ?? enabled),
+    disconnect: manage,
+    poll: manage && (access?.gatewayEnabled ?? enabled),
   };
 }
 /** Why pairing can't start here, in words for the owner. */
@@ -106,6 +122,14 @@ export function gatewayMessage(e: unknown, fallback: string, canPair = true) {
   if (!canPair && e instanceof ApiError && e.code === 'PAIRING_EXPIRED') return PAIRING_ENDED;
   if (e instanceof ApiError && e.code && GATEWAY_PROBLEMS[e.code]) return GATEWAY_PROBLEMS[e.code]!;
   return e instanceof Error ? e.message : fallback;
+}
+/**
+ * Why Reconnect failed. The server refuses it (409 without a gateway code) for a pairing nobody
+ * finished, or one that expired: where no new pairing can start here, that pairing simply ended.
+ */
+export function reconnectMessage(e: unknown, canPair: boolean) {
+  if (!canPair && e instanceof ApiError && e.status === 409 && !e.code) return PAIRING_ENDED;
+  return gatewayMessage(e, 'Connection failed.', canPair);
 }
 /** What the status box says about a connection problem. */
 export function connectionProblem(state: Connection['status'], errorCode: string, canPair = true) {
@@ -276,12 +300,7 @@ export function WhatsAppConnection() {
     connection,
     ...result
   }: Awaited<ReturnType<typeof loadConnection>>) => {
-    setAccess({
-      enabled: result.enabled,
-      gatewayEnabled: result.gatewayEnabled,
-      pairingAllowed: result.pairingAllowed,
-      manageable: result.manageable,
-    });
+    setAccess(pairingAccess(result));
     setConnection(connection);
   };
   useEffect(() => {
@@ -412,7 +431,20 @@ export function WhatsAppConnection() {
               : { confirmed: true },
         );
       } catch (e) {
-        const message = gatewayMessage(e, 'Connection failed.', enabled);
+        // A refused reconnect means the connection changed since the page loaded: show what is
+        // saved now, and word the failure for it.
+        let canPair = enabled;
+        if (action === 'reconnect') {
+          const saved = await loadConnection().catch(() => undefined);
+          if (saved) {
+            showConnection(saved);
+            canPair = !!saved.enabled;
+          }
+        }
+        const message =
+          action === 'reconnect'
+            ? reconnectMessage(e, canPair)
+            : gatewayMessage(e, 'Connection failed.', enabled);
         // Its confirmation shows the failure while still open for this action. Reconnect
         // has none, and a confirmation closed meanwhile can't, so those show below (and
         // as a notification).

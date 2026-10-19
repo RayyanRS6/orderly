@@ -86,15 +86,62 @@ describe('an existing linked phone without pairing approval', () => {
   });
 
   it('follows the server’s flags, and works with servers that send fewer', () => {
-    // A server that says the existing phone can be managed (or not).
-    expect(linkedControls({ ...notApproved, manageable: false }, linked)).toMatchObject({
+    // What GET /whatsapp/connection sends (server/whatsapp/routes.ts): its own decisions win.
+    const sent = { ...notApproved, canPair: false, canManage: true };
+    // A revoked business whose phone finished pairing: everything but a new pairing.
+    expect(linkedControls({ ...sent, canReconnect: true }, linked)).toEqual({
+      pair: false,
+      reconnect: true,
+      disconnect: true,
+      poll: true,
+    });
+    // A pairing nobody finished, or one that expired: the server refuses Reconnect, so the
+    // page does not offer it. The phone can still be checked and disconnected.
+    expect(linkedControls({ ...sent, canReconnect: false }, linked)).toEqual({
+      pair: false,
       reconnect: false,
       disconnect: true,
+      poll: true,
+    });
+    expect(actions({ ...sent, canReconnect: false }, linked, 'error')).not.toContain('Reconnect');
+    // An approved business whose pairing expired: Start pairing, not Reconnect.
+    expect(
+      linkedControls(
+        {
+          enabled: true,
+          gatewayEnabled: true,
+          pairingAllowed: true,
+          canPair: true,
+          canManage: true,
+          canReconnect: false,
+        },
+        linked,
+      ),
+    ).toEqual({ pair: true, reconnect: false, disconnect: true, poll: true });
+    // Already disconnected: nothing left to manage, and no pairing without approval.
+    expect(linkedControls({ ...sent, canManage: false, canReconnect: false }, linked)).toEqual({
+      pair: false,
+      reconnect: false,
+      disconnect: false,
       poll: false,
     });
     expect(
-      linkedControls({ enabled: false, gatewayEnabled: false, manageable: true }, linked),
-    ).toMatchObject({ reconnect: true, poll: true });
+      actions({ ...sent, canManage: false, canReconnect: false }, linked, 'disconnected'),
+    ).toBe('');
+    // The gateway switched off, as sent now: the phone can be disconnected, not checked.
+    expect(
+      linkedControls(
+        {
+          enabled: false,
+          gatewayEnabled: false,
+          pairingAllowed: true,
+          canPair: false,
+          canManage: true,
+          canReconnect: false,
+        },
+        linked,
+      ),
+    ).toEqual({ pair: false, reconnect: false, disconnect: true, poll: false });
     // The gateway is switched off: the phone can still be disconnected (saved first).
     expect(linkedControls({ enabled: false, gatewayEnabled: false }, linked)).toEqual({
       pair: false,
@@ -121,6 +168,9 @@ describe('an existing linked phone without pairing approval', () => {
   it('checks the status of an existing linked phone whatever the approval', () => {
     const page = source('src/components/WhatsAppConnection.tsx');
     expect(page).toContain('const controls = linkedControls(access, connection);');
+    // The page keeps the server's flags as it receives them.
+    expect(page).toContain('setAccess(pairingAccess(result));');
+    expect(page).not.toContain('manageable');
     expect(page).toMatch(/if \(\s*!controls\.poll \|\|\s*connection\?\.provider !== 'baileys'/);
     expect(page).not.toMatch(/if \(\s*!enabled \|\|\s*connection\?\.provider !== 'baileys'/);
     // The buttons are no longer inside the block shown only with pairing allowed.
