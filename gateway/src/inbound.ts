@@ -12,7 +12,11 @@ export type Placeholder = { native: string; timestamp: number; at: number; relea
 // Baileys waits 5 s, asks the restaurant phone to resend the message, gives up after 15 s and
 // emits an answer 0.5 s after it arrives. Wait well past that before telling staff.
 export const PLACEHOLDER_WAIT_MS = 45000;
-const PLACEHOLDER_LIMIT = 500;
+// At most this many customer messages wait for their content at once. Ones staff were already
+// told about stay only to file a late copy in the same chat, so they do not use up that limit;
+// the store as a whole is still capped.
+export const PLACEHOLDER_LIMIT = 500;
+export const PLACEHOLDER_STORE_LIMIT = 2000;
 const DAY_MS = 86400000;
 // The notice to staff goes under its own message ID, the original's with this suffix (Orderly
 // words it as unreadable), so the real message keeps its ID if it still arrives.
@@ -41,7 +45,15 @@ export function holdPlaceholder(
   timestamp: number,
   now: number,
 ) {
-  if (store.get('placeholder', id) || store.count('placeholder') >= PLACEHOLDER_LIMIT) return;
+  if (store.get('placeholder', id)) return;
+  const held = store.count('placeholder');
+  if (held >= PLACEHOLDER_STORE_LIMIT) return;
+  if (
+    held >= PLACEHOLDER_LIMIT &&
+    store.list<Placeholder>('placeholder').filter((row) => !row.value.released).length >=
+      PLACEHOLDER_LIMIT
+  )
+    return;
   store.set('placeholder', id, { native, timestamp, at: now } satisfies Placeholder);
 }
 // Placeholders whose content never came, to tell staff about once. Saved on disk, so a restart

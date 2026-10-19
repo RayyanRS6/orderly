@@ -115,9 +115,11 @@ the migration so old queued replies can be fenced safely.
   must not pause it. Resume only from Orderly's staff controls.
 - WhatsApp Business app **greeting and away messages** are sent by the phone and reach Orderly
   like a staff reply, so they pause the bot for that chat (WhatsApp marks them no differently).
-  Ask the owner to turn them off (Business tools → Greeting message / Away message) and use
-  Orderly's own greeting instead. Test once from a number that has never chatted, with the
-  greeting on and then off, and resume any chat it paused.
+  Orderly has no setting that recognises them: the exact-text helper in `src/shared/whatsapp.ts`
+  is not used anywhere yet. Ask the owner to turn them off (Business tools → Greeting message /
+  Away message) and use Orderly's own greeting instead. Test once from a number that has never
+  chatted, with the greeting on and then off, and resume any chat it paused. This test is a
+  launch gate for every linked restaurant.
 - Interrupt/restart the gateway. Verify encrypted credentials restore without new pairing,
   queued inbound events retry once, and uncertain sends do not automatically resend.
 - Simulate network loss, logout and competing-session errors. Verify the session keeps retrying
@@ -142,9 +144,14 @@ that neither opens nor fails within 45 seconds is abandoned and retried. The sta
 two minutes.
 
 These retries are for numbers that finished pairing. A pairing nobody finishes ends as
-`PAIRING_EXPIRED` and its worker exits, freeing the place: when its QR codes run out (408), on
-a second failure (the first, if a pairing code was already shown) or after 5 minutes. The owner
-starts a new pairing.
+`PAIRING_EXPIRED` and its worker exits, freeing the place: when its QR codes run out (408 with
+Baileys' "QR refs attempts ended"), on a second failure (the first, if a pairing code was
+already shown; a connection lost during pairing, also 408, is such a failure and gets the one
+retry) or after 5 minutes. A pairing WhatsApp refuses ends at once with WhatsApp's reason
+instead: `LOGGED_OUT` for 401, `DISCONNECT_<code>` for 403, 405, 411 or 440 (for example
+`DISCONNECT_405`). The 5-minute timer never replaces that reason, and the supervisor logs it.
+The owner starts a new pairing, after the admin has fixed the cause for 405
+(`GATEWAY_WA_VERSION`).
 
 A gateway restart brings back sessions that finished pairing and were `connected`, `connecting`
 or `reconnecting`, or that an older version parked in `error` with a passing failure code:
@@ -155,8 +162,11 @@ or `reconnecting`, or that an older version parked in `error` with a passing fai
 retrying, becomes `PAIRING_EXPIRED` instead. At most `GATEWAY_MAX_SESSIONS` start, numbers that
 were connected first; the rest wait as `SESSION_CAPACITY_REACHED` and start once a place frees.
 
-Heartbeats reach Orderly once a minute (the 15-second tick still retries undelivered events); a
-heartbeat older than 3 minutes is not ready to send. The gateway must also report a verified
+Heartbeats reach Orderly about once a minute (52.5 to 67.5 seconds apart; the 15-second tick
+still retries undelivered events). Orderly refuses replies once the last heartbeat it received
+is over 3 minutes old: one missed heartbeat is harmless, two missed in a row can already reach
+the limit. A crashed worker restarts only into a free place; if a waiting number took it
+meanwhile, it waits as `SESSION_CAPACITY_REACHED`. The gateway must also report a verified
 account identity. Backend callback failure keeps inbound events encrypted on disk, capped at
 10,000 per session; a full queue stops the session until it drains. A message Orderly rejects
 outright (400/413/422) no longer blocks the ones behind it: it is set aside (at most 500, cleared
@@ -172,18 +182,25 @@ phone. Do not delete receipt records to force a resend. Exactly-once delivery ca
 guaranteed across an external messaging service, but duplicate blind retries are prevented.
 
 Disconnect and new pairing first log the linked device out of WhatsApp (best effort, at most
-3.5 seconds, only while the socket is connected and only for a finished pairing), then wipe
-credentials and jobs, so leftover credentials and later backups stop working. Redeploys,
-restarts and a lost lease only close the socket and keep the pairing. If the session was offline
-at the time, the logout cannot happen: the owner should still check WhatsApp → Linked devices
-and remove the old session. Orders and Orderly chat history remain.
+3.5 seconds, and only for a finished pairing), then wipe credentials and jobs, so leftover
+credentials and later backups stop working. A session with no running worker (parked, crashed
+or waiting for a place) gets a short-lived worker that signs in only to log the device out and
+reports nothing to Orderly; it is stopped after 12 seconds whatever happens, and may briefly run
+beside a full gateway's sessions. A disconnect is logged as `SESSION_DISCONNECTED`. Redeploys,
+restarts and a lost lease only close the socket and keep the pairing. If WhatsApp could not be
+reached at the time, the logout cannot happen: the owner should still check WhatsApp → Linked
+devices and remove the old session. Orders and Orderly chat history remain.
 
 If the owner switches to the official route or disconnects while the gateway cannot be reached,
 Orderly saves the change anyway and the old session keeps running here, linked to the phone.
 Orderly answers its next event or heartbeat (within a minute while it is connected) with 410,
-and the gateway then ends it as a disconnect would: logout, then wipe (logged as
-`SESSION_RETIRED`). Until the gateway is reachable again, removing the device under Linked
-devices on the phone is the immediate remedy.
+and the gateway then ends it as a disconnect would: logout (also when no worker runs for it),
+then wipe (logged as `SESSION_RETIRED`). A session that sends nothing (for example one stopped
+on a refusal such as `DISCONNECT_405`) is not reached this way: press **Disconnect** again in
+Orderly once the gateway is reachable. Until then, removing the device under Linked devices on
+the phone is the immediate remedy. Orderly answers events of a connection it no longer has at
+all (a deleted business) with 200 and ignores them, so it can never end such a session: delete a
+business only after its session ended ([incident runbook](../docs/INCIDENT-RUNBOOK.md) §6).
 
 ## Protocol updates and rollback
 
@@ -235,6 +252,10 @@ npm run build
 npm run test:edge-runtime
 ```
 
-The gateway CI also builds the Docker image. These checks do not authenticate a real number.
+The gateway CI also builds the Docker image. These checks do not authenticate a real number:
+the supervisor tests use a fixture worker without a socket, so the real worker's socket handling
+(the pairing timer, the close handler, the logout-only sign-in) is covered only through the
+policy functions it calls (`retryPairing`, `pairingTimeoutCode`, `reconnectDecision`). The live
+acceptance checklist above is what proves it.
 Baileys is MIT-licensed; the locked `libsignal` dependency declares GPL-3.0. Preserve dependency
 license notices and review the obligations before distributing gateway images/software.

@@ -13,6 +13,7 @@ import type { GatewayConfig } from './config.js';
 import { signedHeaders } from '../../server/whatsapp/signing.js';
 import { crashRestartDelay, HEALTHY_AFTER_MS, restorable } from './policy.js';
 import { SESSION_RETIRED } from './drain.js';
+import { PARKED_LOGOUT_MS } from './shutdown.js';
 
 // Everything a session keeps about the restaurant's WhatsApp, wiped on disconnect and new pairing.
 const SESSION_NAMESPACES = [
@@ -67,6 +68,8 @@ export class Supervisor {
   >();
   private operations = new Set<string>();
   private restartTimers = new Set<ReturnType<typeof setTimeout>>();
+  // Short-lived workers that only log out a session that had no running worker (stopChild).
+  private logouts = new Set<ChildProcess>();
   private stopping = false;
   private readonly owner = randomUUID();
   private flushing = false;
@@ -121,8 +124,10 @@ export class Supervisor {
   // Whether a session finished pairing: it was connected, or its stored credentials hold the
   // account WhatsApp signs on pairing (also for sessions an older gateway saved).
   private paired(session: Session): boolean {
-    if (session.status === 'connected') return true;
-    const path = join(this.config.dataDir, `${session.connectionId}.sqlite`);
+    return session.status === 'connected' || this.hasAccount(session.connectionId);
+  }
+  private hasAccount(connectionId: string): boolean {
+    const path = join(this.config.dataDir, `${connectionId}.sqlite`);
     if (!existsSync(path)) return false;
     let sessionStore: Store | undefined;
     try {
@@ -212,6 +217,14 @@ export class Supervisor {
     // The child's own reason for exiting, and since when it has been connected without a break.
     let fatal: string | undefined;
     let connectedSince: number | undefined;
+    // Why the session stopped, logged once: a refusal WhatsApp gave (such as DISCONNECT_405) is
+    // only a status, and the operator must still find it in the logs.
+    let logged: string | undefined;
+    const logOnce = (code: string) => {
+      if (code === logged) return;
+      logged = code;
+      this.log(code, session.connectionId);
+    };
     child.on('error', () => {
       this.log('WORKER_PROCESS_ERROR', session.connectionId);
       child.kill();
@@ -228,6 +241,11 @@ export class Supervisor {
           this.snapshots.set(session.connectionId, message.snapshot);
           if (message.snapshot.status === 'connected') connectedSince ??= Date.now();
           else connectedSince = undefined;
+          if (
+            ['error', 'logged_out'].includes(message.snapshot.status) &&
+            typeof message.snapshot.errorCode === 'string'
+          )
+            logOnce(message.snapshot.errorCode);
           const healthy =
             connectedSince !== undefined && Date.now() - connectedSince >= this.healthyAfterMs;
           const current = this.store.get<Session>('sessions', session.connectionId);
@@ -250,7 +268,7 @@ export class Supervisor {
         }
         if (message.type === 'fatal') {
           fatal = typeof message.errorCode === 'string' ? message.errorCode : undefined;
-          this.log(message.errorCode, session.connectionId);
+          logOnce(message.errorCode);
         }
         if (message.type === 'warning') this.log(message.code, session.connectionId);
         if (message.type === 'stale')
@@ -295,11 +313,15 @@ export class Supervisor {
           this.restartTimers.delete(timer);
           const latest = this.store.get<Session>('sessions', next.connectionId);
           if (
-            latest?.generation === next.generation &&
-            latest.status === 'error' &&
-            latest.errorCode === next.errorCode
+            latest?.generation !== next.generation ||
+            latest.status !== 'error' ||
+            latest.errorCode !== next.errorCode
           )
-            this.spawn(latest);
+            return;
+          // Its place may have gone to a number that was waiting for one meanwhile.
+          if (this.children.size >= this.config.maxSessions)
+            this.park(latest, 'SESSION_CAPACITY_REACHED');
+          else this.spawn(latest);
         }, crashRestartDelay(next.crashes));
         this.restartTimers.add(timer);
       }
@@ -360,12 +382,15 @@ export class Supervisor {
     }
   }
   // logout is true only for an owner's disconnect or new pairing, or a session Orderly retired:
-  // the worker then removes this linked device from the phone before its credentials are wiped.
-  // Redeploys, restarts and a lost lease close without logging out, so restaurants keep their
-  // pairing.
+  // the worker then removes this linked device from the phone before its credentials are wiped
+  // (a session with no running worker gets a short-lived one for that). Redeploys, restarts and
+  // a lost lease close without logging out, so restaurants keep their pairing.
   async stopChild(id: string, logout = false) {
     const child = this.children.get(id);
-    if (!child) return;
+    if (!child) {
+      if (logout) await this.logoutWithoutWorker(id);
+      return;
+    }
     this.children.delete(id);
     this.snapshots.delete(id);
     for (const [key, pending] of this.pending)
@@ -389,6 +414,42 @@ export class Supervisor {
       if (child.connected) child.send({ type: 'stop', logout });
       else child.kill();
     });
+  }
+  // A session with no running worker (parked, crashed or waiting for a place) still has its
+  // linked device on the phone. Before its credentials are wiped, a short-lived worker signs in
+  // only to log that device out, reporting nothing to Orderly. It may briefly run beside a full
+  // gateway's sessions. Bounded by PARKED_LOGOUT_MS; if WhatsApp cannot be reached the owner
+  // must still remove the device under Linked devices.
+  private async logoutWithoutWorker(connectionId: string) {
+    if (this.stopping || !this.hasAccount(connectionId)) return;
+    const child = fork(this.workerUrl, [], {
+      stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+      serialization: 'json',
+      execArgv: ['--max-old-space-size=128', '--unhandled-rejections=strict'],
+    });
+    this.logouts.add(child);
+    try {
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(() => {
+          child.kill('SIGKILL');
+          resolve();
+        }, PARKED_LOGOUT_MS);
+        const done = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+        child.once('exit', done);
+        child.once('error', () => {
+          child.kill();
+          done();
+        });
+        child.send({ type: 'logout', connectionId }, (error) => {
+          if (error) child.kill();
+        });
+      });
+    } finally {
+      this.logouts.delete(child);
+    }
   }
   async command(input: unknown) {
     if (this.stopping) throw new GatewayError('GATEWAY_STOPPING', 503);
@@ -429,7 +490,10 @@ export class Supervisor {
       const revoke = body.action === 'pair' || body.action === 'disconnect';
       await this.stopChild(body.connectionId, revoke);
       if (revoke) this.wipe(body.connectionId);
-      if (body.action !== 'disconnect') this.spawn(next);
+      // So the operator can confirm in the logs that a disconnected session is gone, for
+      // example before a workspace is deleted (docs/INCIDENT-RUNBOOK.md §6).
+      if (body.action === 'disconnect') this.log('SESSION_DISCONNECTED', body.connectionId);
+      else this.spawn(next);
       return this.status(body);
     } finally {
       this.operations.delete(body.connectionId);
@@ -493,6 +557,7 @@ export class Supervisor {
     this.stopping = true;
     clearInterval(this.timer);
     for (const timer of this.restartTimers) clearTimeout(timer);
+    for (const child of this.logouts) child.kill('SIGKILL');
     await Promise.all([...this.children.keys()].map((id) => this.stopChild(id)));
     this.store.releaseLease(this.owner);
     this.store.close();

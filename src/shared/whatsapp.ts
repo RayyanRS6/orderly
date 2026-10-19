@@ -24,8 +24,9 @@ export type WhatsAppConnection = {
   errorCode?: string;
   updatedAt: string;
 };
-// A connected linked phone reports to Orderly once a minute (each report is one Supabase
-// function call). Replies stop only after three missed reports, so one late beat is harmless.
+// A connected linked phone reports to Orderly about once a minute (each report is one Supabase
+// function call). Replies are refused once the last report received is over 3 minutes old: one
+// missed or late report is harmless, but two missed in a row can already reach the limit.
 export const GATEWAY_HEARTBEAT_MS = 60000;
 export const GATEWAY_HEARTBEAT_STALE_MS = 180000;
 export type WhatsAppAddress = {
@@ -119,8 +120,10 @@ export function locationText(location: {
   return ['Location shared:', place, coordinates].filter(Boolean).join(' ');
 }
 // WhatsApp Business app greeting and away messages reach Orderly exactly like a reply staff typed
-// on the phone, and WhatsApp marks them no differently. A restaurant may list those texts; only an
-// exact match (ignoring spacing) counts as automatic, so a staff quick reply still pauses the bot.
+// on the phone, and WhatsApp marks them no differently. Not used yet: no setting lists those texts
+// and nothing calls this, so today every greeting or away message pauses the bot for that chat,
+// and owners turn them off instead (gateway/README.md). Kept for an opt-in rule where only an exact
+// match (ignoring spacing) counts as automatic, so a staff quick reply still pauses the bot.
 export const phoneAutoMessagesSchema = z.array(z.string().trim().min(1).max(1000)).max(5);
 const autoMessageText = (text: string) => text.normalize('NFC').replace(/\s+/g, ' ').trim();
 export function isPhoneAutoMessage(
