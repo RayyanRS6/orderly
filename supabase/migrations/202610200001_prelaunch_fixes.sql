@@ -644,6 +644,15 @@ begin
 end;
 $$;
 
+-- AI limits saved exactly as the old dashboard's untouched defaults (300 an hour, 30 per customer,
+-- without the per-minute limit every newer save includes) give way to the new defaults. The
+-- settings revision goes up, so a settings copy read before this is refused, not saved back.
+update public.companies set data = (data - 'aiLimits') || jsonb_build_object('settingsRevision',
+    case when jsonb_typeof(data->'settingsRevision') = 'number'
+        and data->>'settingsRevision' ~ '^[0-9]{1,9}$'
+      then (data->>'settingsRevision')::integer + 1 else 1 end)
+  where data->'aiLimits' = '{"repliesPerHour":300,"repliesPerCustomerPerHour":30}'::jsonb;
+
 do $$ declare f record; begin
   for f in select oid::regprocedure signature from pg_proc where pronamespace='public'::regnamespace
     and proname=any(array['alert_recipient','erase_customer','run_retention','awaits_staff_reply','waiting_since',
