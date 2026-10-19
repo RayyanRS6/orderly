@@ -21,6 +21,7 @@ import type {
 import { money } from '../shared/types';
 import { effectiveAiLimits, MODEL_LIMITS } from '../shared/models';
 import {
+  clearQuantityNear,
   mentionsQuantity,
   quantityNear,
   quantityOfMention,
@@ -1141,9 +1142,10 @@ export function parseActions(
         ...requestedOptions([selected], text),
       ];
       // Only a count written next to the chosen dish, in its own part of the message, changes
-      // the one asked about: "3 naan", "naan 3, chicken wali" or "house 12" is not its count.
+      // the one asked about: "3 naan", "naan 3, chicken wali" or "house 12" is not its count,
+      // nor the 4 in "chicken wali 4 naan", which may be the naan's.
       const explicitQuantity = !/^option\b/u.test(value)
-        ? quantityNear(selected, text, products)
+        ? clearQuantityNear(selected, text, products)
         : undefined;
       return [
         {
@@ -2052,7 +2054,28 @@ export function processTurn(
     const deterministic = parseActions(company, products, next, input.text);
     const first = deterministic[0];
     if (first?.type === 'clarify_item' && requested.some((action) => action.type === 'add_item')) {
-      requested = deterministic;
+      // The dish to choose is asked about. The AI's additions of other dishes stand ("karahi 4
+      // naan" with two karahis: the naan), added first so the choice stays open. A count that
+      // may be the next dish's (the 4) is not the choice's: the AI's count for it, else 1.
+      const choice = new Set(first.candidateProductIds);
+      const others = requested.filter(
+        (action) => action.type === 'add_item' && !choice.has(action.productId),
+      );
+      const between = products.some(
+        (product) =>
+          choice.has(product.id) &&
+          quantityNear(product, input.text, products) !== undefined &&
+          clearQuantityNear(product, input.text, products) === undefined,
+      );
+      const proposed = requested.find((action) =>
+        action.type === 'add_item'
+          ? choice.has(action.productId)
+          : action.type === 'clarify_item' &&
+            action.candidateProductIds.some((id) => choice.has(id)),
+      );
+      const count =
+        proposed?.type === 'add_item' || proposed?.type === 'clarify_item' ? proposed.quantity : 1;
+      requested = [...others, between ? { ...first, quantity: count } : first];
       correctedInterpretation = true;
       traces.push('ambiguous_addition_prevented');
     } else if (
@@ -2063,13 +2086,13 @@ export function processTurn(
       // A specific name/ordinal resolves the outstanding choice; keep its options and quantity.
       // The count: one written next to the dish in its own part (the parser's); else the AI's
       // when the customer wrote that number ("chicken biryani, make it 3"); else the pending
-      // choice's, so an AI that forgot "2 chicken" still adds 2, and "aur 3 naan" or "naan 3,
-      // chicken wali" stays the naan's.
+      // choice's, so an AI that forgot "2 chicken" still adds 2, and "aur 3 naan", "naan 3,
+      // chicken wali" or "chicken wali 4 naan" stays the naan's.
       const pending = next.pendingItemChoice?.candidateProductIds.includes(first.productId)
         ? next.pendingItemChoice
         : undefined;
       const product = products.find((p) => p.id === first.productId);
-      const explicit = !!product && quantityNear(product, input.text, products) !== undefined;
+      const explicit = !!product && clearQuantityNear(product, input.text, products) !== undefined;
       const quantityFor = (proposed: number) =>
         !pending || explicit
           ? first.quantity

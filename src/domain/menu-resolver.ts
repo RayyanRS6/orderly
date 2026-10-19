@@ -193,12 +193,14 @@ interface DishWords {
   options: Set<string>;
   // Words naming the restaurant's other dishes.
   others: Set<string>;
-  // A count as written ("100 naan" is refused later), not kept within 1-50.
+  // The other dishes' option words ("half" in "karahi half 4 naan"), part of their mention.
+  otherOptions: Set<string>;
+  // A count as written ("100 naan", "1000 naan" are refused later), not kept within 1-50.
   exact?: boolean;
 }
 // A count in digits ("3", "3x", "x3"), or undefined.
 function digitCount(token: string, words: DishWords): number | undefined {
-  const digits = token.match(words.exact ? /^x?(\d{1,3})x?$/ : /^x?(\d{1,2})x?$/)?.[1];
+  const digits = token.match(words.exact ? /^x?(\d{1,4})x?$/ : /^x?(\d{1,2})x?$/)?.[1];
   if (digits === undefined) return undefined;
   return words.exact ? Number(digits) : Math.max(1, Math.min(50, Number(digits)));
 }
@@ -206,16 +208,22 @@ const labelWords = (product: Product) =>
   [product.name, ...product.aliases]
     .flatMap((label) => normalizeCatalogText(label).split(' '))
     .filter((token) => token && !STOP_WORDS.has(token));
+const optionWords = (product: Product) =>
+  product.variants.flatMap((option) => normalizeCatalogText(option.name).split(' '));
 function dishWords(product: Product, catalog: Product[], exact = false): DishWords {
+  const others = catalog.filter(
+    (other) => other.id !== product.id && other.companyId === product.companyId,
+  );
+  const own = labelWords(product);
+  const options = new Set(optionWords(product));
   return {
-    own: labelWords(product),
-    options: new Set(
-      product.variants.flatMap((option) => normalizeCatalogText(option.name).split(' ')),
-    ),
-    others: new Set(
-      catalog
-        .filter((other) => other.id !== product.id && other.companyId === product.companyId)
-        .flatMap(labelWords),
+    own,
+    options,
+    others: new Set(others.flatMap(labelWords)),
+    otherOptions: new Set(
+      others
+        .flatMap(optionWords)
+        .filter((word) => word && !options.has(word) && !own.includes(word)),
     ),
     exact,
   };
@@ -253,6 +261,32 @@ const dishMention = (text: string, words: DishWords) =>
   });
 const isCount = (token: string, words: DishWords) =>
   digitCount(token, words) !== undefined || !!NUMBER_WORDS[token];
+// Where another dish is named straight before index `i` (with its options, a measure or "wala"
+// after its name: "karahi half 4", "chicken wali 4"), the index its words start at; else -1.
+function otherDishBefore(tokens: string[], i: number, words: DishWords): number {
+  const partOfMention = (token: string) =>
+    words.otherOptions.has(token) || MEASURE_WORDS.has(token) || WALA.has(token);
+  let k = i - 1;
+  while (k >= 0 && partOfMention(tokens[k]!)) k--;
+  if (k < 0 || !words.others.has(tokens[k]!) || isOwn(words, tokens[k]!)) return -1;
+  while (
+    k > 0 &&
+    (words.others.has(tokens[k - 1]!) ||
+      words.options.has(tokens[k - 1]!) ||
+      partOfMention(tokens[k - 1]!))
+  )
+    k--;
+  return k;
+}
+// Whether the count at `i` leads the dish after it. A count straight after another dish ends
+// that dish's part ("naan 3 chicken wali"), unless that dish has a count of its own before it
+// ("3 naan 2 chicken biryani"). So one number is never two dishes' count.
+function countLeads(tokens: string[], i: number, words: DishWords): boolean {
+  const start = otherDishBefore(tokens, i, words);
+  if (start < 0) return true;
+  const j = start - 1;
+  return j >= 0 && isCount(tokens[j]!, words) && countLeads(tokens, j, words);
+}
 function countBefore({ tokens, at }: Mention, words: DishWords): number | undefined {
   let i = at - 1;
   while (i >= 0 && (words.options.has(tokens[i]!) || MEASURE_WORDS.has(tokens[i]!))) i--;
@@ -264,23 +298,14 @@ function countBefore({ tokens, at }: Mention, words: DishWords): number | undefi
   // "bhej do chicken wali": "do" straight after a verb is "give", not two.
   if ((token === 'do' || token === 'دو') && GIVE_VERBS.has(tokens[i - 1] ?? '')) return undefined;
   if (ADDRESS_WORDS.has(tokens[i - 1] ?? '')) return undefined;
-  // "naan 3 chicken wali": a count straight after another dish is that dish's, unless that dish
-  // has its own count before it ("3 naan 2 chicken biryani").
-  if (i > 0 && words.others.has(tokens[i - 1]!) && !isOwn(words, tokens[i - 1]!)) {
-    let j = i - 1;
-    while (
-      j >= 0 &&
-      (words.others.has(tokens[j]!) ||
-        words.options.has(tokens[j]!) ||
-        MEASURE_WORDS.has(tokens[j]!) ||
-        WALA.has(tokens[j]!))
-    )
-      j--;
-    if (j < 0 || !isCount(tokens[j]!, words)) return undefined;
-  }
-  return count;
+  return countLeads(tokens, i, words) ? count : undefined;
 }
-function countAfter({ tokens, end, next }: Mention, words: DishWords): number | undefined {
+// `clear`: only a count that can be no other dish's, so not one followed by another dish.
+function countAfter(
+  { tokens, end, next }: Mention,
+  words: DishWords,
+  clear = false,
+): number | undefined {
   let i = end;
   while (
     i < tokens.length &&
@@ -307,7 +332,8 @@ function countAfter({ tokens, end, next }: Mention, words: DishWords): number | 
     GIVE_VERBS.has(after) ||
     AFTER_COUNT.has(after) ||
     // "naan 3 chicken biryani": the count ends this dish's part, as in "naan 3, chicken biryani".
-    (words.others.has(after) && !isOwn(words, after))
+    // It may also be read as "naan, 3 chicken biryani", so it is not a clear count.
+    (!clear && words.others.has(after) && !isOwn(words, after))
     ? count
     : undefined;
 }
@@ -344,6 +370,20 @@ export function quantityAfter(
 /** The count written next to the dish, before or after it, in its own part of the message. */
 export const quantityNear = (product: Product, text: string, catalog: Product[] = []) =>
   quantityBefore(product, text, catalog) ?? quantityAfter(product, text, catalog);
+/**
+ * The count next to the dish that can be no other dish's: before it, or after it where its
+ * part of the message ends or a measure, softener or verb follows ("chicken wali 3", "biryani
+ * 2 de do"). In "chicken wali 4 naan" the 4 may be the naan's, so it is not the dish's here.
+ */
+export function clearQuantityNear(
+  product: Product,
+  text: string,
+  catalog: Product[] = [],
+): number | undefined {
+  const words = dishWords(product, catalog);
+  const mention = dishMention(text, words);
+  return mention && (countBefore(mention, words) ?? countAfter(mention, words, true));
+}
 /**
  * The count for one exact mention of a dish ("chicken tikka" in "2 chicken biryani aur 1
  * chicken tikka"), before it or else right after it in the mention's own part, as written.
