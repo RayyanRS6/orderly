@@ -74,7 +74,7 @@ describe('the deployment guide', () => {
     );
     expect(deployment).toContain('payment methods setting (`paymentMethods`');
     expect(deployment).toContain(
-      'says the restaurant will share the payment details and confirm the transfer itself',
+      'tells the customer to type "staff" so restaurant staff send the payment details',
     );
     expect(deployment).toContain('replies come from the restaurant’s AI assistant');
     const readme = prose('README.md');

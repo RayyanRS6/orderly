@@ -54,8 +54,8 @@ export interface Company {
   deliveryZones: DeliveryZone[];
   /**
    * How customers may pay the restaurant. Missing or empty means cash only. Orderly never
-   * collects or sends account numbers: for a transfer the customer is told the restaurant will
-   * share its payment details and confirm the transfer itself.
+   * collects or sends account numbers: for a transfer the customer is told to type "staff", and
+   * restaurant staff send the payment details and confirm the transfer themselves.
    */
   paymentMethods?: PaymentMethod[];
   faqs: { question: string; answer: string }[];
