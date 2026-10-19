@@ -113,7 +113,9 @@ describe('privacy policy matches the code', () => {
     expect(menu).toContain('paymentShort(paymentMethodsOf(restaurant))');
     const payments = read('src/lib/payments.ts');
     expect(payments).toContain("return 'pay in cash'");
-    expect(payments).toContain('ask the restaurant in WhatsApp for the details.');
+    expect(payments).toContain(
+      'type “staff” in WhatsApp and restaurant staff will send the details.',
+    );
     expect(privacy).toContain('usually cash on delivery or at pickup');
     expect(privacy).toContain(
       'A JazzCash, Easypaisa or bank transfer is possible only if the restaurant offers it',

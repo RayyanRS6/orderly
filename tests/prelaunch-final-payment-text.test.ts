@@ -16,13 +16,13 @@ describe('payment wording on the menu page and the order card', () => {
     expect(staffPaymentNote(['cash'], false)).toBe('cash at pickup');
   });
 
-  it('names the transfers a restaurant takes, and says to ask it in WhatsApp for the details', () => {
+  it('names the transfers a restaurant takes, and says to type “staff” in WhatsApp for the details', () => {
     const all: PaymentMethod[] = ['cash', 'jazzcash', 'easypaisa', 'bank_transfer'];
     expect(paymentSentence(all, true)).toBe(
-      'Pay cash on delivery, or by JazzCash, Easypaisa or bank transfer — ask the restaurant in WhatsApp for the details.',
+      'Pay cash on delivery, or by JazzCash, Easypaisa or bank transfer — type “staff” in WhatsApp and restaurant staff will send the details.',
     );
     expect(paymentSentence(['jazzcash'], false)).toBe(
-      'Pay by JazzCash — ask the restaurant in WhatsApp for the details.',
+      'Pay by JazzCash — type “staff” in WhatsApp and restaurant staff will send the details.',
     );
     expect(paymentShort(all)).toBe('pay in cash or by transfer');
     expect(paymentShort(['easypaisa'])).toBe('pay by transfer');
