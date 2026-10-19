@@ -216,6 +216,13 @@ function invalidate(cart: Cart) {
   cart.revision += 1;
   unreview(cart);
 }
+// An empty cart in place of this one. The revision keeps increasing, so an earlier submission
+// key is never reused.
+function startNewCart(cart: Cart) {
+  const revision = cart.revision + 1;
+  Object.keys(cart).forEach((key) => delete (cart as unknown as Record<string, unknown>)[key]);
+  Object.assign(cart, emptyCart(), { revision });
+}
 // Back to building without a cart change: nothing is confirmable until a review is shown again.
 function unreview(cart: Cart) {
   cart.status = 'building';
@@ -1553,6 +1560,19 @@ const GENERAL_STATUS = new RegExp(
 const BARE_STATUS =
   /^(?:(?:bhai|bhaiya|sir|ji|yaar|yar|please|pls|aur|or|and|so|abhi|ab|بھائی|جی|اور) )*(?:how (?:much )?long(?:er)?(?: (?:will it take|now|more))?|any updates?|eta|kitni der(?: aur| or| hai| lagegi| lage gi| hogi| aur lagegi)?|kitna (?:time|waqt)(?: aur| lagega| or)?|kab (?:tak )?(?:aaye?ga|aayega|ayega|milega|aaega)|kahan (?:hai|reh gaya)|کتنی دیر(?: اور| ہے| لگے گی)?|کب (?:تک )?(?:آئے گا|ملے گا))(?: (?:bhai|bhaiya|sir|ji|yaar|yar|please|pls|بھائی|جی))*[\s.!?؟۔]*$/u;
 const FINISHED_STATUSES: OrderStatus[] = ['completed', 'rejected', 'cancelled'];
+// An order still open with the restaurant that has not changed for this long (twice as long
+// while it waits for acceptance): staff never closed it.
+const ORDER_LEFT_OPEN_MS = 12 * 60 * 60 * 1000;
+/**
+ * Whether an order staff never closed (accepted, ready or out for delivery and not updated for
+ * 12 hours, or pending for 24) should stop holding the chat's cart, so a returning customer's
+ * new order is taken. Its status is not changed.
+ */
+export function orderLeftOpen(order: Pick<Order, 'status' | 'updatedAt'>, now: string): boolean {
+  if (FINISHED_STATUSES.includes(order.status)) return false;
+  const age = Date.parse(now) - Date.parse(order.updatedAt);
+  return Number.isFinite(age) && age > (order.status === 'pending' ? 2 : 1) * ORDER_LEFT_OPEN_MS;
+}
 /**
  * Whether general wording ("kitni der?") can be about this order: it is still with the
  * restaurant and changed in the last 24 hours, or it finished in the last 2 hours.
@@ -2347,12 +2367,7 @@ export function processTurn(
         continue;
       }
       if (action.type === 'new_order') {
-        // Keep the monotonically increasing revision to prevent submission-key reuse.
-        const revision = cart.revision + 1;
-        Object.keys(cart).forEach(
-          (key) => delete (cart as unknown as Record<string, unknown>)[key],
-        );
-        Object.assign(cart, emptyCart(), { revision });
+        startNewCart(cart);
         delete next.pendingItemChoice;
         reply = say(
           lang,
@@ -2415,6 +2430,18 @@ export function processTurn(
         }
         traces.push(faq ? 'approved_faq' : 'grounded_model_answer');
         continue;
+      }
+      // An order staff never closed no longer holds the cart: the returning customer's new
+      // order starts a fresh cart, as "new order" would. The order itself is left as it is.
+      if (
+        cart.status === 'submitted' &&
+        cart.orderId &&
+        input.latestOrder &&
+        orderLeftOpen(input.latestOrder, shownAt)
+      ) {
+        startNewCart(cart);
+        delete next.pendingItemChoice;
+        traces.push('new_order');
       }
       if (cart.status === 'submitted') {
         reply = say(
