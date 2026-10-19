@@ -18,8 +18,8 @@ import {
 import type { Bootstrap, Order, OrderStatus, PageResult, Trace } from '../shared/types';
 import { money } from '../shared/types';
 import { api } from '../lib/api';
-import { ordersCsv } from '../lib/orders-csv';
-import { paymentMethodsOf, staffPaymentNote } from '../lib/payments';
+import { ordersCsv, UTF8_BOM } from '../lib/orders-csv';
+import { paymentMethodsOf, staffPaymentNote, staffTransferNote } from '../lib/payments';
 import { newestEvent } from '../lib/polling';
 import { useAction, useWorkspace } from '../lib/workspace';
 import { cn, initials, label, shortDate } from '../lib/utils';
@@ -615,7 +615,11 @@ export function Orders() {
           throw new Error('This export is too large. Contact support for a complete archive.');
       }
       const csv = ordersCsv(exportOrders, data.company.timezone);
-      const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+      // The byte-order mark tells Excel the file is UTF-8, so Urdu names and addresses read
+      // as written.
+      const url = URL.createObjectURL(
+        new Blob([UTF8_BOM, csv], { type: 'text/csv;charset=utf-8' }),
+      );
       const link = document.createElement('a');
       link.href = url;
       link.download = `${data.company.slug}-orders.csv`;
@@ -968,6 +972,11 @@ function OrderDetails({ order, onClose }: { order: Order | null; onClose: () => 
                 </dd>
               </div>
             </dl>
+            {staffTransferNote(paymentMethodsOf(data.company)) && (
+              <p className="mt-2 text-xs leading-relaxed text-stone-500">
+                {staffTransferNote(paymentMethodsOf(data.company))}
+              </p>
+            )}
             <div className="mt-5 space-y-2 rounded-2xl border border-ink/[0.05] bg-paper p-4 text-xs text-stone-500">
               <p>
                 <span className="font-semibold text-stone-700">Customer:</span> {order.customerName}{' '}

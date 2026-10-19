@@ -42,7 +42,7 @@ import {
 } from '../lib/menu-cart';
 import { ActionButton, Badge, CustomSelect, ErrorNotice, Field, Spinner } from './ui-basic';
 import { cn } from '../lib/utils';
-import { paymentMethodsOf, paymentSentence, paymentShort } from '../lib/payments';
+import { paymentMethodsOf, paymentSentence, paymentShort, transferAsk } from '../lib/payments';
 
 // The public menu page (/m/<slug>). Its own small chunk: no dialog library, no workspace,
 // no looping motion, and photos load only when scrolled to. Old phones and WhatsApp's
@@ -297,7 +297,9 @@ export function ItemCard({
             <p className="mt-1 text-[12.5px] leading-relaxed text-stone-500">{item.description}</p>
           )}
           <p className="mt-2 text-[13.5px] font-semibold tabular-nums text-brand-800">
-            {/* With variants, a variant's price is charged, never the base price. */}
+            {/* With variants, a variant's price is charged, never the base price; with
+                different variant prices the cheapest is a starting price. */}
+            {new Set(item.variants.map((v) => v.price)).size > 1 && 'from '}
             {money(
               item.variants.length ? Math.min(...item.variants.map((v) => v.price)) : item.price,
             )}
@@ -779,6 +781,11 @@ export function MenuPage({ slug }: { slug: string }) {
           <p className="mt-1 text-[13px] text-stone-500">
             Total {money(placed.total)} · {paymentShort(paymentMethodsOf(restaurant))}
           </p>
+          {transferAsk(paymentMethodsOf(restaurant)) && (
+            <p className="mt-1 text-[13px] text-stone-500">
+              {transferAsk(paymentMethodsOf(restaurant))}
+            </p>
+          )}
           {(placed.whatsappUrl ?? whatsapp) && (
             <a
               className="btn btn-ink mt-5 w-full"

@@ -340,7 +340,14 @@ export default function App() {
       })
       .catch((e) => {
         if (active) {
-          if (companyId && !route.slug) {
+          // Only a business this account can no longer open is forgotten. Being offline, or
+          // the sign-in check being busy, must not quietly open another business instead.
+          if (
+            companyId &&
+            !route.slug &&
+            e instanceof ApiError &&
+            (e.status === 403 || e.status === 404)
+          ) {
             removeStoredCompany();
             setCompanyId('');
           } else {
@@ -454,9 +461,14 @@ export default function App() {
 
   // Each page gets its own tab title, so open tabs can be told apart and screen readers
   // hear the page change. Orders waiting for acceptance lead it, as "(2) …", so a tab in the
-  // background shows them.
+  // background shows them: counted while the tab is on screen, and in a background tab only
+  // with browser alerts on (otherwise as they were when the tab was last shown).
   useEffect(() => {
-    if (!data) return;
+    // Signed out, or between businesses: no count or name from before stays in the tab.
+    if (!data) {
+      document.title = 'Orderly — Conversations to orders';
+      return;
+    }
     const name = [...navigation, ...manage, peopleNav].find((n) => n.id === page)?.label;
     document.title = titleWithCount(
       name ? `${name} · ${data.company.name} — Orderly` : 'Orderly — Conversations to orders',

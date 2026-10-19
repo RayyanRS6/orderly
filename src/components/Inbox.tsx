@@ -64,6 +64,16 @@ export function conversationFlags(
       !blocked && c.channel === 'whatsapp' && !!(c.customerPhone || c.whatsappAddress?.peer),
   };
 }
+/**
+ * The list badge of a chat the bot paused: an AI limit (raising it in Bot settings helps), or
+ * one of the pauses a limit does not explain and raising one does not end.
+ */
+export function pauseBadge(reason?: NonNullable<Conversation['limitPause']>['reason']) {
+  if (reason === 'burst') return 'Many messages';
+  if (reason === 'ai_error') return 'AI error';
+  if (reason === 'late') return 'Late message';
+  return 'AI limit';
+}
 /** The note shown above a chat the bot paused for an AI limit. Empty when there is none. */
 export function limitNote(
   c: FlagSource,
@@ -466,7 +476,9 @@ export function Inbox() {
                       <span className="flex flex-wrap items-center gap-1.5">
                         {c.mode === 'human' && <Status value="human" />}
                         {badge === 'blocked' && <Badge tone="red">Blocked</Badge>}
-                        {badge === 'limit' && <Badge tone="amber">AI limit</Badge>}
+                        {badge === 'limit' && (
+                          <Badge tone="amber">{pauseBadge(c.limitPause?.reason)}</Badge>
+                        )}
                       </span>
                     )}
                   </div>
