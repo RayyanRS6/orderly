@@ -1539,9 +1539,16 @@ const allergyNotice = (company: Company, lang: Language) =>
 const ORDER_STATUS_QUESTION =
   /\bwhere(?:'s| is)? (?:is )?(?:my |the |our )?(?:order|food|rider|delivery)\b|\border status\b|^status\b|\bstatus of (?:my |the )?order\b|\btrack(?:ing)? (?:my |the )?order\b|\bwhen will (?:my order|the order|the food) (?:come|arrive|be ready|reach|be delivered)\b|\bis (?:my order|the order) (?:ready|coming|on the way|confirmed|accepted)\b|\b(?:order|rider)\s+(?:abhi tak\s+)?(?:kahan|kidhar|kab)\b|\border ka (?:kya )?status\b|\bstatus (?:kya hai|batao|bata dein|batayein)\b|(?:آرڈر|رائیڈر)\s(?:\S+\s){0,3}?کہاں|آرڈر کی (?:صورتحال|حالت)|اسٹیٹس|سٹیٹس/u;
 // "How long?" wording that may also be asked before ordering ("kitni der mein delivery hoti
-// hai?", "how long does delivery take?"): about the order only while it is current.
-const GENERAL_STATUS =
-  /\bhow (?:much )?long(?:er)?\b(?! (?:is|are|was|were) (?!it\b)\p{L}| (?:are|r|do|does) (?:you|u) (?:stay )?open)|\bwhen will it (?:come|arrive|be ready|reach|be delivered)\b|\bis it (?:ready|coming|on the way|confirmed|accepted)\b|\bany updates?\b(?! (?:on|to|in|about) (?:the |your |ur )?(?:menu|prices?|rates?|deals?|timings?|hours)\b)|\beta\b|\bkhana\s+(?:abhi tak\s+)?(?:kahan|kidhar|kab)\b|\bkahan (?:hai|reh gaya|pohncha)\b|\bkitni der\b|\bkitna (?:time|waqt)\b|\bkab (?:tak )?(?:aaye?ga|aayega|ayega|milega|pohnche?ga|ready hoga|aaega)\b|کھانا\s(?:\S+\s){0,3}?کہاں|کہاں (?:ہے|رہ گیا|پہنچا)|کتنی دیر|کب (?:تک )?(?:آئے گا|ملے گا|پہنچے گا)/u;
+// hai?", "how long does delivery take?"): about the order only while it is current. Never
+// where the restaurant is ("restaurant kahan hai?", "ریسٹورنٹ کہاں ہے؟") or how long pickup
+// usually takes ("how long does pickup take?").
+const PLACE_WORDS =
+  '(?:restaurant|resturant|shop|branch|outlet|location|address|dukaan|dukan|jagah|place|area|aap|ap|apka|aapka|apki|aapki|ap ka|aap ka|ap ki|aap ki)';
+const URDU_PLACE_WORDS = '(?:ریسٹورنٹ|ریسٹورانٹ|دکان|دُکان|برانچ|پتہ|پتا|لوکیشن|جگہ|آپ)';
+const GENERAL_STATUS = new RegExp(
+  `\\bhow (?:much )?long(?:er)?\\b(?! (?:is|are|was|were) (?!it\\b)\\p{L}| (?:are|r|do|does) (?:you|u) (?:stay )?open| (?:does|do|will) (?:a |the )?(?:pickup|takeaway|take away)\\b)|\\bwhen will it (?:come|arrive|be ready|reach|be delivered)\\b|\\bis it (?:ready|coming|on the way|confirmed|accepted)\\b|\\bany updates?\\b(?! (?:on|to|in|about) (?:the |your |ur )?(?:menu|prices?|rates?|deals?|timings?|hours)\\b)|\\beta\\b|\\bkhana\\s+(?:abhi tak\\s+)?(?:kahan|kidhar|kab)\\b|(?<!\\b${PLACE_WORDS} )\\bkahan (?:hai|reh gaya|pohncha)\\b|\\bkitni der\\b|\\bkitna (?:time|waqt)\\b|\\bkab (?:tak )?(?:aaye?ga|aayega|ayega|milega|pohnche?ga|ready hoga|aaega)\\b|کھانا\\s(?:\\S+\\s){0,3}?کہاں|(?<!${URDU_PLACE_WORDS} )کہاں (?:ہے|رہ گیا|پہنچا)|کتنی دیر|کب (?:تک )?(?:آئے گا|ملے گا|پہنچے گا)`,
+  'u',
+);
 // The whole message is such a question ("kitni der?", "any update?", "how much longer?").
 const BARE_STATUS =
   /^(?:(?:bhai|bhaiya|sir|ji|yaar|yar|please|pls|aur|or|and|so|abhi|ab|بھائی|جی|اور) )*(?:how (?:much )?long(?:er)?(?: (?:will it take|now|more))?|any updates?|eta|kitni der(?: aur| or| hai| lagegi| lage gi| hogi| aur lagegi)?|kitna (?:time|waqt)(?: aur| lagega| or)?|kab (?:tak )?(?:aaye?ga|aayega|ayega|milega|aaega)|kahan (?:hai|reh gaya)|کتنی دیر(?: اور| ہے| لگے گی)?|کب (?:تک )?(?:آئے گا|ملے گا))(?: (?:bhai|bhaiya|sir|ji|yaar|yar|please|pls|بھائی|جی))*[\s.!?؟۔]*$/u;
@@ -1793,7 +1800,7 @@ export function processTurn(
   // The review text this turn shows, so finish() records which reply carried it.
   let shownReview: string | undefined;
   const showReview = () => {
-    const text = review(company, products, cart, lang, input.now);
+    const text = review(company, products, cart, lang, shownAt);
     if (cart.status === 'awaiting_confirmation') shownReview = text;
     return text;
   };
@@ -2079,8 +2086,9 @@ export function processTurn(
       if (!parts.includes('engine')) parts.push('engine');
     }
     // A closed restaurant says so early, in its first reply while closed, not only once the
-    // customer reaches the review. The owner's exact wording and an allergy answer stay as they
-    // are, and a customer asking about a placed order needs no notice.
+    // customer reaches the review: before the reply, or after the owner's greeting, which opens
+    // the chat. The owner's exact wording and an allergy answer stay as they are, and a customer
+    // asking about a placed order needs no notice. A late message is answered for now.
     if (
       reply &&
       next.mode === 'bot' &&
@@ -2089,7 +2097,7 @@ export function processTurn(
       !parts.includes('approved_answer') &&
       !traces.includes('order_status') &&
       cart.status !== 'submitted' &&
-      !isOpen(company, input.now) &&
+      !isOpen(company, shownAt) &&
       !CLOSED_LEADS.some((lead) => reply.includes(lead)) &&
       !conversation.messages.some(
         (m) =>
@@ -2098,13 +2106,23 @@ export function processTurn(
           CLOSED_LEADS.some((lead) => m.text.includes(lead)),
       )
     ) {
-      reply = `${closedText(company, lang, input.now)} ${say(
-        lang,
-        'You can still look at the menu and add items; your cart will be saved.',
-        'آپ پھر بھی مینو دیکھ کر چیزیں شامل کر سکتے ہیں، آپ کی ٹوکری محفوظ رہے گی۔',
-        'Aap phir bhi menu dekh kar items add kar sakte hain, cart save rahega.',
-      )}\n\n${reply}`;
-      if (!parts.includes('engine')) parts.unshift('engine');
+      // A cancelled cart is not saved, so it is not promised.
+      const notice =
+        cart.status === 'cancelled'
+          ? closedText(company, lang, shownAt)
+          : `${closedText(company, lang, shownAt)} ${say(
+              lang,
+              'You can still look at the menu and add items; your cart will be saved.',
+              'آپ پھر بھی مینو دیکھ کر چیزیں شامل کر سکتے ہیں، آپ کی ٹوکری محفوظ رہے گی۔',
+              'Aap phir bhi menu dekh kar items add kar sakte hain, cart save rahega.',
+            )}`;
+      if (parts.includes('greeting')) {
+        reply = `${reply}\n\n${notice}`;
+        if (!parts.includes('engine')) parts.push('engine');
+      } else {
+        reply = `${notice}\n\n${reply}`;
+        if (!parts.includes('engine')) parts.unshift('engine');
+      }
       traces.push('closed_notice');
     }
     if (modelText === 'used' && !parts.includes('model')) modelText = 'replaced';
@@ -2174,7 +2192,7 @@ export function processTurn(
     asksOrderStatus(input.text, input.latestOrder, input.now)
   ) {
     traces.push('order_status');
-    reply = orderStatusText(lang, input.latestOrder, input.now);
+    reply = orderStatusText(lang, input.latestOrder, shownAt);
     return finish();
   }
   let requested = input.action
@@ -2561,15 +2579,15 @@ export function processTurn(
           // so the lead only says nothing was placed. While closed, the review itself says so.
           reply = !cart.items.length
             ? prompt
-            : isOpen(company, input.now)
+            : isOpen(company, shownAt)
               ? `${orderSafetyLine(lang, cart)}\n\n${showReview()}`
               : showReview();
           traces.push('unconfirmed_model_action_rejected');
           continue;
         }
-        if (!isOpen(company, input.now)) {
+        if (!isOpen(company, shownAt)) {
           reply =
-            closedText(company, lang, input.now) +
+            closedText(company, lang, shownAt) +
             say(lang, ' Your cart is saved.', ' آپ کی ٹوکری محفوظ ہے۔', ' Cart save hai.');
           // Nothing stays confirmable while closed; once open, "confirm" shows a fresh review.
           if (cart.status === 'awaiting_confirmation') unreview(cart);
