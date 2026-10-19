@@ -52,3 +52,21 @@ The target hosting subscription cost is $0 while usage stays within the free pla
 AI and WhatsApp are separate services. Gemini's selected free-tier models have quotas and different data-use terms from paid service; use fictional customer data for early tests and review data handling before sending real customer information. Meta pricing depends on message category, destination and current rules. Do not promise free WhatsApp messaging indefinitely or quote old service-window pricing as a permanent guarantee. [Gemini pricing](https://ai.google.dev/gemini-api/docs/pricing), [Meta pricing](https://business.whatsapp.com/products/platform-pricing).
 
 Use the providers' supplied domains initially. Do not enable paid plans, billable fallback models or add-ons to make a test pass. If a quota is exhausted, surface it and pause affected work. Before accepting clients, reassess usage, backups and delivery reliability; preserve the portable Hono API and existing database so a later paid deployment does not require replacing the brain.
+
+## Request budget per screen (October 2026)
+
+Supabase Free includes 500,000 Edge Function calls a month for the whole organization, and Supabase may restrict a Free project that goes over its quota. Every dashboard request, WhatsApp webhook, worker run and linked-phone heartbeat is one call. Since the October 2026 dashboard fixes, a page asks only while its tab is on screen, and the Inbox and Orders fetch their lists and the open chat again only when the workspace reports something new. Per browser tab (one screen):
+
+| Screen or source                                                                           | Edge calls                                                          | A month, at 12 open hours a day |
+| ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------- | ------------------------------- |
+| Inbox on screen (news check every 15 s, staff alerts every minute, stop check every 5 min) | roughly 300 an hour when quiet, up to about 600 during busy service | about 110,000 to 215,000        |
+| Overview, Orders or Activity on screen                                                     | about 300 an hour when quiet, more as orders come in                | about 110,000 or more           |
+| Any other page on screen (staff alerts and the stop check only)                            | about 70 an hour                                                    | about 25,000                    |
+| A hidden tab                                                                               | none; 60 an hour (staff alerts) if browser alerts are on            | up to about 22,000              |
+| Each linked phone (gateway heartbeat once a minute, day and night)                         | 60 an hour                                                          | 43,200 (a 30-day month)         |
+| Customer messages, replies, order actions and reminders                                    | a few calls each, on top of the above                               | grows with orders               |
+
+So one restaurant with one Inbox screen open 12 hours a day and one linked phone uses about 150,000 to 260,000 calls a month before its messages, and a second always-on screen takes that close to the 500,000.
+
+- **Every week,** open Supabase → the organization's **Usage** page and note the Edge Function invocations so far this billing period, with the date, so a rise shows long before the quota runs out.
+- **Move to Supabase Pro** before a third restaurant goes live or before a second always-on screen, whichever comes first.

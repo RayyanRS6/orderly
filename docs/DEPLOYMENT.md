@@ -20,7 +20,7 @@ For a new installation, apply every file in `supabase/migrations` in filename or
 | `202610200002_order_followups.sql` (pre-launch fixes, part 2)                                          | New. Apply **after** the dashboard deploy (§7).                              |
 
 - `202610200001_prelaunch_fixes.sql`: staff alerts go to each subscriber's own email, also for a linked phone that stopped working, and automatic notices no longer hide a customer waiting for staff; erasure and export find every format of a number; a message that failed for good goes into its chat; AI reply defaults of 1,500 an hour (100 per customer) with an 80% warning; pipeline health; a daily purge of old operational rows; a ledger of applied migrations.
-- `202610200002_order_followups.sql`: queues the reminder for an order staff have not accepted after 15 minutes, and ends waiting reminders when WhatsApp is disconnected.
+- `202610200002_order_followups.sql`: queues the reminder for an order staff have not accepted after 15 minutes, ends waiting reminders when WhatsApp is disconnected, and again clears AI limits saved as the old defaults (an older dashboard tab can save them after part 1).
 
 Use the [exact launch guide](ORDERLY-LAUNCH-STEPS-2026-09-18.md) for client setup (its 18 October note lists what changed since) and the [audit closure](ORDERLY-AUDIT-CLOSURE-2026-09-18.md) for the September record.
 
@@ -264,12 +264,17 @@ SQL is applied by hand, and a push to `main` deploys the backend and can rebuild
    - **This gateway with the older backend** (only if Railway went first, with Wait for CI off): the older backend understands every event it sends and never answers 410, so no linked session is ended. The one window: until the backend deploy finishes, the older backend refuses linked-phone replies once the last heartbeat is over 90 seconds old, while this gateway reports about once a minute instead of every 15 seconds. A reply is refused only while heartbeats cannot reach Orderly for about 20 seconds or more, and its send is tried again a few seconds later (5 tries with growing waits), so it is delayed rather than lost.
    - **This backend with the older gateway** (the usual few minutes between the backend deploy and Railway's): the older gateway's 15-second heartbeats stay well inside the new 3-minute limit. A linked session the new backend answers with 410 (a business that moved to the official route or disconnected while the gateway could not be told) stays queued in the older gateway, retried every 15 seconds, until this gateway starts and ends it.
 
-7. **Dashboard:** build from the commit now on `main` (`git status` is clean and `git rev-parse HEAD` equals `git rev-parse origin/main`): `npm run build:cloudflare` with `VITE_API_BASE_URL` set, then `npx wrangler deploy` (§2). Open the dashboard and reload it once. Open dashboards that were not reloaded get a "please reload the page" message on changed forms.
-8. **SQL part 2:** paste `supabase/migrations/202610200002_order_followups.sql` and run it. Its reminders are handled only by the new backend (an older worker would send an unknown job as a WhatsApp message), so never run it earlier.
+7. **Dashboard:** build from the commit now on `main` (`git status` is clean and `git rev-parse HEAD` equals `git rev-parse origin/main`): `npm run build:cloudflare` with `VITE_API_BASE_URL` set, then `npx wrangler deploy` (§2). Open the dashboard and reload it once. Open dashboards that were not reloaded get a "please reload the page" message when they connect an AI key or pair a linked phone, but other forms still save from them (step 8).
+8. **SQL part 2:** ask each restaurant to reload every Orderly tab opened before the release: an older tab fills its AI limits boxes with the old defaults (300 an hour, 30 per customer), and **Save limits** there stores them again. Then paste `supabase/migrations/202610200002_order_followups.sql` and run it. It queues the order reminders, and clears AI limits saved as exactly those old defaults once more, as part 1 did. Never run it earlier: its reminders are handled only by the new backend, and an older worker does not know them and ends each one as a failed job (a staff alert) or as done, unsent. Check that `select name from public.orderly_schema_migrations;` lists it. Later, this read-only check lists any business an older tab saved the old defaults for again; running part 2 again clears them:
+
+   ```sql
+   select id, data->'aiLimits' from public.companies
+   where data->'aiLimits' = '{"repliesPerHour":300,"repliesPerCustomerPerHour":30}'::jsonb;
+   ```
 
 To roll back, go in reverse order:
 
-1. **SQL part 2**, if it was applied, while the new backend still runs. Stop the reminder schedule, remove its function and end the reminders already queued; the older worker would turn each one into a failed job and a staff alert:
+1. **SQL part 2**, if it was applied, while the new backend still runs. Stop the reminder schedule, remove its function and end the reminders already queued; the older worker does not know them and would end each one as a failed job (a staff alert) or as done, unsent:
 
    ```sql
    select cron.unschedule(jobid) from cron.job where jobname = 'orderly-order-followups';
