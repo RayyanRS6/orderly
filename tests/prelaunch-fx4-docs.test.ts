@@ -14,12 +14,13 @@ const release = deployment.slice(
 );
 
 describe('release order', () => {
-  it('pushes the backend first and the gateway in a second push', () => {
+  // Owner decision (fx-9): the history interleaves gateway and backend commits, so the release
+  // goes out as one push with Railway's Wait for CI on, instead of two pushes.
+  it('goes out as one push, with Wait for CI on, before the dashboard', () => {
     const steps = [
       '**Legal text:**',
-      '**Backend, first push:**',
-      'git push origin <last-backend-sha>:main',
-      '**Gateway, second push:**',
+      '**Railway, Wait for CI:**',
+      '**One push:**',
       'git push origin <release-sha>:main',
       '**Dashboard:**',
       '202610200002_order_followups.sql',
@@ -27,9 +28,11 @@ describe('release order', () => {
     const at = steps.map((step) => release.indexOf(step));
     expect(at.every((i) => i > 0)).toBe(true);
     expect([...at].sort((a, b) => a - b)).toEqual(at);
+    for (const gone of ['<last-backend-sha>', 'release notes', '**Gateway, second push:**'])
+      expect(release).not.toContain(gone);
   });
 
-  it('checks the first push against every Railway watch path', () => {
+  it('lists what the push brings to Railway with every Railway watch path', () => {
     const railway = read('gateway/RAILWAY.md');
     const watch = railway.match(/\| Build → Watch Paths\s*\|([^|]+)\|/)![1]!;
     const paths = [...watch.matchAll(/`(!?)\/([^`]+)`/g)].map(([, not, path]) => ({
@@ -37,9 +40,7 @@ describe('release order', () => {
       path: path!.replace(/\/\*\*$/, ''),
     }));
     expect(paths.length).toBeGreaterThanOrEqual(4);
-    const check = release.match(
-      /git log --oneline origin\/main\.\.<last-backend-sha> -- (.+)/,
-    )![1]!;
+    const check = release.match(/git log --oneline origin\/main\.\.<release-sha> -- (.+)/)![1]!;
     for (const { not, path } of paths)
       if (not) expect(check, path).toContain(`':!gateway/*.md'`);
       else expect(check.split(' '), path).toContain(path);

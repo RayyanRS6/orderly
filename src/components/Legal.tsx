@@ -5,7 +5,7 @@ import { supportEmail } from './Public';
 type LegalKind = 'privacy' | 'terms' | 'data-deletion';
 
 // Bump this whenever the text of any of the three documents changes.
-export const LEGAL_LAST_UPDATED = '18 October 2026';
+export const LEGAL_LAST_UPDATED = '19 October 2026';
 // Facts only the owner can supply stay visibly marked until they are filled in, before the
 // dashboard deploy (docs/DEPLOYMENT.md §7). The backup period is the number of days the nightly
 // task in docs/BACKUP-AND-RESTORE.md §4 keeps encrypted copies; change both together.
@@ -40,7 +40,7 @@ const documents: Record<LegalKind, { title: string; intro: string; sections: [st
         ],
         [
           'How long we keep it',
-          `Customer chats, orders and customer details are kept until the restaurant deletes them, or until the restaurant turns on automatic deletion in Security & privacy (records inactive for 30 to 3,650 days). If a menu-page order code is not used, the details typed with it are wiped within about an hour. Activity logs, and delivery receipts not linked to a chat, are deleted after about 90 days. The contents of finished background tasks (such as a message waiting to be processed or a reply waiting to be sent) are cleared after 14 days; a task that failed for good keeps its contents until staff retry it or the restaurant deletes that customer’s details. Blocked numbers are kept until staff unblock them. Security audit records, which hold no message text, are kept. Orderly’s database backups are kept for ${BACKUP_DAYS} days, encrypted and away from the operator’s computer; the computer itself keeps only the two newest copies, and a deleted backup can stay up to 30 more days in the cloud storage’s recycle bin. Copies in Google Sheets, WhatsApp, AI providers, the linked-phone gateway, downloaded exports and provider backups follow their own retention.`,
+          `Customer chats, orders and customer details are kept until the restaurant deletes them, or until the restaurant turns on automatic deletion in Security & privacy (records inactive for 30 to 3,650 days). If a menu-page order code is not used, the details typed with it are wiped within about an hour. Activity logs, and delivery receipts not linked to a chat, are deleted after about 90 days. The contents of finished background tasks (such as a message waiting to be processed or a reply waiting to be sent) are cleared after 14 days; a task that failed for good keeps its contents until staff retry it or the restaurant erases that customer’s details (automatic deletion does not clear it). Blocked numbers are kept until staff unblock them. Security audit records, which hold no message text, are kept. Orderly’s database backups are kept for ${BACKUP_DAYS} days, encrypted and away from the operator’s computer; the computer itself keeps only the two newest copies, and a deleted backup can stay up to 30 more days in the cloud storage’s recycle bin. Copies in Google Sheets, WhatsApp, AI providers, the linked-phone gateway, downloaded exports and provider backups follow their own retention.`,
         ],
         [
           'Your rights and requests',
@@ -78,7 +78,7 @@ const documents: Record<LegalKind, { title: string; intro: string; sections: [st
         ],
         [
           'WhatsApp connection',
-          'The official WhatsApp Business Platform (Cloud API, with the coexistence option to keep using the WhatsApp Business app) is the supported route. The linked-phone connection is an unofficial method that Orderly runs on its own gateway server. It is against WhatsApp’s terms, and WhatsApp can ban the whole number, temporarily or permanently, including the business’s own WhatsApp app. New linked-phone pairings are possible only for businesses the platform administrator approves, after the owner accepts these risks. A business that chooses it accepts that risk.',
+          'The official WhatsApp Business Platform (Cloud API, with the coexistence option to keep using the WhatsApp Business app) is the supported route. The linked-phone connection is an unofficial method that Orderly runs on its own gateway server. It is against WhatsApp’s terms, and WhatsApp can ban the whole number, temporarily or permanently, including the business’s own WhatsApp app. New linked-phone pairings are possible only for businesses the platform administrator approves, after the owner accepts these risks. Until the administrator decides, a business that already used a linked phone before approvals began may also pair again while that connection is still in use. A business that chooses it accepts that risk.',
         ],
         [
           'AI providers',
@@ -121,7 +121,7 @@ const documents: Record<LegalKind, { title: string; intro: string; sections: [st
         ],
         [
           'Restaurants',
-          `An owner can ask Orderly to delete the whole workspace by emailing ${supportEmail} from the owner’s account email. Orderly does this by hand after confirming the request: it pauses the bot, disconnects WhatsApp, Google Sheets and AI keys, then deletes the workspace data.`,
+          `An owner can ask Orderly to delete the whole workspace by emailing ${supportEmail} from the owner’s account email. Orderly does this by hand after confirming the request: it pauses the bot, disconnects WhatsApp, Google Sheets and AI keys, makes sure a linked phone’s session on Orderly’s gateway has ended, then deletes the workspace data.`,
         ],
         [
           'Disconnect WhatsApp',

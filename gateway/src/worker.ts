@@ -19,6 +19,7 @@ import {
   canonicalJid,
   phoneFromJid,
   heartbeatDue,
+  pairingTimeoutCode,
   reconnectDecision,
   retryPairing,
   PAIRING_TIMEOUT_MS,
@@ -26,7 +27,7 @@ import {
 } from './policy.js';
 import { sendOnce, recoverUncertainSends } from './sender.js';
 import { drainOnce, EVENT_BATCH, retryDeadEvents, SESSION_RETIRED } from './drain.js';
-import { endSocket, logsOut } from './shutdown.js';
+import { endSocket, logsOut, PARKED_LOGOUT_CONNECT_MS } from './shutdown.js';
 import { chatContent, messageText, receiptStatus, upsertedMessages } from './upserts.js';
 import { mapIdentity, messageIdentity } from './routing.js';
 import {
@@ -255,11 +256,13 @@ function releasePlaceholders() {
     void drain().catch(() => fail('EVENT_STORAGE_FAILURE'));
   }
 }
-function fail(code: string) {
+// keepStatus: the status already reported (a refusal WhatsApp gave) stays as it is; the code is
+// only logged by the supervisor and kept as the reason this worker stopped.
+function fail(code: string, keepStatus = false) {
   if (stopped || failed) return;
   failed = true;
   try {
-    setStatus('error', code);
+    if (!keepStatus) setStatus('error', code);
     socket?.end(new Error(code));
   } catch {
     /* fatal exit below */
@@ -272,19 +275,41 @@ function guard(work: () => void | Promise<void>) {
     .then(work)
     .catch(() => fail('SESSION_HANDLER_FAILURE'));
 }
-async function connect() {
-  if (stopped || failed) return;
-  codeRequested = false;
-  // End any previous socket before replacing it. It is detached first, so its close event
-  // cannot schedule a second reconnect; ending a closed socket does nothing.
-  const previous = socket;
-  socket = undefined;
-  previous?.end(new Error('REPLACED'));
-  const version =
-    config.version ??
-    store.get<[number, number, number]>('protocol', 'last-good:6.7.22') ??
-    DEFAULT_CONNECTION_CONFIG.version;
-  const currentSocket = makeWASocket({
+function loadAuth(): AuthenticationState {
+  const stored = store.get<unknown>('auth', 'creds');
+  return {
+    creds: stored ? decode(stored) : initAuthCreds(),
+    keys: {
+      get: async (type, ids) => {
+        const result: any = {};
+        for (const id of ids) {
+          const value = store.get('auth', `${type}:${id}`);
+          if (value)
+            result[id] =
+              type === 'app-state-sync-key'
+                ? proto.Message.AppStateSyncKeyData.fromObject(decode(value))
+                : decode(value);
+        }
+        return result;
+      },
+      set: async (data) =>
+        store.transaction(() => {
+          for (const [type, values] of Object.entries(data))
+            for (const [id, value] of Object.entries(values ?? {})) {
+              if (value == null) store.delete('auth', `${type}:${id}`);
+              else store.set('auth', `${type}:${id}`, encode(value));
+            }
+        }),
+    },
+  };
+}
+// An explicit GATEWAY_WA_VERSION, else the last version that worked with this library, else its own.
+const protocolVersion = () =>
+  config.version ??
+  store.get<[number, number, number]>('protocol', 'last-good:6.7.22') ??
+  DEFAULT_CONNECTION_CONFIG.version;
+function openSocket(version: [number, number, number]) {
+  return makeWASocket({
     auth,
     logger: pino({ level: 'silent' }),
     browser: Browsers.ubuntu('Chrome'),
@@ -305,6 +330,17 @@ async function connect() {
       return saved ? decode<proto.IMessage>(saved.message) : undefined;
     },
   });
+}
+async function connect() {
+  if (stopped || failed) return;
+  codeRequested = false;
+  // End any previous socket before replacing it. It is detached first, so its close event
+  // cannot schedule a second reconnect; ending a closed socket does nothing.
+  const previous = socket;
+  socket = undefined;
+  previous?.end(new Error('REPLACED'));
+  const version = protocolVersion();
+  const currentSocket = openSocket(version);
   socket = currentSocket;
   // Only for an already paired account: pairing waits for the owner, not for the network.
   const watchdog = auth.creds.account
@@ -403,19 +439,25 @@ async function connect() {
         if (openedAt && Date.now() - openedAt > 120000) retries = 0;
         openedAt = 0;
         const decision = reconnectDecision(code, retries + 1, restarts);
+        // A pairing WhatsApp refused cannot finish: it ends at once with WhatsApp's own reason
+        // (logged by the supervisor), freeing its place instead of holding it until the timer.
+        const unpaired = !auth.creds.account;
         if (decision.action === 'logout') {
           store.clear('auth');
           setStatus('logged_out', 'LOGGED_OUT');
+          if (unpaired) fail('LOGGED_OUT', true);
           return;
         }
         if (decision.action === 'stop') {
           setStatus('error', `DISCONNECT_${code}`);
+          if (unpaired) fail(`DISCONNECT_${code}`, true);
           return;
         }
         // A pairing nobody finished ends instead of opening new registrations for ever; the
         // worker exits, so the place is free again. 515 right after pairing has an account.
-        if (decision.action === 'retry' && !auth.creds.account) {
-          if (!retryPairing(code, pairingRetried, !!auth.creds.me)) {
+        if (decision.action === 'retry' && unpaired) {
+          const reason = (update.lastDisconnect?.error as Error | undefined)?.message;
+          if (!retryPairing(code, pairingRetried, !!auth.creds.me, reason)) {
             fail('PAIRING_EXPIRED');
             return;
           }
@@ -430,6 +472,26 @@ async function connect() {
       }
     }),
   );
+}
+// See the 'logout' message below. stopped is set first, so this process never drains events,
+// reports a status or reconnects; a device that does not open in time is only closed.
+async function logoutOnly(id: string) {
+  stopped = true;
+  connectionId = id;
+  store = new Store(join(config.dataDir, `${id}.sqlite`), config.key);
+  auth = loadAuth();
+  if (!logsOut(true, auth.creds)) return;
+  const current = openSocket(protocolVersion());
+  socket = current;
+  const opened = await new Promise<boolean>((resolve) => {
+    const timer = setTimeout(() => resolve(false), PARKED_LOGOUT_CONNECT_MS);
+    current.ev.on('connection.update', (update) => {
+      if (update.connection !== 'open' && update.connection !== 'close' && !update.qr) return;
+      clearTimeout(timer);
+      resolve(update.connection === 'open');
+    });
+  });
+  await endSocket(current, opened);
 }
 async function send(input: unknown) {
   const body = sendCommandSchema.parse(input);
@@ -457,32 +519,7 @@ process.on('message', (message: any) => {
       method = message.method ?? 'qr';
       phone = message.phone;
       store = new Store(join(config.dataDir, `${connectionId}.sqlite`), config.key);
-      const stored = store.get<unknown>('auth', 'creds');
-      auth = {
-        creds: stored ? decode(stored) : initAuthCreds(),
-        keys: {
-          get: async (type, ids) => {
-            const result: any = {};
-            for (const id of ids) {
-              const value = store.get('auth', `${type}:${id}`);
-              if (value)
-                result[id] =
-                  type === 'app-state-sync-key'
-                    ? proto.Message.AppStateSyncKeyData.fromObject(decode(value))
-                    : decode(value);
-            }
-            return result;
-          },
-          set: async (data) =>
-            store.transaction(() => {
-              for (const [type, values] of Object.entries(data))
-                for (const [id, value] of Object.entries(values ?? {})) {
-                  if (value == null) store.delete('auth', `${type}:${id}`);
-                  else store.set('auth', `${type}:${id}`, encode(value));
-                }
-            }),
-        },
-      };
+      auth = loadAuth();
       recoverUncertainSends(store);
       setStatus('connecting');
       await connect();
@@ -490,11 +527,20 @@ process.on('message', (message: any) => {
         setTimeout(
           () =>
             guard(() => {
-              if (!auth.creds.account) fail('PAIRING_EXPIRED');
+              if (auth.creds.account) return;
+              const end = pairingTimeoutCode(status, errorCode);
+              fail(end.code, end.keepStatus);
             }),
           PAIRING_TIMEOUT_MS,
         );
     });
+  // A session with no running worker (parked, crashed or waiting for a place) is being ended
+  // for good: sign in only to remove this linked device from the phone, then exit. Nothing is
+  // reported to Orderly; the supervisor wipes the credentials afterwards.
+  if (message.type === 'logout')
+    void logoutOnly(message.connectionId)
+      .catch(() => undefined)
+      .then(() => setImmediate(() => process.exit(0)));
   if (message.type === 'send') {
     sendChain = sendChain
       .then(async () => {

@@ -33,12 +33,32 @@ export function reconnectDecision(
 // codes ran out with 408; that, or a second passing failure, ends it as PAIRING_EXPIRED and the
 // owner starts a new pairing. Once a pairing code was asked for, the number is in the
 // credentials and a retry would try to log in as it, so there is no retry then either.
-export function retryPairing(code: number, retried: boolean, codeRequested: boolean): boolean {
-  return code !== 408 && !retried && !codeRequested;
+// A lost connection is also 408: told apart by Baileys' reason, it gets the one retry like any
+// passing failure. Without a reason, a 408 counts as QR codes that ran out.
+export const QR_CODES_ENDED = 'QR refs attempts ended';
+export function retryPairing(
+  code: number,
+  retried: boolean,
+  codeRequested: boolean,
+  reason?: string,
+): boolean {
+  const codesRanOut = code === 408 && (reason === undefined || reason === QR_CODES_ENDED);
+  return !codesRanOut && !retried && !codeRequested;
 }
 // A pairing not finished by then ends as PAIRING_EXPIRED, even if WhatsApp never closes the
 // socket (unpaired sockets have no connect watchdog, so this one frees the place).
 export const PAIRING_TIMEOUT_MS = 300000;
+// The code a pairing nobody finished ends with when that time is up. A refusal WhatsApp already
+// gave (a stop such as DISCONNECT_405, or a logout) stays the reason, so the dashboard and the
+// gateway logs show the real cause instead of an expired pairing.
+export function pairingTimeoutCode(
+  status: string,
+  errorCode?: string,
+): { code: string; keepStatus: boolean } {
+  if ((status === 'error' || status === 'logged_out') && errorCode)
+    return { code: errorCode, keepStatus: true };
+  return { code: 'PAIRING_EXPIRED', keepStatus: false };
+}
 // Worker failures a fresh process can recover from. INVALID_ACCOUNT_IDENTITY and pairing
 // problems need the owner instead. SESSION_CAPACITY_REACHED: a paired number a full gateway left
 // stopped at start-up; it starts once a place is free, or at the next start.
@@ -71,7 +91,8 @@ export function crashRestartDelay(crashes: number, random = Math.random()): numb
 // A session that stays connected this long is healthy again; earlier crashes are forgiven.
 export const HEALTHY_AFTER_MS = 600000;
 // The worker's housekeeping tick. It retries failed deliveries to Orderly every time, but
-// re-sends an unchanged 'connected' status only once per heartbeat interval.
+// re-sends an unchanged 'connected' status only once per heartbeat interval (so a beat leaves
+// 52.5 to 67.5 seconds after the one before).
 export const TICK_MS = 15000;
 export function heartbeatDue(lastStatusAt: number, now: number, intervalMs: number): boolean {
   // Half a tick of slack, so timer drift never pushes a beat to the following tick.

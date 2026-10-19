@@ -2,7 +2,8 @@ name: Deploy Supabase backend
 
 # A push to main is type-checked and tested first; production is deployed only when every check
 # passes, and only from main. Docs, Markdown and the gateway (checked by check-gateway.yml and
-# deployed by Railway) never redeploy the backend.
+# deployed by Railway) never redeploy the backend. npm test also checks docs and gateway wording;
+# on a push this workflow skips, check-gateway.yml runs the same npm test.
 on:
   push:
     branches:

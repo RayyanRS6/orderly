@@ -35,6 +35,10 @@ async function quietNight() {
 
 describe('ai-pipeline-3: a Sheet refresh another chat started is waited for', () => {
   it('serves both chats after a quiet night instead of sending the second to staff', async () => {
+    // Refreshes are limited per clock minute: a fixed mid-minute time keeps both chats in one
+    // minute however the test is timed. Only Date is faked; the Sheet read and polls still wait.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-20T08:00:30.000Z'));
     await sheetsConnected();
     const read = vi
       .spyOn(GoogleSheetsAdapter.prototype, 'readCatalog')

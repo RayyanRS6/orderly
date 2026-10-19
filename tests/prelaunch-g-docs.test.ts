@@ -42,11 +42,12 @@ describe('setup and deployment docs', () => {
   it('documents the release order, new settings and owner actions', () => {
     const deployment = read('docs/DEPLOYMENT.md');
     const release = deployment.slice(deployment.indexOf('## 7. Release order'));
-    // The gateway goes right after its backend, in a second push, before the dashboard.
+    // One push after SQL part 1, with Wait for CI on so the gateway goes live after its backend,
+    // before the dashboard (owner decision, fx-9).
     const steps = [
       '202610200001',
-      '**Backend, first push:**',
-      '**Gateway, second push:**',
+      '**Railway, Wait for CI:**',
+      '**One push:**',
       '**Dashboard:**',
       '202610200002',
     ];

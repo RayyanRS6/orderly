@@ -1,4 +1,8 @@
 name: Check WhatsApp gateway
+# Runs on every push to main, with no path filter. The backend deploy (deploy-backend.yml) skips
+# pushes that change only docs, Markdown or gateway/, so this is the check that catches a red
+# docs or gateway wording test on such a push. With Railway's Wait for CI on, a red run here
+# also holds the gateway deploy of that commit back.
 on:
   pull_request:
   workflow_dispatch:
@@ -22,7 +26,8 @@ jobs:
       - run: npm ci --prefix gateway
       - run: npm run build --prefix gateway
       - run: npm test --prefix gateway
-      - run: npm test
+      - name: Orderly tests, including the docs and gateway wording checks
+        run: npm test
       - run: npm run build
       - run: npm run test:edge-runtime
       - run: docker build -f gateway/Dockerfile -t orderly-gateway:test .

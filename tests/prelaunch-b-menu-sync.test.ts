@@ -75,6 +75,9 @@ const sheets = async () =>
 
 describe('G1.1: a menu Sheet that cannot be read', () => {
   it('keeps answering from the menu last read, shows why, and tries at most once a minute', async () => {
+    // Refreshes are limited per clock minute: both chats at a fixed mid-minute time.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-18T09:00:30.000Z'));
     const configured = await sheetMenu(5);
     const { result, saved } = await message(configured, newCustomer(), 'menu');
     expect(saved.mode).toBe('bot');
