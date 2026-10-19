@@ -3,7 +3,9 @@
 -- hours, so the first run does not remind customers of orders staff handled hours ago without
 -- pressing Accept) gets one 'order_followup' job, payload {orderId, conversationId}; the worker
 -- checks the order again before it writes to the customer. Staff are reminded by the bell and,
--- since 202610200001, by email alerts after at most 15 minutes.
+-- since 202610200001, by email alerts after at most 15 minutes. Data: AI limits a dashboard from
+-- before the release saved again as the old defaults (300 an hour, 30 per customer) after part 1
+-- give way to the new ones, as in part 1.
 -- Apply after 202610200001_prelaunch_fixes.sql and only once the backend that handles
 -- 'order_followup' jobs is live: an older worker does not know them and ends each one as a
 -- failed job (a staff alert) or as done, unsent.
@@ -71,6 +73,15 @@ end $$;
 
 -- A named schedule is updated on a rerun.
 select cron.schedule('orderly-order-followups', '*/5 * * * *', 'select public.queue_order_followups()');
+
+-- The same AI limits cleanup as part 1, again now that the new dashboard is live: a dashboard
+-- from before the release fills its boxes with 300 and 30 once part 1 has cleared them, so a
+-- save there stores the old defaults again. A rerun finds none.
+update public.companies set data = (data - 'aiLimits') || jsonb_build_object('settingsRevision',
+    case when jsonb_typeof(data->'settingsRevision') = 'number'
+        and data->>'settingsRevision' ~ '^[0-9]{1,9}$'
+      then (data->>'settingsRevision')::integer + 1 else 1 end)
+  where data->'aiLimits' = '{"repliesPerHour":300,"repliesPerCustomerPerHour":30}'::jsonb;
 
 insert into public.orderly_schema_migrations(name) values ('202610200002_order_followups.sql')
   on conflict (name) do nothing;
