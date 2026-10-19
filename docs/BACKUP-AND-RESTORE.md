@@ -1,6 +1,6 @@
 # Database backups and the restore drill
 
-Updated 18 October 2026. Supabase stays on the **Free plan for the pilot**, and Free has no automatic backups. Until the plan changes, these backups are the only copy of the restaurants' orders, chats, logins and encrypted credentials. Take one before every hand-applied SQL migration, and let Windows take one every night.
+Updated 19 October 2026. Supabase stays on the **Free plan for the pilot**, and Free has no automatic backups. **The owner decided on 19 October 2026 to keep no regular backups for now**, and the privacy policy says Orderly keeps no regular backups: a one-off copy taken by hand before a database update (section 3) is deleted within 30 days. Until backups start, a lost or damaged database cannot be restored: the restaurants' orders, chats, menus, logins and encrypted credentials would be gone. Still take a copy before every hand-applied SQL migration. The nightly task (section 4) and the restore drill (section 5) are ready for when backups start; change the privacy policy first (end of section 4).
 
 ## 1. What a backup holds
 
@@ -38,7 +38,7 @@ It does **not** hold: Supabase Vault secrets (the worker token; Vault is encrypt
 
    Copy the line starting `# public key: age1…` into `.local\backup-recipient.txt` (only the `age1…` part). Move `orderly-backup-key.txt` into the password manager (as a secure note or attachment) and delete it from `.local`. Only the public key stays on the laptop, so a stolen laptop cannot open the off-laptop copies. Never create the key in the Desktop, Documents or a OneDrive or Google Drive folder: those can sync it next to the encrypted backups.
 
-5. **Pick an off-laptop folder**, for example a personal OneDrive or Google Drive sync folder, or a USB drive. Below it is `D:\OrderlyBackups`. A sync folder keeps a deleted file in its recycle bin for about 30 more days; the privacy policy says so. Do not use a work or school OneDrive: it can keep deleted files for up to 93 days, longer than the policy says.
+5. **Pick an off-laptop folder**, for example a personal OneDrive or Google Drive sync folder, or a USB drive. Below it is `D:\OrderlyBackups`. A sync folder keeps a deleted file in its recycle bin for about 30 more days; once the nightly task runs, the privacy policy must say so (end of section 4). Do not use a work or school OneDrive: it can keep deleted files for up to 93 days.
 
 ## 3. Take a backup by hand (always before pasting SQL)
 
@@ -49,7 +49,7 @@ npm run backup:db
 Remove-Item Env:SUPABASE_DB_URL
 ```
 
-It prints one line per file and the folder name. It fails with a plain message (and removes the incomplete folder) when the connection string is wrong, pg_dump is missing or too old, or the dump lacks `public.companies` or `auth.users`. Then encrypt it and copy it off the laptop (the same commands the nightly task in section 4 runs; change the folder path), and only then paste the migration:
+It prints one line per file and the folder name. It fails with a plain message (and removes the incomplete folder) when the connection string is wrong, pg_dump is missing or too old, or the dump lacks `public.companies` or `auth.users`. While Orderly keeps no regular backups (since 19 October 2026), keep this copy on the laptop only, then paste the migration, and delete the folder within 30 days, as the privacy policy promises. Once the nightly task runs (section 4), encrypt the copy and put it off the laptop instead (the same commands the nightly task in section 4 runs; change the folder path), and only then paste the migration:
 
 ```powershell
 $latest = Get-ChildItem '.local\backups' -Directory -Filter 'db-*' | Sort-Object Name | Select-Object -Last 1
@@ -94,7 +94,9 @@ Register-ScheduledTask -TaskName 'Orderly nightly database backup' -Action $acti
 
 `-StartWhenAvailable` runs a missed backup when the laptop is next on. The task runs as you, which DPAPI needs. Check it the next morning: Task Scheduler → **Orderly nightly database backup** → Last Run Result `0x0`, and a new `.age` file in the off-laptop folder. If a backup is older than about 26 hours, find out why that day.
 
-The privacy policy (`src/components/Legal.tsx`, `BACKUP_DAYS` and "How long we keep it") states what this task does: 14 days of encrypted copies, only the two newest plain copies on the laptop (including any taken by hand), and up to 30 more days in a sync folder's recycle bin. Change both together. Old copies are removed only when this task runs: if it stops running (Last Run Result not `0x0`), delete plain folders older than two days from `.local\backups` and `.age` files older than 14 days by hand until it is fixed. The task removes only `db-*` folders: any other plain export kept in `.local\backups` (for example one taken by hand before a migration, such as `pre-gateway-migration-…`) stays until you delete it. Delete such exports, or encrypt them off the laptop first as in section 3, as soon as they are not needed; `Get-ChildItem .local\backups -Directory | Where-Object Name -notlike 'db-*'` must print nothing before a dashboard deploy publishes the policy ([DEPLOYMENT.md](DEPLOYMENT.md) §7, step 4).
+Before you set up this task, change the privacy policy: since 19 October 2026 it says Orderly keeps no regular backups (`src/components/Legal.tsx`: "How long we keep it", the terms and the data deletion page; and the erase dialog in `src/components/CustomerData.tsx`). Rewrite those sentences, and the tests that pin them, to say what this task does: 14 days of encrypted copies, only the two newest plain copies on the laptop (including any taken by hand), and up to 30 more days in a sync folder's recycle bin. Old copies are removed only when this task runs: if it stops running (Last Run Result not `0x0`), delete plain folders older than two days from `.local\backups` and `.age` files older than 14 days by hand until it is fixed. The task removes only `db-*` folders: any other plain export kept in `.local\backups` (for example one taken by hand before a migration, such as `pre-gateway-migration-…`) stays until you delete it.
+
+Without the task (the state since 19 October 2026), the policy says a one-off copy is deleted within 30 days (`ONE_OFF_COPY_DAYS` in `Legal.tsx`). Delete every plain export in `.local\backups` within 30 days of taking it, and before a dashboard deploy publishes the policy check that `Get-ChildItem .local\backups -Directory | Where-Object CreationTime -lt (Get-Date).AddDays(-30)` prints nothing (the folder's creation time, which, unlike its last write time, does not move when a file is added later) ([DEPLOYMENT.md](DEPLOYMENT.md) §7, step 4).
 
 ## 5. Restore drill (do it once now, then after big schema changes)
 

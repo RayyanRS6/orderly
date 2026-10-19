@@ -70,7 +70,7 @@ export function RetentionSettings() {
       <p className="text-sm leading-6 text-stone-500">
         Off by default. Deletes inactive conversations and their finished orders, message history
         and related logs from Orderly. Unfinished orders, human handoffs and outstanding jobs are
-        protected. Sheet copies, providers, exports and backups require separate handling.
+        protected. Sheet copies, providers and exports require separate handling.
       </p>
       <p
         className={

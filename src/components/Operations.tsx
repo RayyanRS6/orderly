@@ -570,8 +570,9 @@ export function SecuritySettings() {
               Verify the requester’s identity and your retention obligations first. Exports include
               order records and message history. Deletion removes these records from Orderly’s
               active database; it retains anonymous usage totals and administrative audit events.
-              Provider copies, downloaded exports, Google Sheets and backups require separate
-              handling.
+              Provider copies, downloaded exports and Google Sheets require separate handling.
+              Orderly keeps no regular backups of its database; a one-off copy saved before a
+              database update is deleted within 30 days.
             </p>
             <Field
               label="Customer’s exact phone number"
@@ -623,8 +624,8 @@ export function SecuritySettings() {
                 onChange={(e) => setAck(e.target.checked)}
               />
               <span>
-                I have verified the request and will handle copies in the connected Sheet, providers
-                and backups separately.
+                I have verified the request and will handle copies in the connected Sheet and with
+                providers separately.
               </span>
             </label>
             <p className="text-sm text-stone-500">

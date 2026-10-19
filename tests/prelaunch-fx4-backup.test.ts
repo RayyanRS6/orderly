@@ -58,7 +58,7 @@ describe('backup contents', () => {
     expect(manual).not.toContain('as in section 4, and only then');
   });
 
-  it('says how long copies outlive the nightly clean-up, as the privacy policy does', () => {
+  it('says how long the nightly task’s copies outlive its clean-up', () => {
     const guide = read('docs/BACKUP-AND-RESTORE.md');
     expect(guide).toContain('recycle bin for about 30 more days');
     expect(guide).toContain('only the two newest plain copies on the laptop');

@@ -6,11 +6,14 @@ type LegalKind = 'privacy' | 'terms' | 'data-deletion';
 
 // Bump this whenever the text of any of the three documents changes.
 export const LEGAL_LAST_UPDATED = '19 October 2026';
-// Facts only the owner can supply stay visibly marked until they are filled in, before the
-// dashboard deploy (docs/DEPLOYMENT.md §7). The backup period is the number of days the nightly
-// task in docs/BACKUP-AND-RESTORE.md §4 keeps encrypted copies; change both together.
-const OPERATOR = '[OWNER TO CONFIRM: legal name and address of the business that runs Orderly]';
-const BACKUP_DAYS = '[OWNER TO CONFIRM: number of]';
+// The owner's facts, filled in on 19 October 2026. Orderly is run by a sole proprietor, so the
+// owner's own name is the legal name (no registered company or postal address; the support email
+// is the contact). Orderly keeps no regular database backups, by the owner's decision: the one-off
+// copy taken by hand before a database update (docs/BACKUP-AND-RESTORE.md §3) is deleted within
+// ONE_OFF_COPY_DAYS days. Setting up the nightly task (§4) means rewriting the backup sentences
+// below and in CustomerData.tsx first.
+const OPERATOR = 'Muhammad Rayyan, a sole proprietor in Islamabad, Pakistan';
+const ONE_OFF_COPY_DAYS = '30';
 
 const documents: Record<LegalKind, { title: string; intro: string; sections: [string, string][] }> =
   {
@@ -40,7 +43,7 @@ const documents: Record<LegalKind, { title: string; intro: string; sections: [st
         ],
         [
           'How long we keep it',
-          `Customer chats, orders and customer details are kept until the restaurant deletes them, or until the restaurant turns on automatic deletion in Security & privacy (records inactive for 30 to 3,650 days). If a menu-page order code is not used, the details typed with it are wiped within about an hour. Activity logs, and delivery receipts not linked to a chat, are deleted after about 90 days. The contents of finished background tasks (such as a message waiting to be processed or a reply waiting to be sent) are cleared after 14 days; a task that failed for good keeps its contents until staff retry it or the restaurant erases that customer’s details (automatic deletion does not clear it). Blocked numbers are kept until staff unblock them. Security audit records, which hold no message text, are kept. Orderly’s database backups are kept for ${BACKUP_DAYS} days, encrypted and away from the operator’s computer; the computer itself keeps only the two newest copies, and a deleted backup can stay up to 30 more days in the cloud storage’s recycle bin. Copies in Google Sheets, WhatsApp, AI providers, the linked-phone gateway, downloaded exports and provider backups follow their own retention.`,
+          `Customer chats, orders and customer details are kept until the restaurant deletes them, or until the restaurant turns on automatic deletion in Security & privacy (records inactive for 30 to 3,650 days). If a menu-page order code is not used, the details typed with it are wiped within about an hour. Activity logs, and delivery receipts not linked to a chat, are deleted after about 90 days. The contents of finished background tasks (such as a message waiting to be processed or a reply waiting to be sent) are cleared after 14 days; a task that failed for good keeps its contents until staff retry it or the restaurant erases that customer’s details (automatic deletion does not clear it). Blocked numbers are kept until staff unblock them. Security audit records, which hold no message text, are kept. Orderly keeps no regular backups of its database. Before a database update, the operator may save a one-off copy on their own computer, so the update can be undone if it goes wrong; such a copy is deleted within ${ONE_OFF_COPY_DAYS} days. Copies in Google Sheets, WhatsApp, AI providers, the linked-phone gateway, downloaded exports and provider backups follow their own retention.`,
         ],
         [
           'Your rights and requests',
@@ -102,7 +105,7 @@ const documents: Record<LegalKind, { title: string; intro: string; sections: [st
         ],
         [
           'Ending access',
-          'A business may stop using the service at any time. Orderly deletes a workspace on request; this is done by Orderly, not from the dashboard, after the business has exported anything it needs. Copies in Google Sheets, WhatsApp, AI providers and backups follow their own retention. Orderly may suspend access to protect customers, comply with law or prevent misuse.',
+          `A business may stop using the service at any time. Orderly deletes a workspace on request; this is done by Orderly, not from the dashboard, after the business has exported anything it needs. Copies in Google Sheets, WhatsApp, AI providers and provider backups follow their own retention; a one-off copy Orderly saved before a database update is deleted within ${ONE_OFF_COPY_DAYS} days of being made. Orderly may suspend access to protect customers, comply with law or prevent misuse.`,
         ],
         [
           'Changes to these terms',
@@ -129,7 +132,7 @@ const documents: Record<LegalKind, { title: string; intro: string; sections: [st
         ],
         [
           'What happens next',
-          `After confirming a request, the chats and orders are deleted from the active database. Security audit records, which hold no message text, are kept. Copies in Google Sheets, WhatsApp, AI providers, downloaded exports and backups are not removed by this and follow their own retention; Orderly’s backups expire after ${BACKUP_DAYS} days (a deleted copy can stay up to 30 more days in a cloud recycle bin). We tell you when it is done, or what must be kept and why.`,
+          `After confirming a request, the chats and orders are deleted from the active database. Security audit records, which hold no message text, are kept. Copies in Google Sheets, WhatsApp, AI providers, downloaded exports and provider backups are not removed by this and follow their own retention; a one-off copy Orderly saved before a database update is deleted within ${ONE_OFF_COPY_DAYS} days of being made. We tell you when it is done, or what must be kept and why.`,
         ],
       ],
     },

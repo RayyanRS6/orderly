@@ -104,11 +104,11 @@ The Agent flow checklist shows these steps in order. Each one has a button to th
 
 ## 8. Backups and incidents
 
-- **Backups:** Supabase Free has no automatic backups. Set up the nightly backup and do the restore drill once: [BACKUP-AND-RESTORE.md](BACKUP-AND-RESTORE.md). Always run `npm run backup:db` before pasting SQL into production.
+- **Backups:** Supabase Free has no automatic backups, and since 19 October 2026 the owner keeps no regular backups (the privacy policy says so), so a lost database cannot be restored. Setting up the nightly backup and doing the restore drill once is still recommended: [BACKUP-AND-RESTORE.md](BACKUP-AND-RESTORE.md) (change the policy first). Always take a copy before pasting SQL into production, and delete it within 30 days.
 - **If something goes wrong** (wrong replies, a leaked key, a lost laptop): [INCIDENT-RUNBOOK.md](INCIDENT-RUNBOOK.md). The fastest stop is the Edge Function secret `ORDERLY_PAUSE_AUTOMATION=on`.
 
 ## 9. Not verified yet
 
 - A backup restore has not been rehearsed yet ([BACKUP-AND-RESTORE.md](BACKUP-AND-RESTORE.md) §5).
 - The emergency stop has not been tried on the live project; try it once on the test restaurant.
-- The legal pages still contain `[OWNER TO CONFIRM: …]` placeholders, to be filled in before the next dashboard deploy ([DEPLOYMENT.md](DEPLOYMENT.md) §7, step 4), and have not had a lawyer's review ([COMPLIANCE-NOTES-2026-10-18.md](COMPLIANCE-NOTES-2026-10-18.md)).
+- The legal pages were filled in on 19 October 2026 (operator: the owner as a sole proprietor in Islamabad; no regular backups) but have not had a lawyer's review ([COMPLIANCE-NOTES-2026-10-18.md](COMPLIANCE-NOTES-2026-10-18.md)).

@@ -142,21 +142,23 @@ describe('a leaked backup (docs-privacy-3)', () => {
 });
 
 describe('local backup copies (docs-privacy-7, docs-privacy-10)', () => {
-  const check = "Get-ChildItem .local\\backups -Directory | Where-Object Name -notlike 'db-*'";
+  // The policy's period for a one-off copy taken before a database update.
+  const copyDays = ownerFact(read('src/components/Legal.tsx'), 'ONE_OFF_COPY_DAYS');
+  const check = `Get-ChildItem .local\\backups -Directory | Where-Object CreationTime -lt (Get-Date).AddDays(-${copyDays})`;
 
-  it('removes every other plain export before the dashboard publishes the policy', () => {
+  it('removes one-off copies older than the policy allows before the dashboard publishes it', () => {
+    expect(copyDays).toMatch(/^\d+$/);
     expect(read('docs/BACKUP-AND-RESTORE.md')).toContain(check);
     expect(release).toContain(check);
     expect(release.indexOf(check)).toBeLessThan(release.indexOf('**Dashboard:**'));
-    // What the policy says the laptop keeps.
-    expect(legal('privacy')).toContain('the computer itself keeps only the two newest copies');
+    // What the policy says about those copies.
+    expect(legal('privacy')).toContain(`such a copy is deleted within ${copyDays} days`);
   });
 
-  it('keeps deleted copies only as long as the policy says', () => {
+  it('still keeps the nightly task’s deleted copies out of long-lived recycle bins', () => {
     const guide = prose('docs/BACKUP-AND-RESTORE.md');
     expect(guide).toContain('a personal OneDrive or Google Drive sync folder');
     expect(guide).toContain('Do not use a work or school OneDrive');
-    expect(legal('privacy')).toContain('up to 30 more days in the cloud storage’s recycle bin');
   });
 
   it('says automatic deletion does not clear a failed task, as the database does it', () => {
@@ -355,7 +357,7 @@ describe('heartbeat wording (gateway-7)', () => {
 
 describe('the owner’s legal facts, however they are written (tests-ci-1)', () => {
   const placeholder =
-    "const OPERATOR = '[OWNER TO CONFIRM: legal name and address of the business that runs Orderly]';\nconst BACKUP_DAYS = '[OWNER TO CONFIRM: number of]';\n";
+    "const OPERATOR = '[OWNER TO CONFIRM: legal name and address of the business that runs Orderly]';\nconst ONE_OFF_COPY_DAYS = '30';\n";
   const longName =
     'Example Foods (Private) Limited, 12-B Main Boulevard, Gulberg III, Lahore 54660, Pakistan';
 
@@ -380,48 +382,47 @@ describe('the owner’s legal facts, however they are written (tests-ci-1)', () 
     ];
     for (const [source, value] of cases) expect(ownerFact(source, 'OPERATOR'), source).toBe(value);
     for (const source of [
-      "const BACKUP_DAYS = '14';",
-      'const BACKUP_DAYS = 14;',
-      'const BACKUP_DAYS =\n  "14";',
+      "const ONE_OFF_COPY_DAYS = '30';",
+      'const ONE_OFF_COPY_DAYS = 30;',
+      'const ONE_OFF_COPY_DAYS =\n  "30";',
     ])
-      expect(ownerFact(source, 'BACKUP_DAYS'), source).toBe('14');
+      expect(ownerFact(source, 'ONE_OFF_COPY_DAYS'), source).toBe('30');
     expect(ownerFact('const OPERATOR = `${name}`;', 'OPERATOR')).toBeUndefined();
   });
 
   it('keeps CI green once filled in, in any of those forms, and still catches mistakes', () => {
-    expect(ownerFactProblems(placeholder, '14')).toEqual([]);
+    expect(ownerFactProblems(placeholder)).toEqual([]);
     for (const [operator, days] of [
-      [`\n  '${longName}'`, "'14'"],
-      [`"Dad's Kitchen (Private) Limited, Lahore"`, '14'],
+      [`\n  '${longName}'`, "'30'"],
+      [`"Dad's Kitchen (Private) Limited, Lahore"`, '30'],
       ['`Example Foods,\n  12 Mall Road, Lahore`', '"14"'],
     ]) {
       const filled = withOwnerFact(
         withOwnerFact(placeholder, 'OPERATOR', operator!),
-        'BACKUP_DAYS',
+        'ONE_OFF_COPY_DAYS',
         days!,
       );
       expect(filled).not.toContain('OWNER TO CONFIRM');
-      expect(ownerFactProblems(filled, '14'), filled).toEqual([]);
-      expect(ownerFactProblems(withOwnerFact(filled, 'BACKUP_DAYS', '90'), '14')).toEqual([
-        'BACKUP_DAYS is 90, the backup task keeps 14',
+      expect(ownerFactProblems(filled), filled).toEqual([]);
+      expect(ownerFactProblems(withOwnerFact(filled, 'ONE_OFF_COPY_DAYS', "'thirty'"))).toEqual([
+        'ONE_OFF_COPY_DAYS is thirty, not a number of days',
       ]);
     }
     expect(
       ownerFactProblems(
         withOwnerFact(placeholder, 'OPERATOR', "'Example Foods [OWNER TO CONFIRM]'"),
-        '14',
       ),
     ).toEqual(['OPERATOR is half filled in']);
-    expect(ownerFactProblems('const OPERATOR = name;', '14')).toEqual([
+    expect(ownerFactProblems('const OPERATOR = name;')).toEqual([
       'OPERATOR is missing',
-      'BACKUP_DAYS is missing',
+      'ONE_OFF_COPY_DAYS is missing',
     ]);
   });
 
   it('reads the real file the same way the two legal tests do', () => {
     const source = read('src/components/Legal.tsx');
     expect(ownerFact(source, 'OPERATOR')).toBeTruthy();
-    expect(ownerFact(source, 'BACKUP_DAYS')).toBeTruthy();
+    expect(ownerFact(source, 'ONE_OFF_COPY_DAYS')).toBeTruthy();
     expect(legal('privacy')).toContain(`Orderly is run by ${ownerFact(source, 'OPERATOR')}.`);
   });
 });

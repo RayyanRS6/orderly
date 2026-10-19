@@ -14,7 +14,7 @@ export const eraseChatRequest = (conversationId: string) => ({
   externalCopiesAcknowledged: true as const,
 });
 export const ERASE_CHAT_DESCRIPTION =
-  'This permanently removes this chat, the customer’s other chats with this business and their orders from Orderly’s active database. Copies outside Orderly stay: rows in your Google Sheet, the messages in WhatsApp on the customer’s and the restaurant’s phones, downloaded exports and AI provider records. Remove the ones you control yourself. Orderly’s encrypted backups expire on their own.';
+  'This permanently removes this chat, the customer’s other chats with this business and their orders from Orderly’s active database. Copies outside Orderly stay: rows in your Google Sheet, the messages in WhatsApp on the customer’s and the restaurant’s phones, downloaded exports and AI provider records. Remove the ones you control yourself. Orderly keeps no regular backups of its database; a one-off copy saved before a database update is deleted within 30 days.';
 export const ERASE_CHAT_ACK =
   'I have verified this request and will handle the copies in Google Sheets, WhatsApp and downloaded exports myself.';
 

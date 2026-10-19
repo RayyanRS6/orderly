@@ -8,7 +8,7 @@ Never paste a secret value into a chat, an AI assistant, a ticket, a screenshot 
 
 1. **Write down** the time, what you saw and where (no secret values).
 2. **Is something sending wrong messages, or could customer data or a key be exposed?** If yes, use the emergency stop (section 1) now. Stopping is cheap; it can be undone in a minute.
-3. **Take a backup** before changing any data (`npm run backup:db`, [BACKUP-AND-RESTORE.md](BACKUP-AND-RESTORE.md) §3). It keeps both the evidence and the data.
+3. **Take a backup** before changing any data (`npm run backup:db`, [BACKUP-AND-RESTORE.md](BACKUP-AND-RESTORE.md) §3). It keeps both the evidence and the data. Orderly keeps no regular backups, so this is a one-off copy: delete it within 30 days, as the privacy policy promises, unless a lawyer or the authorities need it kept longer.
 4. **Do not change `CREDENTIAL_ENCRYPTION_KEY`** (section 3 says why).
 5. Then work through sections 3 to 5, and tell people as in section 2.
 
@@ -96,7 +96,7 @@ Rotate in this order for a broad compromise (for example a lost laptop or a leak
 ## 4. Suspected breach: steps
 
 1. **Contain:** emergency stop, then rotate as above.
-2. **Preserve:** take a backup; save the Supabase function and API logs now (the Free plan keeps them only briefly); note times. Do not delete anything. The app's service-role key cannot delete audit rows, which helps; the database owner (the SQL editor, or anyone holding the access token or database password) still can.
+2. **Preserve:** take a backup (a one-off copy, as in section 1, step 3); save the Supabase function and API logs now (the Free plan keeps them only briefly); note times. Do not delete anything. The app's service-role key cannot delete audit rows, which helps; the database owner (the SQL editor, or anyone holding the access token or database password) still can.
 3. **Scope:** which businesses (a service-role or access-token leak means all of them), which kinds of data, which time window. Read-only queries in the SQL editor (inside `begin; set transaction read only; … rollback;`):
 
    ```sql
@@ -135,7 +135,7 @@ The Terms and the deletion page promise that Orderly deletes a whole workspace o
    - **Integrations → WhatsApp → Disconnect.** On a linked phone this logs the device out and wipes its session on the gateway (logged there as `SESSION_DISCONNECTED`). If Orderly then says to "Also remove Orderly under WhatsApp → Linked devices" because the old session could not be ended from here, the gateway did not get the command: once the gateway answers again (its `/healthz`), press **Disconnect** again until it finishes without that note. Either way, ask the owner to check WhatsApp → **Linked devices** and remove Orderly. On the official route the owner also removes Orderly's app in Meta Business settings.
    - **Integrations → Google Sheets → Disconnect**, and the owner removes the service account from the spreadsheet's sharing (the Sheet itself stays theirs).
    - **Bot settings → AI model → Remove saved key**, and the owner revokes the key in the provider's console.
-4. **Export, then back up.** The owner downloads what they need: **Orders → Export all matching orders** (all statuses and dates) and, per customer, **Security & privacy → Export customer data**. There is no one-click export of every chat. Then take a backup ([BACKUP-AND-RESTORE.md](BACKUP-AND-RESTORE.md) §3); it expires with the others, as the privacy policy says.
+4. **Export, then back up.** The owner downloads what they need: **Orders → Export all matching orders** (all statuses and dates) and, per customer, **Security & privacy → Export customer data**. There is no one-click export of every chat. Then take a one-off copy ([BACKUP-AND-RESTORE.md](BACKUP-AND-RESTORE.md) §3) and delete it within 30 days, as the privacy policy and terms promise.
 5. **Check nothing is running and list the accounts** (read-only). The first must return 0 (otherwise wait a few minutes); note from the second each account that is in no other business and is not a platform admin:
 
    ```sql
@@ -179,4 +179,4 @@ The Terms and the deletion page promise that Orderly deletes a whole workspace o
      (select count(*) from public.company_memberships where company_id = '<id>') members;
    ```
 
-9. **Tell the owner** it is done, and what stays: the audit records (no message text), Orderly's backups until they expire, Railway volume backups of a linked phone ([gateway/RAILWAY.md](../gateway/RAILWAY.md) §8), and copies Orderly does not control (the Google Sheet, WhatsApp on the phone, the AI provider's own retention, downloaded exports).
+9. **Tell the owner** it is done, and what stays: the audit records (no message text), the one-off copy from step 4 until it is deleted (within 30 days), Railway volume backups of a linked phone ([gateway/RAILWAY.md](../gateway/RAILWAY.md) §8), and copies Orderly does not control (the Google Sheet, WhatsApp on the phone, the AI provider's own retention, downloaded exports).

@@ -21,39 +21,35 @@ const legal = (kind: 'privacy' | 'terms' | 'data-deletion') =>
 const privacy = legal('privacy');
 const deletion = legal('data-deletion');
 
-// The days of encrypted copies the nightly task in BACKUP-AND-RESTORE.md §4 keeps.
 const backup = read('docs/BACKUP-AND-RESTORE.md');
-const days =
-  backup.match(/Where-Object LastWriteTime -lt \(Get-Date\)\.AddDays\(-(\d+)\)/)?.[1] ?? '';
 
 // What `npm test` checks about the owner's facts (ownerFactProblems) is shared with the fx9 tests,
 // which try every way the owner may write them (tests/prelaunch-fx9-helpers.ts).
-describe('owner placeholders in the legal pages', () => {
+describe('owner facts in the legal pages', () => {
   const source = read('src/components/Legal.tsx');
 
-  it('pass both before and after the owner fills them in', () => {
-    expect(days, 'the nightly task deletes old encrypted copies').toMatch(/^\d+$/);
-    expect(ownerFactProblems(source, days)).toEqual([]);
-    const filled = withOwnerFact(
-      withOwnerFact(source, 'OPERATOR', "'Example Foods (Private) Limited, 12 Mall Road, Lahore'"),
-      'BACKUP_DAYS',
-      `'${days}'`,
-    );
-    expect(filled).not.toContain('OWNER TO CONFIRM');
-    expect(ownerFactProblems(filled, days)).toEqual([]);
-    expect(ownerFactProblems(withOwnerFact(filled, 'BACKUP_DAYS', "'90'"), days)).toEqual([
-      `BACKUP_DAYS is 90, the backup task keeps ${days}`,
+  it('are filled in before the dashboard publishes them, and a mistake still fails CI', () => {
+    expect(source).not.toContain('OWNER TO CONFIRM');
+    expect(ownerFactProblems(source)).toEqual([]);
+    expect(ownerFactProblems(withOwnerFact(source, 'ONE_OFF_COPY_DAYS', "'a month'"))).toEqual([
+      'ONE_OFF_COPY_DAYS is a month, not a number of days',
     ]);
   });
 
-  it('render the operator and the backup period wherever the pages state them', () => {
+  it('render the operator and the one-off copy period wherever the pages state them', () => {
     const operator = ownerFact(source, 'OPERATOR');
-    const period = ownerFact(source, 'BACKUP_DAYS');
+    const copyDays = ownerFact(source, 'ONE_OFF_COPY_DAYS');
     expect(operator).toBeTruthy();
-    expect(period).toBeTruthy();
+    expect(copyDays).toMatch(/^\d+$/);
     expect(privacy).toContain(`Orderly is run by ${operator}.`);
-    expect(privacy).toContain(`Orderly’s database backups are kept for ${period} days`);
-    expect(deletion).toContain(`Orderly’s backups expire after ${period} days`);
+    expect(legal('terms')).toContain(`run by ${operator}.`);
+    expect(privacy).toContain(`such a copy is deleted within ${copyDays} days.`);
+    expect(deletion).toContain(`is deleted within ${copyDays} days of being made.`);
+    expect(legal('terms')).toContain(`is deleted within ${copyDays} days of being made.`);
+    // The erase dialog in the dashboard says the same.
+    expect(read('src/components/CustomerData.tsx')).toContain(
+      `a one-off copy saved before a database update is deleted within ${copyDays} days.`,
+    );
   });
 });
 
@@ -90,12 +86,22 @@ describe('privacy policy matches the code', () => {
     expect(privacy).not.toContain('finished background jobs are cleaned after about 90 days');
   });
 
-  it('states the backups as the backup task keeps them', () => {
-    expect(backup).toContain(`Keep two plain copies on the laptop and ${days} days`);
-    expect(backup).toContain('Select-Object -SkipLast 2 | Remove-Item -Recurse -Force');
-    expect(privacy).toContain('the computer itself keeps only the two newest copies');
-    expect(privacy).toContain('up to 30 more days in the cloud storage’s recycle bin');
-    expect(deletion).toContain('up to 30 more days in a cloud recycle bin');
+  // The owner keeps no regular backups (19 October 2026), so the pages claim none.
+  it('says Orderly keeps no regular backups, and nothing about copies it does not make', () => {
+    expect(privacy).toContain('Orderly keeps no regular backups of its database.');
+    for (const page of [privacy, deletion, legal('terms')])
+      expect(page).not.toMatch(/two newest copies|recycle bin|backups are kept for|backups expire/);
+    expect(read('src/components/CustomerData.tsx')).not.toContain('encrypted backups expire');
+    // The other deletion screens no longer ask restaurants to handle Orderly's backups.
+    for (const file of ['src/components/Operations.tsx', 'src/components/RetentionSettings.tsx'])
+      expect(read(file).replace(/\s+/g, ' '), file).not.toMatch(/and backups (require|separately)/);
+    // The guide's nightly task is not running, and says to change the policy before starting it.
+    expect(backup).toContain('the privacy policy says Orderly keeps no regular backups');
+    // The runbook and README no longer rely on backups that expire on their own.
+    expect(read('docs/INCIDENT-RUNBOOK.md')).not.toMatch(
+      /expires with the others|backups until they expire/,
+    );
+    expect(read('README.md')).not.toContain('the pilot stays on Free with a nightly');
   });
 
   it('does not claim no IP address is stored, since sign-ins record one', () => {

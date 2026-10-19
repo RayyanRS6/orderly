@@ -3,7 +3,8 @@
 Scope: the whole repository (React dashboard and public pages, Hono API on the Supabase Edge Function,
 Postgres migrations, the Railway linked-phone gateway, CI, docs), checked against the owner's brief for a
 pre-launch technical, security, privacy and product audit. Work happened on the local branch
-`audit/prelaunch-2026-10-18`. **Nothing has been pushed, deployed or applied to the live database.**
+`audit/prelaunch-2026-10-18`. It was released to production on 19 October 2026 ([§10](#10-release-record-19-october-2026));
+the sections below describe the state before that release.
 
 Companion documents: [all audit findings](ORDERLY-AUDIT-2026-10-18-FINDINGS.md) (219 rows with status),
 [compliance notes](COMPLIANCE-NOTES-2026-10-18.md) (rules, sources, dates),
@@ -489,3 +490,29 @@ Final checksums (LF / CRLF working copy):
    released as documented, the backup in place and the acceptance test passed, a supervised pilot with one
    friend's restaurant is a reasonable, evidence-based step. Wider launch should wait for Supabase Pro, the
    lawyer's review, and a move off the linked phone.
+
+## 10. Release record, 19 October 2026
+
+Released at the 23:00 quiet hour (Pakistan time), following [DEPLOYMENT.md §7](DEPLOYMENT.md) except that
+the dashboard waited for the owner's facts, so SQL part 2 ran before it and again after it:
+
+- A JSON export of every table was taken first (`.local/backups/pre-prelaunch-20261019-222929`).
+- SQL part 1 was applied at 23:01. All 23 changed functions matched their expected md5, the ledger lists it,
+  52 old job keys were hashed and pipeline health was `ok`.
+- Railway **Wait for CI** was turned on, then `7253079` was pushed to `main`. The backend `verify` and
+  `deploy` jobs and the gateway check passed. Railway held the gateway until CI was green, then deployed
+  it, and the linked phone reconnected.
+- SQL part 2 was applied at 23:05; the ledger lists both parts.
+- The owner's facts followed: Orderly is run by the owner as a sole proprietor in Islamabad (no registered
+  company or postal address; the support email is the contact). The owner also chose to keep **no regular
+  backups** for now, and the policy says so; a one-off copy taken before a database update is deleted
+  within 30 days. The two copies on the laptop are due for deletion by 14 November
+  (`pre-gateway-migration-20261015-221311`) and 18 November 2026 (`pre-prelaunch-20261019-222929`).
+- The commit with those facts is pushed on its own; the dashboard is then deployed from it and SQL part 2
+  is run again (Cloudflare's deployment list records when).
+
+What changes in this report: the "Backups" and "Legal placeholders" rows of §6 and the matching items of
+§7 are settled as above, except that **without backups a lost or damaged database cannot be restored**.
+That is the largest remaining risk of the pilot. Nightly backups ([BACKUP-AND-RESTORE.md](BACKUP-AND-RESTORE.md))
+or Supabase Pro (daily backups, 7 days) remove it. The other owner actions in §6 and the acceptance test
+in §7 are still open.

@@ -1,6 +1,6 @@
-// Reads the owner's facts in src/components/Legal.tsx (OPERATOR, BACKUP_DAYS) however they are
-// written once filled in: on the line after `=` (as prettier splits a long string), in single,
-// double or back quotes, joined with `+` over several lines, or BACKUP_DAYS as a bare number.
+// Reads the owner's facts in src/components/Legal.tsx (OPERATOR, ONE_OFF_COPY_DAYS) however they
+// are written: on the line after `=` (as prettier splits a long string), in single, double or
+// back quotes, joined with `+` over several lines, or ONE_OFF_COPY_DAYS as a bare number.
 // Used by tests/prelaunch-fx4-legal.test.ts and tests/prelaunch-g-legal.test.ts.
 
 // One string literal: '…' or "…" on one line, or `…` over any number of lines (without ${…}).
@@ -31,18 +31,18 @@ export function withOwnerFact(source: string, name: string, literal: string): st
 }
 
 /**
- * What `npm test` checks about the owner's facts: each is either still the visible marker or a
- * real value, and a filled-in backup period matches the backup task.
+ * What `npm test` checks about the owner's facts: the operator is either still the visible marker
+ * or a real value, and the one-off copy period is a number of days.
  */
-export function ownerFactProblems(source: string, days: string) {
+export function ownerFactProblems(source: string) {
   const problems: string[] = [];
   const operator = ownerFact(source, 'OPERATOR');
-  const period = ownerFact(source, 'BACKUP_DAYS');
+  const copyDays = ownerFact(source, 'ONE_OFF_COPY_DAYS');
   if (!operator) problems.push('OPERATOR is missing');
   else if (!/^\[OWNER TO CONFIRM: [^\]]+\]$/.test(operator) && /[[\]]|TO CONFIRM/.test(operator))
     problems.push('OPERATOR is half filled in');
-  if (!period) problems.push('BACKUP_DAYS is missing');
-  else if (!/^\[OWNER TO CONFIRM: [^\]]+\]$/.test(period) && period !== days)
-    problems.push(`BACKUP_DAYS is ${period}, the backup task keeps ${days}`);
+  if (!copyDays) problems.push('ONE_OFF_COPY_DAYS is missing');
+  else if (!/^\d+$/.test(copyDays))
+    problems.push(`ONE_OFF_COPY_DAYS is ${copyDays}, not a number of days`);
   return problems;
 }

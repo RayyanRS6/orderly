@@ -165,7 +165,7 @@ Use a recipient you control, with the client's agreement and a staff member moni
 
 ## 13. Backups and restore rehearsal
 
-The pilot stays on the Supabase Free plan, which has no automatic backups. Use `npm run backup:db`, the nightly task and the drill in [BACKUP-AND-RESTORE.md](BACKUP-AND-RESTORE.md); the steps below are the principles it follows.
+The pilot stays on the Supabase Free plan, which has no automatic backups. Since 19 October 2026 the owner keeps no regular backups: take a one-off copy with `npm run backup:db` before any SQL and delete it within 30 days. The nightly task and the drill in [BACKUP-AND-RESTORE.md](BACKUP-AND-RESTORE.md) are for later (change the privacy policy first); the steps below are the principles it follows.
 
 1. Check the Supabase project's actual plan and available backup/restore options; purchase upgrades yourself only if suitable. See [Supabase backups](https://supabase.com/docs/guides/platform/backups).
 2. Securely back up the existing credential-encryption key and required deployment configuration separately. Database rows alone cannot decrypt credentials without that key. Do not commit secret backups.

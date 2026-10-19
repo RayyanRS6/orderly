@@ -27,8 +27,8 @@ const { renderPublic, supportEmail } = await import(
 );
 if (!/^[^\s@<>]+@[^\s@<>]+\.[a-z]{2,}$/i.test(supportEmail ?? ''))
   throw new Error('The support email (src/components/Public.tsx) is missing or invalid.');
-// The legal pages must not go live with an "[OWNER TO CONFIRM: …]" placeholder (the operator's
-// legal name and address, the backup period; src/components/Legal.tsx). The build stops before
+// The legal pages must not go live with an "[OWNER TO CONFIRM: …]" placeholder (for example the
+// operator; src/components/Legal.tsx). The build stops before
 // anything is published, and removes the half-built dist folder, so a deploy run straight after
 // a failed build has nothing to upload. Only for a build that will not be published (a local
 // preview), set ALLOW_LEGAL_PLACEHOLDERS=1 to build anyway.
