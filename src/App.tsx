@@ -74,6 +74,7 @@ import { BotSettings } from './components/BotSettings';
 import { Activity, SecuritySettings } from './components/Operations';
 import { AgentFlow } from './components/AgentFlow';
 import { go, useRoute, workspacePath } from './lib/routes';
+import { ACTIVITY_POLL_MS, CONFIG_POLL_MS, pollWhileVisible } from './lib/polling';
 
 const navigation = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
@@ -339,7 +340,14 @@ export default function App() {
       })
       .catch((e) => {
         if (active) {
-          if (companyId && !route.slug) {
+          // Only a business this account can no longer open is forgotten. Being offline, or
+          // the sign-in check being busy, must not quietly open another business instead.
+          if (
+            companyId &&
+            !route.slug &&
+            e instanceof ApiError &&
+            (e.status === 403 || e.status === 404)
+          ) {
             removeStoredCompany();
             setCompanyId('');
           } else {
@@ -357,11 +365,14 @@ export default function App() {
     };
   }, [authenticated, companyId, route.slug]);
 
+  // Paused while the tab is hidden; shown again, it checks at once if a check fell due. Pages
+  // fetch their own lists again only when this brings news (ordersChangeKey,
+  // conversationsChangeKey), not on every check.
   useEffect(() => {
     if (!authenticated || !data || !['overview', 'orders', 'inbox', 'activity'].includes(page))
       return;
-    const timer = setInterval(() => {
-      if (!document.hidden && !savesInFlight.current)
+    return pollWhileVisible(() => {
+      if (!savesInFlight.current)
         void api<Pick<Bootstrap, 'summary' | 'traces' | 'jobs' | 'orders'>>(
           '/activity',
           data.company.id,
@@ -373,9 +384,18 @@ export default function App() {
             setError('');
           })
           .catch((e) => setError(`Updates delayed: ${e.message}`));
-    }, 15000);
-    return () => clearInterval(timer);
+    }, ACTIVITY_POLL_MS);
   }, [authenticated, !!data, page, refresh]);
+  // Orderly's emergency stop can start or end while this page is open: check it again every few
+  // minutes while the page is on screen, so the banner says what is true without a reload.
+  useEffect(() => {
+    if (!authenticated || !data) return;
+    return pollWhileVisible(() => {
+      void api<Configuration>('/config')
+        .then((c) => setAutomationPaused(!!c.automationPaused))
+        .catch(() => undefined);
+    }, CONFIG_POLL_MS);
+  }, [authenticated, !!data]);
 
   const mutate = useCallback(
     async <T,>(
@@ -441,9 +461,14 @@ export default function App() {
 
   // Each page gets its own tab title, so open tabs can be told apart and screen readers
   // hear the page change. Orders waiting for acceptance lead it, as "(2) …", so a tab in the
-  // background shows them.
+  // background shows them: counted while the tab is on screen, and in a background tab only
+  // with browser alerts on (otherwise as they were when the tab was last shown).
   useEffect(() => {
-    if (!data) return;
+    // Signed out, or between businesses: no count or name from before stays in the tab.
+    if (!data) {
+      document.title = 'Orderly — Conversations to orders';
+      return;
+    }
     const name = [...navigation, ...manage, peopleNav].find((n) => n.id === page)?.label;
     document.title = titleWithCount(
       name ? `${name} · ${data.company.name} — Orderly` : 'Orderly — Conversations to orders',

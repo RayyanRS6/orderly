@@ -15,11 +15,12 @@ import {
   Wallet,
   X,
 } from 'lucide-react';
-import type { Bootstrap, Order, OrderStatus, PageResult } from '../shared/types';
+import type { Bootstrap, Order, OrderStatus, PageResult, Trace } from '../shared/types';
 import { money } from '../shared/types';
 import { api } from '../lib/api';
-import { ordersCsv } from '../lib/orders-csv';
-import { paymentMethodsOf, staffPaymentNote } from '../lib/payments';
+import { ordersCsv, UTF8_BOM } from '../lib/orders-csv';
+import { paymentMethodsOf, staffPaymentNote, staffTransferNote } from '../lib/payments';
+import { newestEvent } from '../lib/polling';
 import { useAction, useWorkspace } from '../lib/workspace';
 import { cn, initials, label, shortDate } from '../lib/utils';
 import {
@@ -490,15 +491,19 @@ export function Overview() {
   );
 }
 
+/** Events about orders: staff changing one (here or elsewhere), a cancellation, a reminder. */
+const orderEvent = (t: Trace) => /order|cancel/i.test(t.action);
 /**
- * Changes whenever an order or the order totals change, or anything new was recorded (a change
- * to an older order, made here or elsewhere, records an event), and only then.
+ * Changes whenever an order or the order totals change, or a new order event was recorded (a
+ * change to an older order records one), and only then. WhatsApp delivery receipts, chat events
+ * and AI spending are recorded all through service but change no order, so they are left out.
  */
 export function ordersChangeKey(data: Pick<Bootstrap, 'orders' | 'summary' | 'traces'>) {
+  const s = data.summary;
   return JSON.stringify([
-    data.summary ?? null,
+    s ? [s.orders, s.pending, s.value] : null,
     data.orders.map((o) => [o.id, o.status, o.updatedAt, o.syncStatus]),
-    (data.traces ?? []).map((t) => t.id),
+    newestEvent(data.traces, orderEvent),
   ]);
 }
 
@@ -610,7 +615,11 @@ export function Orders() {
           throw new Error('This export is too large. Contact support for a complete archive.');
       }
       const csv = ordersCsv(exportOrders, data.company.timezone);
-      const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+      // The byte-order mark tells Excel the file is UTF-8, so Urdu names and addresses read
+      // as written.
+      const url = URL.createObjectURL(
+        new Blob([UTF8_BOM, csv], { type: 'text/csv;charset=utf-8' }),
+      );
       const link = document.createElement('a');
       link.href = url;
       link.download = `${data.company.slug}-orders.csv`;
@@ -963,6 +972,11 @@ function OrderDetails({ order, onClose }: { order: Order | null; onClose: () => 
                 </dd>
               </div>
             </dl>
+            {staffTransferNote(paymentMethodsOf(data.company)) && (
+              <p className="mt-2 text-xs leading-relaxed text-stone-500">
+                {staffTransferNote(paymentMethodsOf(data.company))}
+              </p>
+            )}
             <div className="mt-5 space-y-2 rounded-2xl border border-ink/[0.05] bg-paper p-4 text-xs text-stone-500">
               <p>
                 <span className="font-semibold text-stone-700">Customer:</span> {order.customerName}{' '}

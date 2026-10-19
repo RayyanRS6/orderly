@@ -32,16 +32,23 @@ export function csvCell(value: unknown) {
   return `"${(/^[\s]*[=+@\-]/.test(text) ? "'" : '') + text.replaceAll('"', '""')}"`;
 }
 
-/** "2 x Zinger Burger (Large, Extra cheese) - no onions; 1 x Fries" */
+/**
+ * "2 x Zinger Burger (Large, Extra cheese) - no onions; 1 x Fries". An older saved line without
+ * notes or options still exports.
+ */
 export const orderItems = (order: Order) =>
   order.items
     .map((line) => {
-      const options = [line.variant, ...line.modifiers].filter(Boolean).join(', ');
+      const options = [line.variant, ...(line.modifiers ?? [])].filter(Boolean).join(', ');
+      const notes = (line.notes ?? '').trim();
       return `${line.quantity} x ${line.name}${options ? ` (${options})` : ''}${
-        line.notes.trim() ? ` - ${line.notes.trim()}` : ''
+        notes ? ` - ${notes}` : ''
       }`;
     })
     .join('; ');
+
+/** Put before the CSV text so Excel reads the file as UTF-8 (Urdu names and addresses). */
+export const UTF8_BOM = '﻿';
 
 export const ORDER_CSV_FIELDS = [
   'reference',

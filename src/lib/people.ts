@@ -210,6 +210,35 @@ export function linkedDeviceCopy(business: string, allowed: boolean): ChangeCopy
         tone: 'primary',
       };
 }
+/**
+ * Whether a business can start a new linked-phone pairing, as the server decides it
+ * (pairingAllowed in server/whatsapp/routes.ts): the admin's saved choice, or, where none was
+ * ever saved, whether its linked phone from before approvals is still in use. `pairingAllowed` is
+ * the server's answer for a business without a saved choice; undefined when it couldn't be read.
+ */
+export type LinkedDeviceState = 'allowed' | 'existing' | 'stopped' | 'not_allowed' | 'unknown';
+export function linkedDeviceState(
+  saved: boolean | undefined,
+  pairingAllowed?: boolean,
+): LinkedDeviceState {
+  if (saved === true) return 'allowed';
+  if (saved === false) return 'stopped';
+  if (pairingAllowed === undefined) return 'unknown';
+  return pairingAllowed ? 'existing' : 'not_allowed';
+}
+/** Ticked whenever new pairings are possible, so unticking stops them in one step. */
+export const linkedDeviceOn = (state: LinkedDeviceState) =>
+  state === 'allowed' || state === 'existing';
+const LINKED_RISK = 'The unofficial WhatsApp route. WhatsApp can ban a number linked this way.';
+export const LINKED_DEVICE_NOTES: Record<LinkedDeviceState, string> = {
+  allowed: LINKED_RISK,
+  existing:
+    'It used a linked phone before approvals existed, so its owners can still start a new pairing, even for another number, until you stop it. Untick to stop; the phone linked now keeps working.',
+  stopped: LINKED_RISK,
+  not_allowed: LINKED_RISK,
+  unknown:
+    'Not decided yet. A business already using a linked phone can still start a new pairing until you stop it.',
+};
 /** The request that carries out a confirmed linked-phone change. */
 export function linkedDeviceRequest(companyId: string, allowed: boolean) {
   return {

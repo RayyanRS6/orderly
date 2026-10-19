@@ -642,8 +642,18 @@ function OptionPrice({
   );
 }
 
+/** The import confirmation: how much of the current menu the file replaces. */
+export function replaceMenuWarning(currentItems: number) {
+  return currentItems
+    ? `This replaces your whole menu: the ${currentItems} ${currentItems === 1 ? 'item' : 'items'} on it now are removed unless they are in this CSV.`
+    : 'This replaces the entire menu. Items absent from the CSV will be removed.';
+}
+
 function CsvImport({ onDone }: { onDone: () => void }) {
-  const { mutate } = useWorkspace();
+  const { data, mutate } = useWorkspace();
+  // The example only fills an empty menu's import: on a live menu one more confirmation
+  // would turn it into two sample dishes. The box's placeholder still shows the format.
+  const menuEmpty = !data.products.length;
   const { pending, run } = useAction();
   const [csv, setCsv] = useState('');
   const [error, setError] = useState('');
@@ -695,17 +705,19 @@ function CsvImport({ onDone }: { onDone: () => void }) {
             onChange={(e) => setCsv(e.target.value)}
           />
         </Field>
-        <button
-          type="button"
-          className="text-xs font-semibold text-brand-700 underline-offset-4 transition-colors hover:text-brand-800 hover:underline"
-          onClick={() => setCsv(sample)}
-        >
-          Use example CSV
-        </button>
+        {menuEmpty && (
+          <button
+            type="button"
+            className="mr-4 text-xs font-semibold text-brand-700 underline-offset-4 transition-colors hover:text-brand-800 hover:underline"
+            onClick={() => setCsv(sample)}
+          >
+            Use example CSV
+          </button>
+        )}
         <a
           href="/examples/menu.csv"
           download
-          className="ml-4 inline-flex items-center gap-1 text-xs font-semibold text-brand-700 underline-offset-4 transition-colors hover:text-brand-800 hover:underline"
+          className="inline-flex items-center gap-1 text-xs font-semibold text-brand-700 underline-offset-4 transition-colors hover:text-brand-800 hover:underline"
         >
           <Download className="size-3" />
           Download template
@@ -731,7 +743,7 @@ function CsvImport({ onDone }: { onDone: () => void }) {
         open={confirming}
         onOpenChange={setConfirming}
         title="Replace your menu?"
-        description="This replaces the entire menu. Items absent from the CSV will be removed."
+        description={replaceMenuWarning(data.products.length)}
         confirmLabel="Replace menu"
         tone="danger"
         busy={pending === 'import'}

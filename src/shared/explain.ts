@@ -123,7 +123,7 @@ const CORRECTION_LABELS: Record<string, string> = {
   invented_link_ignored:
     'The AI’s wording included a web link you didn’t provide, so it was dropped.',
   allergy_question_guarded:
-    'The customer asked about allergies, so your approved allergy answer (or a fixed safety notice) was sent word for word and staff were asked to check.',
+    'The customer asked about allergies, so your approved allergy answer was sent word for word; without one, a fixed safety notice was sent and the chat went to staff.',
   allergy_assurance_ignored:
     'The AI’s wording promised something about allergies or ingredients, so it was dropped.',
 };
