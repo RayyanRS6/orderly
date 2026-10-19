@@ -10,9 +10,13 @@ import {
   describeChange,
   groupPeople,
   lastSeen,
+  LINKED_DEVICE_NOTES,
   linkedDeviceCopy,
+  linkedDeviceOn,
   linkedDeviceRequest,
+  linkedDeviceState,
   personName,
+  type LinkedDeviceState,
   type PeopleChange,
 } from '../lib/people';
 import {
@@ -31,6 +35,57 @@ const roles = [
 ];
 const note =
   'rounded-2xl border border-dashed border-ink/10 bg-paper/70 px-4 py-3 text-sm text-stone-500';
+
+/**
+ * The admin's linked-phone switch for one business. Ticked whenever a new pairing is possible,
+ * including for a business allowed only because it already used a linked phone, so unticking
+ * stops pairing in one step. Where that couldn't be checked, Stop pairing is offered directly.
+ */
+export function LinkedDeviceSwitch({
+  state,
+  pending,
+  onAsk,
+}: {
+  state: LinkedDeviceState;
+  /** A linked-phone change is being saved. */
+  pending: boolean;
+  /** Opens the confirmation for allowing (true) or stopping (false) new pairings. */
+  onAsk: (allowed: boolean) => void;
+}) {
+  const on = linkedDeviceOn(state);
+  return (
+    <div className="mt-3 flex flex-wrap items-start gap-2">
+      <label className="flex min-w-0 flex-1 cursor-pointer items-start gap-3 rounded-2xl border border-ink/[0.06] bg-paper px-4 py-3 text-sm leading-6 transition-colors has-[:checked]:border-brand-500/25 has-[:checked]:bg-brand-50">
+        <input
+          className="mt-1 size-4 shrink-0 accent-brand-500"
+          type="checkbox"
+          checked={on}
+          disabled={pending}
+          onChange={() => onAsk(!on)}
+        />
+        <span>
+          <span className="font-semibold text-ink">Allow linked-phone pairing</span>
+          {state === 'existing' && (
+            <span className="ml-2 inline-block">
+              <Badge tone="amber">Allowed (existing linked phone)</Badge>
+            </span>
+          )}
+          <span className="block text-xs text-stone-500">{LINKED_DEVICE_NOTES[state]}</span>
+        </span>
+      </label>
+      {state === 'unknown' && (
+        <button
+          type="button"
+          className="btn btn-quiet self-center"
+          disabled={pending}
+          onClick={() => onAsk(false)}
+        >
+          Stop pairing
+        </button>
+      )}
+    </div>
+  );
+}
 
 /** The platform admin's view of everyone who can sign in, by business. Loaded on demand. */
 export function People() {
@@ -72,6 +127,24 @@ export function People() {
       active = false;
     };
   }, [data.company.id, loads]);
+  // A business with no saved choice may still pair while its linked phone from before approvals
+  // is in use: ask the server for each one, so the switch shows what is really possible.
+  const [effective, setEffective] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    if (data.role !== 'admin' || !directory) return;
+    let active = true;
+    for (const business of directory.businesses)
+      if (data.companies.find((c) => c.id === business.id)?.linkedDeviceAllowed === undefined)
+        api<{ pairingAllowed?: boolean }>('/whatsapp/connection', business.id)
+          .then(({ pairingAllowed }) => {
+            if (active && typeof pairingAllowed === 'boolean')
+              setEffective((current) => ({ ...current, [business.id]: pairingAllowed }));
+          })
+          .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [directory]);
 
   if (data.role !== 'admin')
     return (
@@ -113,28 +186,16 @@ export function People() {
   // Whether this business may pair a linked phone. The saved setting comes with the workspace,
   // where the admin sees every business; the box changes only once the admin confirms.
   const linkedToggle = (business: PeopleDirectory['businesses'][number]) => {
-    const allowed = !!data.companies.find((c) => c.id === business.id)?.linkedDeviceAllowed;
-    return (
-      <label className="mt-3 flex cursor-pointer items-start gap-3 rounded-2xl border border-ink/[0.06] bg-paper px-4 py-3 text-sm leading-6 transition-colors has-[:checked]:border-brand-500/25 has-[:checked]:bg-brand-50">
-        <input
-          className="mt-1 size-4 shrink-0 accent-brand-500"
-          type="checkbox"
-          checked={allowed}
-          disabled={pending === 'linked'}
-          onChange={() => {
-            setLinkedError('');
-            setLinked({ companyId: business.id, name: business.name, allowed: !allowed });
-            setLinkedOpen(true);
-          }}
-        />
-        <span>
-          <span className="font-semibold text-ink">Allow linked-phone pairing</span>
-          <span className="block text-xs text-stone-500">
-            The unofficial WhatsApp route. WhatsApp can ban a number linked this way.
-          </span>
-        </span>
-      </label>
+    const state = linkedDeviceState(
+      data.companies.find((c) => c.id === business.id)?.linkedDeviceAllowed,
+      effective[business.id],
     );
+    const askLinked = (allowed: boolean) => {
+      setLinkedError('');
+      setLinked({ companyId: business.id, name: business.name, allowed });
+      setLinkedOpen(true);
+    };
+    return <LinkedDeviceSwitch state={state} pending={pending === 'linked'} onAsk={askLinked} />;
   };
   const details = (person: PeopleAccount, memberRole?: 'owner' | 'staff') => (
     <div className="min-w-0">

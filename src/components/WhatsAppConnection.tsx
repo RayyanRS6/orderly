@@ -17,11 +17,35 @@ export const LINKED_RISK_SUMMARY =
   'This unofficial connection is against WhatsApp’s terms. WhatsApp can ban the whole number, temporarily or permanently, including the restaurant’s own WhatsApp app. Messages are decrypted on Orderly’s gateway server, and sent replies are kept there, encrypted, for up to 3 days.';
 /** What GET /whatsapp/connection says about linked-phone pairing for this business. */
 export type PairingAccess = {
+  /** A new pairing can start here: the gateway runs and pairing is allowed. */
   enabled: boolean;
   /** Missing from servers older than the per-business approval. */
   gatewayEnabled?: boolean;
   pairingAllowed?: boolean;
+  /**
+   * The existing linked phone can be managed (status, reconnect), approved or not. Missing from
+   * servers that do not send it: the gateway being on is then what counts.
+   */
+  manageable?: boolean;
 };
+/**
+ * Which linked-phone controls show. Only a new pairing needs the admin's approval: an existing
+ * linked phone can always be disconnected, and reconnected (and its status checked) while the
+ * gateway runs, even after the approval was withdrawn (server/whatsapp/routes.ts).
+ */
+export function linkedControls(
+  access: PairingAccess | undefined,
+  connection: Pick<Connection, 'provider'> | null,
+) {
+  const linked = connection?.provider === 'baileys';
+  const gateway = access?.manageable ?? access?.gatewayEnabled ?? !!access?.enabled;
+  return {
+    pair: !!access?.enabled,
+    reconnect: linked && gateway,
+    disconnect: linked,
+    poll: linked && gateway,
+  };
+}
 /** Why pairing can't start here, in words for the owner. */
 export function pairingUnavailable(access: PairingAccess) {
   if (access.gatewayEnabled === false)
@@ -51,16 +75,22 @@ export function pairingPollDelay(status?: Connection['status']) {
 }
 /** Seconds to wait after "too many checks" (429), when the server's wait can't be read. */
 const STATUS_BACKOFF_S = 60;
-/** What the owner should do about the connection's state, if anything. */
-export function connectionAdvice(state: Connection['status'], errorCode?: string) {
+/**
+ * What the owner should do about the connection's state, if anything. `canPair` is false where
+ * this business can't start a new pairing here, so the advice never sends the owner to a
+ * button that isn't shown.
+ */
+export function connectionAdvice(state: Connection['status'], errorCode?: string, canPair = true) {
   if (errorCode === 'INBOUND_EVENT_REJECTED')
     return 'A customer message could not be passed to Orderly. Check the restaurant phone for it and reply there; reconnecting does not help.';
   if (errorCode === 'DISCONNECT_405')
-    return 'WhatsApp refused the gateway’s WhatsApp version. The Orderly platform admin must update the gateway (GATEWAY_WA_VERSION); then start a new pairing.';
+    return `WhatsApp refused the gateway’s WhatsApp version. The Orderly platform admin must update the gateway (GATEWAY_WA_VERSION); then ${canPair ? 'start a new pairing' : 'contact Orderly support to pair the phone again'}.`;
   if (state === 'reconnecting')
     return 'The gateway is reconnecting to WhatsApp by itself. This usually takes a minute; there is nothing to do yet.';
   if (errorCode)
-    return 'Try reconnecting, or start a new pairing if WhatsApp logged this device out.';
+    return canPair
+      ? 'Try reconnecting, or start a new pairing if WhatsApp logged this device out.'
+      : 'Try reconnecting. If WhatsApp logged this device out, contact Orderly support to pair it again.';
 }
 /** Gateway problems with one thing to do, said in full instead of "needs attention". */
 export const GATEWAY_PROBLEMS: Record<string, string> = {
@@ -68,16 +98,21 @@ export const GATEWAY_PROBLEMS: Record<string, string> = {
   SESSION_CAPACITY_REACHED:
     'Orderly’s linked-phone service is full right now. Contact Orderly support.',
 };
+/** An unfinished pairing that ended where a new one can't start here (no approval, or no gateway). */
+export const PAIRING_ENDED =
+  'This pairing ended before it finished. A new pairing isn’t available for this business: contact Orderly support, or use the official WhatsApp Business Platform below.';
 /** A failed request's words, or the plain words for a gateway code it carries. */
-export function gatewayMessage(e: unknown, fallback: string) {
+export function gatewayMessage(e: unknown, fallback: string, canPair = true) {
+  if (!canPair && e instanceof ApiError && e.code === 'PAIRING_EXPIRED') return PAIRING_ENDED;
   if (e instanceof ApiError && e.code && GATEWAY_PROBLEMS[e.code]) return GATEWAY_PROBLEMS[e.code]!;
   return e instanceof Error ? e.message : fallback;
 }
 /** What the status box says about a connection problem. */
-export function connectionProblem(state: Connection['status'], errorCode: string) {
+export function connectionProblem(state: Connection['status'], errorCode: string, canPair = true) {
+  if (!canPair && errorCode === 'PAIRING_EXPIRED') return PAIRING_ENDED;
   return (
     GATEWAY_PROBLEMS[errorCode] ??
-    `Connection needs attention: ${reason(errorCode)}. ${connectionAdvice(state, errorCode) ?? ''}`.trim()
+    `Connection needs attention: ${reason(errorCode)}. ${connectionAdvice(state, errorCode, canPair) ?? ''}`.trim()
   );
 }
 /** Said when a switch or disconnect could not end the old linked-phone session itself. */
@@ -112,6 +147,68 @@ export function LinkedCleanupNote({
   );
 }
 
+/** Start new pairing, Reconnect and Disconnect, each only where linkedControls allows it. */
+export function LinkedPhoneActions({
+  controls,
+  state,
+  pending,
+  startDisabled,
+  startTitle,
+  onStart,
+  onReconnect,
+  onDisconnect,
+}: {
+  controls: ReturnType<typeof linkedControls>;
+  state: Connection['status'];
+  pending?: string;
+  startDisabled: boolean;
+  startTitle?: string;
+  onStart: () => void;
+  onReconnect: () => void;
+  onDisconnect: () => void;
+}) {
+  if (!controls.pair && !controls.disconnect) return null;
+  const ended = ['logged_out', 'disconnected'].includes(state);
+  return (
+    <div className="mt-4 flex flex-wrap gap-2">
+      {controls.pair && (
+        <button
+          className="btn btn-primary"
+          disabled={startDisabled}
+          title={startTitle}
+          onClick={onStart}
+        >
+          Start new pairing
+        </button>
+      )}
+      {controls.reconnect && (
+        <ActionButton
+          disabled={ended}
+          title={
+            ended
+              ? `This session ended.${controls.pair ? ' Start a new pairing instead.' : ''}`
+              : undefined
+          }
+          loading={pending === 'reconnect'}
+          loadingLabel="Reconnecting…"
+          onClick={onReconnect}
+        >
+          <RefreshCw className="size-4" />
+          Reconnect
+        </ActionButton>
+      )}
+      {controls.disconnect && (
+        <button
+          className="btn text-red-700 hover:border-red-200 hover:bg-red-50 hover:text-red-800"
+          onClick={onDisconnect}
+        >
+          Disconnect
+        </button>
+      )}
+    </div>
+  );
+}
+
 type Action = 'pair' | 'disconnect' | 'select-meta' | 'reconnect';
 const DONE: Record<Action, string> = {
   pair: 'New pairing started. Scan the QR code or enter the code in WhatsApp.',
@@ -140,6 +237,7 @@ const REASONS: Record<string, string> = {
 const reason = (code: string) =>
   REASONS[code] ??
   (code.startsWith('DISCONNECT_') ? `WhatsApp closed the connection (${code})` : code);
+const PROBLEM_BOX = 'mt-3 rounded-xl bg-red-50 px-3.5 py-2.5 text-sm font-medium text-red-700';
 export function WhatsAppConnection() {
   const { data, refresh, notify } = useWorkspace();
   const act = useAction();
@@ -148,6 +246,7 @@ export function WhatsAppConnection() {
   // Undefined until the connection has loaded.
   const [access, setAccess] = useState<PairingAccess>();
   const enabled = !!access?.enabled;
+  const controls = linkedControls(access, connection);
   // Bumped after each action, so the status is checked again even if the saved one is unchanged
   // (a reconnect from 'error' reports its progress only through the status check).
   const [checks, setChecks] = useState(0);
@@ -181,6 +280,7 @@ export function WhatsAppConnection() {
       enabled: result.enabled,
       gatewayEnabled: result.gatewayEnabled,
       pairingAllowed: result.pairingAllowed,
+      manageable: result.manageable,
     });
     setConnection(connection);
   };
@@ -205,10 +305,11 @@ export function WhatsAppConnection() {
     };
   }, [companyId, canEdit]);
   // One check when the page opens or the status changes, then every 5 seconds only while a
-  // pairing or reconnect is in progress and this tab is on screen.
+  // pairing or reconnect is in progress and this tab is on screen. An existing linked phone is
+  // checked whether or not a new pairing is allowed.
   useEffect(() => {
     if (
-      !enabled ||
+      !controls.poll ||
       connection?.provider !== 'baileys' ||
       ['disconnected', 'logged_out'].includes(connection.status)
     )
@@ -217,6 +318,8 @@ export function WhatsAppConnection() {
     let timer: ReturnType<typeof setTimeout>;
     // Set when a check was skipped in a background tab: the tab being shown again checks at once.
     let waiting = false;
+    // Failed checks in a row: after a few, ask once a minute instead of every 5 seconds.
+    let failures = 0;
     let status: Connection['status'] = connection.status;
     const poll = async () => {
       if (document.hidden) {
@@ -231,6 +334,7 @@ export function WhatsAppConnection() {
           {},
         );
         if (!active) return;
+        failures = 0;
         setConnection(result.connection);
         setSnapshot(result.snapshot);
         setError('');
@@ -243,8 +347,15 @@ export function WhatsAppConnection() {
           delay = (e.retryAfter ?? STATUS_BACKOFF_S) * 1000;
         } else {
           setSnapshot(undefined);
-          setError(gatewayMessage(e, 'Connection unavailable.'));
-          delay = pairingPollDelay(status);
+          setError(gatewayMessage(e, 'Connection unavailable.', enabled));
+          failures++;
+          // 409: no linked phone any more (switched in another tab); asking again won't help.
+          delay =
+            e instanceof ApiError && e.status === 409
+              ? undefined
+              : failures >= 3 && pairingPollDelay(status)
+                ? STATUS_BACKOFF_S * 1000
+                : pairingPollDelay(status);
         }
       }
       if (active && delay !== undefined) timer = setTimeout(() => void poll(), delay);
@@ -264,6 +375,7 @@ export function WhatsAppConnection() {
     };
   }, [
     companyId,
+    controls.poll,
     enabled,
     connection?.id,
     connection?.generation,
@@ -300,7 +412,7 @@ export function WhatsAppConnection() {
               : { confirmed: true },
         );
       } catch (e) {
-        const message = gatewayMessage(e, 'Connection failed.');
+        const message = gatewayMessage(e, 'Connection failed.', enabled);
         // Its confirmation shows the failure while still open for this action. Reconnect
         // has none, and a confirmation closed meanwhile can't, so those show below (and
         // as a notification).
@@ -460,48 +572,25 @@ export function WhatsAppConnection() {
             including the restaurant’s own WhatsApp app, and that messages are processed on
             Orderly’s gateway server.
           </label>
-          <div className="mt-4 flex flex-wrap gap-2">
-            <button
-              className="btn btn-primary"
-              disabled={!accepted || !phoneValid}
-              title={
-                !accepted
-                  ? 'Tick the permission box above first.'
-                  : !phoneValid
-                    ? 'Enter the WhatsApp number with its country code.'
-                    : undefined
-              }
-              onClick={() => ask('pair')}
-            >
-              Start new pairing
-            </button>
-            {connection?.provider === 'baileys' && (
-              <>
-                <ActionButton
-                  disabled={['logged_out', 'disconnected'].includes(state)}
-                  title={
-                    ['logged_out', 'disconnected'].includes(state)
-                      ? 'This session ended. Start a new pairing instead.'
-                      : undefined
-                  }
-                  loading={pending === 'reconnect'}
-                  loadingLabel="Reconnecting…"
-                  onClick={() => void run('reconnect')}
-                >
-                  <RefreshCw className="size-4" />
-                  Reconnect
-                </ActionButton>
-                <button
-                  className="btn text-red-700 hover:border-red-200 hover:bg-red-50 hover:text-red-800"
-                  onClick={() => ask('disconnect')}
-                >
-                  Disconnect
-                </button>
-              </>
-            )}
-          </div>
         </>
       )}
+      {/* Reconnect and Disconnect stay for an existing linked phone without pairing approval. */}
+      <LinkedPhoneActions
+        controls={controls}
+        state={state}
+        pending={pending}
+        startDisabled={!accepted || !phoneValid}
+        startTitle={
+          !accepted
+            ? 'Tick the permission box above first.'
+            : !phoneValid
+              ? 'Enter the WhatsApp number with its country code.'
+              : undefined
+        }
+        onStart={() => ask('pair')}
+        onReconnect={() => void run('reconnect')}
+        onDisconnect={() => ask('disconnect')}
+      />
       {connection?.provider === 'baileys' && (
         <div className="mt-5 rounded-2xl border border-ink/[0.06] bg-paper p-4" aria-live="polite">
           <p
@@ -551,11 +640,17 @@ export function WhatsAppConnection() {
               {connectionAdvice(state)}
             </p>
           )}
-          {(snapshot?.errorCode || connection.errorCode) && (
-            <p className="mt-3 rounded-xl bg-red-50 px-3.5 py-2.5 text-sm font-medium text-red-700">
-              {connectionProblem(state, snapshot?.errorCode || connection.errorCode || '')}
-            </p>
-          )}
+          {(snapshot?.errorCode || connection.errorCode) &&
+            // Where no new pairing can start, the advice never says to start one.
+            (enabled ? (
+              <p className={PROBLEM_BOX}>
+                {connectionProblem(state, snapshot?.errorCode || connection.errorCode || '')}
+              </p>
+            ) : (
+              <p className={PROBLEM_BOX}>
+                {connectionProblem(state, snapshot?.errorCode || connection.errorCode || '', false)}
+              </p>
+            ))}
         </div>
       )}
       {cleanup && <LinkedCleanupNote onDismiss={() => setCleanup(false)} />}
