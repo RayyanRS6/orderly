@@ -15,11 +15,12 @@ import {
   Wallet,
   X,
 } from 'lucide-react';
-import type { Bootstrap, Order, OrderStatus, PageResult } from '../shared/types';
+import type { Bootstrap, Order, OrderStatus, PageResult, Trace } from '../shared/types';
 import { money } from '../shared/types';
 import { api } from '../lib/api';
 import { ordersCsv } from '../lib/orders-csv';
 import { paymentMethodsOf, staffPaymentNote } from '../lib/payments';
+import { newestEvent } from '../lib/polling';
 import { useAction, useWorkspace } from '../lib/workspace';
 import { cn, initials, label, shortDate } from '../lib/utils';
 import {
@@ -490,15 +491,19 @@ export function Overview() {
   );
 }
 
+/** Events about orders: staff changing one (here or elsewhere), a cancellation, a reminder. */
+const orderEvent = (t: Trace) => /order|cancel/i.test(t.action);
 /**
- * Changes whenever an order or the order totals change, or anything new was recorded (a change
- * to an older order, made here or elsewhere, records an event), and only then.
+ * Changes whenever an order or the order totals change, or a new order event was recorded (a
+ * change to an older order records one), and only then. WhatsApp delivery receipts, chat events
+ * and AI spending are recorded all through service but change no order, so they are left out.
  */
 export function ordersChangeKey(data: Pick<Bootstrap, 'orders' | 'summary' | 'traces'>) {
+  const s = data.summary;
   return JSON.stringify([
-    data.summary ?? null,
+    s ? [s.orders, s.pending, s.value] : null,
     data.orders.map((o) => [o.id, o.status, o.updatedAt, o.syncStatus]),
-    (data.traces ?? []).map((t) => t.id),
+    newestEvent(data.traces, orderEvent),
   ]);
 }
 

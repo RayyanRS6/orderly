@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowLeft, Send } from 'lucide-react';
-import type { Company, Conversation, Message, PageResult } from '../shared/types';
+import type { Bootstrap, Company, Conversation, Message, PageResult, Trace } from '../shared/types';
 import { resumesAfterLimit } from '../domain/engine';
 import { useAction, useWorkspace } from '../lib/workspace';
 import { api } from '../lib/api';
+import { CHAT_POLL_MS, newestEvent, pollWhileVisible } from '../lib/polling';
 import { cn, shortDate } from '../lib/utils';
 import {
   ActionButton,
@@ -94,15 +95,59 @@ const DELIVERY_LABELS: Record<NonNullable<Message['delivery']>, string> = {
   read: 'Read ✓✓',
   failed: 'Not delivered',
 };
+// How long a fresh reply is watched for its delivery tick.
+const SENDING_MS = 120000;
 export function deliveryLabel(conversation: Conversation, m: Message, now = Date.now()) {
   if (m.delivery) return DELIVERY_LABELS[m.delivery];
   // A fresh WhatsApp reply without a receipt is still queued or on its way.
   if (
     conversation.channel === 'whatsapp' &&
     m.role === 'assistant' &&
-    now - Date.parse(m.createdAt) < 120000
+    now - Date.parse(m.createdAt) < SENDING_MS
   )
     return 'Sending…';
+}
+
+/** WhatsApp's delivery receipts (sent, delivered, read) name no chat and change no list. */
+const receipt = (t: Trace) => t.action.startsWith('whatsapp.') && !t.conversationId;
+/**
+ * Changes when the workspace check (every 15 seconds) brings news about conversations: a new
+ * chat, one moving to or from staff, an AI reply, or any other new event except a delivery
+ * receipt. The list and the open chat are fetched again only then.
+ */
+export function conversationsChangeKey(data: Pick<Bootstrap, 'summary' | 'traces'>) {
+  const s = data.summary;
+  return JSON.stringify([
+    s ? [s.conversations, s.needsStaff, s.monthlySpend] : null,
+    newestEvent(data.traces, (t) => !receipt(t)),
+  ]);
+}
+type ChatState = Pick<Conversation, 'updatedAt' | 'mode' | 'messages'>;
+/**
+ * Whether the list shows news the open chat lacks: a newer message or change, or a move to or
+ * from staff. A chat the list does not show (another page or filter) can't be compared, so it
+ * counts as behind.
+ */
+export function chatBehind(open: ChatState, listed?: ChatState) {
+  if (!listed) return true;
+  const last = listed.messages.at(-1);
+  return (
+    listed.updatedAt > open.updatedAt ||
+    listed.mode !== open.mode ||
+    (!!last && !open.messages.some((m) => m.id === last.id))
+  );
+}
+/** Whether a reply sent in the last 2 minutes still waits for WhatsApp to report it delivered. */
+export function awaitingDelivery(c: Pick<Conversation, 'channel' | 'messages'>, now = Date.now()) {
+  return (
+    c.channel === 'whatsapp' &&
+    c.messages.some(
+      (m) =>
+        m.role !== 'customer' &&
+        (!m.delivery || m.delivery === 'accepted' || m.delivery === 'sent') &&
+        now - Date.parse(m.createdAt) < SENDING_MS,
+    )
+  );
 }
 
 export function Inbox() {
@@ -149,13 +194,16 @@ export function Inbox() {
       if (requestId.current === request) setError((e as Error).message);
     }
   }, [data.company.id, page, search, status, sandbox]);
+  // The workspace check brings a new summary object every 15 seconds even when nothing
+  // changed: ask for the list again only when it brought news about conversations.
+  const changes = conversationsChangeKey(data);
   useEffect(() => {
     const timer = setTimeout(() => void refresh(), 200);
     return () => {
       clearTimeout(timer);
       requestId.current++;
     };
-  }, [refresh, data.summary]);
+  }, [refresh, changes]);
   useEffect(() => {
     let active = true;
     setConversation(undefined);
@@ -188,11 +236,12 @@ export function Inbox() {
   // Only a chat that loaded is checked for new messages: one that failed to load keeps its
   // own error instead of turning into "Updates delayed".
   const loaded = !!detailId && conversation?.id === detailId;
+  // Asks for the open chat again and adds what is new. Set while a loaded chat is on screen.
+  const updateChat = useRef<(() => void) | undefined>(undefined);
   useEffect(() => {
     if (!detailId || !loaded) return;
     let active = true;
-    const poll = setInterval(() => {
-      if (document.hidden || busy) return;
+    updateChat.current = () =>
       void api<Conversation>(`/conversations/${detailId}`, data.company.id)
         .then((c) => {
           if (!active) return;
@@ -208,12 +257,33 @@ export function Inbox() {
         .catch((e) => {
           if (active) setError(`Updates delayed: ${e.message}`);
         });
-    }, 10000);
     return () => {
       active = false;
-      clearInterval(poll);
+      updateChat.current = undefined;
     };
-  }, [detailId, loaded, data.company.id, busy]);
+  }, [detailId, loaded, data.company.id]);
+  // The list is fetched again only after news: when it shows the open chat with a newer message
+  // or change than the one on screen, ask for the chat too. Only a new list result asks.
+  const openChat = useRef(conversation);
+  openChat.current = conversation;
+  useEffect(() => {
+    const open = openChat.current;
+    if (!open || open.id !== shown.current) return;
+    const listed = result.items.find((c) => c.id === open.id);
+    if (chatBehind(open, listed)) updateChat.current?.();
+  }, [result]);
+  // A fresh reply shows "Sending…" or "Sent ✓" until WhatsApp reports it delivered: only then
+  // is the chat asked again on a timer, every 30 seconds while this tab is on screen and
+  // nothing is being saved.
+  const busyNow = useRef(busy);
+  busyNow.current = busy;
+  const waitingForTick = loaded && !!conversation && awaitingDelivery(conversation);
+  useEffect(() => {
+    if (!waitingForTick) return;
+    return pollWhileVisible(() => {
+      if (!busyNow.current) updateChat.current?.();
+    }, CHAT_POLL_MS);
+  }, [waitingForTick, detailId]);
   // Only the message list scrolls to the newest message: on phones the page is taller than
   // the screen, and scrollIntoView would also move the page staff are reading.
   useEffect(() => {

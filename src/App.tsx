@@ -74,6 +74,7 @@ import { BotSettings } from './components/BotSettings';
 import { Activity, SecuritySettings } from './components/Operations';
 import { AgentFlow } from './components/AgentFlow';
 import { go, useRoute, workspacePath } from './lib/routes';
+import { ACTIVITY_POLL_MS, CONFIG_POLL_MS, pollWhileVisible } from './lib/polling';
 
 const navigation = [
   { id: 'overview', label: 'Overview', icon: LayoutDashboard },
@@ -357,11 +358,14 @@ export default function App() {
     };
   }, [authenticated, companyId, route.slug]);
 
+  // Paused while the tab is hidden; shown again, it checks at once if a check fell due. Pages
+  // fetch their own lists again only when this brings news (ordersChangeKey,
+  // conversationsChangeKey), not on every check.
   useEffect(() => {
     if (!authenticated || !data || !['overview', 'orders', 'inbox', 'activity'].includes(page))
       return;
-    const timer = setInterval(() => {
-      if (!document.hidden && !savesInFlight.current)
+    return pollWhileVisible(() => {
+      if (!savesInFlight.current)
         void api<Pick<Bootstrap, 'summary' | 'traces' | 'jobs' | 'orders'>>(
           '/activity',
           data.company.id,
@@ -373,9 +377,18 @@ export default function App() {
             setError('');
           })
           .catch((e) => setError(`Updates delayed: ${e.message}`));
-    }, 15000);
-    return () => clearInterval(timer);
+    }, ACTIVITY_POLL_MS);
   }, [authenticated, !!data, page, refresh]);
+  // Orderly's emergency stop can start or end while this page is open: check it again every few
+  // minutes while the page is on screen, so the banner says what is true without a reload.
+  useEffect(() => {
+    if (!authenticated || !data) return;
+    return pollWhileVisible(() => {
+      void api<Configuration>('/config')
+        .then((c) => setAutomationPaused(!!c.automationPaused))
+        .catch(() => undefined);
+    }, CONFIG_POLL_MS);
+  }, [authenticated, !!data]);
 
   const mutate = useCallback(
     async <T,>(
