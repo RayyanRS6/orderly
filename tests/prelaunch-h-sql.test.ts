@@ -266,13 +266,14 @@ describe('a customer waiting for staff has waited since their message (G5.1)', (
     expect(await rpc('queue_staff_alerts')).toBe(1);
   });
 
-  it('counts from the customer’s latest message, until a staff member replies', async () => {
+  // Changed by sql-3 (owner decision): writing again no longer restarts the wait.
+  it('counts from the customer’s first unanswered message, until a staff member replies', async () => {
     const c = await waiting([
       message('customer', 'Hello', minutesAgo(40)),
       message('customer', 'Anyone there?', minutesAgo(5)),
     ]);
-    expect(await since(c)).toBe(Date.parse(c.messages[1]!.createdAt));
-    expect(await overdue(10)).toBe(false);
+    expect(await since(c)).toBe(Date.parse(c.messages[0]!.createdAt));
+    expect(await overdue(10)).toBe(true);
     const answered = await staffWrites(c, 'Calling you now');
     expect(await since(answered)).toBeUndefined();
     expect(await overdue(1)).toBe(false);

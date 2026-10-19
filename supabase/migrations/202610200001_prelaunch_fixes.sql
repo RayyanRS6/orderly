@@ -182,21 +182,32 @@ language sql immutable set search_path = public as $$
   end;
 $$;
 
--- Since when a customer waiting for staff has waited, for the bell and email alerts: their latest
--- message, unless a staff reply came after it. Automatic notices count as nothing, as in
--- awaits_staff_reply, so an order status change no longer restarts the wait. When staff took the
--- chat over from the bot later than that message (p_human_since, the chat's humanSince), since
--- then: the bot had answered, so a takeover hours later is not overdue at once. Never later than
--- the chat was last saved; with neither, when the chat was last saved, as before.
+-- Since when a customer waiting for staff has waited, for the bell and email alerts: their first
+-- message after the last reply they got, so writing again ("hello?") does not restart the wait.
+-- A reply is a staff member's or the bot's. Automatic notices count as nothing, as in
+-- awaits_staff_reply, so an order status change neither ends nor restarts the wait; nor does the
+-- bot's reply that handed the chat to staff (its explanation says so, or nothing was written
+-- after it), so the wait counts from the message it handed over. When staff took the chat over
+-- from the bot (p_human_since, the chat's humanSince), only messages from then on count, and
+-- with none, since then: the bot had answered, so a takeover hours later is not overdue at once.
+-- Never later than the chat was last saved; with neither, when the chat was last saved, as before.
 create or replace function public.waiting_since(p_messages jsonb,p_updated_at timestamptz,p_human_since timestamptz default null) returns timestamptz
 language sql stable set search_path = public as $$
-  select least(p_updated_at,greatest(p_human_since,(
-    select case when m->>'role'='customer' then (m->>'createdAt')::timestamptz end
-    from jsonb_array_elements(case when jsonb_typeof(p_messages)='array' then p_messages else '[]'::jsonb end) with ordinality a(m,n)
+  with written as (
+    select m, n from jsonb_array_elements(case when jsonb_typeof(p_messages)='array' then p_messages else '[]'::jsonb end) with ordinality a(m,n)
     where m->>'notice' is distinct from 'true'
-      and (m->>'role'='customer' or (m->>'role'='staff'
-        and coalesce(m->>'text','') !~ '^Order [^ ]+ is now (pending|accepted|preparing|ready|out for delivery|completed|rejected|cancelled)\.$'))
-    order by n desc limit 1)));
+      and not (m->>'role'='staff'
+        and coalesce(m->>'text','') ~ '^Order [^ ]+ is now (pending|accepted|preparing|ready|out for delivery|completed|rejected|cancelled)\.$')
+  ), replied as (
+    select coalesce(max(n),0) n from written
+    where m->>'role'='staff' or (m->>'role'='assistant' and m->'explanation'->>'outcome' is distinct from 'staff'
+      and n<(select max(n) from written))
+  )
+  select least(p_updated_at,greatest(p_human_since,(
+    select (w.m->>'createdAt')::timestamptz from written w, replied r
+    where w.m->>'role'='customer' and w.n>r.n
+      and (p_human_since is null or (w.m->>'createdAt')::timestamptz>=p_human_since)
+    order by w.n limit 1)));
 $$;
 
 -- Keep in step with AI_LIMIT_DEFAULTS and AI_LIMIT_RANGES in src/shared/models.ts. Changed: the
@@ -527,10 +538,12 @@ $$;
 
 -- Whether saved work is being processed, for an outside monitor (through the server only).
 -- 'stalled': a job due more than 3 minutes ago (or whose worker lease ran out 3 minutes ago) that
--- recovery would still send, not counting messages held behind a customer's failed message (those
--- already show as failed jobs). 'unconfigured': the worker address and token or the minute's
--- recovery are not set up, so nothing is sent. Worker errors are read from pg_net's responses,
--- which come only from dispatch_orderly_job (its sole caller of net.http_post).
+-- recovery would still send, not counting messages held in order behind an earlier message of the
+-- same customer that is not done (as recover_orderly_jobs holds them): only the first can be
+-- stalled, and one that failed already shows as a failed job. 'unconfigured': the worker address
+-- and token or the minute's recovery are not set up, so nothing is sent. Worker errors are read
+-- from pg_net's responses, which come only from dispatch_orderly_job (its sole caller of
+-- net.http_post).
 create or replace function public.orderly_pipeline_health() returns jsonb
 language plpgsql stable security definer set search_path = '' as $$
 declare scheduler jsonb; stalled integer; oldest timestamptz; last_run jsonb; worker_errors integer; health text;
@@ -542,7 +555,7 @@ begin
       or (j.status = 'processing' and coalesce(j.lease_until, j.next_run_at) < now() - interval '3 minutes'))
     and (j.data->>'kind' is distinct from 'incoming' or not exists (
       select 1 from public.jobs earlier where earlier.company_id = j.company_id
-        and earlier.data->>'kind' = 'incoming' and earlier.status = 'failed'
+        and earlier.data->>'kind' = 'incoming' and earlier.status <> 'done'
         and coalesce(earlier.data->'payload'->>'streamKey', earlier.data->'payload'->>'phone')
           is not distinct from coalesce(j.data->'payload'->>'streamKey', j.data->'payload'->>'phone')
         and earlier.arrival_sequence < j.arrival_sequence));

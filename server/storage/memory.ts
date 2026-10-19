@@ -118,15 +118,29 @@ const automaticNotice = (m: Message) =>
   m.notice === true || (m.role === 'staff' && STATUS_NOTICE.test(m.text ?? ''));
 const awaitsStaffReply = (messages: Message[]) =>
   messages.filter((m) => !automaticNotice(m)).at(-1)?.role !== 'staff';
-// Mirrors SQL waiting_since: a waiting customer has waited since their latest message, unless a
-// staff reply (not an automatic notice) came after it, and since staff took the chat over from
-// the bot (humanSince) when that is later. Never later than the chat was saved; with neither,
-// since the chat was saved.
+// Mirrors SQL waiting_since: a waiting customer has waited since their first message after the
+// last reply they got (staff's or the bot's; not an automatic notice, and not the bot's reply
+// that handed the chat to staff), so writing again does not restart the wait. After staff took
+// the chat over from the bot (humanSince), only messages from then on count, and with none, since
+// then. Never later than the chat was saved; with neither, since the chat was saved.
 const waitingSince = (c: Conversation) => {
-  const last = c.messages
-    .filter((m) => !automaticNotice(m) && (m.role === 'customer' || m.role === 'staff'))
-    .at(-1);
-  const since = [last?.role === 'customer' ? last.createdAt : undefined, c.humanSince]
+  const written = c.messages.filter((m) => !automaticNotice(m));
+  const takeover = Date.parse(c.humanSince ?? '');
+  let replied = -1;
+  written.forEach((m, index) => {
+    if (
+      m.role === 'staff' ||
+      (m.role === 'assistant' && m.explanation?.outcome !== 'staff' && index < written.length - 1)
+    )
+      replied = index;
+  });
+  const first = written
+    .slice(replied + 1)
+    .find(
+      (m) =>
+        m.role === 'customer' && (Number.isNaN(takeover) || Date.parse(m.createdAt) >= takeover),
+    );
+  const since = [first?.createdAt, c.humanSince]
     .filter((at): at is string => !!at && !Number.isNaN(Date.parse(at)))
     .sort((a, b) => Date.parse(a) - Date.parse(b))
     .at(-1);
@@ -606,7 +620,8 @@ export class MemoryRepository implements Repository {
   pipelineHealth() {
     return this.read((s): PipelineHealth => {
       const cutoff = Date.now() - 3 * 60000;
-      // Behind a customer's failed message: already shown as a failed job.
+      // Held in order behind an earlier message of the same customer that is not done: only
+      // the first can be stalled, and one that failed already shows as a failed job.
       const held = (j: Job) =>
         j.kind === 'incoming' &&
         s.jobs
@@ -614,7 +629,7 @@ export class MemoryRepository implements Repository {
           .some(
             (e) =>
               e.kind === 'incoming' &&
-              e.status === 'failed' &&
+              e.status !== 'done' &&
               e.companyId === j.companyId &&
               (e.payload.streamKey ?? e.payload.phone) === (j.payload.streamKey ?? j.payload.phone),
           );

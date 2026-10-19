@@ -1,10 +1,12 @@
 -- Reminds a customer whose order is still waiting for the restaurant. Every 5 minutes, each live
--- WhatsApp order still pending 15 minutes after it was placed (and placed within the last 24
--- hours) gets one 'order_followup' job, payload {orderId, conversationId}; the worker checks the
--- order again before it writes to the customer. Staff are reminded by the bell and, since
--- 202610200001, by email alerts after at most 15 minutes.
+-- WhatsApp order still pending 15 minutes after it was placed (and placed within the last 3
+-- hours, so the first run does not remind customers of orders staff handled hours ago without
+-- pressing Accept) gets one 'order_followup' job, payload {orderId, conversationId}; the worker
+-- checks the order again before it writes to the customer. Staff are reminded by the bell and,
+-- since 202610200001, by email alerts after at most 15 minutes.
 -- Apply after 202610200001_prelaunch_fixes.sql and only once the backend that handles
--- 'order_followup' jobs is live: an older worker treats an unknown kind as a WhatsApp message.
+-- 'order_followup' jobs is live: an older worker does not know them and ends each one as a
+-- failed job (a staff alert) or as done, unsent.
 -- The job functions need no change: claim_job, list_due_jobs, dispatch_orderly_job,
 -- recover_orderly_jobs and fail_exhausted_orderly_jobs treat every kind but 'incoming' alike.
 -- Safe to rerun.
@@ -32,7 +34,7 @@ begin
     select o.id, o.company_id, o.conversation_id from orders o
       join conversations c on c.company_id = o.company_id and c.id = o.conversation_id
     where o.data->>'status' = 'pending' and o.data->>'sandbox' = 'false'
-      and o.created_at < now() - interval '15 minutes' and o.created_at > now() - interval '24 hours'
+      and o.created_at < now() - interval '15 minutes' and o.created_at > now() - interval '3 hours'
       and c.channel = 'whatsapp' and jsonb_typeof(c.data->'blocked') is distinct from 'object'
       and not exists(select 1 from jobs j where j.dedupe_key = 'order-followup:' || o.id)
     order by o.created_at, o.id limit 100
