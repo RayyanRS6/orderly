@@ -102,52 +102,6 @@ export function Overview() {
           <ArrowUpRight className="size-4 text-stone-400" />
         </button>
       </PageHeading>
-      {data.readiness && (
-        <section className="card mb-5 p-5">
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <h2 className="panel-title">
-              Launch readiness · {data.readiness.filter((c) => c.ready).length}/
-              {data.readiness.length}
-            </h2>
-            <button className="btn" onClick={() => navigate('flow')}>
-              Review setup
-            </button>
-          </div>
-          <ul className="stagger mt-4 grid gap-2 text-[13px] text-stone-700 sm:grid-cols-2">
-            {data.readiness.map((c) => (
-              <li
-                key={c.id}
-                className="flex items-center gap-2.5 rounded-2xl bg-white/60 px-3 py-2 ring-1 ring-ink/[0.04]"
-              >
-                <span
-                  role="img"
-                  aria-label={c.ready ? 'Complete' : 'Required'}
-                  className={cn(
-                    'inline-flex size-5 shrink-0 items-center justify-center rounded-full text-[11px] leading-none font-bold',
-                    c.ready
-                      ? 'pop-in bg-success-700 text-white [--d:260ms]'
-                      : 'bg-sun/35 text-stone-700',
-                  )}
-                >
-                  {c.ready ? '✓' : '○'}
-                </span>{' '}
-                {c.label}
-                <ReadinessLink check={c} />
-              </li>
-            ))}
-          </ul>
-          <p className="mt-4 text-xs text-stone-500">
-            {data.summary?.needsStaff ?? 0}{' '}
-            {data.summary?.needsStaff === 1 ? 'conversation needs' : 'conversations need'} staff.{' '}
-            <button
-              className="font-semibold text-brand-700 underline-offset-4 transition-colors hover:text-brand-800 hover:underline"
-              onClick={() => navigate('inbox')}
-            >
-              Open inbox
-            </button>
-          </p>
-        </section>
-      )}
       <section className="glow-dark mb-8 grid grid-cols-1 overflow-hidden rounded-[26px] border border-white/[0.06] bg-ink text-cream shadow-[0_40px_80px_-44px_rgb(14_6_4/0.75),0_24px_60px_-40px_rgb(255_105_44/0.35)] md:grid-cols-5">
         <div className="p-6 sm:p-9 md:col-span-3">
           <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.05] py-1.5 pr-3.5 pl-3 text-[11px] font-semibold tracking-[0.14em] text-cream/80 uppercase">
@@ -459,6 +413,52 @@ export function Overview() {
           emptyDescription={data.mode === 'demo' ? undefined : 'Try the bot and confirm an order.'}
         />
       </section>
+      {data.readiness && (
+        <section className="card mt-8 p-5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="panel-title">
+              Launch readiness · {data.readiness.filter((c) => c.ready).length}/
+              {data.readiness.length}
+            </h2>
+            <button className="btn" onClick={() => navigate('flow')}>
+              Review setup
+            </button>
+          </div>
+          <ul className="stagger mt-4 grid gap-2 text-[13px] text-stone-700 sm:grid-cols-2">
+            {data.readiness.map((c) => (
+              <li
+                key={c.id}
+                className="flex items-center gap-2.5 rounded-2xl bg-white/60 px-3 py-2 ring-1 ring-ink/[0.04]"
+              >
+                <span
+                  role="img"
+                  aria-label={c.ready ? 'Complete' : 'Required'}
+                  className={cn(
+                    'inline-flex size-5 shrink-0 items-center justify-center rounded-full text-[11px] leading-none font-bold',
+                    c.ready
+                      ? 'pop-in bg-success-700 text-white [--d:260ms]'
+                      : 'bg-sun/35 text-stone-700',
+                  )}
+                >
+                  {c.ready ? '✓' : '○'}
+                </span>{' '}
+                {c.label}
+                <ReadinessLink check={c} />
+              </li>
+            ))}
+          </ul>
+          <p className="mt-4 text-xs text-stone-500">
+            {data.summary?.needsStaff ?? 0}{' '}
+            {data.summary?.needsStaff === 1 ? 'conversation needs' : 'conversations need'} staff.{' '}
+            <button
+              className="font-semibold text-brand-700 underline-offset-4 transition-colors hover:text-brand-800 hover:underline"
+              onClick={() => navigate('inbox')}
+            >
+              Open inbox
+            </button>
+          </p>
+        </section>
+      )}
       {activity.length > 0 && (
         <section className="mt-8">
           <div className="mb-4 flex flex-wrap items-baseline gap-x-3 gap-y-1">
