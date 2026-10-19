@@ -23,7 +23,7 @@ import { encryptSecret } from './security';
 import { PROVIDER_NAMES } from '../src/shared/models';
 import { createConversation } from '../src/domain/engine';
 import { readiness } from './readiness';
-import { appMode } from './config';
+import { appMode, automationPaused } from './config';
 import { addMemberByEmail } from './team';
 import { emailAlertsAvailable } from './integrations/alerts';
 import { disconnectGateway } from './whatsapp/connections';
@@ -42,6 +42,14 @@ export function managementRoutes(repo: Repository) {
   const app = new Hono<AppEnv>();
   const owner = (role: Role) => {
     if (role === 'staff') throw new PublicError('Only an owner can manage this setting.', 403);
+  };
+  // The platform-wide stop (ORDERLY_PAUSE_AUTOMATION) means no AI calls, tests included.
+  const refuseWhilePaused = () => {
+    if (automationPaused())
+      throw new PublicError(
+        'AI calls are paused on Orderly right now, so nothing was tested or changed. Try again later.',
+        503,
+      );
   };
   app.get('/notifications', async (c) =>
     c.json({
@@ -171,6 +179,7 @@ export function managementRoutes(repo: Repository) {
   // then save the key and switch this business to the new model. Any failure changes nothing.
   app.post('/ai/connect', async (c) => {
     owner(c.get('role'));
+    refuseWhilePaused();
     const company = c.get('company');
     const body = z
       .object({
@@ -298,6 +307,7 @@ export function managementRoutes(repo: Repository) {
   });
   app.post('/models/test', async (c) => {
     owner(c.get('role'));
+    refuseWhilePaused();
     const company = c.get('company');
     if (company.ai.provider === 'mock')
       throw new PublicError('Select and save a provider model first.');

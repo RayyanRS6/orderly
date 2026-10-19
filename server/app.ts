@@ -10,7 +10,7 @@ import type { PipelineHealth, Repository } from './repository.js';
 import type { Company, Integration, IntegrationKind, Role } from '../src/shared/types.js';
 import { createConversation, transitionOrder } from '../src/domain/engine.js';
 import { slugify } from '../src/shared/slug.js';
-import { appMode, automationPaused, env } from './config.js';
+import { appMode, automationPaused, env, workerLeaseMs } from './config.js';
 import {
   PublicError,
   encryptSecret,
@@ -81,6 +81,10 @@ const owner = (role: Role) => {
   if (!['owner', 'admin'].includes(role))
     throw new PublicError('Only the restaurant owner can change these settings.', 403);
 };
+// How long an order status change waits for a busy chat before writing its notice copy: up to
+// 16 tries half a second apart, about as long as one AI reply takes.
+const NOTICE_LOCK_TRIES = 16;
+const NOTICE_LOCK_WAIT_MS = 500;
 // A request path with its record IDs replaced, for audit entries and failure logs.
 const routePattern = (path: string) => path.replace(/\/[a-f0-9-]{36}(?=\/|$)/g, '/:id');
 // Only a rejected token means signing in again. When Supabase Auth cannot be reached or is
@@ -682,6 +686,12 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
   });
   app.post('/api/chat', async (c) => {
     const company = c.get('company');
+    // The platform-wide stop: no AI call, so no test chat either.
+    if (automationPaused())
+      throw new PublicError(
+        'Automatic replies are paused on Orderly right now. Try again later.',
+        503,
+      );
     // Test chats spend the business's own AI budget, which live customers also need. One
     // business gets 15 a minute however many people test, checked before any AI work.
     if (!(await repo.consumeRateLimit(`chat:${company.id}`, 15))) {
@@ -740,24 +750,43 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
     // The order already had this status: nothing was sent, so the chat gets no notice either.
     if (updated.status === order.status) return c.json(updated);
     // The chat's copy of the status message the customer is sent. Marked as a notice, so a
-    // customer still waiting for a staff reply stays under "Needs staff" and in staff alerts. A
+    // customer still waiting for a staff reply stays under "Needs staff" and in staff alerts.
+    // Written under the chat's lock like a turn, so it never lands in the middle of one (that
+    // turn would start again and pay for its AI call twice). A chat still busy after a few
+    // seconds is written to anyway: the customer has the notice, so the chat needs its copy. A
     // chat that changed meanwhile is read again.
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      const conversation = await repo.getConversation(order.companyId, order.conversationId);
-      if (!conversation) break;
-      const at = new Date().toISOString();
-      const next = {
-        ...conversation,
-        version: conversation.version + 1,
-        updatedAt: at,
-        messages: [
-          ...conversation.messages,
-          { id: randomUUID(), role: 'staff' as const, text, createdAt: at, notice: true },
-        ],
-      };
-      if (await repo.saveConversation(next, conversation.version)) break;
-      if (attempt === 3)
-        console.warn('Orderly: an order status notice could not be added to its chat.');
+    const lockId = randomUUID();
+    let locked = false;
+    for (let wait = 0; wait < NOTICE_LOCK_TRIES; wait++) {
+      locked = await repo.acquireConversationLock(
+        order.companyId,
+        order.conversationId,
+        lockId,
+        new Date(Date.now() + workerLeaseMs()).toISOString(),
+      );
+      if (locked) break;
+      await new Promise((resolve) => setTimeout(resolve, NOTICE_LOCK_WAIT_MS));
+    }
+    try {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        const conversation = await repo.getConversation(order.companyId, order.conversationId);
+        if (!conversation) break;
+        const at = new Date().toISOString();
+        const next = {
+          ...conversation,
+          version: conversation.version + 1,
+          updatedAt: at,
+          messages: [
+            ...conversation.messages,
+            { id: randomUUID(), role: 'staff' as const, text, createdAt: at, notice: true },
+          ],
+        };
+        if (await repo.saveConversation(next, conversation.version)) break;
+        if (attempt === 3)
+          console.warn('Orderly: an order status notice could not be added to its chat.');
+      }
+    } finally {
+      if (locked) await repo.releaseConversationLock(order.companyId, order.conversationId, lockId);
     }
     return c.json(updated);
   });
