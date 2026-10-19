@@ -316,7 +316,8 @@ const TRANSFER_NAMES: Record<Exclude<PaymentMethod, 'cash'>, [string, string, st
 const orList = (names: string[], comma: string, or: string) =>
   names.length > 1 ? `${names.slice(0, -1).join(comma)} ${or} ${names.at(-1)}` : (names[0] ?? '');
 // How a restaurant that also takes transfers is paid. Orderly never collects or sends account
-// numbers: the customer is told the restaurant shares its details and confirms the transfer.
+// numbers. The customer is told how to get the restaurant's details: typing "staff" reaches a
+// person in this chat, who sends them and confirms the transfer.
 function transferPaymentText(
   lang: Language,
   fulfillment: Order['fulfillment'],
@@ -327,9 +328,9 @@ function transferPaymentText(
   const names = (index: 0 | 1 | 2) => transfers.map((method) => TRANSFER_NAMES[method][index]);
   return say(
     lang,
-    `Payment: ${cash ? `cash ${fulfillment === 'pickup' ? 'at pickup' : 'on delivery'}, or ` : ''}${names(0).join(' / ')} — the restaurant will share the payment details and confirm the transfer itself.`,
-    `ادائیگی ${orList([...(cash ? ['نقد'] : []), ...names(1)], '، ', 'یا')} سے ${cash ? 'ہو سکتی ہے' : 'ہوگی'}۔ ٹرانسفر کے لیے ریسٹورنٹ ادائیگی کی تفصیل خود بھیجے گا اور ٹرانسفر کی تصدیق خود کرے گا۔`,
-    `Payment ${orList([...(cash ? ['cash'] : []), ...names(2)], ', ', 'ya')} se ${cash ? 'ho sakti hai' : 'hogi'}. Transfer ke liye restaurant payment details khud bhejega aur transfer khud confirm karega.`,
+    `Payment: ${cash ? `cash ${fulfillment === 'pickup' ? 'at pickup' : 'on delivery'}, or ` : ''}${names(0).join(' / ')} — to pay by transfer, type “staff” here and restaurant staff will send the payment details and confirm the transfer themselves.`,
+    `ادائیگی ${orList([...(cash ? ['نقد'] : []), ...names(1)], '، ', 'یا')} سے ${cash ? 'ہو سکتی ہے' : 'ہوگی'}۔ ٹرانسفر کے لیے ریسٹورنٹ کی ادائیگی کی تفصیل یہاں “عملہ” لکھ کر منگوائیں، عملہ ٹرانسفر کی تصدیق خود کرے گا۔`,
+    `Payment ${orList([...(cash ? ['cash'] : []), ...names(2)], ', ', 'ya')} se ${cash ? 'ho sakti hai' : 'hogi'}. Transfer ke liye yahan “staff” likhein, restaurant ka staff payment details bhejega aur transfer khud confirm karega.`,
   );
 }
 /**
