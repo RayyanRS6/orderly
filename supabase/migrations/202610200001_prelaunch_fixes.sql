@@ -8,12 +8,16 @@
 -- the spam safety net is 1,500 AI replies an hour (100 per customer) with a warning at 80%, the
 -- Active orders filter leaves out pending orders, the daily orders chart counts the business's
 -- own days, a pipeline health check, a daily purge of old operational rows, and a ledger of
--- applied migrations.
+-- applied migrations. Data: a job's duplicate key keeps only its SHA-256 (it held the customer's
+-- number or Meta message ID), Meta delivery-status traces (each named a message ID) go, and AI
+-- limits saved as the old defaults (300 an hour, 30 per customer) give way to the new ones.
 -- Apply after 202610190003_menu_purge_schedule.sql and before deploying the backend that calls
 -- orderly_pipeline_health, customer_records, conversation_records and erase_conversation. The
 -- backend and dashboard running now keep
--- working: every function keeps its signature and result shape (staff_attention only adds a
--- 'whatsapp' count and items), and the only new column has a default.
+-- working: every function keeps its signature and result shape (staff_attention adds a
+-- 'whatsapp' count and items and a 'limit' item with scope 'hourly_near' for the 80% warning,
+-- and dates a waiting customer as waiting_since does), the only new column has a default, and the
+-- duplicate keys they send are hashed by a trigger.
 -- Safe to rerun while no later file redefines these functions. It replaces, starting from their
 -- latest bodies: alert_recipient (202609180001), erase_customer and run_retention (202609170001),
 -- query_orders and workspace_summary (202609160001), prune_orderly_cron_history (202609110001),
@@ -596,10 +600,10 @@ create index if not exists message_deliveries_unlinked on public.message_deliver
 
 -- Keeps operational rows from filling the database (500 MB on the Free plan): traces older than
 -- 90 days (audit events are a separate table and stay), the content of finished jobs older than
--- 14 days (the job and its duplicate key stay, so a late webhook retry is still recognised, and
--- its status does not change), and receipts never linked to a chat, older than 90 days. At most
--- p_batch rows of each per statement and four statements per table per run, so a run stays short;
--- a backlog clears over a few days. Scheduled daily below.
+-- 14 days (the job and its hashed duplicate key stay, so a late webhook retry is still recognised,
+-- and its status does not change), and receipts never linked to a chat, older than 90 days. At
+-- most p_batch rows of each per statement and four statements per table per run, so a run stays
+-- short; a backlog clears over a few days. Scheduled daily below.
 create or replace function public.purge_orderly_operations(p_batch integer default 5000) returns integer
 language plpgsql security definer set search_path = public set lock_timeout = '5s' as $$
 declare batch integer := least(greatest(coalesce(p_batch, 5000), 1), 10000); n integer; total integer := 0;
@@ -644,6 +648,30 @@ begin
 end;
 $$;
 
+-- A job's duplicate key names the message it was saved for: a Cloud API message ID (which encodes
+-- the customer's number) or the linked phone's customer address (their number or privacy ID).
+-- Only its SHA-256 is kept, so erasure, retention and the purge leave nothing of the customer in
+-- it; a duplicate is still refused (insert_job's on conflict compares the hashes), whichever
+-- backend sends the key. Orderly's own keys name no customer and stay as they are:
+-- 'order-followup:<order id>' (queue_order_followups reads it back) and 'staff-alert:...'.
+create or replace function public.hash_job_dedupe_key() returns trigger
+language plpgsql set search_path = '' as $$
+begin
+  if new.dedupe_key !~ '^([0-9a-f]{64}|order-followup:.*|staff-alert:.*)$' then
+    new.dedupe_key := encode(sha256(convert_to(new.dedupe_key, 'UTF8')), 'hex');
+  end if;
+  return new;
+end $$;
+drop trigger if exists orderly_hash_dedupe_key on public.jobs;
+create trigger orderly_hash_dedupe_key before insert or update of dedupe_key on public.jobs
+  for each row execute function public.hash_job_dedupe_key();
+-- The keys saved before, the same way. A rerun finds none.
+update public.jobs set dedupe_key = encode(sha256(convert_to(dedupe_key, 'UTF8')), 'hex')
+  where dedupe_key !~ '^([0-9a-f]{64}|order-followup:.*|staff-alert:.*)$';
+-- Meta delivery-status traces, one per status, each named a message ID and no chat, so erasing
+-- the customer never removed them. The backend now keeps one only for a failed delivery,
+-- without the ID. A rerun after the backend deploy also clears those the older one wrote.
+delete from public.traces where conversation_id is null and data->>'detail' like 'Meta message %';
 -- AI limits saved exactly as the old dashboard's untouched defaults (300 an hour, 30 per customer,
 -- without the per-minute limit every newer save includes) give way to the new defaults. The
 -- settings revision goes up, so a settings copy read before this is refused, not saved back.
@@ -663,9 +691,10 @@ do $$ declare f record; begin
     execute format('revoke all on function %s from public,anon,authenticated',f.signature);
     execute format('grant execute on function %s to service_role',f.signature);
   end loop;
-  -- Parts of the functions above, never called on their own: erasing without its checks.
+  -- Parts of the functions above, never called on their own: erasing without its checks, and
+  -- the duplicate key trigger.
   for f in select oid::regprocedure signature from pg_proc where pronamespace='public'::regnamespace
-    and proname=any(array['erase_customer_chats','conversation_customer_ids']) loop
+    and proname=any(array['erase_customer_chats','conversation_customer_ids','hash_job_dedupe_key']) loop
     execute format('revoke all on function %s from public,anon,authenticated,service_role',f.signature);
   end loop;
 end $$;

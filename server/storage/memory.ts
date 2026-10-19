@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, rename, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type {
   Company,
   Conversation,
@@ -79,6 +79,12 @@ interface BlockedKey {
 }
 type AttentionScope = import('../../src/shared/types').StaffAttention['items'][number]['scope'];
 const BLOCK_KEY = /^(pn|lid):[0-9]{5,20}$/;
+// Mirrors SQL hash_job_dedupe_key: a job's duplicate key is kept as its SHA-256 (it names the
+// customer's message), except Orderly's own keys, which name no customer.
+const storedDedupeKey = (key: string) =>
+  /^([0-9a-f]{64}|order-followup:.*|staff-alert:.*)$/s.test(key)
+    ? key
+    : createHash('sha256').update(key, 'utf8').digest('hex');
 // Usage that counts as an AI reply toward the spam limits: a live chat's call that cost something.
 const countedReply = (u: Usage, companyId: string, since: number) =>
   u.companyId === companyId && u.costUsd > 0 && !u.sandbox && Date.parse(u.createdAt) >= since;
@@ -1800,9 +1806,10 @@ export class MemoryRepository implements Repository {
       reservation.settled = true;
     });
   }
-  insertJob(job: Job, dedupeKey?: string) {
+  insertJob(job: Job, rawDedupeKey?: string) {
     return this.mutate((s) => {
       checkJob(s, job);
+      const dedupeKey = rawDedupeKey && storedDedupeKey(rawDedupeKey);
       if (s.jobs.some((j) => j.id === job.id) || (dedupeKey && Object.hasOwn(s.dedupe, dedupeKey)))
         return false;
       s.jobs.push(copy(job));

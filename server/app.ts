@@ -271,6 +271,7 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
               }
             : {};
         for (const status of value.statuses ?? []) {
+          const errorCode = Number(status.errors?.[0]?.code) || 'unknown';
           if (
             ['sent', 'delivered', 'read', 'failed'].includes(status.status) &&
             typeof status.id === 'string'
@@ -282,16 +283,20 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
               undefined,
               undefined,
               status.errors?.length
-                ? `Meta delivery error ${Number(status.errors[0].code) || 'unknown'}. Check the business number and account health.`
+                ? `Meta delivery error ${errorCode}. Check the business number and account health.`
                 : undefined,
             );
-          await repo.addTrace({
-            id: randomUUID(),
-            companyId: company.id,
-            action: `whatsapp.${String(status.status).slice(0, 30)}`,
-            detail: `Meta message ${String(status.id).slice(0, 150)}`,
-            createdAt: new Date().toISOString(),
-          });
+          // The receipt above shows on the message. Only a failed delivery also gets a trace, and
+          // never with the message ID: Meta's ID encodes the customer's number, and a trace linked
+          // to no chat is not removed when the customer is erased.
+          if (status.status === 'failed')
+            await repo.addTrace({
+              id: randomUUID(),
+              companyId: company.id,
+              action: 'whatsapp.failed',
+              detail: `Meta could not deliver a message (error ${errorCode}). Check the business number and account health.`,
+              createdAt: new Date().toISOString(),
+            });
         }
         if (change.field === 'smb_message_echoes') {
           for (const echo of value.message_echoes ?? []) {
