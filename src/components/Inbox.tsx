@@ -4,7 +4,13 @@ import type { Bootstrap, Company, Conversation, Message, PageResult, Trace } fro
 import { resumesAfterLimit } from '../domain/engine';
 import { useAction, useWorkspace } from '../lib/workspace';
 import { api } from '../lib/api';
-import { CHAT_POLL_MS, newestEvent, pollWhileVisible } from '../lib/polling';
+import {
+  CHAT_POLL_MS,
+  LIST_REFRESH_MS,
+  newestEvent,
+  noteNewEvents,
+  pollWhileVisible,
+} from '../lib/polling';
 import { cn, shortDate } from '../lib/utils';
 import {
   ActionButton,
@@ -132,6 +138,14 @@ export function conversationsChangeKey(data: Pick<Bootstrap, 'summary' | 'traces
     newestEvent(data.traces, (t) => !receipt(t)),
   ]);
 }
+/**
+ * Whether a workspace check brought an event this page has not seen (noted in `seen`). The key
+ * above follows the newest event, but a customer's message is dated when they sent it: one
+ * recorded late sits behind a newer event and leaves the key as it was. Receipts are not news.
+ */
+export function conversationNews(seen: Set<string>, traces: Trace[] | undefined) {
+  return noteNewEvents(seen, traces, (t) => !receipt(t));
+}
 type ChatState = Pick<Conversation, 'updatedAt' | 'mode' | 'messages'>;
 /**
  * Whether the list shows news the open chat lacks: a newer message or change, or a move to or
@@ -192,16 +206,35 @@ export function Inbox() {
   const requestId = useRef(0);
   const end = useRef<HTMLDivElement>(null);
   const logRef = useRef<HTMLDivElement>(null);
+  const busyNow = useRef(busy);
+  busyNow.current = busy;
+  // When the list was last asked for, and the error of a list or chat request that failed: the
+  // next workspace check asks again instead of waiting for more news.
+  const listAt = useRef(0);
+  const listFailed = useRef('');
+  const chatFailed = useRef(false);
+  // Asks for the open chat again and adds what is new. Set while a loaded chat is on screen.
+  const updateChat = useRef<(() => void) | undefined>(undefined);
   const refresh = useCallback(async () => {
     const request = ++requestId.current;
+    listAt.current = Date.now();
     try {
       const r = await api<PageResult<Conversation>>(
         `/conversations?page=${page}&pageSize=30&search=${encodeURIComponent(search)}&status=${status}&sandbox=${sandbox}`,
         data.company.id,
       );
-      if (requestId.current === request) setResult(r);
+      if (requestId.current === request) {
+        // Back online: the earlier failure no longer applies.
+        const failed = listFailed.current;
+        listFailed.current = '';
+        if (failed) setError((e) => (e === failed ? '' : e));
+        setResult(r);
+      }
     } catch (e) {
-      if (requestId.current === request) setError((e as Error).message);
+      if (requestId.current === request) {
+        listFailed.current = (e as Error).message;
+        setError((e as Error).message);
+      }
     }
   }, [data.company.id, page, search, status, sandbox]);
   // The workspace check brings a new summary object every 15 seconds even when nothing
@@ -214,6 +247,31 @@ export function Inbox() {
       requestId.current++;
     };
   }, [refresh, changes]);
+  // An event this page has not seen is news too, even when the key above stayed the same (a
+  // customer's message recorded late). A list or chat request that failed is asked again.
+  const [seenEvents] = useState(() => {
+    const seen = new Set<string>();
+    conversationNews(seen, data.traces);
+    return seen;
+  });
+  const keySeen = useRef(changes);
+  useEffect(() => {
+    const fresh = conversationNews(seenEvents, data.traces);
+    // A new key already asks for the list (above).
+    const asked = keySeen.current !== changes;
+    keySeen.current = changes;
+    if (!asked && (fresh || listFailed.current)) void refresh();
+    if (chatFailed.current) updateChat.current?.();
+  }, [data.traces, changes]);
+  // Once a minute regardless while this tab is on screen, unless the list just came: a staff
+  // reply sent from the restaurant's own phone leaves no event at all.
+  useEffect(
+    () =>
+      pollWhileVisible(() => {
+        if (!busyNow.current && Date.now() - listAt.current >= LIST_REFRESH_MS / 2) void refresh();
+      }, LIST_REFRESH_MS),
+    [refresh],
+  );
   useEffect(() => {
     let active = true;
     setConversation(undefined);
@@ -246,15 +304,15 @@ export function Inbox() {
   // Only a chat that loaded is checked for new messages: one that failed to load keeps its
   // own error instead of turning into "Updates delayed".
   const loaded = !!detailId && conversation?.id === detailId;
-  // Asks for the open chat again and adds what is new. Set while a loaded chat is on screen.
-  const updateChat = useRef<(() => void) | undefined>(undefined);
   useEffect(() => {
     if (!detailId || !loaded) return;
     let active = true;
+    chatFailed.current = false;
     updateChat.current = () =>
       void api<Conversation>(`/conversations/${detailId}`, data.company.id)
         .then((c) => {
           if (!active) return;
+          chatFailed.current = false;
           // Back online: an earlier delay notice no longer applies.
           setError((e) => (e.startsWith('Updates delayed') ? '' : e));
           setConversation((old) => ({
@@ -265,10 +323,13 @@ export function Inbox() {
           }));
         })
         .catch((e) => {
-          if (active) setError(`Updates delayed: ${e.message}`);
+          if (!active) return;
+          chatFailed.current = true;
+          setError(`Updates delayed: ${e.message}`);
         });
     return () => {
       active = false;
+      chatFailed.current = false;
       updateChat.current = undefined;
     };
   }, [detailId, loaded, data.company.id]);
@@ -285,8 +346,6 @@ export function Inbox() {
   // A fresh reply shows "Sending…" or "Sent ✓" until WhatsApp reports it delivered: only then
   // is the chat asked again on a timer, every 30 seconds while this tab is on screen and
   // nothing is being saved.
-  const busyNow = useRef(busy);
-  busyNow.current = busy;
   const waitingForTick = loaded && !!conversation && awaitingDelivery(conversation);
   useEffect(() => {
     if (!waitingForTick) return;

@@ -8,43 +8,27 @@ import {
   ACTIVITY_POLL_MS,
   CHAT_POLL_MS,
   CONFIG_POLL_MS,
+  LIST_REFRESH_MS,
   newestEvent,
   pollWhileVisible,
 } from '../src/lib/polling';
 import { awaitingDelivery, chatBehind, conversationsChangeKey } from '../src/components/Inbox';
 import { ordersChangeKey } from '../src/components/Orders';
-import { ALERT_POLL_MS, shouldPollAlerts } from '../src/components/StaffAlerts';
-import { seedConversations, seedOrders } from '../src/shared/seed';
-import type { Bootstrap, Conversation, Message, Trace } from '../src/shared/types';
+import { seedOrders } from '../src/shared/seed';
+import type { Bootstrap, Conversation, Trace } from '../src/shared/types';
 import { bootstrap } from './prelaunch-e-helpers';
+import {
+  at,
+  chat,
+  fakeDocument,
+  inboxTab,
+  message,
+  quietServer,
+  START,
+  trace,
+} from './prelaunch-fx11-helpers';
 
 const source = (file: string) => readFileSync(join(process.cwd(), file), 'utf8');
-const START = Date.parse('2026-10-19T10:00:00.000Z');
-const at = (seconds: number) => new Date(START + seconds * 1000).toISOString();
-const trace = (id: string, action: string, createdAt: string, conversationId?: string): Trace => ({
-  id,
-  companyId: 'company-1',
-  action,
-  detail: '',
-  createdAt,
-  ...(conversationId && { conversationId }),
-});
-
-// A stand-in for the browser tab: whether it is hidden, and its visibilitychange listeners.
-function fakeDocument(hidden = false) {
-  const listeners = new Set<() => void>();
-  const doc = {
-    hidden,
-    addEventListener: (_: string, fn: () => void) => void listeners.add(fn),
-    removeEventListener: (_: string, fn: () => void) => void listeners.delete(fn),
-    show(next: boolean) {
-      doc.hidden = !next;
-      for (const fn of [...listeners]) fn();
-    },
-  };
-  vi.stubGlobal('document', doc);
-  return doc;
-}
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -206,22 +190,6 @@ describe('what makes the Orders page fetch again', () => {
   });
 });
 
-const chat = (messages: Message[], extra: Partial<Conversation> = {}): Conversation => ({
-  ...seedConversations[0]!,
-  id: 'c1',
-  channel: 'whatsapp',
-  mode: 'bot',
-  messages,
-  updatedAt: messages.at(-1)!.createdAt,
-  ...extra,
-});
-const message = (
-  id: string,
-  role: Message['role'],
-  createdAt: string,
-  extra: Partial<Message> = {},
-) => ({ id, role, text: id, createdAt, ...extra }) as Message;
-
 describe('when the open chat is fetched again', () => {
   const open = chat([
     message('m1', 'customer', at(-700)),
@@ -260,141 +228,20 @@ describe('when the open chat is fetched again', () => {
   });
 });
 
-/**
- * One dashboard tab on the Inbox with a chat open, wired the way App, StaffAlerts and the Inbox
- * wire these helpers (the source checks below hold them to it): the workspace check every 15
- * seconds, the emergency-stop check, the alerts check once a minute, and the Inbox list and open
- * chat fetched again only on news. `server` answers like the backend, with new objects each time.
- */
-function inboxTab(
-  server: {
-    activity: () => Pick<Bootstrap, 'summary' | 'traces'>;
-    list: () => Conversation[];
-    chat: () => Conversation;
-  },
-  { alertsOn = false } = {},
-) {
-  const calls: string[] = [];
-  const stops: (() => void)[] = [];
-  let data = server.activity();
-  // App: the workspace check, and the emergency-stop check.
-  stops.push(
-    pollWhileVisible(() => {
-      calls.push('/activity');
-      data = { ...data, ...server.activity() };
-      inboxSaw();
-    }, ACTIVITY_POLL_MS),
-    pollWhileVisible(() => calls.push('/config'), CONFIG_POLL_MS),
-  );
-  // StaffAlerts: at once, then a minute after each answer; a hidden tab waits unless alerts are on.
-  let waiting = false;
-  let alertTimer: ReturnType<typeof setTimeout> | undefined;
-  const alerts = () => {
-    if (!shouldPollAlerts(document.hidden, alertsOn)) {
-      waiting = true;
-      return;
-    }
-    calls.push('/attention');
-    alertTimer = setTimeout(alerts, ALERT_POLL_MS);
-  };
-  const shown = () => {
-    if (document.hidden || !waiting) return;
-    waiting = false;
-    clearTimeout(alertTimer);
-    alerts();
-  };
-  document.addEventListener('visibilitychange', shown);
-  alerts();
-  // Inbox: the chat from the link, and the list 200 ms after opening or after news.
-  let open = server.chat();
-  calls.push('/conversations/c1');
-  let key = conversationsChangeKey(data);
-  let listTimer = setTimeout(list, 200);
-  function inboxSaw() {
-    const next = conversationsChangeKey(data);
-    if (next === key) return;
-    key = next;
-    clearTimeout(listTimer);
-    listTimer = setTimeout(list, 200);
-  }
-  function list() {
-    calls.push('/conversations');
-    if (
-      chatBehind(
-        open,
-        server.list().find((c) => c.id === open.id),
-      )
-    )
-      updateChat();
-  }
-  let stopTicks: (() => void) | undefined;
-  function updateChat() {
-    calls.push('/conversations/c1');
-    open = server.chat();
-    watchTicks();
-  }
-  function watchTicks() {
-    const waitingForTick = awaitingDelivery(open);
-    if (waitingForTick && !stopTicks) stopTicks = pollWhileVisible(updateChat, CHAT_POLL_MS);
-    if (!waitingForTick && stopTicks) {
-      stopTicks();
-      stopTicks = undefined;
-    }
-  }
-  watchTicks();
-  return {
-    count: (path?: string) => (path ? calls.filter((c) => c === path).length : calls.length),
-    stop() {
-      for (const stop of stops) stop();
-      stopTicks?.();
-      clearTimeout(alertTimer);
-      clearTimeout(listTimer);
-      document.removeEventListener('visibilitychange', shown);
-    },
-  };
-}
-
-// A quiet restaurant: nothing new arrives while the tab is open.
-function quietServer() {
-  const conversation = chat([
-    message('m1', 'customer', at(-700)),
-    message('m2', 'assistant', at(-690), { delivery: 'read' }),
-  ]);
-  const state = {
-    summary: {
-      orders: 3,
-      pending: 0,
-      value: 450000,
-      conversations: 1,
-      needsStaff: 0,
-      monthlySpend: 1,
-      daily: [],
-    },
-    traces: [trace('t1', 'reply', at(-690), 'c1')],
-    conversation,
-  };
-  return {
-    state,
-    activity: () => structuredClone({ summary: state.summary, traces: state.traces }),
-    list: () => [
-      { ...structuredClone(state.conversation), messages: state.conversation.messages.slice(-1) },
-    ],
-    chat: () => structuredClone(state.conversation),
-  };
-}
-
 describe('the Free-plan request budget of an Inbox tab', () => {
-  it('stays within 60 requests in 10 minutes for an idle Inbox on screen with a chat open', () => {
+  it('stays within 70 requests in 10 minutes for an idle Inbox on screen with a chat open', () => {
     fakeDocument();
     const tab = inboxTab(quietServer());
     vi.advanceTimersByTime(10 * 60000);
     // Before: 40 workspace checks, 40 list fetches, 60 chat fetches and 10 alert checks.
     expect(tab.count('/activity')).toBe(40);
-    expect(tab.count('/conversations')).toBe(1);
+    // On opening, then once a minute in case of news that leaves no event (LIST_REFRESH_MS).
+    expect(LIST_REFRESH_MS).toBe(60000);
+    expect(tab.count('/conversations')).toBe(11);
     expect(tab.count('/conversations/c1')).toBe(1);
     expect(tab.count('/attention')).toBe(11);
     expect(tab.count('/config')).toBe(2);
-    expect(tab.count()).toBeLessThanOrEqual(60);
+    expect(tab.count()).toBeLessThanOrEqual(70);
     tab.stop();
   });
 
@@ -429,12 +276,13 @@ describe('the Free-plan request budget of an Inbox tab', () => {
     const server = quietServer();
     const tab = inboxTab(server);
     vi.advanceTimersByTime(1000);
-    // Two minutes of WhatsApp read and delivered receipts for older replies.
+    // Two minutes of WhatsApp read and delivered receipts for older replies: the list only on
+    // opening and once a minute (LIST_REFRESH_MS), none for a receipt.
     for (let i = 0; i < 8; i++) {
       server.state.traces = [trace(`r${i}`, 'whatsapp.read', at(i)), ...server.state.traces];
       vi.advanceTimersByTime(ACTIVITY_POLL_MS);
     }
-    expect(tab.count('/conversations')).toBe(1);
+    expect(tab.count('/conversations')).toBe(1 + 2);
     // Another customer writes: the list is fetched again, the open chat is not.
     server.state.traces = [
       trace('t2', 'human_mode_message_saved', at(200), 'c2'),
@@ -442,7 +290,7 @@ describe('the Free-plan request budget of an Inbox tab', () => {
     ];
     server.state.summary = { ...server.state.summary, conversations: 2 };
     vi.advanceTimersByTime(ACTIVITY_POLL_MS);
-    expect(tab.count('/conversations')).toBe(2);
+    expect(tab.count('/conversations')).toBe(2 + 2);
     expect(tab.count('/conversations/c1')).toBe(1);
     // The open chat's customer writes and the bot answers: the chat is fetched once, then again
     // every 30 seconds only until the reply is delivered.
