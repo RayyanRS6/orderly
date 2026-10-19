@@ -64,11 +64,18 @@ describe('the linked-phone status check (F25, F06)', () => {
   });
 
   it('allows about 40 checks a minute for a business', async () => {
-    await storeConnection(app.repo(), { status: 'connected' });
-    for (let i = 0; i < 40; i++) expect((await check()).status).toBe(200);
-    const limited = await check();
-    expect(limited.status).toBe(429);
-    expect(limited.headers.get('retry-after')).toBe('60');
+    // Counted per clock minute: all 41 checks at a fixed mid-minute time.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-20T10:00:30.000Z'));
+    try {
+      await storeConnection(app.repo(), { status: 'connected' });
+      for (let i = 0; i < 40; i++) expect((await check()).status).toBe(200);
+      const limited = await check();
+      expect(limited.status).toBe(429);
+      expect(limited.headers.get('retry-after')).toBe('60');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

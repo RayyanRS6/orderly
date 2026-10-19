@@ -6,6 +6,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { LegalPage } from '../src/components/Legal';
+import { ownerFact, ownerFactProblems, withOwnerFact } from './prelaunch-fx9-helpers';
 
 // Windows checkouts may have CRLF line endings.
 const read = (file: string) =>
@@ -25,45 +26,31 @@ const backup = read('docs/BACKUP-AND-RESTORE.md');
 const days =
   backup.match(/Where-Object LastWriteTime -lt \(Get-Date\)\.AddDays\(-(\d+)\)/)?.[1] ?? '';
 
-// What `npm test` checks about the owner's facts: each is either still the visible marker or a
-// real value, and a filled-in backup period matches the backup task.
-function ownerFactProblems(source: string, days: string) {
-  const value = (name: string) =>
-    source.match(new RegExp(`const ${name} =\\s*(['"\`])(.+?)\\1;`))?.[2];
-  const problems: string[] = [];
-  const operator = value('OPERATOR');
-  const period = value('BACKUP_DAYS');
-  if (!operator) problems.push('OPERATOR is missing');
-  else if (!/^\[OWNER TO CONFIRM: [^\]]+\]$/.test(operator) && /[[\]]|TO CONFIRM/.test(operator))
-    problems.push('OPERATOR is half filled in');
-  if (!period) problems.push('BACKUP_DAYS is missing');
-  else if (!/^\[OWNER TO CONFIRM: [^\]]+\]$/.test(period) && period !== days)
-    problems.push(`BACKUP_DAYS is ${period}, the backup task keeps ${days}`);
-  return problems;
-}
-
+// What `npm test` checks about the owner's facts (ownerFactProblems) is shared with the fx9 tests,
+// which try every way the owner may write them (tests/prelaunch-fx9-helpers.ts).
 describe('owner placeholders in the legal pages', () => {
   const source = read('src/components/Legal.tsx');
 
   it('pass both before and after the owner fills them in', () => {
     expect(days, 'the nightly task deletes old encrypted copies').toMatch(/^\d+$/);
     expect(ownerFactProblems(source, days)).toEqual([]);
-    const filled = source
-      .replace(
-        /const OPERATOR = '[^']*';/,
-        "const OPERATOR = 'Example Foods (Private) Limited, 12 Mall Road, Lahore';",
-      )
-      .replace(/const BACKUP_DAYS = '[^']*';/, `const BACKUP_DAYS = '${days}';`);
+    const filled = withOwnerFact(
+      withOwnerFact(source, 'OPERATOR', "'Example Foods (Private) Limited, 12 Mall Road, Lahore'"),
+      'BACKUP_DAYS',
+      `'${days}'`,
+    );
     expect(filled).not.toContain('OWNER TO CONFIRM');
     expect(ownerFactProblems(filled, days)).toEqual([]);
-    expect(
-      ownerFactProblems(filled.replace(`BACKUP_DAYS = '${days}'`, "BACKUP_DAYS = '90'"), days),
-    ).toEqual([`BACKUP_DAYS is 90, the backup task keeps ${days}`]);
+    expect(ownerFactProblems(withOwnerFact(filled, 'BACKUP_DAYS', "'90'"), days)).toEqual([
+      `BACKUP_DAYS is 90, the backup task keeps ${days}`,
+    ]);
   });
 
   it('render the operator and the backup period wherever the pages state them', () => {
-    const operator = source.match(/const OPERATOR = '([^']*)';/)![1]!;
-    const period = source.match(/const BACKUP_DAYS = '([^']*)';/)![1]!;
+    const operator = ownerFact(source, 'OPERATOR');
+    const period = ownerFact(source, 'BACKUP_DAYS');
+    expect(operator).toBeTruthy();
+    expect(period).toBeTruthy();
     expect(privacy).toContain(`Orderly is run by ${operator}.`);
     expect(privacy).toContain(`Orderly’s database backups are kept for ${period} days`);
     expect(deletion).toContain(`Orderly’s backups expire after ${period} days`);
