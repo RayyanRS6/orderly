@@ -41,18 +41,20 @@ process.on('message', (message: any) => {
   }
   if (message.type === 'send') {
     if (message.body.text === 'simulate-crash') process.exit(1);
+    // Like fail(), a worker that reports why it stops exits 100 ms later: the parent can see an
+    // exit before messages still in the channel, which would then be ignored.
+    const failWith = (errorCode: string) =>
+      process.send?.({ type: 'fatal', errorCode }, undefined, {}, () =>
+        setTimeout(() => process.exit(1), 100),
+      );
     // A worker that reports why it stops, as fail() does.
     if (message.body.text === 'simulate-fatal') {
-      process.send?.({ type: 'fatal', errorCode: 'INBOUND_QUEUE_FULL' }, undefined, {}, () =>
-        process.exit(1),
-      );
+      failWith('INBOUND_QUEUE_FULL');
       return;
     }
     // A pairing nobody finished ends, as the real worker's fail('PAIRING_EXPIRED') does.
     if (message.body.text === 'simulate-pairing-expired') {
-      process.send?.({ type: 'fatal', errorCode: 'PAIRING_EXPIRED' }, undefined, {}, () =>
-        process.exit(1),
-      );
+      failWith('PAIRING_EXPIRED');
       return;
     }
     // WhatsApp refused a pairing nobody finished (a stop code): the real worker reports it as its
@@ -62,9 +64,7 @@ process.on('message', (message: any) => {
         type: 'snapshot',
         snapshot: { connectionId, generation, status: 'error', errorCode: 'DISCONNECT_405' },
       });
-      process.send?.({ type: 'fatal', errorCode: 'DISCONNECT_405' }, undefined, {}, () =>
-        process.exit(1),
-      );
+      failWith('DISCONNECT_405');
       return;
     }
     // Orderly answered an event with 410: it no longer uses this session.

@@ -74,6 +74,9 @@ const lines = (log: string) =>
         .split('\n')
         .map((line) => line.split(' '))
     : [];
+// Windows can hold a just-exited worker's files for a moment; rmSync retries EPERM and EBUSY.
+const remove = (dir: string) =>
+  rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 const send = (supervisor: Supervisor, session: object, text: string) =>
   supervisor.send({
     ...session,
@@ -145,7 +148,7 @@ test('a refused pairing keeps its code in Orderly and the logs, and is not resta
   } finally {
     logs.restore();
     await supervisor.close();
-    rmSync(dataDir, { recursive: true, force: true });
+    remove(dataDir);
   }
 });
 
@@ -197,7 +200,7 @@ test('a session Orderly retired is logged out before it is wiped, even with no w
     globalThis.fetch = original;
     delete process.env.ORDERLY_TEST_STOP_LOG;
     await supervisor.close();
-    rmSync(dataDir, { recursive: true, force: true });
+    remove(dataDir);
   }
 });
 
@@ -248,7 +251,7 @@ test('a disconnect or new pairing of a parked session logs its device out first;
     logs.restore();
     delete process.env.ORDERLY_TEST_STOP_LOG;
     await supervisor.close();
-    rmSync(dataDir, { recursive: true, force: true });
+    remove(dataDir);
   }
 });
 
@@ -274,21 +277,25 @@ test('a crashed worker whose place was taken meanwhile waits for one instead of 
     await eventually(() => supervisor.status(running).status === 'connected');
     supervisor.store.set('sessions', waiting.connectionId, waiting);
     seedCreds(dataDir, config.key, waiting.connectionId, PAIRED);
+    // Two earlier crashes, so the restart waits 3 to 5 seconds: time for the waiting number to
+    // take the place first, however slow the machine.
+    const stored = supervisor.store.get<Stored>('sessions', running.connectionId)!;
+    supervisor.store.set('sessions', running.connectionId, { ...stored, crashes: 2 });
     await assert.rejects(send(supervisor, running, 'simulate-crash'), /SEND_UNCERTAIN/);
     await eventually(
-      () => supervisor.store.get<Stored>('sessions', running.connectionId)?.crashes === 1,
+      () => supervisor.store.get<Stored>('sessions', running.connectionId)?.crashes === 3,
     );
     // Before the crashed worker's restart, the waiting number takes the free place (any
     // disconnect admits waiting numbers at once).
     await supervisor.command({ connectionId: randomUUID(), generation: 1, action: 'disconnect' });
     await eventually(() => supervisor.status(waiting).status === 'connected');
-    await new Promise((r) => setTimeout(r, crashRestartDelay(1, 1) + 500));
+    await new Promise((r) => setTimeout(r, crashRestartDelay(3, 1) + 500));
     assert.equal(supervisor.health().workers, 1);
     assert.equal(supervisor.status(running).errorCode, 'SESSION_CAPACITY_REACHED');
     assert.equal(restorable('error', 'SESSION_CAPACITY_REACHED'), true);
   } finally {
     await supervisor.close();
-    rmSync(dataDir, { recursive: true, force: true });
+    remove(dataDir);
   }
 });
 
@@ -315,6 +322,6 @@ test('a day of unreadable messages staff were told about does not stop new ones 
     assert.ok(PLACEHOLDER_STORE_LIMIT > PLACEHOLDER_LIMIT);
   } finally {
     store.close();
-    rmSync(dir, { recursive: true, force: true });
+    remove(dir);
   }
 });
