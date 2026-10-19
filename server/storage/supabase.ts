@@ -44,6 +44,22 @@ const migrationMissing = (error: { code?: string } | null) =>
   ['PGRST202', '42883', '42P01', 'PGRST205'].includes(error?.code ?? '');
 const spamMigrationError = () =>
   new PublicError('Apply the spam protection database migration first.', 503);
+// Refusals the database raises while work is running, said as the local store says them (409),
+// so the owner knows to wait instead of seeing a general failure.
+const BUSY_REFUSALS: [raised: string, message: string][] = [
+  [
+    'Pause automation and wait for running work before deleting customer data',
+    'Pause automation and wait for running work before deleting customer data.',
+  ],
+  [
+    'Wait for running work before disconnecting',
+    'Wait for running jobs to finish before disconnecting.',
+  ],
+];
+function busyRefusal(error: { message?: string } | null) {
+  const found = BUSY_REFUSALS.find(([raised]) => error?.message?.includes(raised));
+  return found && new PublicError(found[1], 409);
+}
 const warned = new Set<string>();
 function warnOnce(name: string, migration = '202610180001_spam_protection.sql') {
   if (warned.has(name)) return;
@@ -325,7 +341,13 @@ export class SupabaseRepository implements Repository {
     });
   }
   async disconnectIntegration(companyId: string, kind: IntegrationKind) {
-    await this.rpc('disconnect_integration', { p_company_id: companyId, p_kind: kind });
+    const result = await this.client.rpc('disconnect_integration', {
+      p_company_id: companyId,
+      p_kind: kind,
+    });
+    const busy = busyRefusal(result.error);
+    if (busy) throw busy;
+    unwrap(result);
   }
   async listCompanyJobs(companyId: string) {
     const rows =
@@ -499,8 +521,14 @@ export class SupabaseRepository implements Repository {
       (r: { user_id: string }) => r.user_id,
     );
   }
-  eraseCustomer(companyId: string, phone: string) {
-    return this.rpc<number>('erase_customer', { p_company_id: companyId, p_phone: phone });
+  async eraseCustomer(companyId: string, phone: string) {
+    const result = await this.client.rpc('erase_customer', {
+      p_company_id: companyId,
+      p_phone: phone,
+    });
+    const busy = busyRefusal(result.error);
+    if (busy) throw busy;
+    return unwrap(result) as number;
   }
   async eraseConversation(companyId: string, conversationId: string) {
     const result = await this.client.rpc('erase_conversation', {
@@ -512,6 +540,8 @@ export class SupabaseRepository implements Repository {
         'Apply the 202610200001_prelaunch_fixes.sql database migration first.',
         503,
       );
+    const busy = busyRefusal(result.error);
+    if (busy) throw busy;
     return unwrap(result) as number;
   }
   async conversationRecords(companyId: string, conversationId: string) {

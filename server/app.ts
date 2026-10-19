@@ -126,6 +126,22 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
       onError: (c) => c.json({ error: 'Request exceeds 600 KB.' }, 413),
     }),
   );
+  // A request body that is not JSON is the sender's mistake (400). Any other SyntaxError, such as
+  // a mistyped MODEL_PRICING_JSON or an upstream answer that is not JSON, is the server's: it is
+  // logged and answered 500 like any unexpected failure.
+  app.use('/api/*', async (c, next) => {
+    const parse = c.req.json.bind(c.req);
+    c.req.json = async () => {
+      try {
+        return await parse();
+      } catch (error) {
+        if (error instanceof SyntaxError)
+          throw new PublicError('Request body must be valid JSON.', 400);
+        throw error;
+      }
+    };
+    await next();
+  });
   app.onError((error, c) => {
     if (error instanceof ZodError)
       return c.json(
@@ -136,9 +152,6 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
         },
         400,
       );
-    // c.req.json() on a body that is not JSON.
-    if (error instanceof SyntaxError)
-      return c.json({ error: 'Request body must be valid JSON.' }, 400);
     // code: for the dashboard to act on, such as a linked-phone service code.
     if (error instanceof PublicError && !error.cause)
       return c.json(

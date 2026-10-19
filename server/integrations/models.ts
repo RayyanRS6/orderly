@@ -228,15 +228,31 @@ export function refusedRetryDelay(raw: unknown, attempt: number, maxWaitMs: numb
   const wait = asked ?? 500 * 2 ** attempt + Math.floor(Math.random() * 250);
   return wait <= maxWaitMs ? wait : undefined;
 }
+// MODEL_PRICING_JSON as last read. A value that is not a JSON object is logged once and ignored,
+// so a typo in it shows as "enter the prices" for unknown models, never as a failed request.
+let pricing: { raw: string; overrides: Record<string, [number, number]> } | undefined;
+function pricingOverrides(): Record<string, [number, number]> {
+  const raw = process.env.MODEL_PRICING_JSON || '{}';
+  if (pricing?.raw !== raw) {
+    let overrides: Record<string, [number, number]> = {};
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+        overrides = parsed as Record<string, [number, number]>;
+      else throw new TypeError('not an object');
+    } catch {
+      console.warn('Orderly: MODEL_PRICING_JSON is not a JSON object and is ignored.');
+    }
+    pricing = { raw, overrides };
+  }
+  return pricing.overrides;
+}
 export function modelRate(
   model: string,
   custom?: [number, number],
   inputTokens = 0,
 ): [number, number] {
-  const overrides = JSON.parse(process.env.MODEL_PRICING_JSON || '{}') as Record<
-    string,
-    [number, number]
-  >;
+  const overrides = pricingOverrides();
   const longPrompt = LONG_PROMPT_RATES[model];
   const value =
     custom ??

@@ -100,13 +100,15 @@ export function redactSecrets(text: string): string {
       '$1=[hidden]',
     );
 }
-// Tokens and keys that can appear inside an upstream error message.
+// Tokens and keys that can appear inside an upstream error message, and phone numbers (ten or
+// more digits, with or without spaces or dashes; a date or a short code stays readable).
 const scrub = (text: string) =>
   redactSecrets(text)
     .replace(/Bearer\s+\S+/gi, 'Bearer [hidden]')
     .replace(/\beyJ[\w-]*\.[\w-]+(?:\.[\w-]+)?/g, '[token]')
     .replace(/\b(?:sk|rk|pk)-[\w-]{8,}/g, '[key]')
-    .replace(/\bAIza[\w-]{20,}/g, '[key]');
+    .replace(/\bAIza[\w-]{20,}/g, '[key]')
+    .replace(/\+?\d(?:[\s-]?\d){9,}/g, '[number]');
 const label = (value: unknown) =>
   typeof value === 'string' || typeof value === 'number' ? String(value).slice(0, 80) : undefined;
 /**

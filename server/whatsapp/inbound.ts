@@ -110,5 +110,6 @@ export function metaEchoText(echo: MetaMessage): string | undefined {
   if (media) return `Staff sent a ${STAFF_MEDIA[media.kind]} in WhatsApp: ${media.caption}`;
   const shared = locationText(echo.location);
   if (shared) return `Staff sent a location in WhatsApp. ${shared}`;
-  return `Staff sent a ${type || 'media'} message in WhatsApp.`;
+  const kind = type || 'media';
+  return `Staff sent ${/^[aeiou]/i.test(kind) ? 'an' : 'a'} ${kind} message in WhatsApp.`;
 }
