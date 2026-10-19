@@ -106,7 +106,25 @@ export function resumesAfterLimit(
 // The language a built-in notice answers this message in, as the engine would reply.
 export function noticeLanguage(company: Company, conversation: Conversation, text: string) {
   const configured = botConfig(company).language;
-  return configured !== 'auto' ? configured : languageOf(text, conversation.language);
+  return configured !== 'auto'
+    ? configured
+    : languageOf(customerWords(text), conversation.language);
+}
+// Orderly's own words in a customer's turn: a media, voice-note or unreadable-message marker,
+// a shared location, and the keywords and button titles Orderly tells customers to use
+// ("staff", "confirm", "review", "new order", "Confirm order").
+const ORDERLY_MARKER = /^(?:customer sent a\b.*\bstaff assistance requested\.|location shared:)/isu;
+const ORDERLY_KEYWORDS =
+  /^(?:staff|human|insaan|insan|confirm|confirm order|talk to staff|review|new order|menu|cancel)[\s.!?؟]*$/iu;
+/**
+ * The words a customer typed, for telling their language: none for a button tap or Orderly's
+ * own marker or keyword, so those never switch an Urdu or Roman Urdu chat to English. A
+ * caption loses the "(sent with a photo)" marker.
+ */
+export function customerWords(text: string, action?: BotAction): string {
+  const value = text.trim();
+  if (action || ORDERLY_MARKER.test(value) || ORDERLY_KEYWORDS.test(value)) return '';
+  return value.replace(/\s*\(sent with a (?:photo|video|document)\)$/u, '');
 }
 // What a customer is told when an AI limit pauses the bot. The same words for every limit:
 // customers need to know a person will answer and whether their order is safe, not why.
@@ -173,10 +191,11 @@ const CANCEL_REQUEST = new RegExp(
   ].join(''),
   'u',
 );
+// Quotes count as spacing: the reminder asks for “منسوخ”, and a copy keeps its quotes.
 export const asksToCancelOrder = (text: string) =>
   CANCEL_REQUEST.test(
     normalize(text)
-      .replace(/[.!?؟،۔,]+/gu, ' ')
+      .replace(/[.!?؟،۔,“”"‘’«»]+/gu, ' ')
       .replace(/\s+/g, ' ')
       .trim(),
   );
@@ -401,14 +420,42 @@ const noChatOrdering = (lang: Language) =>
     'ابھی اس چیٹ میں آرڈر دستیاب نہیں ہے۔ کسی انسان سے بات کرنے کے لیے “عملہ” لکھیں۔',
     'Abhi is chat mein order available nahi hai. Kisi insaan se baat karne ke liye “staff” likhein.',
   );
-// The engine's own refusal of a pickup/delivery choice the restaurant does not offer.
-function fulfillmentRefusal(company: Company, chosen: 'pickup' | 'delivery'): string | undefined {
+// The engine's own refusal of a pickup/delivery choice the restaurant does not offer, in the
+// customer's language. `change`: the cart already holds that choice, so they are asked to change it.
+function fulfillmentRefusal(
+  company: Company,
+  chosen: 'pickup' | 'delivery',
+  lang: Language,
+  change = false,
+): string | undefined {
   const offered = offeredFulfillment(company);
   if (offered === 'both' || offered === chosen) return undefined;
-  return offered
-    ? `This restaurant currently offers ${offered} only.`
-    : 'Ordering in this chat is not available right now. Type “staff” to talk to a person.';
+  if (!offered) return noChatOrdering(lang);
+  return say(
+    lang,
+    `This restaurant currently offers ${offered} only.${change ? ` Please choose ${offered}.` : ''}`,
+    offered === 'pickup'
+      ? 'ابھی صرف پک اپ دستیاب ہے۔ براہ کرم پک اپ منتخب کریں۔'
+      : 'ابھی صرف ڈیلیوری دستیاب ہے۔ براہ کرم ڈیلیوری منتخب کریں۔',
+    `Abhi sirf ${offered} available hai. Meherbani karke ${offered} chunein.`,
+  );
 }
+// Delivery areas a customer named that the restaurant does not deliver to.
+const unknownZone = (company: Company, lang: Language) =>
+  company.deliveryZones.length
+    ? say(
+        lang,
+        `We deliver to: ${company.deliveryZones.map((z) => z.name).join(', ')}.`,
+        `ہم ان علاقوں میں ڈیلیوری کرتے ہیں: ${company.deliveryZones.map((z) => z.name).join(', ')}۔`,
+        `Hum in ilaqon mein delivery karte hain: ${company.deliveryZones.map((z) => z.name).join(', ')}.`,
+      )
+    : (fulfillmentRefusal(company, 'delivery', lang) ??
+      say(
+        lang,
+        'We do not deliver right now.',
+        'ابھی ہم ڈیلیوری نہیں کر رہے۔',
+        'Abhi hum delivery nahi kar rahe.',
+      ));
 
 function missingDetails(company: Company, cart: Cart, lang: Language): string | undefined {
   if (!cart.items.length)
@@ -1701,7 +1748,7 @@ export function processTurn(
       reply: next.messages.find((m) => m.id === `${input.messageId}:reply`)?.text ?? '',
       traces: ['duplicate_message_ignored'],
     };
-  next.language = languageOf(input.text, next.language);
+  next.language = languageOf(customerWords(input.text, input.action), next.language);
   if (configuration.language !== 'auto') next.language = configuration.language;
   next.botVersion = company.bot?.published?.version;
   if (next.channel === 'demo')
@@ -2105,8 +2152,12 @@ export function processTurn(
     // (see resumesAfterPause), unless the customer asked for a person.
     if (next.mode === 'bot') next.botPausedAt = input.now;
     next.mode = 'human';
-    // Asking for a person makes it a real handoff: the bot must not take the chat back.
-    if (input.action?.type === 'handoff' || asksForPerson(input.text)) {
+    // Asking for a person makes it a real handoff: the bot must not take the chat back. Orderly's
+    // own marker ("… Staff assistance requested.") is not the customer asking.
+    if (
+      input.action?.type === 'handoff' ||
+      (!ORDERLY_MARKER.test(input.text.trim()) && asksForPerson(input.text))
+    ) {
       delete next.botPausedAt;
       delete next.limitPause;
     }
@@ -2264,7 +2315,7 @@ export function processTurn(
         reply = `${say(lang, 'Which one would you like?', 'آپ کون سا لینا چاہیں گے؟', 'Aap kaun sa lena chahenge?')}\n${candidates
           .map(
             (product, index) =>
-              `${index + 1}. ${product.name}${product.available ? '' : ' · Unavailable'}`,
+              `${index + 1}. ${product.name}${product.available ? '' : say(lang, ' · Unavailable', ' · دستیاب نہیں', ' · available nahi')}`,
           )
           .join('\n')}`;
         continue;
@@ -2439,7 +2490,7 @@ export function processTurn(
         ]);
         if (action.fulfillment && !['pickup', 'delivery'].includes(action.fulfillment))
           throw new Error('Choose pickup or delivery.');
-        const refused = action.fulfillment && fulfillmentRefusal(company, action.fulfillment);
+        const refused = action.fulfillment && fulfillmentRefusal(company, action.fulfillment, lang);
         if (refused) throw new Error(refused);
         if (action.customerName !== undefined) {
           const name = action.customerName.trim();
@@ -2457,12 +2508,7 @@ export function processTurn(
           const zone = company.deliveryZones.find(
             (z) => normalize(z.name) === normalize(action.zone!),
           );
-          if (!zone)
-            throw new Error(
-              company.deliveryZones.length
-                ? `We deliver to: ${company.deliveryZones.map((z) => z.name).join(', ')}.`
-                : (fulfillmentRefusal(company, 'delivery') ?? 'We do not deliver right now.'),
-            );
+          if (!zone) throw new Error(unknownZone(company, lang));
           details.zone = zone.name;
         }
         if (action.fulfillment) {
@@ -2488,9 +2534,9 @@ export function processTurn(
       }
       if (action.type === 'review') {
         settleFulfillment();
-        const refused = cart.fulfillment && fulfillmentRefusal(company, cart.fulfillment);
-        if (refused)
-          throw new Error(offered ? `${refused} Please update your fulfillment choice.` : refused);
+        const refused =
+          cart.fulfillment && fulfillmentRefusal(company, cart.fulfillment, lang, true);
+        if (refused) throw new Error(refused);
         incompleteReviewQuestion = modelResponse ? missingDetails(company, cart, lang) : undefined;
         reply = incompleteReviewQuestion
           ? cartSummary(company, products, cart, lang)
@@ -2499,9 +2545,9 @@ export function processTurn(
       }
       if (action.type === 'confirm') {
         settleFulfillment();
-        const refused = cart.fulfillment && fulfillmentRefusal(company, cart.fulfillment);
-        if (refused)
-          throw new Error(offered ? `${refused} Please update your fulfillment choice.` : refused);
+        const refused =
+          cart.fulfillment && fulfillmentRefusal(company, cart.fulfillment, lang, true);
+        if (refused) throw new Error(refused);
         // Typed words must be consent; a bare "yes" only straight after the review itself.
         const agreed = input.action ? 'explicit' : consent(input.text);
         if (!agreed || (agreed === 'bare' && !reviewAnswered)) {
