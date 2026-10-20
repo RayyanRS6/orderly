@@ -114,6 +114,20 @@ export function dealOpenAt(schedule: DealSchedule | undefined, clock: Clock | un
 }
 
 /**
+ * Still before the start date, judged as dealOpenAt judges it: inside a window by the date the
+ * occurrence belongs to (after midnight, a night is still the evening before), otherwise by
+ * today's date. So "from 2 Mar" stays in the wording for as long as the deal is held back by it.
+ */
+export function beforeStartDate(
+  schedule: Pick<DealSchedule, 'days' | 'start' | 'end' | 'startDate'>,
+  clock: Clock,
+): boolean {
+  return (
+    !!schedule.startDate && (occurrenceDate(schedule, clock) ?? clock.date) < schedule.startDate
+  );
+}
+
+/**
  * The date of the last occurrence between the schedule's dates (searching back at most 6 days
  * from the end date), or undefined with no end date or no occurrence.
  */

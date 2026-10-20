@@ -16,7 +16,10 @@ import {
 } from 'lucide-react';
 import { api } from '../lib/api';
 import { money, type CartItem } from '../shared/types';
+// dealSavings comes from shared/menu, not shared/deals: the page needs nothing else of the
+// deal helpers, so they stay out of its chunk.
 import {
+  dealSavings,
   waMeUrl,
   type MenuSession,
   type PublicMenu,
@@ -24,7 +27,6 @@ import {
   type PublicMenuItem,
   type WebCart,
 } from '../shared/menu';
-import { dealSavings } from '../shared/deals';
 import {
   addLine,
   checkoutProblem,
@@ -35,6 +37,7 @@ import {
   loadCart,
   loadDraft,
   loadToken,
+  menuIsStale,
   menuLoadFailure,
   notOrderable,
   orderFailure,
@@ -667,6 +670,13 @@ export function MenuPage({ slug }: { slug: string }) {
     });
   }, [checkout]);
 
+  // When the menu on screen was read (by this browser's clock, which may be set wrong on an old
+  // phone, so never compared with the server's generatedAt).
+  const menuReadAt = useRef(0);
+  useEffect(() => {
+    if (menu) menuReadAt.current = Date.now();
+  }, [menu]);
+
   // Deals with set times start and end while the page is open, so the menu is read again every
   // minute while it is on screen, and on coming back to it. Never during checkout, where the
   // lines must not change under the customer (Place order is checked again anyway).
@@ -685,6 +695,9 @@ export function MenuPage({ slug }: { slug: string }) {
         () => undefined,
       );
     };
+    // Back from checkout or the order code screen, the menu may be many minutes old and still
+    // show a deal that has ended: read it now rather than at the next tick.
+    if (menuIsStale(menuReadAt.current, Date.now())) refresh();
     const timer = window.setInterval(refresh, 60_000);
     document.addEventListener('visibilitychange', refresh);
     return () => {

@@ -4,6 +4,8 @@ import { AI_LIMIT_RANGES, MODEL_LIMITS } from '../src/shared/models.js';
 import { PHOTO_URL_RE } from '../src/shared/menu.js';
 import { SLUG_RE } from '../src/shared/slug.js';
 import { scheduleNeverOccurs } from '../src/shared/hours.js';
+import { DEAL_LIMITS } from '../src/shared/deals.js';
+import { money } from '../src/shared/types.js';
 const text = (max: number) => z.string().trim().max(max);
 /** The AI data terms an owner confirms in Connect and test. Raise it when their wording changes. */
 export const AI_TERMS_VERSION = 'ai-data-terms-2026-10-18';
@@ -138,10 +140,13 @@ export const dealScheduleSchema = z
         message: 'None of the chosen days falls between the start and end dates.',
       });
   });
+// The limits are DEAL_LIMITS, which the Deals editor checks before sending.
+const D = DEAL_LIMITS;
+const dealMoney = () => z.number().int().min(0).max(D.price);
 const dealItemSchema = z
   .object({
-    name: text(100).min(1),
-    quantity: z.number().int().min(1).max(50),
+    name: text(D.itemName).min(1),
+    quantity: z.number().int().min(1).max(D.quantity),
     productId: z.preprocess(blankAsMissing, text(80).min(1).optional()),
     variantId: z.preprocess(blankAsMissing, text(80).min(1).optional()),
   })
@@ -152,31 +157,31 @@ const dealItemSchema = z
 // Option ids end up in cart modifierIds, which allow 80 characters.
 const dealChoiceSchema = z.object({
   id: text(80).min(1),
-  name: text(80).min(1),
+  name: text(D.choiceName).min(1),
   options: z
     .array(
       z.object({
         id: text(80).min(1),
-        name: text(100).min(1),
-        price: z.number().int().min(0).max(100_000_000).default(0),
+        name: text(D.optionName).min(1),
+        price: dealMoney().default(0),
       }),
     )
     .min(2, 'Give each choice at least 2 options.')
-    .max(25),
+    .max(D.options),
 });
 /** A deal as the dashboard saves it. The server sets companyId, position and updatedAt. */
 export const dealSchema = z
   .object({
     id: z.string().uuid().optional(),
-    name: text(120).min(1),
-    description: text(500).default(''),
-    emoji: text(16).default('🎁'),
+    name: text(D.name).min(1),
+    description: text(D.description).default(''),
+    emoji: text(D.emoji).default('🎁'),
     imageUrl: photoUrl,
-    aliases: z.array(text(60)).max(10).default([]),
-    price: z.number().int().min(0).max(100_000_000),
-    regularPrice: z.preprocess(blankAsMissing, z.number().int().min(0).max(100_000_000).optional()),
-    items: z.array(dealItemSchema).min(1, 'Add what the deal includes.').max(20),
-    choices: z.array(dealChoiceSchema).max(5).default([]),
+    aliases: z.array(text(D.otherName)).max(D.otherNames).default([]),
+    price: dealMoney(),
+    regularPrice: z.preprocess(blankAsMissing, dealMoney().optional()),
+    items: z.array(dealItemSchema).min(1, 'Add what the deal includes.').max(D.items),
+    choices: z.array(dealChoiceSchema).max(D.choices).default([]),
     available: z.boolean(),
     schedule: z.preprocess(blankAsMissing, dealScheduleSchema.optional()),
   })
@@ -212,13 +217,50 @@ export const dealSchema = z
         !schedule.endDate
       ) && { schedule: { ...schedule, days: [...schedule.days].sort((a, b) => a - b) } }),
   }));
+// What the owner reads when a deal is refused: the editor's own words for each field, by its
+// path (# for any row), never a path or the validator's wording. The editor checks the same
+// first (formProblem), so this is for an older dashboard tab. Messages written on the schema
+// already read this way and win over these.
+const DEAL_FIELD_WORDS: Record<string, string> = {
+  id: 'Reload the page and try again.',
+  name: `Give the deal a name of up to ${D.name} characters.`,
+  description: `Keep the description to ${D.description} characters or fewer.`,
+  emoji: 'Use one emoji, or a few at most.',
+  aliases: `Use at most ${D.otherNames} other names.`,
+  'aliases.#': `Keep each other name to ${D.otherName} characters or fewer.`,
+  price: `Enter a deal price up to ${money(D.price)}.`,
+  regularPrice: `Enter a price if bought separately up to ${money(D.price)}, or leave it empty.`,
+  items: `A deal can include up to ${D.items} items.`,
+  'items.#.name': `Give each included item a name of up to ${D.itemName} characters.`,
+  'items.#.quantity': `Give each included item a number from 1 to ${D.quantity}.`,
+  'items.#.productId': 'An included item can’t be linked to the menu: unlink it and try again.',
+  'items.#.variantId': 'An included item can’t be linked to the menu: unlink it and try again.',
+  choices: `A deal can have up to ${D.choices} choices.`,
+  'choices.#.name': `Name each choice in up to ${D.choiceName} characters, for example Drink.`,
+  'choices.#.options': `Give each choice 2 to ${D.options} options.`,
+  'choices.#.options.#.name': `Name each option in up to ${D.optionName} characters.`,
+  'choices.#.options.#.price': `Enter each extra charge up to ${money(D.price)}, or leave it empty.`,
+  available: 'Reload the page and try again.',
+  schedule: 'Reload the page and try again.',
+  'schedule.days': 'Choose at least one day.',
+  'schedule.days.#': 'Choose at least one day.',
+  'schedule.start': 'Enter the time the deal starts and the time it ends.',
+  'schedule.end': 'Enter the time the deal starts and the time it ends.',
+};
+/** For dealSchema.safeParse(body, { error: dealFieldWords }). */
+export const dealFieldWords = (issue: { path?: PropertyKey[] }) =>
+  DEAL_FIELD_WORDS[
+    (issue.path ?? []).map((key) => (typeof key === 'number' ? '#' : String(key))).join('.')
+  ] ?? 'Reload the page and try again.';
 export const dealAvailableSchema = z.object({ available: z.boolean() }).strict();
 export const dealOrderSchema = z
   .object({
+    // Every deal the business has, up to what the stores read (1000): the 50-deal limit is
+    // checked when a deal is added, and an order must never fail for having more.
     ids: z
       .array(z.string().uuid())
       .min(1)
-      .max(50)
+      .max(1000)
       .refine((ids) => new Set(ids).size === ids.length, 'List each deal once.'),
   })
   .strict();

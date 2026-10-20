@@ -131,7 +131,11 @@ describe('the deals routes', () => {
       [{ name: ' ' }, 'name'],
       [{ items: [] }, 'Add what the deal includes.'],
       [{ items: [{ name: 'Fries', quantity: 1, variantId: 'large' }] }, 'A size needs a linked'],
-      [{ items: [{ name: 'Fries', quantity: 51 }] }, 'items.0.quantity'],
+      // Said in the editor's words, not as the field path "items.0.quantity".
+      [
+        { items: [{ name: 'Fries', quantity: 51 }] },
+        'Give each included item a number from 1 to 50.',
+      ],
       [
         { choices: [{ ...drink, options: [drink.options[0]] }] },
         'Give each choice at least 2 options.',
@@ -168,7 +172,10 @@ describe('the deals routes', () => {
       [{ imageUrl: 'http://cdn.example/combo.jpg' }, 'https://'],
       [{ schedule: { days: [1, 1], start: '12:00', end: '15:00' } }, 'Choose each day only once.'],
       [{ schedule: { days: [], start: '12:00', end: '15:00' } }, 'Choose at least one day.'],
-      [{ schedule: { days: [1], start: '24:00', end: '15:00' } }, 'schedule.start'],
+      [
+        { schedule: { days: [1], start: '24:00', end: '15:00' } },
+        'Enter the time the deal starts and the time it ends.',
+      ],
       [
         { schedule: { days: [1], start: '12:00', end: '15:00', startDate: '2026-02-30' } },
         'Use a real date.',
@@ -203,7 +210,37 @@ describe('the deals routes', () => {
       const res = await saveDeal(fields);
       expect(res.status, JSON.stringify(fields)).toBe(400);
       expect(res.data.error, JSON.stringify(fields)).toContain(message);
+      // The owner reads it in the Deals dialog: never a field path or the validator's wording.
+      expect(res.data.error, JSON.stringify(fields)).not.toMatch(
+        /\w\.\d|^\w+: |Too (big|small)|expected|Invalid/,
+      );
     }
+    expect(await deals()).toEqual([]);
+  });
+
+  it('says what an older Deals tab sent wrong in plain words', async () => {
+    const refused: [Record<string, unknown>, string][] = [
+      [
+        { aliases: Array.from({ length: 11 }, (_, i) => `name ${i}`) },
+        'Use at most 10 other names.',
+      ],
+      [{ aliases: ['x'.repeat(61)] }, 'Keep each other name to 60 characters or fewer.'],
+      [{ price: 100_000_001 }, 'Enter a deal price up to Rs. 1,000,000.'],
+      [{ regularPrice: -1 }, 'Enter a price if bought separately up to Rs. 1,000,000'],
+      [
+        {
+          choices: [{ ...drink, options: [...drink.options, { id: 'x', name: 'y'.repeat(101) }] }],
+        },
+        'Name each option in up to 100 characters.',
+      ],
+      [{ name: 'x'.repeat(121) }, 'Give the deal a name of up to 120 characters.'],
+      [{ available: 'yes' }, 'Reload the page and try again.'],
+    ];
+    for (const [fields, message] of refused)
+      expect(await saveDeal(fields), JSON.stringify(fields)).toEqual({
+        status: 400,
+        data: { error: expect.stringContaining(message) },
+      });
     expect(await deals()).toEqual([]);
   });
 
@@ -274,6 +311,36 @@ describe('the deals routes', () => {
     });
     expect((await saveDeal({ id: kept[0]!.id })).status).toBe(200);
     expect(await deals()).toHaveLength(50);
+  });
+
+  it('keeps the limit when two new deals are saved at once, and reorders however many there are', async () => {
+    const repo = app.repo();
+    for (let i = 0; i < 49; i++) await repo.saveDeal(stored({ position: i + 1 }));
+    // Two phones save a new deal at the same moment: both see 49 before either is saved. One
+    // or both are taken back (both only when each counts the other), never 51 kept.
+    const both = await Promise.all([saveDeal(), saveDeal({ name: 'Family Combo' })]);
+    for (const res of both)
+      if (res.status !== 200)
+        expect(res).toEqual({
+          status: 409,
+          data: { error: 'You can have up to 50 deals. Delete one you no longer use first.' },
+        });
+    expect(both.filter((res) => res.status === 200).length).toBeLessThanOrEqual(1);
+    expect((await deals()).length).toBe(both.filter((res) => res.status === 200).length + 49);
+    // A deal saved after the race still fits while there is room.
+    if ((await deals()).length < 50) expect((await saveDeal()).status).toBe(200);
+    expect(await deals()).toHaveLength(50);
+    // Deals beyond 50 (put there by hand, say) never stop the owner saving a new order.
+    for (let i = 0; i < 3; i++) await repo.saveDeal(stored({ position: 60 + i }));
+    const all = await deals();
+    expect(all.length).toBeGreaterThan(50);
+    const ids = all.map((d) => d.id).reverse();
+    expect(await call('/deals/order', { body: { ids } })).toEqual({
+      status: 200,
+      data: { ok: true },
+    });
+    const positions = Object.fromEntries((await deals()).map((d) => [d.id, d.position]));
+    expect(ids.map((id) => positions[id])).toEqual(ids.map((_, i) => i + 1));
   });
 
   it('checks only the menu links added or changed now', async () => {

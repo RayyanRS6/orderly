@@ -110,6 +110,13 @@ export const hasTimedDeal = (menu: PublicMenu | undefined, ids?: string[]) =>
     category.items.some((item) => item.deal?.when && (!ids || ids.includes(item.id))),
   );
 
+/**
+ * Whether a menu read at `readAt` is older than the page's one-minute deal refresh, so the
+ * refresh reads it again at once when it resumes. A clock turned back counts as old.
+ */
+export const menuIsStale = (readAt: number, now: number) =>
+  !(now >= readAt && now - readAt < 60_000);
+
 /** A typed number the way the customer knows it ("+92 300 1234567"), or undefined if invalid. */
 export function typedPhoneLabel(value: string): string | undefined {
   const digits = normalizeTypedPhone(value);

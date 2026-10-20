@@ -31,11 +31,14 @@ import {
   dealBody,
   dealToForm,
   daysToChips,
+  detailsProblem,
   formProblem,
   formSchedule,
   formToBody,
   linkedName,
   longWindowNote,
+  MAX_CHOICES,
+  MAX_OPTIONS,
   menuMatches,
   newDealForm,
   nextDealName,
@@ -58,10 +61,11 @@ import { DealEditor, Deals, RELOAD_NOTE } from '../src/components/Deals';
 import { AddItem, addText, Playground } from '../src/components/Conversations';
 import { Catalog } from '../src/components/Catalog';
 import { parseRoute, pages, workspacePath } from '../src/lib/routes';
-import { dealProduct, dealState, sellableCatalog } from '../src/shared/deals';
+import { DEAL_LIMITS, dealProduct, dealState, sellableCatalog } from '../src/shared/deals';
 import { localClock } from '../src/shared/hours';
 import { seedCompanies, seedProducts } from '../src/shared/seed';
 import { buildAgentFlow } from '../server/agent-flow';
+import { dealSchema } from '../server/validation';
 import { MemoryRepository } from '../server/storage/memory';
 import type { Deal, Product } from '../src/shared/types';
 import { bootstrap, render } from './prelaunch-e-helpers';
@@ -365,6 +369,107 @@ describe('the deal form', () => {
     ).toBe('The end date is before the start date.');
   });
 
+  it('never sends what the server refuses, and says why in plain words', () => {
+    const form: DealForm = {
+      ...newDealForm([], key),
+      price: '799',
+      items: [{ key: 'a', name: 'Zinger', quantity: 1 }],
+    };
+    const option = (name: string, extra = '') => ({ id: key(), name, extra });
+    const choice = (name: string, ...options: ReturnType<typeof option>[]) => ({
+      id: key(),
+      name,
+      options,
+    });
+    const drink = choice('Drink', option('Coke'), option('Sprite'));
+    // The server's check of exactly what the editor would send.
+    const server = (f: DealForm) => dealSchema.safeParse(formToBody(f, menu)).success;
+    const refused: [Partial<DealForm>, string][] = [
+      [
+        { aliases: Array.from({ length: 11 }, (_, i) => `name ${i}`).join(', ') },
+        'Use at most 10 other names (you have 11).',
+      ],
+      [
+        { aliases: 'zinger meal with extra fries and a large drink for lunch time only' },
+        'Keep each other name to 60 characters or fewer. “zinger meal with extra f…” is longer.',
+      ],
+      [
+        { choices: [choice('Drink', option('Coke'), option('coke '))] },
+        'Drink has coke twice. Keep one of them.',
+      ],
+      [
+        { choices: [drink, choice('drink', option('Coke'), option('Sprite'))] },
+        'Two choices are called drink. Give each its own name, such as drink 1 and drink 2.',
+      ],
+      [
+        { choices: [choice('Drink', option('Coke'), option('x'.repeat(101)))] },
+        'Keep each option of Drink to 100 characters or fewer.',
+      ],
+      [
+        { choices: [choice('Drink', option('Coke'), option('Lassi', '1000000.01'))] },
+        'Enter the extra charge for Lassi up to Rs. 1,000,000, or leave it empty.',
+      ],
+      [
+        { imageUrl: 'http://cdn.example/deal.jpg' },
+        'Use a photo link that starts with https://, or leave it empty.',
+      ],
+      [{ price: '1000000.01' }, 'Keep the deal price to Rs. 1,000,000 or less.'],
+      [
+        { regularTyped: true, regularPrice: '2000000' },
+        'Enter a price if bought separately up to Rs. 1,000,000, or leave it empty.',
+      ],
+      [{ name: 'x'.repeat(121) }, 'Keep the deal’s name to 120 characters or fewer.'],
+      [{ description: 'x'.repeat(501) }, 'Keep the description to 500 characters or fewer.'],
+      // Lengths count characters as the server does: an emoji is one, not two.
+      [{ emoji: '🍔'.repeat(17) }, 'Use one emoji, or a few at most.'],
+      [
+        { items: [{ key: 'a', name: 'x'.repeat(101), quantity: 1 }] },
+        'Keep each included item’s name to 100 characters or fewer.',
+      ],
+      [
+        { timed: true, allDay: false, start: '', end: '15:00' },
+        'Enter the time the deal starts and the time it ends.',
+      ],
+      [{ timed: true, startDate: '275760-09-13' }, 'Use a real date, or leave it empty.'],
+      // Tuesday 20 and Wednesday 21 October 2026, on Fridays only.
+      [
+        { timed: true, chips: [5], startDate: '2026-10-20', endDate: '2026-10-21' },
+        'None of the chosen days falls between the start and end dates.',
+      ],
+    ];
+    for (const [fields, message] of refused) {
+      const wrong = { ...form, ...fields };
+      expect(formProblem(wrong), message).toBe(message);
+      expect(server(wrong), message).toBe(false);
+    }
+    // Everything the editor lets through, the server keeps: limits at their edge included.
+    const kept: Partial<DealForm>[] = [
+      {},
+      ...WHEN_PRESETS.map((preset) => preset.fill('2026-10-21')),
+      { aliases: Array.from({ length: 10 }, (_, i) => `name ${i}`).join(', ') },
+      { aliases: `${'x'.repeat(60)}, zinger meal, ڈیل 1` },
+      { choices: [drink, choice('Side', option('Fries', '50.25'), option('Raita'))] },
+      { choices: [choice('Drink 1', option('Coke'), option('Sprite')), drink] },
+      { price: '1000000', regularTyped: true, regularPrice: '1000000' },
+      { imageUrl: 'https://cdn.example/deal.jpg', emoji: '🍔🍟🥤', description: 'x'.repeat(500) },
+      { emoji: '🍔'.repeat(16), aliases: 'ڈیل'.repeat(20) },
+      { timed: true, chips: [5], allDay: false, start: '00:00', end: '03:00' },
+    ];
+    for (const fields of kept) {
+      const fine = { ...form, ...fields };
+      expect(formProblem(fine), JSON.stringify(fields)).toBe('');
+      expect(server(fine), JSON.stringify(fields)).toBe(true);
+    }
+    // A problem in the folded "More details" is known as one, so the editor can open it.
+    const tooMany = { ...form, aliases: refused[0]![0].aliases! };
+    expect(detailsProblem(tooMany)).toBe(formProblem(tooMany));
+    const twice: DealForm = { ...form, choices: [drink, drink] };
+    expect(detailsProblem(twice)).toBe('');
+    expect(formProblem(twice)).not.toBe('');
+    // The editor and the server share one set of limits.
+    expect([MAX_CHOICES, MAX_OPTIONS]).toEqual([DEAL_LIMITS.choices, DEAL_LIMITS.options]);
+  });
+
   it('fills the When fields from the presets', () => {
     const fill = (id: string) => WHEN_PRESETS.find((p) => p.id === id)!.fill('2026-10-21');
     expect(WHEN_PRESETS.map((p) => p.label)).toEqual([
@@ -434,6 +539,14 @@ describe('the deal form', () => {
     expect(scheduleNotice(later.schedule, clock)).toBe('');
     expect(scheduleNotice(undefined, clock)).toBe('');
     expect(dayWords('2026-08-14')).toBe('14 Aug 2026');
+    // Saved at 01:00 on its start date, a late deal is still before its first night (the night
+    // of 22 Oct runs until 02:00): it starts that evening, as the menu says.
+    const late = { days: ALL_DAYS, start: '23:00', end: '02:00', startDate: '2026-10-22' };
+    const night = { ...late, start: '00:00', end: '03:00' };
+    const oneAm = localClock(company.timezone, '2026-10-21T20:00:00.000Z');
+    expect(scheduleNotice(late, oneAm)).toBe('It starts on 22 Oct 2026.');
+    expect(scheduleNotice(night, oneAm)).toBe('It starts on 22 Oct 2026.');
+    expect(scheduleNotice(late, localClock(company.timezone, '2026-10-22T18:30:00.000Z'))).toBe('');
   });
 
   it('copies a choice with new ids, numbering the set and keeping it together', () => {
@@ -498,6 +611,43 @@ describe('the deal form', () => {
     expect(sameNameWarning(['Deal 1'], menu, [deal()], 'd-on')).toBe('');
     // Other names count too, on both sides.
     expect(sameNameWarning(['biryani'], menu, [], undefined)).toContain('Chicken Biryani');
+  });
+
+  it('warns when a deal’s name is part of a menu item’s name, or has one in it', () => {
+    // "zinger" for a Zinger Deal, with Zinger Burger on the menu: the bot may sell the deal to
+    // someone ordering the burger, so the owner is told before saving.
+    const burger = { ...biryani, id: 'p-zinger', name: 'Zinger Burger', aliases: [] };
+    expect(sameNameWarning(['Zinger Deal', 'zinger'], [...menu, burger], [], 'd')).toBe(
+      '“zinger” is also part of Zinger Burger on your menu, so the bot may take an order for Zinger Burger as this deal. Use a longer name that isn’t part of a menu item’s name.',
+    );
+    // Through a menu item's other names too, in any script, naming at most three items.
+    expect(sameNameWarning(['Deal 1', 'chicken'], menu, [], undefined)).toBe(
+      '“chicken” is also part of Chicken Biryani, Chicken Karahi and Chicken Tikka on your menu, so the bot may take an order for one of them as this deal. Use a longer name that isn’t part of a menu item’s name.',
+    );
+    const wings = ['Wings', 'Wraps', 'Rolls'].map((name, i) => ({
+      ...biryani,
+      id: `p-${i}`,
+      name: `Chicken ${name}`,
+      aliases: [],
+    }));
+    expect(sameNameWarning(['chicken'], [...menu, ...wings], [], undefined)).toContain(
+      'part of Chicken Biryani, Chicken Karahi, Chicken Tikka and others on your menu',
+    );
+    expect(sameNameWarning(['مکھنی'], menu, [], undefined)).toContain('Daal Makhani');
+    // The other way round: the deal's name has a menu item's name in it.
+    expect(sameNameWarning(['Biryani Deal'], menu, [], undefined)).toBe(
+      'To order “Biryani Deal” in chat, customers need its full name: “biryani” alone orders Chicken Biryani.',
+    );
+    expect(sameNameWarning(['Biryani Lassi Deal'], menu, [], undefined)).toBe(
+      'To order “Biryani Lassi Deal” in chat, customers need its full name: “biryani” alone orders Chicken Biryani and “lassi” alone orders Mango Lassi.',
+    );
+    // Whole words only, and nothing for names that share no words.
+    expect(sameNameWarning(['Deal 1', 'zing'], [...menu, burger], [], undefined)).toBe('');
+    expect(sameNameWarning(['Family Deal', 'family meal'], menu, [], undefined)).toBe('');
+    // A name the same as a menu item's is said once, as the same name.
+    expect(sameNameWarning(['Chicken Biryani'], menu, [], undefined)).toBe(
+      'Same name as Chicken Biryani on your menu. The bot will ask customers which one they mean.',
+    );
   });
 
   it('offers the best six menu items for what is typed, and names a size', () => {
@@ -728,6 +878,10 @@ describe('the deal editor', () => {
   it('warns about a name the menu already uses', () => {
     expect(editor(deal({ name: 'Chicken Biryani' }), [])).toContain(
       'Same name as Chicken Biryani on your menu.',
+    );
+    // An other name that is part of dishes' names, next to the deal's name where it is seen.
+    expect(editor(deal({ aliases: ['chicken'] }), [])).toContain(
+      '“chicken” is also part of Chicken Biryani, Chicken Karahi',
     );
   });
 });

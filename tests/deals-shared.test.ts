@@ -4,12 +4,12 @@ import {
   dealProduct,
   dealSavings,
   dealState,
-  dealsWorkItOut,
   dealWhen,
-  openingOverlap,
   sellableCatalog,
 } from '../src/shared/deals';
-import { localClock } from '../src/shared/hours';
+// The Deals tab's own helpers, kept out of the menu page's chunk.
+import { dealsWorkItOut, openingOverlap } from '../src/shared/deal-insights';
+import { dealOpenAt, localClock } from '../src/shared/hours';
 import { sortMenuCategories } from '../src/shared/menu';
 import { seedCompanies, seedProducts } from '../src/shared/seed';
 import type { Deal, DealSchedule, Product } from '../src/shared/types';
@@ -167,6 +167,62 @@ describe('deal times in words', () => {
     expect(dealWhen(dated, 'en')).toBe('Mon–Fri 12:00–15:00 · from 2 Mar 2026 · until 14 Aug 2026');
     const independence = { days: everyDay, start: '00:00', end: '00:00', endDate: '2026-08-14' };
     expect(dealWhen(independence, 'en', at('2026-08-14T13:00'))).toBe('All day · until 14 Aug');
+  });
+
+  it('keeps "from" after midnight on the start date while a night is still the evening before', () => {
+    // 01:00 on 2 Mar is the night of 1 Mar, before the start: refused, so it must not read as
+    // "every day 23:00–02:00" at a time inside those hours.
+    const late = { days: everyDay, start: '23:00', end: '02:00', startDate: '2026-03-02' };
+    expect(dealOpenAt(late, at('2026-03-02T01:00'))).toBe(false);
+    expect(allDays(late, at('2026-03-02T01:00'))).toEqual([
+      'Every day 23:00–02:00 · from 2 Mar',
+      'روزانہ 23:00–02:00 · 2 مارچ سے',
+      'rozana 23:00–02:00 · 2 Mar se',
+    ]);
+    // Later that day the next night is the first one; once it runs, "from" has gone.
+    expect(dealWhen(late, 'en', at('2026-03-02T10:00'))).toBe('Every day 23:00–02:00');
+    expect(dealOpenAt(late, at('2026-03-02T23:30'))).toBe(true);
+    expect(dealWhen(late, 'en', at('2026-03-03T01:00'))).toBe('Every day 23:00–02:00');
+    const night = { days: everyDay, start: '00:00', end: '03:00', startDate: '2026-03-02' };
+    expect(dealOpenAt(night, at('2026-03-02T01:00'))).toBe(false);
+    expect(allDays(night, at('2026-03-02T01:00'))).toEqual([
+      'Every night 00:00–03:00 · from 2 Mar',
+      'ہر رات 00:00–03:00 · 2 مارچ سے',
+      'har raat 00:00–03:00 · 2 Mar se',
+    ]);
+    expect(dealOpenAt(night, at('2026-03-03T01:00'))).toBe(true);
+    expect(dealWhen(night, 'roman-ur', at('2026-03-03T01:00'))).toBe('har raat 00:00–03:00');
+    // A Ramadan sehri deal: its first morning is the night of 8 Feb, so 8 Feb 04:00 is before it.
+    const sehri = { ...night, start: '03:00', end: '05:30', startDate: '2027-02-08' };
+    const sehriDated = { ...sehri, endDate: '2027-03-09' };
+    expect(dealWhen(sehriDated, 'en', at('2027-02-08T04:00'))).toBe(
+      'Every night 03:00–05:30 · from 8 Feb · until 9 Mar',
+    );
+    expect(dealWhen(sehriDated, 'en', at('2027-02-09T04:00'))).toBe(
+      'Every night 03:00–05:30 · until 9 Mar',
+    );
+  });
+
+  it('never reads as on now at a time a dated deal is refused, around its start date', () => {
+    const schedules: DealSchedule[] = [
+      { days: everyDay, start: '23:00', end: '02:00', startDate: '2026-03-02' },
+      { days: everyDay, start: '00:00', end: '03:00', startDate: '2026-03-02' },
+      { days: [1], start: '23:00', end: '02:00', startDate: '2026-03-02' },
+      { days: [2], start: '00:00', end: '02:00', startDate: '2026-03-02' },
+      { ...lunch, startDate: '2026-03-02' },
+      { days: everyDay, start: '00:00', end: '00:00', startDate: '2026-03-02' },
+    ];
+    for (const schedule of schedules)
+      for (let half = 0; half < 4 * 48; half++) {
+        const instant = new Date(Date.parse(pkt('2026-02-28T00:00')) + half * 30 * 60_000);
+        const clock = localClock(company.timezone, instant.toISOString())!;
+        const words = dealWhen(schedule, 'en', clock);
+        const label = `${JSON.stringify(schedule)} at ${clock.date} ${clock.minute}`;
+        // Refused inside its hours: the wording says when it starts. On: it doesn't.
+        if (dealOpenAt(schedule, clock)) expect(words, label).not.toContain('from');
+        else if (dealOpenAt({ ...schedule, startDate: undefined }, clock))
+          expect(words, label).toContain('· from 2 Mar');
+      }
   });
 });
 

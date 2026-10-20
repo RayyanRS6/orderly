@@ -130,6 +130,20 @@ export const PHOTO_URL_RE = /^https:\/\/[^\s"'<>]+$/i;
 export const isPhotoUrl = (value: unknown): value is string =>
   typeof value === 'string' && value.length <= 500 && PHOTO_URL_RE.test(value);
 
+/**
+ * "You save" on a deal: the owner's regular price minus the deal price, when above 0. Takes a
+ * saved deal or a menu entry made from one (its `deal.regularPrice`).
+ */
+export function dealSavings(deal: {
+  price: number;
+  regularPrice?: number;
+  deal?: { regularPrice?: number };
+}): number | undefined {
+  const regular = deal.deal ? deal.deal.regularPrice : deal.regularPrice;
+  const saving = typeof regular === 'number' ? regular - deal.price : NaN;
+  return Number.isFinite(saving) && saving > 0 ? saving : undefined;
+}
+
 /** Categories in first-seen order, with any "Deal" or "Deals" category first. */
 export function sortMenuCategories<T extends { category: string }>(
   items: T[],
