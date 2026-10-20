@@ -79,10 +79,11 @@ function chat() {
           `${item.productId} ×${item.quantity}${item.modifierIds.length ? ` [${item.modifierIds.join(', ')}]` : ''}`,
       );
     },
-    send(text: string, actions?: BotAction[], response?: ModelResponse) {
+    // `menu`: the menu as it is at this message (the owner may edit a deal in between).
+    send(text: string, actions?: BotAction[], response?: ModelResponse, menu = products) {
       const result = processTurn(
         company,
-        products,
+        menu,
         conversation,
         { messageId: `m${++n}`, text, now },
         actions,
@@ -100,11 +101,14 @@ describe('asking for a deal’s choice', () => {
     const asked = c.send('deal 1');
     expect(asked.reply).toBe(ASK_DRINK);
     expect(asked.traces).toEqual(['add_item', 'deal_choice_asked']);
+    // The list as shown is kept, so a number answers what the customer saw.
     expect(c.conversation.pendingDealChoice).toEqual({
       productId: 'deal-1',
       quantity: 1,
       picked: [],
       notes: '',
+      groupId: 'g-drink',
+      optionIds: ['o-coke', 'o-sprite', 'o-fanta'],
     });
     expect(c.items).toEqual([]);
     const answered = c.send('2');
@@ -358,5 +362,357 @@ describe('the AI and the deal’s choice', () => {
     );
     c.send('3');
     expect(c.items).toEqual([`${crispy.id} ×1`, 'deal-1 ×1 [o-fanta]']);
+  });
+});
+
+describe('a message that only mentions an option while the deal’s choice is open', () => {
+  const ok: ModelResponse = { text: 'Anything else?', askFor: 'anything_else' };
+  const add = (productId: string, quantity = 1, modifierIds: string[] = []): BotAction => ({
+    type: 'add_item',
+    productId,
+    quantity,
+    modifierIds,
+  });
+
+  it.each([
+    'no sprite',
+    'not sprite please',
+    'without sprite',
+    'sprite mat dena',
+    'sprite nahi',
+    'remove sprite',
+    'remove sprite 345ml',
+    'also add a sprite 1.5L',
+    '1 sprite',
+    'do sprite',
+  ])('never reads “%s” as the deal’s Sprite', (text) => {
+    const c = chat();
+    c.send('deal 1');
+    expect(parseActions(company, products, c.conversation, text)).not.toContainEqual(
+      expect.objectContaining({ productId: 'deal-1' }),
+    );
+  });
+
+  it('still reads the answer beside an option turned down, or a deal’s own number', () => {
+    const c = chat();
+    c.send('deal 1');
+    expect(parseActions(company, products, c.conversation, 'no sprite, coke please')).toEqual([
+      { type: 'add_item', productId: 'deal-1', quantity: 1, modifierIds: ['o-coke'], notes: '' },
+    ]);
+    // "no diet coke" turns down the longer name, never leaving its "coke" as the answer.
+    const diet = sellableCatalog(
+      company,
+      [...seed, sprite345, sprite15],
+      [
+        deal(
+          'deal-1',
+          'Deal 1',
+          [
+            {
+              ...drink,
+              options: [...drink.options, { id: 'o-diet', name: 'Diet Coke', price: 0 }],
+            },
+          ],
+          1,
+        ),
+      ],
+      now,
+      { all: true },
+    );
+    const d = chat();
+    d.send('deal 1', undefined, undefined, diet);
+    expect(parseActions(company, diet, d.conversation, 'no diet coke')[0]).not.toMatchObject({
+      productId: 'deal-1',
+    });
+    // The 1 of "deal 1" counts no Coke.
+    expect(parseActions(company, products, c.conversation, 'deal 1 coke')).toEqual([
+      { type: 'add_item', productId: 'deal-1', quantity: 1, modifierIds: ['o-coke'], notes: '' },
+    ]);
+  });
+
+  it('leaves the question open when the AI reads a refusal, a removal or a question', () => {
+    const c = chat();
+    c.send('deal 1');
+    const refused = c.send('no sprite', [{ type: 'answer', text: '' }], {
+      text: 'Which drink would you like instead?',
+      askFor: 'none',
+    });
+    expect(refused.reply).toBe('Which drink would you like instead?');
+    expect(refused.traces).not.toContain('deal_choice_resolved');
+    const asked = c.send('sprite kitne ki hai', [{ type: 'answer', text: '' }], {
+      text: 'It comes with the deal.',
+      askFor: 'none',
+    });
+    expect(asked.reply).toBe('It comes with the deal.');
+    expect(c.items).toEqual([]);
+    expect(c.conversation.pendingDealChoice?.productId).toBe('deal-1');
+    const removal = chat();
+    removal.send('1 sprite 345ml');
+    removal.send('deal 1');
+    const removed = removal.send(
+      'remove sprite 345ml',
+      [{ type: 'remove_item', productId: 'sprite-345' }],
+      ok,
+    );
+    expect(removed.traces).not.toContain('deal_choice_resolved');
+    expect(removal.items).toEqual([]);
+    expect(removal.conversation.pendingDealChoice?.productId).toBe('deal-1');
+  });
+
+  it('keeps a dish ordered by its longer name or with its own count beside the answer', () => {
+    // Side open: "fries" answers it, and the Loaded Fries ordered beside it stay.
+    const both = chat();
+    both.send('deal 3 with sprite');
+    both.send(
+      'fries, aur 1 loaded fries bhi',
+      [add('deal-3', 1, ['o-sprite', 'o-fries']), add(fries.id)],
+      ok,
+    );
+    expect(both.items).toEqual(['deal-3 ×1 [o-fries, o-sprite]', `${fries.id} ×1`]);
+    // Only the Loaded Fries: the AI's and the engine's reading add them, never the deal.
+    for (const actions of [[add(fries.id, 2)], undefined]) {
+      const c = chat();
+      c.send('deal 3 with sprite');
+      c.send('aur 2 loaded fries bhi', actions, actions && ok);
+      expect(c.items).toEqual([`${fries.id} ×2`]);
+    }
+    const bottle = chat();
+    bottle.send('deal 1');
+    bottle.send('also add a sprite 1.5L', [add('sprite-15')], ok);
+    expect(bottle.items).toEqual(['sprite-15 ×1']);
+    // "coke" answers; the two Sprites with their own count are the AI's to add.
+    const counted = chat();
+    counted.send('deal 1');
+    counted.send('coke, aur 2 sprite', [add('deal-1', 1, ['o-coke']), add('sprite-345', 2)], ok);
+    expect(counted.items).toEqual(['deal-1 ×1 [o-coke]', 'sprite-345 ×2']);
+  });
+});
+
+describe('a deal’s choice answered by number after the owner changed it', () => {
+  const menu = (deals: Deal[]) =>
+    sellableCatalog(company, [...seed, sprite345, sprite15], deals, now, { all: true });
+  const noCoke = menu([
+    deal('deal-1', 'Deal 1', [{ ...drink, options: drink.options.slice(1) }], 1),
+    deal('deal-3', 'Deal 3', [side], 3),
+  ]);
+
+  it('reads the number against the list the customer saw', () => {
+    for (const [answer, pick] of [
+      ['2', 'o-sprite'],
+      ['3', 'o-fanta'],
+    ]) {
+      const c = chat();
+      c.send('deal 1');
+      c.send(answer!, undefined, undefined, noCoke);
+      expect(c.items).toEqual([`deal-1 ×1 [${pick}]`]);
+    }
+    // The AI reading "2" against the new list (Fanta) is corrected to what was shown.
+    const ai = chat();
+    ai.send('deal 1');
+    const result = ai.send(
+      '2',
+      [{ type: 'add_item', productId: 'deal-1', quantity: 1, modifierIds: ['o-fanta'] }],
+      { text: 'Done.', askFor: 'none' },
+      noCoke,
+    );
+    expect(result.traces).toContain('deal_choice_resolved');
+    expect(ai.items).toEqual(['deal-1 ×1 [o-sprite]']);
+  });
+
+  it('asks again, from the list as it is now, when the option or the choice asked is gone', () => {
+    const c = chat();
+    c.send('deal 3');
+    const again = c.send('2', undefined, undefined, noCoke);
+    expect(again.reply).toBe('Choose Side for Deal 3:\n1. Fries\n2. Wings (+Rs. 100)');
+    expect(c.items).toEqual([]);
+    expect(c.conversation.pendingDealChoice).toMatchObject({ groupId: 'g-side' });
+    c.send('2', undefined, undefined, noCoke);
+    expect(c.items).toEqual(['deal-3 ×1 [o-wings]']);
+    const noSprite = menu([
+      deal('deal-1', 'Deal 1', [{ ...drink, options: [drink.options[0]!, drink.options[2]!] }], 1),
+    ]);
+    const gone = chat();
+    gone.send('deal 1');
+    expect(gone.send('2', undefined, undefined, noSprite).reply).toBe(
+      'Choose Drink for Deal 1:\n1. Coke\n2. Fanta (+Rs. 50)',
+    );
+    expect(gone.items).toEqual([]);
+  });
+
+  it('reads a number by the deal as it is for a choice asked before the list was kept', () => {
+    const conversation = {
+      ...createConversation(company.id, '923001234567', 'whatsapp', now),
+      pendingDealChoice: { productId: 'deal-1', quantity: 1, picked: [], notes: '' },
+    };
+    const result = processTurn(company, products, conversation, {
+      messageId: 'm1',
+      text: '2',
+      now,
+    });
+    expect(result.conversation.cart.items).toMatchObject([
+      { productId: 'deal-1', modifierIds: ['o-sprite'] },
+    ]);
+  });
+});
+
+describe('a deal’s choice waiting behind a dish choice when the owner changes the deal', () => {
+  const menu = (deal3: Deal) =>
+    sellableCatalog(
+      company,
+      [...seed, sprite345, sprite15],
+      [deal('deal-1', 'Deal 1', [drink], 1), deal3],
+      now,
+      { all: true },
+    );
+
+  it('drops it, with no error, when the choice it waited for is gone', () => {
+    for (const choices of [[drink], []]) {
+      const c = chat();
+      expect(c.send('deal 3 with sprite aur burger').reply).toBe(
+        'Which one would you like?\n1. Classic Smash\n2. Crispy Chicken',
+      );
+      const result = c.send('2', undefined, undefined, menu(deal('deal-3', 'Deal 3', choices, 3)));
+      expect(result.reply).toBe('Added 1 × Crispy Chicken. Add anything else, or send “review”.');
+      expect(result.traces).toEqual(['add_item']);
+      expect(c.items).toEqual([`${crispy.id} ×1`]);
+      expect(c.conversation.pendingItemChoice).toBeUndefined();
+      expect(c.conversation.pendingDealChoice).toBeUndefined();
+    }
+  });
+
+  it('says the deal is not on when it was paused meanwhile, instead of asking its choice', () => {
+    const c = chat();
+    c.send('deal 3 with sprite aur burger');
+    const paused = menu({ ...deal('deal-3', 'Deal 3', [drink, side], 3), available: false });
+    const result = c.send('2', undefined, undefined, paused);
+    expect(result.reply).toBe(
+      'Added 1 × Crispy Chicken. Add anything else, or send “review”.\n\nDeal 3 is not available right now.',
+    );
+    expect(c.conversation.pendingDealChoice).toBeUndefined();
+  });
+});
+
+describe('a "which deal?" answered, then the deal’s own choice', () => {
+  const lunch = sellableCatalog(
+    company,
+    seed,
+    [
+      deal('zinger-lunch', 'Zinger Lunch Deal', [drink], 1),
+      deal('biryani-lunch', 'Biryani Lunch Deal', [drink], 2),
+    ],
+    now,
+    { all: true },
+  );
+  const which: BotAction = {
+    type: 'clarify_item',
+    candidateProductIds: ['zinger-lunch', 'biryani-lunch'],
+    quantity: 1,
+  };
+  const quiet: ModelResponse = { text: 'Done.', askFor: 'none' };
+
+  it('reads the next number as the drink, never as the other deal', () => {
+    const c = chat();
+    c.send('lunch deal', undefined, undefined, lunch);
+    expect(c.send('1', undefined, undefined, lunch).reply).toBe(
+      'Choose Drink for Zinger Lunch Deal:\n1. Coke\n2. Sprite\n3. Fanta (+Rs. 50)',
+    );
+    expect(c.conversation.pendingItemChoice).toBeUndefined();
+    c.send('2', undefined, undefined, lunch);
+    expect(c.items).toEqual(['zinger-lunch ×1 [o-sprite]']);
+  });
+
+  it.each([
+    ['answer', [{ type: 'answer', text: '' }]],
+    ['"which deal?"', [which]],
+    ['add without the pick', [{ type: 'add_item', productId: 'zinger-lunch', quantity: 1 }]],
+  ] as [string, BotAction[]][])('corrects the AI’s %s on that number', (_, proposal) => {
+    const c = chat();
+    c.send('lunch deal', [which], quiet, lunch);
+    c.send('1', [{ type: 'add_item', productId: 'zinger-lunch', quantity: 1 }], quiet, lunch);
+    const result = c.send('2', proposal, quiet, lunch);
+    expect(result.traces).toContain('deal_choice_resolved');
+    expect(result.traces).not.toContain('item_choice_resolved');
+    expect(result.reply).not.toContain('Which one would you like?');
+    expect(c.items).toEqual(['zinger-lunch ×1 [o-sprite]']);
+    expect(c.conversation.pendingItemChoice).toBeUndefined();
+  });
+});
+
+describe('a deal’s choice left open when the deal goes off', () => {
+  // Friday 23 October 2026: Lunch Deal runs Mon–Fri 12:00–15:00.
+  const at = (local: string, date = '2026-10-23') =>
+    new Date(`${date}T${local}:00+05:00`).toISOString();
+  const lunch: Deal = {
+    ...deal('lunch', 'Lunch Deal', [{ ...drink, options: drink.options.slice(0, 2) }], 1),
+    schedule: { days: [1, 2, 3, 4, 5], start: '12:00', end: '15:00' },
+  };
+  const menuAt = (when: string, deals: Deal[] = [lunch]) =>
+    sellableCatalog(company, [...seed, sprite345], deals, when, { all: true });
+  function timed() {
+    let conversation = createConversation(company.id, '923001234567', 'whatsapp', at('14:00'));
+    let n = 0;
+    return {
+      get conversation() {
+        return conversation;
+      },
+      send(text: string, when: string, actions?: BotAction[], menu = menuAt(when)) {
+        const result = processTurn(
+          company,
+          menu,
+          conversation,
+          { messageId: `t${++n}`, text, now: when },
+          actions,
+          actions && { text: 'Anything else?', askFor: 'anything_else' },
+        );
+        conversation = result.conversation;
+        return result;
+      },
+    };
+  }
+  const refusal = 'Lunch Deal is only available Mon–Fri 12:00–15:00.';
+
+  it('refuses it once, then a drink is that drink, also once the deal is back on', () => {
+    const c = timed();
+    c.send('lunch deal', at('14:59'));
+    const late = c.send('sprite', at('15:05'));
+    expect(late.reply).toBe(refusal);
+    expect(c.conversation.pendingDealChoice).toBeUndefined();
+    expect(c.send('sprite', at('15:06')).reply).toBe(
+      'Added 1 × Sprite 345ml. Add anything else, or send “review”.',
+    );
+    const monday = timed();
+    monday.send('lunch deal', at('14:59'));
+    monday.send('2', at('15:05'));
+    monday.send('sprite', at('13:00', '2026-10-26'));
+    expect(monday.conversation.cart.items.map((item) => item.productId)).toEqual(['sprite-345']);
+  });
+
+  it('lets the drink be ordered by its own name straight away', () => {
+    const c = timed();
+    c.send('lunch deal', at('14:59'));
+    expect(c.send('sprite 345ml', at('15:05')).reply).toBe(
+      'Added 1 × Sprite 345ml. Add anything else, or send “review”.',
+    );
+    expect(c.conversation.pendingDealChoice).toBeUndefined();
+  });
+
+  it('refuses once on the AI path too, then keeps the AI’s drink', () => {
+    const c = timed();
+    c.send('lunch deal', at('14:59'));
+    const sprite: BotAction[] = [{ type: 'add_item', productId: 'sprite-345', quantity: 1 }];
+    expect(c.send('just a sprite then', at('15:05'), sprite).reply).toBe(refusal);
+    expect(c.conversation.pendingDealChoice).toBeUndefined();
+    c.send('just a sprite then', at('15:06'), sprite);
+    expect(c.conversation.cart.items.map((item) => item.productId)).toEqual(['sprite-345']);
+  });
+
+  it('is cleared with the refusal when the owner pauses the deal', () => {
+    const c = timed();
+    c.send('lunch deal', at('13:00'));
+    const paused = menuAt(at('13:05'), [{ ...lunch, available: false }]);
+    expect(c.send('2', at('13:05'), undefined, paused).reply).toBe(
+      'Lunch Deal is not available right now.',
+    );
+    expect(c.conversation.pendingDealChoice).toBeUndefined();
   });
 });

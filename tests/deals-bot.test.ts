@@ -1029,3 +1029,317 @@ describe('a deal whose name holds a question word or "person"', () => {
     expect(send('I need a person').botPausedAt).toBeUndefined();
   });
 });
+
+describe('numbered deals named together: "deal 2 and 3"', () => {
+  const numbered = [1, 2, 3, 4, 5].map((k) =>
+    deal(`deal-${k}`, `Deal ${k}`, { position: k, choices: [] }),
+  );
+  const products = catalog('13:00', numbered);
+
+  it.each([
+    'deal 2 and 3',
+    'deal 2 aur 3',
+    'deal 2 & 3',
+    'deal 2, 3',
+    'mujhe deal 2 aur 3 chahiye',
+    'deals 2 and 3',
+  ])('reads “%s” as Deal 2 and Deal 3', (text) => {
+    expect(parse(text, products)).toEqual(['add deal-2 ×1', 'add deal-3 ×1']);
+  });
+
+  it('still reads a count written after a deal, and a number before another dish', () => {
+    expect(parse('deal 1, 2, 3 aur 4', products)).toEqual([
+      'add deal-1 ×1',
+      'add deal-2 ×1',
+      'add deal-3 ×1',
+      'add deal-4 ×1',
+    ]);
+    expect(parse('deal 2, make it 3', products)).toEqual(['add deal-2 ×3']);
+    expect(parse('deal 2 aur deal 3', products)).toEqual(['add deal-2 ×1', 'add deal-3 ×1']);
+    expect(parse('deal 2 aur 3 zinger', products)).toEqual([
+      'add deal-2 ×1',
+      'add zinger-burger ×3',
+    ]);
+    // No Deal 7: the 7 is a count, as before.
+    expect(parse('deal 2 aur 7', products)).toEqual(['add deal-2 ×7']);
+    const c = chat();
+    expect(c.send('deal 2 and 3', { products }).traces).toEqual(['add_item', 'add_item']);
+    expect(lines(c)).toEqual(['deal-2 ×1', 'deal-3 ×1']);
+  });
+
+  it('keeps the AI’s two deals beside an open "which burger?"', () => {
+    const c = chat();
+    c.send('burger', { products });
+    expect(c.conversation.pendingItemChoice).toBeDefined();
+    const result = c.send('deal 2 and 3', {
+      products,
+      actions: [
+        { type: 'add_item', productId: 'deal-2', quantity: 1, modifierIds: [] },
+        { type: 'add_item', productId: 'deal-3', quantity: 1, modifierIds: [] },
+      ],
+      response: { text: 'Anything else?', askFor: 'anything_else' },
+    });
+    expect(result.traces).not.toContain('item_choice_resolved');
+    expect(lines(c)).toEqual(['deal-2 ×1', 'deal-3 ×1']);
+  });
+
+  it('reads numbered dishes as before on a menu without deals', () => {
+    // What main (c5704f5) gives for the same messages.
+    const platter = (k: number, category = 'Platters') =>
+      dish(`platter-${k}`, `Platter ${k}`, { category, emoji: '🍱', price: 50000 });
+    const legacy = (k: number) =>
+      dish(`deal-${k}`, `Deal ${k}`, { category: 'Deals', emoji: '🍱', price: 50000 });
+    const menu = [platter(1), platter(2), platter(3), legacy(1), legacy(2)];
+    const turn = (text: string) => chat().send(text, { products: menu });
+    expect(parse('platter 1 aur 2', menu)).toEqual(['add platter-1 ×2']);
+    expect(turn('platter 1 aur 2').reply).toBe(
+      'Added 2 × Platter 1. Add anything else, or send “review”.',
+    );
+    expect(parse('deal 1 and 2', menu)).toEqual(['which deal-1 | deal-2 ×2']);
+    expect(turn('deal 1 and 2').reply).toBe('Which one would you like?\n1. Deal 1\n2. Deal 2');
+    expect(parse('deal 1 aur 2 chahiye', menu)).toEqual(['add deal-1 ×2']);
+    expect(parse('platter 2, make it 3', menu)).toEqual(['add platter-2 ×3']);
+  });
+});
+
+describe('a saving the owner wrote, and AI wording that only starts the same way', () => {
+  const feast = deal('feast', 'Family Feast', {
+    choices: [],
+    description: 'Two burgers, save 20% on weekends.',
+  });
+  const products = catalog('13:00', [feast]);
+  const answer = (text: string, who: Company = company) =>
+    chat(who).send('tell me about the family feast', {
+      products,
+      actions: [{ type: 'answer', text: '' }],
+      response: { text, askFor: 'none', groundingIds: [] },
+    });
+
+  it('drops another amount and keeps the owner’s own phrase', () => {
+    for (const text of ['Save 25% today on everything!', 'Save 2 on every burger today!']) {
+      const result = answer(text);
+      expect(result.reply).not.toContain(text);
+      expect(result.traces).toContain('unsafe_model_response_ignored');
+    }
+    expect(answer('Save 20% on weekends with the Family Feast!').reply).toBe(
+      'Save 20% on weekends with the Family Feast!',
+    );
+    // "save 200" in an approved answer, and "save 20%" in the deal's, vouch for neither "save
+    // 2000" nor "save 20".
+    const owner: Company = {
+      ...company,
+      faqs: [{ question: 'Any discount?', answer: 'Order the feast and save 200.' }],
+    };
+    for (const text of ['You save 2000 on big orders.', 'You save 20 on big orders.'])
+      expect(answer(text, owner).traces).toContain('unsafe_model_response_ignored');
+    expect(answer('Order the feast and save 200.', owner).reply).toBe(
+      'Order the feast and save 200.',
+    );
+  });
+});
+
+describe('the chat menu for one numbered deal, and for deals at other times', () => {
+  const ten = Array.from({ length: 10 }, (_, i) =>
+    deal(`deal-${i + 1}`, `Deal ${i + 1}`, { position: i + 1, choices: [drink, side] }),
+  );
+  const products = catalog('13:00', ten);
+
+  it('shows only the deal asked about by its number', () => {
+    expect(parse('deal 9 kitne ki hai?', products)).toEqual(['menu Deal 9']);
+    const nine = chat().send('deal 9 kitne ki hai?', { products }).reply;
+    expect(nine).toContain(
+      '🎁 Deal 9 — Rs. 799 (save Rs. 250)\n  Zinger burger + Fries + Drink\n  Drink: Coke, Sprite, Fanta (+Rs. 50)\n  Side: Fries, Wings (+Rs. 100)',
+    );
+    expect(nine).not.toContain('Deal 1 —');
+    expect(nine).not.toContain('Showing');
+    const one = chat().send('deal 1 hai?', { products }).reply;
+    expect(one).toContain('🎁 Deal 1 — Rs. 799');
+    for (const other of ['Deal 2 —', 'Deal 10 —']) expect(one).not.toContain(other);
+    // The AI's search for it, and a shorthand question about all of them.
+    const search = (query: string) =>
+      chat().send('?', {
+        products,
+        actions: [{ type: 'menu', query }],
+        response: { text: 'Here you go:', askFor: 'none' },
+      }).reply;
+    expect(search('deal 9')).not.toContain('Deal 1 —');
+    expect(search('koi deal h')).toContain('🎁 Deal 2 — Rs. 799');
+  });
+
+  it('says the deals run at other times when none is on now, never "…and 2 more" alone', () => {
+    const dinner = deal('dinner', 'Dinner Deal', { position: 6, schedule: weekdayLunch });
+    const later = catalog('16:00', [lunchDeal, dinner]);
+    const reply = chat().send('menu', { local: '16:00', products: later }).reply;
+    expect(reply.split('\n').slice(0, 3)).toEqual([
+      'Bun & Co.',
+      'We have 2 deals at other times. Send “deals” to see them.',
+      '🍔 Classic Smash — Rs. 690',
+    ]);
+    expect(chat().send('مینو', { local: '16:00', products: later }).reply).toContain(
+      'دوسرے اوقات میں 2 ڈیلز دستیاب ہیں۔',
+    );
+  });
+
+  it('keeps a deal with very long lists within one message, beside the dishes', () => {
+    const long = (k: number) =>
+      `Special family size item number ${k} with extra toppings and sauces`;
+    const big = deal('big', 'Mega Party Deal', {
+      items: Array.from({ length: 20 }, (_, k) => ({ name: long(k + 1), quantity: 2 })),
+      choices: [
+        {
+          id: 'g-big',
+          name: 'Flavour',
+          options: Array.from({ length: 8 }, (_, k) => ({
+            id: `o-${k}`,
+            name: `${long(k + 1)} flavour`,
+            price: 0,
+          })),
+        },
+      ],
+    });
+    const many = catalog('13:00', [big, { ...big, id: 'big-2', name: 'Mega Party Deal 2' }]);
+    const general = chat().send('menu', { products: many }).reply;
+    expect(general.length).toBeLessThanOrEqual(4096);
+    expect(general).toContain('🍔 Classic Smash — Rs. 690');
+    const listed = chat().send('deals', { products: many }).reply;
+    expect(listed).toContain('🎁 Mega Party Deal — Rs. 799');
+    expect(listed).not.toContain('Showing 0');
+  });
+});
+
+describe('deals sharing a name with another deal or a dish', () => {
+  const ended = {
+    days: [0, 1, 2, 3, 4, 5, 6],
+    start: '00:00',
+    end: '00:00',
+    endDate: '2026-10-01',
+  };
+  const live = deal('new', 'Ramadan Deal', { position: 2, choices: [], price: 89900 });
+
+  it('takes the deal on offer over a paused or ended one of the same name', () => {
+    for (const old of [
+      deal('old', 'Ramadan Deal', { position: 1, choices: [], schedule: ended }),
+      deal('old', 'Ramadan Deal', { position: 1, choices: [], available: false }),
+    ]) {
+      const products = catalog('13:00', [old, live]);
+      expect(parse('1 ramadan deal', products)).toEqual(['add new ×1']);
+      expect(resolveItemMention(products, company.id, 'ramadan deal chahiye')).toMatchObject({
+        kind: 'unique',
+        product: { id: 'new' },
+      });
+      const c = chat();
+      expect(c.send('Add 1 Ramadan Deal', { products }).reply).toBe(
+        'Added 1 × Ramadan Deal. Add anything else, or send “review”.',
+      );
+      expect(lines(c)).toEqual(['new ×1']);
+      // The AI unsure between them: the live one.
+      const ai = chat();
+      ai.send('1 ramadan deal', {
+        products,
+        actions: [{ type: 'clarify_item', candidateProductIds: ['old', 'new'], quantity: 1 }],
+        response: { text: '', askFor: 'none' },
+      });
+      expect(lines(ai)).toEqual(['new ×1']);
+    }
+  });
+
+  it('asks which one for two live deals of one name, or a live deal named like a dish', () => {
+    const twin = deal('old', 'Ramadan Deal', { position: 1, choices: [] });
+    const both = catalog('13:00', [twin, live]);
+    expect(parse('1 ramadan deal', both)).toEqual(['which old | new ×1']);
+    expect(chat().send('1 ramadan deal', { products: both }).reply).toBe(
+      'Which one would you like?\n1. Ramadan Deal — Rs. 799\n2. Ramadan Deal — Rs. 899',
+    );
+    // Asked about, both are shown.
+    const shown = chat().send('ramadan deal hai?', { products: both }).reply;
+    expect(shown).toContain('🎁 Ramadan Deal — Rs. 799');
+    expect(shown).toContain('🎁 Ramadan Deal — Rs. 899');
+    const named = catalog('13:00', [deal('crispy-deal', 'Crispy Chicken', { choices: [] })]);
+    expect(parse('1 crispy chicken', named)).toEqual([`which crispy-deal | ${crispy.id} ×1`]);
+  });
+
+  it('leaves the words to the dish when the deal of that name is paused or ended', () => {
+    for (const over of [{ available: false }, { schedule: ended }])
+      for (const gone of [
+        deal('crispy-deal', 'Crispy Chicken', { choices: [], ...over }),
+        deal('crispy-deal', 'Chicken Deal', { choices: [], aliases: ['Crispy Chicken'], ...over }),
+      ]) {
+        const products = catalog('13:00', [gone]);
+        expect(parse('1 crispy chicken', products)).toEqual([`add ${crispy.id} ×1`]);
+        const c = chat();
+        c.send('1 crispy chicken', { products });
+        expect(lines(c)).toEqual([`${crispy.id} ×1`]);
+      }
+  });
+});
+
+describe('a deal’s name inside a longer dish name', () => {
+  const plain = dish('p-zinger', 'Zinger Burger', { category: 'Burgers' });
+  const products = catalog('13:00', [{ ...zingerDeal, aliases: ['zinger'] }], [...seed, plain]);
+
+  it('leaves "zinger burger" the burger, and "zinger" the deal', () => {
+    expect(parse('1 zinger burger', products)).toEqual(['add p-zinger ×1']);
+    expect(parse('2 zinger burger chahiye', products)).toEqual(['add p-zinger ×2']);
+    expect(parse('1 zinger', products)).toEqual(['add zinger-deal ×1']);
+    expect(parse('1 zinger deal and 2 zinger burger', products)).toEqual([
+      'add zinger-deal ×1',
+      'add p-zinger ×2',
+    ]);
+    expect(resolveItemMention(products, company.id, '1 zinger burger')).toMatchObject({
+      kind: 'unique',
+      product: { id: 'p-zinger' },
+    });
+    // What Test your bot's Add button sends for the burger.
+    const c = chat();
+    expect(c.send('Add 1 Zinger Burger', { products }).reply).toBe(
+      'Added 1 × Zinger Burger. Add anything else, or send “review”.',
+    );
+    expect(lines(c)).toEqual(['p-zinger ×1']);
+  });
+
+  it('reads a deal word inside a dish’s name as that dish: "kids meal"', () => {
+    const kidsMeal = dish('kids-meal', 'Kids Meal', { category: 'Meals' });
+    const kids = catalog(
+      '13:00',
+      [deal('kids-deal', 'Kids Deal', { choices: [] })],
+      [...seed, kidsMeal],
+    );
+    expect(parse('1 kids meal', kids)).toEqual(['add kids-meal ×1']);
+    expect(parse('1 kids deal', kids)).toEqual(['add kids-deal ×1']);
+  });
+});
+
+describe('the review’s deal lines and the whole message’s 1024 characters', () => {
+  it('leaves them out when a line before the review would push the message past 1024', () => {
+    const items = Array.from({ length: 4 }, (_, i) => ({
+      name: `Item number ${i + 1} of the family feast box!!!!!!`,
+      quantity: 1,
+    }));
+    const feasts = Array.from({ length: 4 }, (_, i) =>
+      deal(`feast-${i + 1}`, `Family Feast ${i + 1}`, { position: i + 1, choices: [], items }),
+    );
+    const products = catalog('13:00', feasts);
+    const c = chat();
+    for (const feast of feasts)
+      c.send(feast.name, {
+        products,
+        actions: [{ type: 'add_item', productId: feast.id, quantity: 1, modifierIds: [] }],
+      });
+    const shown = c.send('pickup, Ali', {
+      products,
+      actions: [{ type: 'set_details', fulfillment: 'pickup', customerName: 'Ali' }],
+    });
+    // The review alone fits with what the deals include.
+    expect(shown.reply).toContain('Item number 1');
+    expect(shown.reply.length).toBeGreaterThan(960);
+    expect(shown.reply.length).toBeLessThanOrEqual(1024);
+    c.send('cart?', { products, actions: [{ type: 'cart_summary' }] });
+    const again = c.send('confirm', { products, actions: [{ type: 'confirm' }] });
+    expect(again.traces).toEqual(['confirm', 'fresh_confirmation_required']);
+    expect(again.reply.startsWith('Please confirm the current details below.\n\n')).toBe(true);
+    expect(again.reply).not.toContain('Item number');
+    expect(again.reply.length).toBeLessThanOrEqual(1024);
+    expect(c.conversation.cart.reviewMessageId).toBeDefined();
+    expect(c.send('confirm', { products }).order).toBeDefined();
+  });
+});

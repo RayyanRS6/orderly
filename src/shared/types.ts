@@ -362,9 +362,18 @@ export interface Conversation {
   };
   /**
    * The bot asked which option the customer wants for the deal's next unpicked choice group.
-   * Cleared wherever pendingItemChoice is.
+   * Cleared wherever pendingItemChoice is. `groupId` and `optionIds` are the choice and its
+   * options as last shown, so a number answers the list the customer saw (absent on choices
+   * asked before they were kept).
    */
-  pendingDealChoice?: { productId: string; quantity: number; picked: string[]; notes: string };
+  pendingDealChoice?: {
+    productId: string;
+    quantity: number;
+    picked: string[];
+    notes: string;
+    groupId?: string;
+    optionIds?: string[];
+  };
   testContext?: {
     target: 'draft' | 'published';
     configRevision: number;
