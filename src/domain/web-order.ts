@@ -10,7 +10,7 @@ import type {
 } from '../shared/types';
 import { money } from '../shared/types';
 import type { WebCart } from '../shared/menu';
-import { normalizeText, quoteCart, type CartQuote } from './pricing';
+import { CartError, normalizeText, quoteCart, type CartQuote } from './pricing';
 import { buildOrder, isOpen, noticeLanguage, orderReceivedText } from './engine';
 
 /** Pure rules for orders placed on the public menu page. The server only stores the result. */
@@ -87,7 +87,14 @@ export function quoteWebCart(
     return { cart, quote: quoteCart(company, products, cart) };
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Please check your order.';
-    throw new MenuOrderError(/unavailable/i.test(message) ? 'unavailable' : 'invalid', message);
+    // Pricing says which kind of problem it is; the wording is only a fallback for other errors.
+    const code =
+      error instanceof CartError
+        ? error.kind
+        : /unavailable/i.test(message)
+          ? 'unavailable'
+          : 'invalid';
+    throw new MenuOrderError(code, message);
   }
 }
 
@@ -174,6 +181,7 @@ export function buildWebOrder(
     orderId: order.id,
   };
   delete next.pendingItemChoice;
+  delete next.pendingDealChoice;
   next.customerName = cart.customerName!;
   if (options.customerMessage) {
     next.messages.push({

@@ -1,6 +1,7 @@
 import type {
   Company,
   Conversation,
+  Deal,
   Integration,
   IntegrationKind,
   Job,
@@ -156,6 +157,14 @@ export interface Repository {
   saveProduct(product: Product): Promise<void>;
   deleteProduct(companyId: string, id: string): Promise<void>;
   replaceProducts(companyId: string, products: Product[]): Promise<void>;
+  // Deals have their own table (202610210001_deals.sql): imports and Sheets refreshes never
+  // touch them. Before the migration a business has none, and saving one fails with 503. Menu
+  // items and deals share one id space, so each side refuses an id the other uses.
+  listDeals(companyId: string): Promise<Deal[]>;
+  saveDeal(deal: Deal): Promise<void>;
+  deleteDeal(companyId: string, id: string): Promise<void>;
+  // Positions 1..N in this order. Ids of other businesses' deals are ignored.
+  setDealPositions(companyId: string, ids: string[]): Promise<void>;
   listConversations(companyId: string): Promise<Conversation[]>;
   getConversation(companyId: string, id: string): Promise<Conversation | undefined>;
   findConversation(

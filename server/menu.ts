@@ -3,6 +3,7 @@ import type { Repository } from './repository.js';
 import type {
   Company,
   Conversation,
+  Deal,
   Job,
   Language,
   Order,
@@ -28,6 +29,7 @@ import {
   type WebCart,
 } from '../src/shared/menu.js';
 import { connectionMatches, customerKeys } from '../src/shared/whatsapp.js';
+import { sellableCatalog } from '../src/shared/deals.js';
 import {
   botConfig,
   cashOnly,
@@ -168,7 +170,17 @@ export async function publicMenu(repo: Repository, slug: string, now: string): P
   const stored = await repo.getCompany(link.companyId);
   if (!stored) throw new MenuError(NOT_AVAILABLE, 404, 'not_found');
   const company = withPause(configuredCompany(stored));
-  const products = (await repo.listProducts(company.id)).filter((p) => p.companyId === company.id);
+  const [stock, deals] = await Promise.all([
+    repo.listProducts(company.id),
+    repo.listDeals(company.id),
+  ]);
+  // Deals as they are at this moment, first; paused and ended ones are left out.
+  const products = sellableCatalog(
+    company,
+    stock.filter((p) => p.companyId === company.id),
+    deals,
+    now,
+  );
   // The same choice the chat offers: delivery needs a delivery area.
   const fulfillment = offeredFulfillment(company);
   const open = isOpen(company, now);
@@ -450,11 +462,20 @@ export async function placeLinkOrder(
     if (check.state !== 'ready' || !check.conversation || !check.claims)
       throw stateError(check.state, check.company);
     const { company, conversation, claims } = check;
-    const products = await repo.listProducts(company.id);
+    // One moment for the deals' times and the opening hours.
+    const now = new Date().toISOString();
+    const [products, deals] = await Promise.all([
+      repo.listProducts(company.id),
+      repo.listDeals(company.id),
+    ]);
+    // A paused or ended deal in the cart stays in, so it is refused by name.
+    const catalog = sellableCatalog(company, products, deals, now, {
+      keepIds: request.cart.items.map((item) => item.productId),
+    });
     let built: ReturnType<typeof buildWebOrder>;
     try {
-      built = buildWebOrder(company, products, conversation, request.cart, {
-        now: new Date().toISOString(),
+      built = buildWebOrder(company, catalog, conversation, request.cart, {
+        now,
         submissionKey: `${company.id}:${conversation.id}:menu-link:${claims.nonce}`,
         expectedTotal: request.expectedTotal,
       });
@@ -577,7 +598,14 @@ export async function createMenuDraftFor(
   if (!company.botEnabled) throw new MenuError(STATE_ERRORS.bot_off[1], 409, 'bot_off');
   const now = new Date().toISOString();
   if (!isOpen(company, now)) throw stateError('closed', company);
-  const products = await repo.listProducts(company.id);
+  const [stock, deals] = await Promise.all([
+    repo.listProducts(company.id),
+    repo.listDeals(company.id),
+  ]);
+  // Priced and checked at this one moment; a paused or ended deal in the cart is refused by name.
+  const products = sellableCatalog(company, stock, deals, now, {
+    keepIds: request.cart.items.map((item) => item.productId),
+  });
   let priced: ReturnType<typeof quoteWebCart>;
   try {
     priced = quoteWebCart(company, products, request.cart);
@@ -769,6 +797,7 @@ export async function redeemMenuDraft(
   repo: Repository,
   company: Company,
   products: Product[],
+  deals: Deal[],
   conversation: Conversation,
   input: TurnInput,
   code: string,
@@ -811,9 +840,14 @@ export async function redeemMenuDraft(
       'Order code made for a different number.',
     );
   if (!draft.cart) return refuse(CODE_ENDED(lang), 'Order code has no saved order.');
+  // The deals as they are now, not when the code was made. A paused or ended deal in the order
+  // stays in, so the reply can name it.
+  const catalog = sellableCatalog(company, products, deals, now, {
+    keepIds: draft.cart.items.map((item) => item.productId),
+  });
   let built: ReturnType<typeof buildWebOrder>;
   try {
-    built = buildWebOrder(company, products, conversation, draft.cart, {
+    built = buildWebOrder(company, catalog, conversation, draft.cart, {
       now,
       submissionKey: `${company.id}:${conversation.id}:menu-draft:${draft.id}`,
       expectedTotal: draft.quotedTotal,
@@ -834,6 +868,23 @@ export async function redeemMenuDraft(
           'Yeh order ek message ke liye bohat bara hai. Meherbani karke apna order yahin batayein.',
         ),
         'Order code refused: too_large.',
+      );
+    // A deal whose times ended (or that was paused or sold out) since the code was made.
+    const deal =
+      error.code === 'unavailable'
+        ? draft.cart.items
+            .map((item) => catalog.find((p) => p.id === item.productId))
+            .find((p) => p?.deal && !p.available)
+        : undefined;
+    if (deal)
+      return refuse(
+        say(
+          lang,
+          `${deal.name} is not available right now, so this order wasn't placed. Please open the menu link again.`,
+          `${deal.name} ابھی دستیاب نہیں ہے، اس لیے یہ آرڈر نہیں دیا گیا۔ براہ کرم مینو لنک دوبارہ کھولیں۔`,
+          `${deal.name} abhi available nahi hai, is liye yeh order place nahi hua. Meherbani karke menu link dobara kholein.`,
+        ),
+        'Order code refused: deal not on.',
       );
     return refuse(
       say(

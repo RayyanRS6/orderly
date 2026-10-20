@@ -3,6 +3,7 @@ import { MAX_BOT_INSTRUCTIONS, PAYMENT_METHODS } from '../src/shared/bot.js';
 import { AI_LIMIT_RANGES, MODEL_LIMITS } from '../src/shared/models.js';
 import { PHOTO_URL_RE } from '../src/shared/menu.js';
 import { SLUG_RE } from '../src/shared/slug.js';
+import { scheduleNeverOccurs } from '../src/shared/hours.js';
 const text = (max: number) => z.string().trim().max(max);
 /** The AI data terms an owner confirms in Connect and test. Raise it when their wording changes. */
 export const AI_TERMS_VERSION = 'ai-data-terms-2026-10-18';
@@ -65,6 +66,16 @@ export const optionSchema = z.object({
   name: text(100).min(1),
   price: z.number().int().min(0).max(100_000_000),
 });
+// An https photo link for the menu page; an emptied field means no photo.
+const photoUrl = z.preprocess(
+  (v) => (v === '' ? undefined : v),
+  z
+    .string()
+    .trim()
+    .max(500)
+    .regex(PHOTO_URL_RE, 'Use a photo link that starts with https://')
+    .optional(),
+);
 export const productSchema = z
   .object({
     id: z.string().uuid().optional(),
@@ -78,15 +89,7 @@ export const productSchema = z
     aliases: z.array(text(100)).max(20).default([]),
     variants: z.array(optionSchema).max(15).default([]),
     modifiers: z.array(optionSchema).max(20).default([]),
-    imageUrl: z.preprocess(
-      (v) => (v === '' ? undefined : v),
-      z
-        .string()
-        .trim()
-        .max(500)
-        .regex(PHOTO_URL_RE, 'Use a photo link that starts with https://')
-        .optional(),
-    ),
+    imageUrl: photoUrl,
   })
   .superRefine((p, ctx) => {
     for (const key of ['variants', 'modifiers'] as const)
@@ -100,6 +103,125 @@ export const productSchema = z
           message: 'Option IDs and names must be unique.',
         });
   });
+const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+// A form may send an emptied field as '' or null: it means not set.
+const blankAsMissing = (v: unknown) => (v === '' || v === null ? undefined : v);
+// 'YYYY-MM-DD' that is a real day ('2026-02-30' is not).
+const dayDate = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Use a date like 2026-08-14.')
+  .refine((v) => {
+    const at = Date.parse(`${v}T00:00:00Z`);
+    return Number.isFinite(at) && new Date(at).toISOString().startsWith(v);
+  }, 'Use a real date.');
+export const dealScheduleSchema = z
+  .object({
+    days: z.array(z.number().int().min(0).max(6)).min(1, 'Choose at least one day.').max(7),
+    start: z.string().regex(HHMM),
+    end: z.string().regex(HHMM),
+    startDate: z.preprocess(blankAsMissing, dayDate.optional()),
+    endDate: z.preprocess(blankAsMissing, dayDate.optional()),
+  })
+  .superRefine((schedule, ctx) => {
+    if (new Set(schedule.days).size !== schedule.days.length)
+      ctx.addIssue({ code: 'custom', path: ['days'], message: 'Choose each day only once.' });
+    else if (schedule.startDate && schedule.endDate && schedule.startDate > schedule.endDate)
+      ctx.addIssue({
+        code: 'custom',
+        path: ['endDate'],
+        message: 'The end date is before the start date.',
+      });
+    else if (scheduleNeverOccurs(schedule))
+      ctx.addIssue({
+        code: 'custom',
+        path: ['days'],
+        message: 'None of the chosen days falls between the start and end dates.',
+      });
+  });
+const dealItemSchema = z
+  .object({
+    name: text(100).min(1),
+    quantity: z.number().int().min(1).max(50),
+    productId: z.preprocess(blankAsMissing, text(80).min(1).optional()),
+    variantId: z.preprocess(blankAsMissing, text(80).min(1).optional()),
+  })
+  .refine((item) => !item.variantId || item.productId, {
+    path: ['variantId'],
+    message: 'A size needs a linked menu item.',
+  });
+// Option ids end up in cart modifierIds, which allow 80 characters.
+const dealChoiceSchema = z.object({
+  id: text(80).min(1),
+  name: text(80).min(1),
+  options: z
+    .array(
+      z.object({
+        id: text(80).min(1),
+        name: text(100).min(1),
+        price: z.number().int().min(0).max(100_000_000).default(0),
+      }),
+    )
+    .min(2, 'Give each choice at least 2 options.')
+    .max(25),
+});
+/** A deal as the dashboard saves it. The server sets companyId, position and updatedAt. */
+export const dealSchema = z
+  .object({
+    id: z.string().uuid().optional(),
+    name: text(120).min(1),
+    description: text(500).default(''),
+    emoji: text(16).default('🎁'),
+    imageUrl: photoUrl,
+    aliases: z.array(text(60)).max(10).default([]),
+    price: z.number().int().min(0).max(100_000_000),
+    regularPrice: z.preprocess(blankAsMissing, z.number().int().min(0).max(100_000_000).optional()),
+    items: z.array(dealItemSchema).min(1, 'Add what the deal includes.').max(20),
+    choices: z.array(dealChoiceSchema).max(5).default([]),
+    available: z.boolean(),
+    schedule: z.preprocess(blankAsMissing, dealScheduleSchema.optional()),
+  })
+  .superRefine((deal, ctx) => {
+    // A pick is found by its id alone, so ids must be unique across the whole deal.
+    const ids = deal.choices.flatMap((group) => [group.id, ...group.options.map((o) => o.id)]);
+    if (new Set(ids).size !== ids.length)
+      ctx.addIssue({ code: 'custom', path: ['choices'], message: 'Choice IDs must be unique.' });
+    if (new Set(deal.choices.map((g) => g.name.toLowerCase())).size !== deal.choices.length)
+      ctx.addIssue({
+        code: 'custom',
+        path: ['choices'],
+        message: 'Give each choice its own name.',
+      });
+    deal.choices.forEach((group, index) => {
+      if (new Set(group.options.map((o) => o.name.toLowerCase())).size !== group.options.length)
+        ctx.addIssue({
+          code: 'custom',
+          path: ['choices', index, 'options'],
+          message: 'Option names must be unique within a choice.',
+        });
+    });
+  })
+  .transform(({ schedule, aliases, ...deal }) => ({
+    ...deal,
+    aliases: aliases.filter(Boolean),
+    // Every day, all day and no dates is the same as no times: on whenever the restaurant is.
+    ...(schedule &&
+      !(
+        schedule.days.length === 7 &&
+        schedule.start === schedule.end &&
+        !schedule.startDate &&
+        !schedule.endDate
+      ) && { schedule: { ...schedule, days: [...schedule.days].sort((a, b) => a - b) } }),
+  }));
+export const dealAvailableSchema = z.object({ available: z.boolean() }).strict();
+export const dealOrderSchema = z
+  .object({
+    ids: z
+      .array(z.string().uuid())
+      .min(1)
+      .max(50)
+      .refine((ids) => new Set(ids).size === ids.length, 'List each deal once.'),
+  })
+  .strict();
 // The settings an owner edits. Fields the server manages (id, createdAt, catalogSyncedAt, the
 // AI data approval, linked-phone permission) are not listed, so a copy sent back is dropped.
 // A save never changes the slug either; the save route keeps the stored one.

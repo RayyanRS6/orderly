@@ -76,15 +76,20 @@ await writeFile(
   ),
 );
 // A restaurant's menu page (/m/<slug>, rewritten to this file) fetches its own small chunk and
-// the chunks it imports alongside the entry script. It must never reach the workspace or the
-// dialog library, which would make every Instagram/QR visitor download the dashboard.
+// the chunks it imports alongside the entry script. It must never reach the workspace, the
+// dialog library or the bot engine, which would make every Instagram/QR visitor download the
+// dashboard.
 if (!manifest['src/components/MenuPage.tsx'])
   throw new Error('The menu page chunk (src/components/MenuPage.tsx) is missing from the build.');
 const menuPreload = new Set();
 const visitMenu = (key) => {
   const chunk = manifest[key];
   if (!chunk || chunk.isEntry || menuPreload.has(chunk.file)) return;
-  if (key === 'src/App.tsx' || /(^|\/)node_modules\/@radix-ui\//.test(key))
+  if (
+    key === 'src/App.tsx' ||
+    key === 'src/domain/engine.ts' ||
+    /(^|\/)node_modules\/@radix-ui\//.test(key)
+  )
     throw new Error(`The menu page must stay light, but it loads ${key}.`);
   menuPreload.add(chunk.file);
   for (const dep of chunk.imports ?? []) visitMenu(dep);

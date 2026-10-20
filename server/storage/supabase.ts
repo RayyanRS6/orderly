@@ -2,6 +2,7 @@ import { createClient, type SupabaseClient, type User } from '@supabase/supabase
 import type {
   Company,
   Conversation,
+  Deal,
   Integration,
   IntegrationKind,
   Job,
@@ -32,7 +33,7 @@ import type {
   WebOrderOutcome,
 } from '../../src/shared/menu';
 import type { PipelineHealth, Repository } from '../repository';
-import { ACCOUNT_IN_USE, LAST_OWNER_MESSAGE, PublicError } from '../security';
+import { ACCOUNT_IN_USE, CATALOG_ID_IN_USE, LAST_OWNER_MESSAGE, PublicError } from '../security';
 import { env } from '../config';
 
 type Result<T> = { data: T | null; error: { message: string } | null };
@@ -45,6 +46,16 @@ const migrationMissing = (error: { code?: string } | null) =>
   ['PGRST202', '42883', '42P01', 'PGRST205'].includes(error?.code ?? '');
 const spamMigrationError = () =>
   new PublicError('Apply the spam protection database migration first.', 503);
+const DEALS_MIGRATION = '202610210001_deals.sql';
+// A write to the menu or the deals: before the deals migration a deal cannot be saved, and an
+// id the other side uses is refused (SQL enforce_catalog_id) in the owner's words.
+function catalogWrite<T>(result: Result<T> & { error: { code?: string } | null }, deals = false) {
+  if (deals && migrationMissing(result.error))
+    throw new PublicError(`Apply the ${DEALS_MIGRATION} database migration first.`, 503);
+  if (result.error?.message?.includes('Menu item ID is already in use'))
+    throw new PublicError(CATALOG_ID_IN_USE, 409);
+  return unwrap(result);
+}
 // Refusals the database raises while work is running, said as the local store says them (409),
 // so the owner knows to wait instead of seeing a general failure.
 const BUSY_REFUSALS: [raised: string, message: string][] = [
@@ -660,7 +671,7 @@ export class SupabaseRepository implements Repository {
     return this.list<Product>('products', companyId);
   }
   async saveProduct(product: Product) {
-    unwrap(
+    catalogWrite(
       await this.client
         .from('products')
         .upsert({ id: product.id, company_id: product.companyId, data: product }),
@@ -670,7 +681,53 @@ export class SupabaseRepository implements Repository {
     unwrap(await this.client.from('products').delete().eq('company_id', companyId).eq('id', id));
   }
   async replaceProducts(companyId: string, products: Product[]) {
-    await this.rpc('replace_products', { p_company_id: companyId, p_products: products });
+    catalogWrite(
+      await this.client.rpc('replace_products', {
+        p_company_id: companyId,
+        p_products: products,
+      }),
+    );
+  }
+  // Every bot turn and menu page reads these: before the migration a business simply has none.
+  async listDeals(companyId: string) {
+    const result = await this.client
+      .from('deals')
+      .select('data')
+      .eq('company_id', companyId)
+      .limit(1000);
+    if (migrationMissing(result.error)) {
+      warnOnce('deals', DEALS_MIGRATION);
+      return [];
+    }
+    return (unwrap(result) ?? []).map((row: { data: Deal }) => row.data);
+  }
+  async saveDeal(deal: Deal) {
+    catalogWrite(
+      await this.client
+        .from('deals')
+        .upsert({ id: deal.id, company_id: deal.companyId, data: deal }),
+      true,
+    );
+  }
+  async deleteDeal(companyId: string, id: string) {
+    catalogWrite(
+      await this.client.from('deals').delete().eq('company_id', companyId).eq('id', id),
+      true,
+    );
+  }
+  // One write for the whole new order: each deal whose position changes is saved again.
+  async setDealPositions(companyId: string, ids: string[]) {
+    const rows = (catalogWrite(
+      await this.client.from('deals').select('data').eq('company_id', companyId).limit(1000),
+      true,
+    ) ?? []) as { data: Deal }[];
+    const moved = rows.flatMap(({ data }) => {
+      const position = ids.indexOf(data.id) + 1;
+      return position && position !== data.position
+        ? [{ id: data.id, company_id: companyId, data: { ...data, position } }]
+        : [];
+    });
+    if (moved.length) catalogWrite(await this.client.from('deals').upsert(moved), true);
   }
   listConversations(companyId: string) {
     return this.list<Conversation>('conversations', companyId, 'updated_at', 200);

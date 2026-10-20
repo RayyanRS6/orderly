@@ -153,5 +153,10 @@ export class PublicError extends Error {
 }
 /** A linked phone whose WhatsApp account another business already has connected (409). */
 export const ACCOUNT_IN_USE = 'This account is already connected to another restaurant.';
+/**
+ * Menu items and deals share one id space (SQL enforce_catalog_id raises the same words), so
+ * no business can give a menu item a deal's id or the reverse (409).
+ */
+export const CATALOG_ID_IN_USE = 'Menu item ID is already in use.';
 export const LAST_OWNER_MESSAGE =
   'Every business needs at least one owner. Add another owner first. You also can’t remove or demote yourself.';

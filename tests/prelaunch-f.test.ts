@@ -854,6 +854,7 @@ describe('server-only access and the migrations ledger (F57)', () => {
       'public.run_retention(text)',
       'public.staff_attention(text)',
       'public.has_overdue_attention(text,integer)',
+      'public.enforce_catalog_id()',
     ];
     for (const signature of signatures) {
       expect(

@@ -29,6 +29,7 @@ import {
   resolvePendingItemChoice,
 } from './menu-resolver';
 import { leftToRight } from './disclosure';
+import { inWindow, localClock, toMinute, turnInstant } from '../shared/hours';
 import { normalizeText as normalize, quoteCart, type CartQuote } from './pricing';
 export { quoteCart, type CartQuote } from './pricing';
 
@@ -233,46 +234,11 @@ function unreview(cart: Cart) {
   delete cart.reviewedAt;
 }
 
-// The restaurant's local weekday (0 = Sunday) and minute of the day, or undefined.
-function localClock(company: Company, now: string): { day: number; minute: number } | undefined {
-  const date = new Date(now);
-  if (!Number.isFinite(date.getTime())) return undefined;
-  try {
-    const parts = new Intl.DateTimeFormat('en-US', {
-      timeZone: company.timezone,
-      weekday: 'short',
-      hour: '2-digit',
-      minute: '2-digit',
-      hourCycle: 'h23',
-    }).formatToParts(date);
-    const part = (key: string) => parts.find((p) => p.type === key)?.value ?? '';
-    const day = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(part('weekday'));
-    const minute = Number(part('hour')) * 60 + Number(part('minute'));
-    return day < 0 || !Number.isFinite(minute) ? undefined : { day, minute };
-  } catch {
-    return undefined;
-  }
-}
-const toMinute = (time: string) => {
-  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) return NaN;
-  const [h, m] = time.split(':').map(Number);
-  return h! * 60 + m!;
-};
+// Overnight hours count toward the day they start; deals use the same rule (shared/hours.ts).
 export function isOpen(company: Company, now: string): boolean {
   try {
-    const clock = localClock(company, now);
-    if (!clock) return false;
-    const { day, minute } = clock;
-    const start = toMinute(company.openingHours.start),
-      end = toMinute(company.openingHours.end);
-    if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
-    if (start === end) return company.openingHours.days.includes(day);
-    if (start < end)
-      return company.openingHours.days.includes(day) && minute >= start && minute < end;
-    return (
-      (minute >= start && company.openingHours.days.includes(day)) ||
-      (minute < end && company.openingHours.days.includes((day + 6) % 7))
-    );
+    const clock = localClock(company.timezone, now);
+    return !!clock && inWindow(company.openingHours, clock);
   } catch {
     return false;
   }
@@ -280,7 +246,7 @@ export function isOpen(company: Company, now: string): boolean {
 // When a closed restaurant next opens: in how many days (0 = today), on which weekday.
 function nextOpening(company: Company, now: string): { inDays: number; day: number } | undefined {
   try {
-    const clock = localClock(company, now);
+    const clock = localClock(company.timezone, now);
     const start = toMinute(company.openingHours.start);
     if (!clock || !Number.isFinite(start) || !Number.isFinite(toMinute(company.openingHours.end)))
       return undefined;
@@ -1871,10 +1837,7 @@ export function processTurn(
   const reviewAnswered = isLatestReview(conversation.cart, conversation.messages.at(-1));
   // A review is timed by when it was really shown: a late message's reply goes out when it is
   // processed (receivedAt), not at the time the message was sent.
-  const shownAt =
-    input.receivedAt && Number.isFinite(Date.parse(input.receivedAt))
-      ? input.receivedAt
-      : input.now;
+  const shownAt = turnInstant(input);
   const reviewAge = cart.reviewedAt ? Date.parse(shownAt) - Date.parse(cart.reviewedAt) : NaN;
   const reviewFresh = reviewAge >= 0 && reviewAge <= REVIEW_FRESH_MS;
   // The review text this turn shows, so finish() records which reply carried it.

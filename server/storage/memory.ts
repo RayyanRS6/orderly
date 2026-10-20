@@ -5,6 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import type {
   Company,
   Conversation,
+  Deal,
   Integration,
   IntegrationKind,
   Job,
@@ -36,7 +37,7 @@ import {
 } from '../../src/shared/seed';
 import type { PipelineHealth, Repository } from '../repository';
 import { transitionOrder } from '../../src/domain/engine';
-import { ACCOUNT_IN_USE, LAST_OWNER_MESSAGE, PublicError } from '../security';
+import { ACCOUNT_IN_USE, CATALOG_ID_IN_USE, LAST_OWNER_MESSAGE, PublicError } from '../security';
 import { PLATFORM_AUDIT_ID } from '../config';
 import { orderMatches, pageOf, stagesOf, summaryOf } from '../queries';
 import { effectiveAiLimits } from '../../src/shared/models';
@@ -268,6 +269,7 @@ interface State {
   retention: Record<string, import('../../src/shared/types').RetentionStatus>;
   companies: Company[];
   products: Product[];
+  deals: Deal[];
   conversations: Conversation[];
   orders: Order[];
   integrations: { companyId: string; integration: Integration; encryptedSecret?: string }[];
@@ -285,6 +287,8 @@ const freshState = (seed: boolean): State => ({
   retention: {},
   companies: seed ? copy(seedCompanies) : [],
   products: seed ? copy(seedProducts) : [],
+  // Also what a demo file saved before deals loads with.
+  deals: [],
   conversations: seed ? copy(seedConversations) : [],
   orders: seed ? copy(seedOrders) : [],
   traces: seed ? copy(seedTraces) : [],
@@ -1215,6 +1219,8 @@ export class MemoryRepository implements Repository {
         s.products.find((p) => p.id === product.id),
         product.companyId,
       );
+      // Mirrors SQL enforce_catalog_id: whichever business owns the deal.
+      if (s.deals.some((d) => d.id === product.id)) throw new PublicError(CATALOG_ID_IN_USE, 409);
       put(s.products, product);
     });
   }
@@ -1229,14 +1235,45 @@ export class MemoryRepository implements Repository {
       companyExists(s, companyId);
       if (new Set(products.map((p) => p.id)).size !== products.length)
         throw new Error('Duplicate product id.');
+      const dealIds = new Set(s.deals.map((d) => d.id));
       for (const product of products) {
         if (product.companyId !== companyId) throw new Error('Invalid product company.');
         assertOwnership(
           s.products.find((p) => p.id === product.id),
           companyId,
         );
+        if (dealIds.has(product.id)) throw new PublicError(CATALOG_ID_IN_USE, 409);
       }
       s.products = [...s.products.filter((p) => p.companyId !== companyId), ...copy(products)];
+    });
+  }
+  listDeals(companyId: string) {
+    return this.read((s) => s.deals.filter((d) => d.companyId === companyId));
+  }
+  saveDeal(deal: Deal) {
+    return this.mutate((s) => {
+      companyExists(s, deal.companyId);
+      assertOwnership(
+        s.deals.find((d) => d.id === deal.id),
+        deal.companyId,
+      );
+      if (s.products.some((p) => p.id === deal.id)) throw new PublicError(CATALOG_ID_IN_USE, 409);
+      put(s.deals, deal);
+    });
+  }
+  deleteDeal(companyId: string, id: string) {
+    return this.mutate((s) => {
+      companyExists(s, companyId);
+      s.deals = s.deals.filter((d) => d.companyId !== companyId || d.id !== id);
+    });
+  }
+  setDealPositions(companyId: string, ids: string[]) {
+    return this.mutate((s) => {
+      companyExists(s, companyId);
+      ids.forEach((id, index) => {
+        const deal = s.deals.find((d) => d.id === id && d.companyId === companyId);
+        if (deal) deal.position = index + 1;
+      });
     });
   }
   listConversations(companyId: string) {

@@ -556,9 +556,10 @@ describe('Theme Polish: Dropdowns, Scrollbars, and Sidebar Scrolling', () => {
 
 describe('light public pages', () => {
   const src = join(process.cwd(), 'src');
-  // Any of these pulls the dashboard or the dialog library into the menu page's chunk.
-  const banned = ['App.tsx', 'lib/workspace.tsx', 'components/ui.tsx'].map((file) =>
-    join(src, file),
+  // Any of these pulls the dashboard, the dialog library or the bot engine into the menu
+  // page's chunk.
+  const banned = ['App.tsx', 'lib/workspace.tsx', 'components/ui.tsx', 'domain/engine.ts'].map(
+    (file) => join(src, file),
   );
   const real = (file: string) => readFileSync(file, 'utf8');
 
@@ -603,6 +604,8 @@ describe('light public pages', () => {
       'lib/menu-cart.ts',
       'shared/menu.ts',
       'domain/pricing.ts',
+      'shared/deals.ts',
+      'shared/hours.ts',
     ])
       walk(join(src, file));
     return problems;
@@ -631,6 +634,10 @@ describe('light public pages', () => {
     expect(
       heavyImports(adding('components/ui-basic.tsx', "const app = () => import('../App');")),
     ).toEqual(['src/components/ui-basic.tsx imports ../App']);
+    // The deal and hours helpers are shared with the engine, never the other way round.
+    expect(
+      heavyImports(adding('shared/deals.ts', "import { isOpen } from '../domain/engine';")),
+    ).toEqual(['src/shared/deals.ts imports ../domain/engine']);
     // Type-only imports are dropped at build time, so they cost the page nothing.
     expect(
       heavyImports(adding('lib/menu-cart.ts', "import type { Page } from './workspace';")),

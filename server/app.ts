@@ -7,11 +7,19 @@ import { requestId } from 'hono/request-id';
 import { createClient } from '@supabase/supabase-js';
 import { z, ZodError } from 'zod';
 import type { PipelineHealth, Repository } from './repository.js';
-import type { Company, Integration, IntegrationKind, Order, Role } from '../src/shared/types.js';
+import type {
+  Company,
+  Deal,
+  Integration,
+  IntegrationKind,
+  Order,
+  Role,
+} from '../src/shared/types.js';
 import { createConversation, transitionOrder } from '../src/domain/engine.js';
 import { slugify } from '../src/shared/slug.js';
 import { appMode, automationPaused, env, workerLeaseMs } from './config.js';
 import {
+  CATALOG_ID_IN_USE,
   PublicError,
   encryptSecret,
   decryptSecret,
@@ -24,6 +32,9 @@ import {
   productSchema,
   companySchema,
   chatSchema,
+  dealAvailableSchema,
+  dealOrderSchema,
+  dealSchema,
   settingsRevision,
   withSettingsRevision,
 } from './validation.js';
@@ -85,6 +96,8 @@ const owner = (role: Role) => {
 // 16 tries half a second apart, about as long as one AI reply takes.
 const NOTICE_LOCK_TRIES = 16;
 const NOTICE_LOCK_WAIT_MS = 500;
+// Deals per business, so the menu page and the bot's catalog stay small.
+const MAX_DEALS = 50;
 // A request path with its record IDs replaced, for audit entries and failure logs.
 const routePattern = (path: string) => path.replace(/\/[a-f0-9-]{36}(?=\/|$)/g, '/:id');
 // Only a rejected token means signing in again. When Supabase Auth cannot be reached or is
@@ -510,9 +523,10 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
   );
   app.get('/api/bootstrap', async (c) => {
     const company = c.get('company');
-    const [products, orderPage, conversationPage, integrations, summary, traces, checks] =
+    const [products, deals, orderPage, conversationPage, integrations, summary, traces, checks] =
       await Promise.all([
         repo.listProducts(company.id),
+        repo.listDeals(company.id),
         repo.queryOrders(company.id, { pageSize: 50, sandbox: appMode() === 'demo' }),
         repo.queryConversations(company.id, { pageSize: 50, sandbox: appMode() === 'demo' }),
         repo.getIntegrations(company.id),
@@ -545,6 +559,7 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
       company: withSettingsRevision(company),
       companies: c.get('allowedCompanies'),
       products,
+      deals,
       orders: orderPage.items,
       conversations: conversationPage.items,
       integrations: allIntegrations,
@@ -697,6 +712,77 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
   app.post('/api/catalog/refresh', async (c) => {
     owner(c.get('role'));
     return c.json({ count: await refreshCatalog(repo, c.get('company')) });
+  });
+  // Deals are edited here whatever the menu source: imports and Sheets refreshes leave them be.
+  app.post('/api/deals', async (c) => {
+    owner(c.get('role'));
+    const company = c.get('company');
+    const body = dealSchema.parse(await c.req.json());
+    const [deals, products] = await Promise.all([
+      repo.listDeals(company.id),
+      repo.listProducts(company.id),
+    ]);
+    const stored = body.id ? deals.find((d) => d.id === body.id) : undefined;
+    if (body.id && !stored) throw new PublicError('Deal not found.', 404);
+    if (!stored && deals.length >= MAX_DEALS)
+      throw new PublicError(
+        `You can have up to ${MAX_DEALS} deals. Delete one you no longer use first.`,
+        409,
+      );
+    // Only a link added or changed now must point at the menu. One saved before is kept when its
+    // item has gone (a Sheet can give items new ids): the Deals tab warns about it instead.
+    const link = (item: { productId?: string; variantId?: string }) =>
+      JSON.stringify([item.productId, item.variantId ?? null]);
+    const kept = new Set(stored?.items.map(link));
+    for (const item of body.items) {
+      if (!item.productId || kept.has(link(item))) continue;
+      const product = products.find((p) => p.id === item.productId);
+      if (!product) throw new PublicError(`${item.name} is no longer on your menu.`, 422);
+      if (item.variantId && !product.variants.some((v) => v.id === item.variantId))
+        throw new PublicError(`Choose a size for ${product.name}.`, 422);
+    }
+    const id = stored?.id ?? randomUUID();
+    if (products.some((p) => p.id === id)) throw new PublicError(CATALOG_ID_IN_USE, 409);
+    const deal: Deal = {
+      ...body,
+      id,
+      companyId: company.id,
+      position: stored?.position ?? Math.max(0, ...deals.map((d) => d.position)) + 1,
+      updatedAt: new Date().toISOString(),
+    };
+    await repo.saveDeal(deal);
+    return c.json(deal);
+  });
+  // Pause or resume at once, say when an item runs out: nothing else is checked or changed.
+  app.post('/api/deals/:id/available', async (c) => {
+    owner(c.get('role'));
+    const company = c.get('company');
+    const { available } = dealAvailableSchema.parse(await c.req.json());
+    const stored = (await repo.listDeals(company.id)).find((d) => d.id === c.req.param('id'));
+    if (!stored) throw new PublicError('Deal not found.', 404);
+    const deal: Deal = { ...stored, available, updatedAt: new Date().toISOString() };
+    await repo.saveDeal(deal);
+    return c.json(deal);
+  });
+  app.post('/api/deals/order', async (c) => {
+    owner(c.get('role'));
+    const company = c.get('company');
+    const { ids } = dealOrderSchema.parse(await c.req.json());
+    const deals = await repo.listDeals(company.id);
+    if (ids.some((id) => !deals.some((d) => d.id === id)))
+      throw new PublicError('Deal not found.', 404);
+    // Deals the list leaves out (one just added in another tab) follow, in their own order.
+    const rest = deals
+      .filter((d) => !ids.includes(d.id))
+      .sort((a, b) => a.position - b.position)
+      .map((d) => d.id);
+    await repo.setDealPositions(company.id, [...ids, ...rest]);
+    return c.json({ ok: true });
+  });
+  app.delete('/api/deals/:id', async (c) => {
+    owner(c.get('role'));
+    await repo.deleteDeal(c.get('company').id, c.req.param('id'));
+    return c.json({ ok: true });
   });
   app.post('/api/chat', async (c) => {
     const company = c.get('company');

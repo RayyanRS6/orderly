@@ -63,6 +63,8 @@ import { assertCurrentAddress, jobAddress, requireMeta } from './whatsapp/connec
 import { customerKeys, sameAddress, type WhatsAppAddress } from '../src/shared/whatsapp';
 import { appHost, menuPublicUrl, personalMenuText, redeemMenuDraft } from './menu.js';
 import { menuCodeIn } from '../src/shared/menu.js';
+import { sellableCatalog } from '../src/shared/deals.js';
+import { turnInstant } from '../src/shared/hours.js';
 
 // A message handled more than this late is answered with care: a confirmation is asked again.
 const LATE_AFTER_MS = 10 * 60 * 1000;
@@ -423,9 +425,15 @@ export async function handleTurn(
           refresh.error,
         );
     }
-    const products = await repo.listProducts(company.id);
+    const [products, deals] = await Promise.all([
+      repo.listProducts(company.id),
+      repo.listDeals(company.id),
+    ]);
     if (codeUsable && company.botEnabled && conversation.mode === 'bot')
-      return await redeemMenuDraft(repo, company, products, conversation, input, menuCode!);
+      return await redeemMenuDraft(repo, company, products, deals, conversation, input, menuCode!);
+    // The menu as sold at this message's moment, deals first. Every stored deal is there, paused
+    // and ended ones as unavailable, so asking for one by name gets a clear refusal.
+    const catalog = sellableCatalog(company, products, deals, turnInstant(input), { all: true });
     // The order this chat placed: its real status answers "where is my order?", and once it is
     // finished (or the cart was cancelled), or staff never closed it (see orderLeftOpen), the
     // next message starts a fresh cart, as "new order" would, before the AI sees the chat. An
@@ -455,6 +463,7 @@ export async function handleTurn(
       // A new revision, so the next order can never reuse an earlier submission key.
       conversation.cart = { ...emptyCart(), revision: cart.revision + 1 };
       delete conversation.pendingItemChoice;
+      delete conversation.pendingDealChoice;
     }
     const latestOrder =
       placed && conversation.cart.orderId === placed.id
@@ -520,9 +529,10 @@ export async function handleTurn(
       try {
         interpretation = await new AiModelAdapter(repo).interpret(
           company,
-          products,
+          catalog,
           conversation,
           input.text,
+          { hasDeals: deals.length > 0 },
         );
         const proposal = interpretation;
         const matchedRule = botConfig(company).behaviorRules.find(
@@ -632,7 +642,7 @@ export async function handleTurn(
     }
     const result = processTurn(
       company,
-      products,
+      catalog,
       conversation,
       { ...input, menuLink: menuUrl, appHost: appHost(), ...(latestOrder && { latestOrder }) },
       actions,

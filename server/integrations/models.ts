@@ -357,12 +357,17 @@ function makeModel(provider: Provider, model: string, apiKey: string) {
   if (provider === 'gemini') return createGoogleGenerativeAI({ apiKey })(model);
   throw new PublicError('Select a live model provider first.');
 }
+/** hasDeals: the business has saved deals, in any state (for the prompt's deals rule). */
+export interface InterpretOptions {
+  hasDeals?: boolean;
+}
 export interface ModelAdapter {
   interpret(
     company: Company,
     products: Product[],
     conversation: Conversation,
     text: string,
+    options?: InterpretOptions,
   ): Promise<ModelInterpretation>;
 }
 export class AiModelAdapter implements ModelAdapter {
@@ -376,6 +381,8 @@ export class AiModelAdapter implements ModelAdapter {
     products: Product[],
     conversation: Conversation,
     text: string,
+    // For a deals rule in the prompt, only for a business with deals (the prompt step adds it).
+    options: InterpretOptions = {},
   ): Promise<ModelInterpretation> {
     if (!company.privacy?.aiDataApproved)
       throw new PublicError(

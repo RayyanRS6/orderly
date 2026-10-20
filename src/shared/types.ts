@@ -113,11 +113,102 @@ export interface Product {
   modifiers: ProductOption[];
   /** An https photo link for the menu page. Never sent to the AI. */
   imageUrl?: string;
+  /** Set only on a deal turned into a menu entry at sell time (shared/deals.ts). */
+  deal?: ProductDeal;
+}
+/** One pick in a deal's choice group, e.g. "Sprite". price = extra charge in paisa (0 = free). */
+export interface DealChoiceOption {
+  id: string;
+  name: string;
+  price: number;
+}
+/** A choice the customer must make for a deal, e.g. "Drink". Exactly one option is picked. */
+export interface DealChoiceGroup {
+  id: string;
+  name: string;
+  options: DealChoiceOption[];
+}
+/** One thing a deal includes. productId (+ variantId for a size) links a menu item: optional. */
+export interface DealItem {
+  name: string;
+  quantity: number;
+  productId?: string;
+  variantId?: string;
+}
+/** When a deal can be ordered, in the restaurant's timezone. Same day rule as opening hours. */
+export interface DealSchedule {
+  /**
+   * 0 = Sunday … 6 = Saturday, 1..7 unique. A listed day is the calendar day a window STARTS
+   * (isOpen's rule): start > end crosses midnight and its after-midnight part belongs to the
+   * listed start day.
+   */
+  days: number[];
+  /** 'HH:MM'. start === end means all day on the listed days. */
+  start: string;
+  /** 'HH:MM'. */
+  end: string;
+  /** 'YYYY-MM-DD' inclusive, compared with the occurrence date (shared/hours.ts). */
+  startDate?: string;
+  /** 'YYYY-MM-DD' inclusive, compared with the occurrence date (shared/hours.ts). */
+  endDate?: string;
+}
+/** A combo or time-limited offer. Kept in its own table, never in `products`. */
+export interface Deal {
+  /** A uuid, never equal to any product id: products and deals share one id space. */
+  id: string;
+  companyId: string;
+  /** "Deal 1", "Zinger Lunch Deal". */
+  name: string;
+  description: string;
+  /** Default '🎁'. */
+  emoji: string;
+  /** An https photo link, as for products. */
+  imageUrl?: string;
+  aliases: string[];
+  /** The deal price, in paisa. */
+  price: number;
+  /**
+   * The owner's "price if bought separately". "You save" = regularPrice - price, shown only when
+   * above 0. Never worked out at sell time.
+   */
+  regularPrice?: number;
+  /** What's included, 1..20. */
+  items: DealItem[];
+  /** 0..5 groups of 2..25 options. Ids are unique across the deal. */
+  choices: DealChoiceGroup[];
+  /** The owner's on/off ("Paused" when false). */
+  available: boolean;
+  /** Missing means whenever the restaurant is open. */
+  schedule?: DealSchedule;
+  /** Order on the menu: ascending, ties by name (numeric collation). */
+  position: number;
+  updatedAt: string;
+}
+export type DealState = 'on' | 'later' | 'sold_out' | 'paused' | 'ended';
+/** Present only on product-shaped deal entries built at sell time; never stored in `products`. */
+export interface ProductDeal {
+  /** `${quantity} × ${name}` from the deal's STORED item names. */
+  includes: string[];
+  choices: DealChoiceGroup[];
+  regularPrice?: number;
+  state: DealState;
+  /** English wording of when it is on, time-aware; for the menu page, the AI and the dashboard. */
+  when?: string;
+  /**
+   * Internal, so the engine can word the times in the chat's language. Never sent to the public
+   * menu or the AI.
+   */
+  schedule?: DealSchedule;
 }
 export interface CartItem {
   productId: string;
   quantity: number;
+  /** Never set for a deal. */
   variantId?: string;
+  /**
+   * For a deal line: the chosen option id of each choice group, one per group. Their order means
+   * nothing (stored sorted, like extras): show picks in the deal's group order instead.
+   */
   modifierIds: string[];
   notes: string;
 }
@@ -269,6 +360,11 @@ export interface Conversation {
     notes: string;
     originalText: string;
   };
+  /**
+   * The bot asked which option the customer wants for the deal's next unpicked choice group.
+   * Cleared wherever pendingItemChoice is.
+   */
+  pendingDealChoice?: { productId: string; quantity: number; picked: string[]; notes: string };
   testContext?: {
     target: 'draft' | 'published';
     configRevision: number;
@@ -300,10 +396,15 @@ export interface OrderLine {
   name: string;
   quantity: number;
   unitPrice: number;
+  /** On a deal line: its picks in group order, "Drink: Sprite, Side: Fries"; absent with none. */
   variant?: string;
   modifiers: string[];
   notes: string;
   total: number;
+  /** Deal lines only, always there ([] with no choice groups): the picks in group order. */
+  choices?: { group: string; option: string }[];
+  /** Deal lines only, always there: what the deal includes ("1 × Fries"). Marks a deal line. */
+  includes?: string[];
 }
 export interface Order {
   id: string;
@@ -533,6 +634,8 @@ export interface Bootstrap {
   company: Company;
   companies: Company[];
   products: Product[];
+  /** Missing from servers older than deals. */
+  deals?: Deal[];
   orders: Order[];
   conversations: Conversation[];
   integrations: Integration[];
