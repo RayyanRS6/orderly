@@ -22,14 +22,20 @@ import { money } from '../shared/types';
 import { effectiveAiLimits, MODEL_LIMITS } from '../shared/models';
 import {
   clearQuantityNear,
+  DEAL_WORDS,
+  findDealMentions,
   mentionsQuantity,
+  normalizeCatalogText,
+  quantityFromText,
   quantityNear,
   quantityOfMention,
   resolveItemMention,
   resolvePendingItemChoice,
+  type DealMention,
 } from './menu-resolver';
 import { leftToRight } from './disclosure';
-import { inWindow, localClock, toMinute, turnInstant } from '../shared/hours';
+import { inWindow, localClock, toMinute, turnInstant, type Clock } from '../shared/hours';
+import { dealSavings, dealWhen } from '../shared/deals';
 import { normalizeText as normalize, quoteCart, type CartQuote } from './pricing';
 export { quoteCart, type CartQuote } from './pricing';
 
@@ -481,8 +487,17 @@ function missingDetails(company: Company, cart: Cart, lang: Language): string | 
     );
 }
 
-/** Read-only recap: missing checkout details must never hide the customer's cart. */
-function cartSummary(company: Company, products: Product[], cart: Cart, lang: Language): string {
+/**
+ * Read-only recap: missing checkout details must never hide the customer's cart. `problem` says
+ * why a deal in it can't be ordered now (see dealProblem), in place of the general note.
+ */
+function cartSummary(
+  company: Company,
+  products: Product[],
+  cart: Cart,
+  lang: Language,
+  problem?: string,
+): string {
   if (!cart.items.length)
     return say(lang, 'Your cart is empty.', 'آپ کی ٹوکری خالی ہے۔', 'Aap ka cart khali hai.');
   const title = say(lang, 'Your order so far:', 'اب تک آپ کا آرڈر:', 'Ab tak aap ka order:');
@@ -520,12 +535,142 @@ function cartSummary(company: Company, products: Product[], cart: Cart, lang: La
     return `${title}\n${cart.items
       .map((item) => {
         const product = products.find((p) => p.companyId === company.id && p.id === item.productId);
-        return `${item.quantity} × ${product?.name ?? 'Item no longer on the menu'}${product && !product.available ? ' · Unavailable' : ''}${item.notes ? `\n  ${item.notes}` : ''}`;
+        const mark =
+          product?.deal && product.deal.state !== 'on'
+            ? say(lang, ' · not on now', ' · ابھی دستیاب نہیں', ' · abhi available nahi')
+            : product && !product.available
+              ? ' · Unavailable'
+              : '';
+        return `${item.quantity} × ${product?.name ?? 'Item no longer on the menu'}${mark}${item.notes ? `\n  ${item.notes}` : ''}`;
       })
       .join(
         '\n',
-      )}\n\n${say(lang, 'Some selections need checking against the current menu before a total can be confirmed.', 'کل رقم بتانے سے پہلے کچھ اشیاء موجودہ مینو سے چیک کرنا ضروری ہیں۔', 'Total batane se pehle kuch items current menu se check karne honge.')}`;
+      )}\n\n${problem ?? say(lang, 'Some selections need checking against the current menu before a total can be confirmed.', 'کل رقم بتانے سے پہلے کچھ اشیاء موجودہ مینو سے چیک کرنا ضروری ہیں۔', 'Total batane se pehle kuch items current menu se check karne honge.')}`;
   }
+}
+
+// What a deal includes, for one line: "Zinger burger + Fries + 2 × Drink".
+const includesText = (deal: NonNullable<Product['deal']>) =>
+  deal.includes.map((line) => line.replace(/^1 × /u, '')).join(' + ');
+// When a deal is on, in the chat's language ('' with no set times).
+const dealTimes = (product: Product, lang: Language, clock?: Clock) =>
+  product.deal?.schedule
+    ? dealWhen(product.deal.schedule, lang, clock)
+    : lang === 'en'
+      ? (product.deal?.when ?? '')
+      : '';
+/**
+ * Why a deal can't be added now, in the customer's language. Thrown, so no AI wording goes
+ * with it.
+ */
+function dealRefusal(product: Product, lang: Language, clock?: Clock): string {
+  const name = product.name;
+  const when = dealTimes(product, lang, clock);
+  const state = product.deal!.state;
+  if (state === 'later' && when)
+    return say(
+      lang,
+      `${name} is only available ${when}.`,
+      `${name} صرف ${when} دستیاب ہے۔`,
+      `${name} sirf ${when} available hai.`,
+    );
+  if (state === 'ended')
+    return say(
+      lang,
+      `${name} has ended.`,
+      `${name} ختم ہو چکی ہے۔`,
+      `${name} khatam ho chuki hai.`,
+    );
+  if (state === 'sold_out')
+    return say(
+      lang,
+      `${name} is sold out right now.`,
+      `${name} کا سامان ابھی ختم ہے۔`,
+      `${name} abhi sold out hai.`,
+    );
+  return say(
+    lang,
+    `${name} is not available right now.`,
+    `${name} ابھی دستیاب نہیں ہے۔`,
+    `${name} abhi available nahi hai.`,
+  );
+}
+/**
+ * A deal in the cart that isn't on now (its times are over, it sold out, was paused or ended),
+ * with how to take it out, in the customer's language; undefined when every deal in it is on.
+ * Checked before the whole cart is priced, so a stale deal is named instead of blocking the
+ * cart with a general error.
+ */
+function dealProblem(
+  company: Company,
+  products: Product[],
+  cart: Cart,
+  lang: Language,
+  clock?: Clock,
+): string | undefined {
+  for (const item of cart.items) {
+    const product = products.find((p) => p.companyId === company.id && p.id === item.productId);
+    if (!product?.deal || product.deal.state === 'on') continue;
+    const name = product.name;
+    const when = dealTimes(product, lang, clock);
+    const state = product.deal.state;
+    const why =
+      state === 'later' && when
+        ? say(
+            lang,
+            `${name} in your cart is only available ${when}.`,
+            `آپ کی ٹوکری میں ${name} صرف ${when} دستیاب ہے۔`,
+            `Aap ke cart mein ${name} sirf ${when} available hai.`,
+          )
+        : state === 'ended'
+          ? say(
+              lang,
+              `${name} in your cart has ended.`,
+              `آپ کی ٹوکری میں ${name} ختم ہو چکی ہے۔`,
+              `Aap ke cart mein ${name} khatam ho chuki hai.`,
+            )
+          : state === 'sold_out'
+            ? say(
+                lang,
+                `${name} in your cart is sold out right now.`,
+                `آپ کی ٹوکری میں ${name} کا سامان ابھی ختم ہے۔`,
+                `Aap ke cart mein ${name} abhi sold out hai.`,
+              )
+            : say(
+                lang,
+                `${name} in your cart is not available right now.`,
+                `آپ کی ٹوکری میں ${name} ابھی دستیاب نہیں ہے۔`,
+                `Aap ke cart mein ${name} abhi available nahi hai.`,
+              );
+    return `${why} ${say(
+      lang,
+      `Send “remove ${name}” to take it out, then carry on.`,
+      `اسے نکالنے کے لیے “remove ${name}” لکھیں، پھر آرڈر جاری رکھیں۔`,
+      `Isay nikalne ke liye “remove ${name}” likhein, phir order jari rakhein.`,
+    )}`;
+  }
+  return undefined;
+}
+// The deal's choice still to make, as the engine asks it: "Choose Drink for Deal 1:\n1. Coke
+// …\n3. Fanta (+Rs. 50)". `more`: another deal in the message waits for its turn.
+function dealChoiceQuestion(
+  product: Product,
+  pending: NonNullable<Conversation['pendingDealChoice']>,
+  lang: Language,
+  more = false,
+): string {
+  const group = product.deal!.choices.find(
+    (choice) => !choice.options.some((option) => pending.picked.includes(option.id)),
+  )!;
+  const deal = pending.quantity > 1 ? `${pending.quantity} × ${product.name}` : product.name;
+  return `${say(lang, `Choose ${group.name} for ${deal}:`, `${deal} کے لیے ${group.name} منتخب کریں:`, `${deal} ke liye ${group.name} chunein:`)}\n${group.options
+    .map(
+      (option, index) =>
+        `${index + 1}. ${option.name}${option.price > 0 ? ` (+${money(option.price)})` : ''}`,
+    )
+    .join(
+      '\n',
+    )}${more ? `\n\n${say(lang, 'Then tell me the next deal.', 'پھر اگلی ڈیل بتائیں۔', 'Phir agli deal batayein.')}` : ''}`;
 }
 
 export function isCartSummaryRequest(text: string): boolean {
@@ -548,32 +693,44 @@ function review(
   if (missing) return `${cartSummary(company, products, cart, lang)}\n\n${missing}`;
   const open = isOpen(company, now);
   const quote = quoteCart(company, products, cart);
-  const lines = quote.items
-    .map(
-      (item) =>
-        `${item.quantity} × ${item.name}${item.variant ? ` (${item.variant})` : ''}${item.modifiers.length ? ` + ${item.modifiers.join(', ')}` : ''} — ${money(item.total)}${item.notes ? `\n  ${item.notes}` : ''}`,
-    )
-    .join('\n');
-  const text = [
-    say(lang, 'Please review your order:', 'اپنے آرڈر کا جائزہ لیں:', 'Apna order check kar lein:'),
-    lines,
-    `\n${cart.fulfillment === 'delivery' ? `Delivery: ${cart.address} (${cart.zone})` : 'Pickup'} · ${cart.customerName}`,
-    `${say(lang, 'Delivery fee', 'ڈیلیوری فیس', 'Delivery fee')}: ${money(quote.deliveryFee)}`,
-    `${say(lang, 'Total', 'کل رقم', 'Total')}: ${money(quote.total)}`,
-    open
-      ? say(
-          lang,
-          '\nReply “confirm” to submit this order for restaurant acceptance.',
-          '\nریسٹورنٹ کی منظوری کے لیے آرڈر بھیجنے کو “تصدیق” لکھیں۔',
-          '\nRestaurant ki manzoori ke liye “confirm” ya “haan” likhein.',
-        )
-      : `\n${closedText(company, lang, now)}${say(
-          lang,
-          ' Your cart is saved. Send “review” when we are open.',
-          ' آپ کی ٹوکری محفوظ ہے۔ ہمارے کھلنے پر “جائزہ” لکھیں۔',
-          ' Cart save hai. Jab hum khule hon to “review” likhein.',
-        )}`,
-  ].join('\n');
+  // Under a deal, what it includes ("   Zinger burger + Fries + Drink").
+  const lines = (includes: boolean) =>
+    quote.items
+      .map(
+        (item) =>
+          `${item.quantity} × ${item.name}${item.variant ? ` (${item.variant})` : ''}${item.modifiers.length ? ` + ${item.modifiers.join(', ')}` : ''} — ${money(item.total)}${includes && item.includes?.length ? `\n   ${item.includes.map((line) => line.replace(/^1 × /u, '')).join(' + ')}` : ''}${item.notes ? `\n  ${item.notes}` : ''}`,
+      )
+      .join('\n');
+  const reviewText = (includes: boolean) =>
+    [
+      say(
+        lang,
+        'Please review your order:',
+        'اپنے آرڈر کا جائزہ لیں:',
+        'Apna order check kar lein:',
+      ),
+      lines(includes),
+      `\n${cart.fulfillment === 'delivery' ? `Delivery: ${cart.address} (${cart.zone})` : 'Pickup'} · ${cart.customerName}`,
+      `${say(lang, 'Delivery fee', 'ڈیلیوری فیس', 'Delivery fee')}: ${money(quote.deliveryFee)}`,
+      `${say(lang, 'Total', 'کل رقم', 'Total')}: ${money(quote.total)}`,
+      open
+        ? say(
+            lang,
+            '\nReply “confirm” to submit this order for restaurant acceptance.',
+            '\nریسٹورنٹ کی منظوری کے لیے آرڈر بھیجنے کو “تصدیق” لکھیں۔',
+            '\nRestaurant ki manzoori ke liye “confirm” ya “haan” likhein.',
+          )
+        : `\n${closedText(company, lang, now)}${say(
+            lang,
+            ' Your cart is saved. Send “review” when we are open.',
+            ' آپ کی ٹوکری محفوظ ہے۔ ہمارے کھلنے پر “جائزہ” لکھیں۔',
+            ' Cart save hai. Jab hum khule hon to “review” likhein.',
+          )}`,
+    ].join('\n');
+  // WhatsApp drops the review's buttons above 1024 characters, so what deals include is shown
+  // only while the review stays within that.
+  const withIncludes = quote.items.some((item) => item.includes?.length) ? reviewText(true) : '';
+  const text = withIncludes && withIncludes.length <= 1024 ? withIncludes : reviewText(false);
   if (text.length > 3500)
     throw new Error('This order is too large for one message. Please ask staff to complete it.');
   if (!open) {
@@ -677,6 +834,38 @@ const dishWords = (query?: string) =>
         .filter((word) => word && !NOT_DISH_WORDS.has(word))
     : [];
 
+// A menu search for the deals themselves: "deals", "koi deal", "today's offers", "ڈیلز".
+const DEAL_QUERY = /^(?:deals?|combos?|offers?|ڈیل|ڈیلز|ڈیلیں)$/u;
+const DEAL_QUERY_FILLER = new Set([
+  'koi',
+  'kuch',
+  'aaj',
+  'today',
+  'todays',
+  'current',
+  'running',
+  'special',
+  'specials',
+  'latest',
+  'new',
+  'available',
+  'chal',
+  'rahi',
+  'rahe',
+  'kon',
+  'kaun',
+  'konsi',
+  'kaunsi',
+  'si',
+  'sa',
+  'کوئی',
+  'کچھ',
+  'آج',
+]);
+const asksForDeals = (words: string[]) =>
+  words.some((word) => DEAL_QUERY.test(word)) &&
+  words.every((word) => DEAL_QUERY.test(word) || DEAL_QUERY_FILLER.has(word) || word.length === 1);
+
 function menu(
   company: Company,
   products: Product[],
@@ -684,7 +873,8 @@ function menu(
   query?: string,
   guided = false,
   link?: string,
-) {
+  now?: string,
+): string {
   const all = products.filter((p) => p.companyId === company.id);
   if (!all.length)
     return say(
@@ -693,22 +883,65 @@ function menu(
       'ابھی مینو دستیاب نہیں ہے۔ کسی انسان سے بات کرنے کے لیے “عملہ” لکھیں۔',
       'Abhi menu available nahi hai. Kisi insaan se baat karne ke liye “staff” likhein.',
     );
+  // Paused and ended deals are on the bot's list only so they can be refused by name.
+  const hasDeals = all.some((p) => p.deal);
+  const listed = hasDeals
+    ? all.filter((p) => !p.deal || (p.deal.state !== 'paused' && p.deal.state !== 'ended'))
+    : all;
+  const clock = hasDeals && now ? localClock(company.timezone, now) : undefined;
+  // A deal: price and saving, then what it includes and its choices; when it is on if not now.
+  const dealEntry = (p: Product) => {
+    const deal = p.deal!;
+    const saving = dealSavings(p);
+    const when = deal.state === 'later' ? dealTimes(p, lang, clock) : '';
+    return `${p.emoji} ${p.name} — ${money(p.price)}${saving ? say(lang, ` (save ${money(saving)})`, ` (${money(saving)} کی بچت)`, ` (${money(saving)} ki bachat)`) : ''}${
+      when
+        ? say(lang, ` · On ${when}`, ` · ${when} دستیاب`, ` · ${when} available`)
+        : deal.state === 'on'
+          ? ''
+          : ' · Unavailable'
+    }${deal.includes.length ? `\n  ${includesText(deal)}` : ''}${deal.choices
+      .map(
+        (group) =>
+          `\n  ${group.name}: ${group.options
+            .slice(0, 8)
+            .map(
+              (option) => `${option.name}${option.price > 0 ? ` (+${money(option.price)})` : ''}`,
+            )
+            .join(', ')}${group.options.length > 8 ? ', …' : ''}`,
+      )
+      .join('')}`;
+  };
   const words = dishWords(query);
+  if (hasDeals && asksForDeals(words)) {
+    // On and later deals (sold out ones marked), then the menu's own "Deals" section.
+    const deals = listed.filter((p) => p.deal);
+    if (!deals.some((p) => p.deal!.state === 'on' || p.deal!.state === 'later'))
+      return `${say(lang, 'We have no deals on right now.', 'ابھی کوئی ڈیل نہیں چل رہی۔', 'Abhi koi deal nahi chal rahi.')}\n\n${menu(company, products, lang, undefined, guided, link, now)}`;
+    return menuText(
+      company,
+      lang,
+      [...deals, ...listed.filter((p) => !p.deal && /^deals?$/i.test(p.category.trim()))],
+      (p) => (p.deal ? dealEntry(p) : menuLine(p)),
+      guided,
+      link,
+    );
+  }
   const textOf = (p: Product) => normalize(`${p.name} ${p.category} ${p.aliases.join(' ')}`);
   const matchingAll = (list: string[]) =>
-    all.filter((p) => list.every((word) => textOf(p).includes(word)));
+    listed.filter((p) => list.every((word) => textOf(p).includes(word)));
   // Prefer dishes matching every word; otherwise ignore words that match no dish at all
   // (an unlisted filler word must not hide a dish that is on the menu).
-  const known = words.filter((word) => all.some((p) => textOf(p).includes(word)));
+  const known = words.filter((word) => listed.some((p) => textOf(p).includes(word)));
   const matching = !words.length
-    ? all
+    ? listed
     : matchingAll(words).length
       ? matchingAll(words)
       : known.length
         ? matchingAll(known)
         : [];
   // Never answer a menu request with an empty list: show the menu instead.
-  const own = matching.length ? matching : all;
+  const own = matching.length ? matching : listed;
   // Quote only letters and digits, cut by character, and never the AI's text when it
   // reads like a price or an order outcome: only the engine states those.
   const shown = Array.from(words.join(' ')).slice(0, 40).join('');
@@ -730,28 +963,82 @@ function menu(
               )
         }\n\n`
       : '';
-  const lines: string[] = [];
-  for (const p of own) {
-    const line = `${p.emoji} ${p.name} — ${money(p.price)}${p.available ? '' : ' · Unavailable'}${
-      p.variants.length
-        ? `\n  ${p.variants
-            .slice(0, 4)
-            .map((v) => `${v.name.slice(0, 60)} ${money(v.price)}`)
-            .join(' / ')}${p.variants.length > 4 ? ' / more options available' : ''}`
-        : ''
-    }${
-      p.modifiers.length
-        ? `\n  Extras: ${p.modifiers
-            .slice(0, 4)
-            .map((m) => `${m.name.slice(0, 60)} +${money(m.price)}`)
-            .join(', ')}${p.modifiers.length > 4 ? ' / more extras available' : ''}`
-        : ''
-    }`;
+  if (!hasDeals || own !== listed)
+    return menuText(
+      company,
+      lang,
+      own,
+      (p) => (p.deal ? dealEntry(p) : menuLine(p)),
+      guided,
+      link,
+      notFound,
+    );
+  // The whole menu: up to 3 deals that are on, one line each, then the dishes.
+  const deals = listed.filter((p) => p.deal && p.deal.state !== 'sold_out');
+  const on = deals.filter((p) => p.deal!.state === 'on').slice(0, 3);
+  const top = on.map(
+    (p) =>
+      `${p.emoji} ${p.name} — ${money(p.price)}${p.deal!.includes.length ? `: ${includesText(p.deal!)}` : ''}`,
+  );
+  const more = deals.length - on.length;
+  if (more > 0)
+    top.push(
+      say(
+        lang,
+        `…and ${more} more deal${more === 1 ? '' : 's'}. Send “deals” to see them all.`,
+        `…اور ${more} مزید ڈیلز۔ سب دیکھنے کے لیے “deals” لکھیں۔`,
+        `…aur ${more} deals hain. Sab dekhne ke liye “deals” likhein.`,
+      ),
+    );
+  return menuText(
+    company,
+    lang,
+    listed.filter((p) => !p.deal),
+    menuLine,
+    guided,
+    link,
+    notFound,
+    top,
+  );
+}
+// A dish on the chat menu: price, sizes and extras.
+const menuLine = (p: Product) =>
+  `${p.emoji} ${p.name} — ${money(p.price)}${p.available ? '' : ' · Unavailable'}${
+    p.variants.length
+      ? `\n  ${p.variants
+          .slice(0, 4)
+          .map((v) => `${v.name.slice(0, 60)} ${money(v.price)}`)
+          .join(' / ')}${p.variants.length > 4 ? ' / more options available' : ''}`
+      : ''
+  }${
+    p.modifiers.length
+      ? `\n  Extras: ${p.modifiers
+          .slice(0, 4)
+          .map((m) => `${m.name.slice(0, 60)} +${money(m.price)}`)
+          .join(', ')}${p.modifiers.length > 4 ? ' / more extras available' : ''}`
+      : ''
+  }`;
+// The chat menu: at most 12 entries and 2800 characters, with any `top` lines (deals) first.
+function menuText(
+  company: Company,
+  lang: Language,
+  entries: Product[],
+  entryText: (p: Product) => string,
+  guided: boolean,
+  link?: string,
+  notFound = '',
+  top: string[] = [],
+): string {
+  const lines = [...top];
+  let shown = 0;
+  for (const p of entries) {
+    const line = entryText(p);
     if (lines.join('\n').length + line.length > 2800 || lines.length >= 12) break;
     lines.push(line);
+    shown += 1;
   }
   const linkLine = link ? `\n\n${menuLinkLine(lang, link)}` : '';
-  return `${notFound}${company.name}\n${lines.join('\n')}${lines.length < own.length ? `\n\nShowing ${lines.length} of ${own.length} items. Ask for a category or item name to narrow the menu.` : ''}${guided ? '' : `\n\n${say(lang, 'Tell me the item and quantity, for example “2 chicken biryani”.', 'چیز کا نام اور تعداد بتائیں، جیسے “2 چکن بریانی”۔', 'Item aur quantity batayein, jaise “2 chicken biryani”.')}`}${linkLine}`;
+  return `${notFound}${company.name}\n${lines.join('\n')}${shown < entries.length ? `\n\nShowing ${shown} of ${entries.length} items. Ask for a category or item name to narrow the menu.` : ''}${guided ? '' : `\n\n${say(lang, 'Tell me the item and quantity, for example “2 chicken biryani”.', 'چیز کا نام اور تعداد بتائیں، جیسے “2 چکن بریانی”۔', 'Item aur quantity batayein, jaise “2 chicken biryani”.')}`}${linkLine}`;
 }
 const menuLinkLine = (lang: Language, link: string) =>
   say(
@@ -1248,15 +1535,158 @@ export const assuresSafety = (text: string) => {
   const value = normalize(text);
   return SAFETY_ASSURANCE.test(value) || URDU_ASSURANCE.test(value);
 };
+// A saving or discount stated in AI wording, read on normalized text: "save 250", "saves you
+// 250", "30% off", "20 percent discount", "250 ki bachat", "۲۵۰ روپے کی بچت". "Off" never takes
+// a number after it ("we're off on 25 December"). Only the engine states a deal's saving.
+const SAVING_DIGIT = '[\\d۰-۹٠-٩]';
+const SAVING_CLAIM = new RegExp(
+  [
+    `\\b(?:save[sd]?|saving|savings|discount(?:ed|s)?|bachat|bachao|bachaen|bachayen|bachaiye|riayat|riyayat|chhoot|chhut)\\b\\s*(?:(?:of|you|up ?to|upto|rs\\.?|pkr|tak|ki|ka)\\s*)*${SAVING_DIGIT}`,
+    `${SAVING_DIGIT}[\\d,]*(?:\\.\\d+)?\\s*(?:%|percent|per cent|fee ?sad|rupees?|rupay|rupaye|rs|pkr)?\\s*(?:ki |ka |tak )?(?:off|discount|saving|savings|bachat|bachao|riayat|riyayat|chhoot|chhut)\\b`,
+    `${SAVING_DIGIT}[\\d,]*\\s*(?:%|٪|فیصد|روپے|روپیہ)?\\s*(?:کی\\s*|تک\\s*)?${urduWord('بچت|رعایت|چھوٹ|ڈسکاؤنٹ|آف')}`,
+    `${urduWord('بچت|رعایت|چھوٹ|ڈسکاؤنٹ')}\\s*(?:\\S+\\s*){0,2}?${SAVING_DIGIT}`,
+  ].join('|'),
+  'gu',
+);
 function requestedOptions(products: Product[], text: string): string[] {
   return [
     ...new Set(
       products
-        .flatMap((product) => [...product.variants, ...product.modifiers])
+        .flatMap((product) => [
+          ...product.variants,
+          ...product.modifiers,
+          ...(product.deal?.choices.flatMap((group) => group.options) ?? []),
+        ])
         .filter((option) => contains(text, option.name))
         .map((option) => option.name),
     ),
   ];
+}
+// Where a name is written in a normalized text, as whole words: [start, end] each time.
+function occurrencesOf(value: string, phrase: string): [number, number][] {
+  const p = normalize(phrase).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  if (!p) return [];
+  return [...value.matchAll(new RegExp(`(?<![\\p{L}\\p{N}])${p}(?![\\p{L}\\p{N}])`, 'gu'))].map(
+    (m) => [m.index, m.index + m[0].length],
+  );
+}
+// The text with these stretches blanked to a comma (a break between parts of the message),
+// keeping every other character where it was.
+const blanked = (value: string, spans: [number, number][]) =>
+  [...spans]
+    .sort((a, b) => b[0] - a[0])
+    .reduce(
+      (text, [start, end]) =>
+        `${text.slice(0, start)}${','.padEnd(end - start, ' ')}${text.slice(end)}`,
+      value,
+    );
+// A deal's picks from option names the customer gave ("sprite"): one per choice, in order.
+function picksNamed(product: Product, names: string[]): string[] {
+  const used = new Set<string>();
+  return (product.deal?.choices ?? []).flatMap((group) => {
+    const option = [...group.options]
+      .sort((a, b) => b.name.length - a.name.length)
+      .find((o) => !used.has(o.name) && names.some((name) => contains(name, o.name)));
+    if (!option) return [];
+    used.add(option.name);
+    return [option.id];
+  });
+}
+/**
+ * The answer to "Choose Drink for Deal 1": a number from the list, or the name of exactly one
+ * option (a name inside a longer one, "coke" in "diet coke", is that one). Names for the next
+ * open choices too, in order, fill those as well ("coke aur fries" for Drink, then Side).
+ * Anything else, two drinks for one choice or none, is no answer.
+ */
+function answeredPicks(product: Product, picked: string[], value: string): string[] | undefined {
+  const open = product.deal!.choices.filter(
+    (group) => !group.options.some((option) => picked.includes(option.id)),
+  );
+  const asked = open[0];
+  if (!asked) return undefined;
+  const ordinal = value.match(/^(?:option\s*)?(\d{1,2})(?:st|nd|rd|th)?[.!\s]*$/u)?.[1];
+  if (ordinal) {
+    const option = asked.options[Number(ordinal) - 1];
+    return option ? [option.id] : undefined;
+  }
+  const names = [...new Set(open.flatMap((group) => group.options.map((o) => normalize(o.name))))];
+  const written = names
+    .flatMap((name) => occurrencesOf(value, name).map(([start, end]) => ({ name, start, end })))
+    .sort((a, b) => b.end - b.start - (a.end - a.start) || a.start - b.start);
+  const found: typeof written = [];
+  for (const w of written)
+    if (!found.some((f) => f.start < w.end && w.start < f.end)) found.push(w);
+  found.sort((a, b) => a.start - b.start);
+  if (!found.length) return undefined;
+  if (open.length === 1 || found.length === 1) {
+    if (new Set(found.map((f) => f.name)).size !== 1) return undefined;
+    const option = asked.options.find((o) => normalize(o.name) === found[0]!.name);
+    return option ? [option.id] : undefined;
+  }
+  if (found.length > open.length) return undefined;
+  const ids: string[] = [];
+  for (const [k, f] of found.entries()) {
+    const option = open[k]!.options.find((o) => normalize(o.name) === f.name);
+    if (!option) return undefined;
+    ids.push(option.id);
+  }
+  return ids;
+}
+// "koi deal hai?", "deal hai kya", "any deals", "deals dikhao", "کوئی ڈیل ہے": asking about the
+// deals, not ordering one.
+const DEAL_ASK = new RegExp(
+  [
+    '[?؟]',
+    '^(?:what|which|any|do you|does|is there|are there|koi|kya|kia|konsi|kaunsi|kon si|kaun si|kuch|show|tell|list|see)\\b',
+    '\\b(?:hai|hain|he|h)\\s+(?:kya|kia)\\b',
+    '\\b(?:kya|kia)\\s+(?:hai|hain)\\b',
+    '\\b(?:dikhao|dikha do|dikhayein|dikhaen|dikhain|batao|bata do|batayein|batain|bhejo|bhej do|show|list)\\b',
+    '^(?:کوئی|کیا|کون)(?![\\p{L}\\p{M}])',
+    'دکھا|بتا|بھیج',
+    '(?<![\\p{L}\\p{M}])(?:ہے|ہیں)\\s*(?:کیا)?\\s*$',
+  ].join('|'),
+  'u',
+);
+// Words that leave a message only about the deals: "deals", "today's deals", "koi deal".
+const DEAL_FILLERS = new Set(
+  'any some your our the all today todays s new latest current special please pls plz koi kuch aaj sab saari sari wali wala ji bhai کوئی کچھ آج سب'.split(
+    ' ',
+  ),
+);
+const DEAL_ORDER = new RegExp(
+  [
+    "\\b(?:chahiye|chahye|chaiye|chahie|chahiyen|dena|de do|dedo|de dein|de den|lena|lunga|lungi|lenge|want|need|add|order|i ?['’]?ll (?:take|have)|give me|get me|can i (?:get|have))\\b",
+    'چاہیے|چاہئے|دے دیں|دیجیے|لینا|لوں گا',
+  ].join('|'),
+  'u',
+);
+// A named deal asked about rather than ordered: "deal 2 hai?", "kya zinger deal milegi".
+const NAMED_DEAL_QUESTION = new RegExp(
+  [
+    '^(?:what|which|any|do you|does|is there|are there|koi|kya|kia|konsi|kaunsi|kon si|kaun si)\\b',
+    '\\b(?:hai|hain|he|milegi|milega|milti|milta|available)\\s*(?:kya|kia)?\\s*[?؟]*$',
+    '^(?:کوئی|کیا|کون)(?![\\p{L}\\p{M}])',
+    '(?<![\\p{L}\\p{M}])(?:ہے|ہیں|ملے گی|ملے گا)\\s*(?:کیا)?\\s*[?؟]*$',
+  ].join('|'),
+  'u',
+);
+// A deal word ("deal", "combo", "ڈیل") in the text that names no deal and is no part of a dish's
+// name ("Kids Meal").
+function looseDealWord(products: Product[], value: string, mentions: DealMention[]): boolean {
+  const loose = [...value.matchAll(/[\p{L}\p{M}\p{N}]+/gu)].filter((m) =>
+    DEAL_WORDS.has(normalizeCatalogText(m[0])),
+  );
+  if (!loose.length) return false;
+  const named = [
+    ...mentions.flatMap((mention) => mention.spans),
+    ...products
+      .filter((product) => !product.deal)
+      .flatMap((product) => [product.name, ...product.aliases])
+      .flatMap((label) => occurrencesOf(value, label)),
+  ];
+  return loose.some(
+    (m) => !named.some(([start, end]) => start <= m.index && m.index + m[0].length <= end),
+  );
 }
 
 /** Deliberately bounded simulator. Production adapters may extract the same actions. */
@@ -1329,9 +1759,11 @@ export function parseActions(
             selected.variants.find((option) =>
               requested.some((name) => contains(name, option.name)),
             )?.id,
-          modifierIds: selected.modifiers
-            .filter((option) => requested.some((name) => contains(name, option.name)))
-            .map((option) => option.id),
+          modifierIds: selected.deal
+            ? picksNamed(selected, requested)
+            : selected.modifiers
+                .filter((option) => requested.some((name) => contains(name, option.name)))
+                .map((option) => option.id),
           notes: conversation.pendingItemChoice.notes,
         },
       ];
@@ -1348,6 +1780,67 @@ export function parseActions(
         },
       ];
   }
+  // Deals are named by their own words only, with any picks written beside them.
+  const dealMentions = findDealMentions(products, company.id, value);
+  // The answer to the deal's open choice ("2", "sprite"), unless another deal is named.
+  const pendingDeal = conversation.pendingDealChoice;
+  const askedDeal =
+    pendingDeal &&
+    products.find((p) => p.companyId === company.id && p.id === pendingDeal.productId && p.deal);
+  if (
+    pendingDeal &&
+    askedDeal &&
+    !browsing &&
+    dealMentions.every((mention) => mention.products.includes(askedDeal))
+  ) {
+    const picks = answeredPicks(askedDeal, pendingDeal.picked, value);
+    if (picks)
+      return [
+        {
+          type: 'add_item',
+          productId: askedDeal.id,
+          quantity: pendingDeal.quantity,
+          modifierIds: [...pendingDeal.picked, ...picks],
+          notes: pendingDeal.notes,
+        },
+      ];
+  }
+  const own = products.filter((p) => p.companyId === company.id);
+  // A deal word that names no deal asks for the deals, or orders one of them: never a dish
+  // ("deal" is one letter from "daal"). A question about one named deal shows it.
+  if (!dealMentions.length && looseDealWord(own, value, dealMentions)) {
+    const onlyDeals = normalizeCatalogText(value)
+      .split(' ')
+      .every((word) => DEAL_WORDS.has(word) || DEAL_FILLERS.has(word));
+    if (DEAL_ASK.test(value) || onlyDeals) return [{ type: 'menu', query: 'deals' }];
+    if (DEAL_ORDER.test(value) && own.some((p) => p.deal)) {
+      const on = own.filter((p) => p.deal?.state === 'on');
+      const quantity = quantityFromText(text, products);
+      if (on.length === 1)
+        return [{ type: 'add_item', productId: on[0]!.id, quantity, modifierIds: [] }];
+      return on.length
+        ? [
+            {
+              type: 'clarify_item',
+              candidateProductIds: on.slice(0, 12).map((p) => p.id),
+              quantity,
+              requestedOptionNames: requestedOptions(on, text),
+              originalText: text,
+            },
+          ]
+        : [{ type: 'menu', query: 'deals' }];
+    }
+  }
+  if (dealMentions.length && NAMED_DEAL_QUESTION.test(value) && !DEAL_ORDER.test(value))
+    return [
+      {
+        type: 'menu',
+        query:
+          dealMentions.length === 1 && dealMentions[0]!.products.length === 1
+            ? dealMentions[0]!.products[0]!.name
+            : 'deals',
+      },
+    ];
   // A bare "yes" may answer any question, so it means confirm only straight after the review.
   // Otherwise it is an acknowledgement, never a dish ("haan" is one letter from "naan").
   const agreed = consent(text);
@@ -1363,16 +1856,20 @@ export function parseActions(
     )
   )
     return [{ type: 'menu' }];
-  const explicitProducts = products.filter(
-    (p) =>
-      p.companyId === company.id && [p.name, ...p.aliases].some((label) => contains(value, label)),
+  // What is left once the deals and their picks are taken out names dishes only, so "1 zinger
+  // deal" never also adds a Zinger burger. Without a deal named it is the message itself.
+  const dealSpans = dealMentions.flatMap((mention) => mention.spans);
+  const rest = dealSpans.length ? blanked(value, dealSpans) : value;
+  const dishes = products.filter((p) => p.companyId === company.id && !p.deal);
+  const explicitProducts = dishes.filter((p) =>
+    [p.name, ...p.aliases].some((label) => contains(rest, label)),
   );
   const distinctMentions =
     explicitProducts.length > 1 &&
     explicitProducts.every((p) =>
       [p.name, ...p.aliases].some(
         (label) =>
-          contains(value, label) &&
+          contains(rest, label) &&
           !explicitProducts.some(
             (other) =>
               other.id !== p.id &&
@@ -1382,28 +1879,92 @@ export function parseActions(
           ),
       ),
     );
-  if (earlyResolution.kind === 'ambiguous' && !distinctMentions)
+  const clarify = (candidates: Product[], quantity: number): BotAction => ({
+    type: 'clarify_item',
+    candidateProductIds: candidates.slice(0, 12).map((product) => product.id),
+    quantity,
+    requestedOptionNames: requestedOptions(candidates, text),
+    originalText: text,
+  });
+  // "lunch deal" with two lunch deals: which one.
+  const unsure = dealMentions.find((mention) => mention.products.length > 1);
+  if (unsure) return [clarify(unsure.products, earlyResolution.quantity)];
+  // Each deal named: added with its picks, or removed ("remove deal 1").
+  const named: { at: number; action: BotAction }[] = dealMentions.map((mention) => {
+    const product = mention.products[0]!;
+    const prefix = value.slice(Math.max(0, mention.at - 24), mention.at);
+    return {
+      at: mention.at,
+      action: /\b(remove|delete|hatao)\b|نکال|ہٹا/u.test(prefix)
+        ? { type: 'remove_item', productId: product.id }
+        : {
+            type: 'add_item',
+            productId: product.id,
+            quantity: quantityOfMention(product, mention.phrase, text, products) ?? 1,
+            modifierIds: mention.picks,
+          },
+    };
+  });
+  // A dish asked about by a word several share ("burger"), beside a deal, is asked about after
+  // the deal is added.
+  const dishResolution = dealMentions.length
+    ? resolveItemMention(products, company.id, rest)
+    : earlyResolution;
+  if (dishResolution.kind === 'ambiguous' && !distinctMentions)
     return [
-      {
-        type: 'clarify_item',
-        candidateProductIds: earlyResolution.products.slice(0, 12).map((product) => product.id),
-        quantity: earlyResolution.quantity,
-        requestedOptionNames: requestedOptions(earlyResolution.products, text),
-        originalText: text,
-      },
+      ...named.map((entry) => entry.action),
+      clarify(dishResolution.products, dishResolution.quantity),
     ];
-  const actions: BotAction[] = [];
-  const matches = products
-    .filter((p) => p.companyId === company.id)
-    .map((product) => ({
-      product,
-      alias: [product.name, ...product.aliases]
-        .filter((alias) => contains(value, alias))
-        .sort((a, b) => b.length - a.length)[0],
-    }))
-    .filter((m): m is { product: Product; alias: string } => !!m.alias)
-    .sort((a, b) => value.indexOf(normalize(a.alias)) - value.indexOf(normalize(b.alias)));
-  if (!matches.length) {
+  // A dish named only inside a longer name of another dish is that dish, each time it is
+  // written: "1 chicken burger" is no burger, "1 chicken burger aur 1 burger" is both.
+  const found = dishes
+    .map((product) => {
+      const labels = [product.name, ...product.aliases].filter((alias) => contains(rest, alias));
+      return {
+        product,
+        labels,
+        alias: [...labels].sort((a, b) => b.length - a.length)[0]!,
+        places: labels.flatMap((alias) =>
+          occurrencesOf(rest, alias).map(([start, end]) => ({ alias, start, end })),
+        ),
+      };
+    })
+    .filter((m) => m.labels.length);
+  const within = (place: { start: number; end: number }, id: string) =>
+    found.flatMap((other) =>
+      other.product.id === id
+        ? []
+        : other.places.filter(
+            (o) =>
+              o.start <= place.start &&
+              place.end <= o.end &&
+              o.end - o.start > place.end - place.start,
+          ),
+    );
+  const matches = found
+    .flatMap(({ product, alias, places }) => {
+      const nested = places.filter((place) => within(place, product.id).length);
+      if (!nested.length)
+        return [
+          {
+            product,
+            alias,
+            at: rest.indexOf(normalize(alias)),
+            countText: dealSpans.length ? rest : text,
+          },
+        ];
+      const first = places
+        .filter((place) => !nested.includes(place))
+        .sort((a, b) => a.start - b.start || b.end - b.start - (a.end - a.start))[0];
+      if (!first) return [];
+      // Its count is read with the longer names it sits in taken out.
+      const covers = nested.flatMap((place) =>
+        within(place, product.id).map((o): [number, number] => [o.start, o.end]),
+      );
+      return [{ product, alias: first.alias, at: first.start, countText: blanked(rest, covers) }];
+    })
+    .sort((a, b) => a.at - b.at);
+  if (!matches.length && !dealMentions.length) {
     const detailLike =
       /(?:my name is|name\s*:|mera naam|mera nam|میرا نام|نام\s*:|address\s*:|pata\s*:|پتہ\s*:|پتا\s*:|\bpickup\b|\bdelivery\b|پک اپ|ڈیلیوری|ڈلیوری)/iu.test(
         text,
@@ -1440,11 +2001,11 @@ export function parseActions(
   }
   const sameMention = matches.filter(
     (match) =>
-      value.indexOf(normalize(match.alias)) === value.indexOf(normalize(matches[0]?.alias ?? '')) &&
-      normalize(match.alias) === normalize(matches[0]?.alias ?? ''),
+      match.at === matches[0]!.at && normalize(match.alias) === normalize(matches[0]!.alias),
   );
   if (sameMention.length > 1)
     return [
+      ...named.map((entry) => entry.action),
       {
         type: 'clarify_item',
         candidateProductIds: sameMention.slice(0, 12).map((match) => match.product.id),
@@ -1452,7 +2013,12 @@ export function parseActions(
           1,
           Math.min(
             50,
-            quantityOfMention(sameMention[0]!.product, sameMention[0]!.alias, text, products) ?? 1,
+            quantityOfMention(
+              sameMention[0]!.product,
+              sameMention[0]!.alias,
+              sameMention[0]!.countText,
+              products,
+            ) ?? 1,
           ),
         ),
         requestedOptionNames: requestedOptions(
@@ -1462,46 +2028,53 @@ export function parseActions(
         originalText: text,
       },
     ];
+  const [first] = [
+    ...dealMentions.map((mention) => ({ at: mention.at, product: mention.products[0]! })),
+    ...matches,
+  ].sort((a, b) => a.at - b.at);
   if (
-    matches.length &&
+    first &&
     /^(?:what|how much|is |are |do you have|tell me|kitna|kya)|(?:\bprice\b|\bavailable\b|کتنے|قیمت|دستیاب)/u.test(
       value,
     )
   )
-    return [{ type: 'menu', query: matches[0]!.product.name }];
+    return [{ type: 'menu', query: first.product.name }];
   if (
-    matches.length &&
+    first &&
     /\b(?:do not|don't|dont|not|no)\s+(?:want|add|need)|نہیں چاہیے|nahi chahiye/u.test(value)
   )
     return [{ type: 'answer', text: '' }];
-  for (const { product, alias } of matches) {
-    const at = value.indexOf(normalize(alias));
-    const prefix = value.slice(Math.max(0, at - 24), at);
+  for (const { product, alias, at, countText } of matches) {
+    const prefix = rest.slice(Math.max(0, at - 24), at);
     if (/\b(remove|delete|hatao)\b|نکال|ہٹا/u.test(prefix)) {
-      actions.push({ type: 'remove_item', productId: product.id });
+      named.push({ at, action: { type: 'remove_item', productId: product.id } });
       continue;
     }
-    const variant = product.variants.find((v) => contains(value, v.name));
+    const variant = product.variants.find((v) => contains(rest, v.name));
     const modifiers = product.modifiers.filter(
       (m) =>
-        contains(value, m.name) &&
+        contains(rest, m.name) &&
         !/\b(without|no|remove)\s*$/u.test(
-          value.slice(
-            Math.max(0, value.indexOf(normalize(m.name)) - 15),
-            value.indexOf(normalize(m.name)),
+          rest.slice(
+            Math.max(0, rest.indexOf(normalize(m.name)) - 15),
+            rest.indexOf(normalize(m.name)),
           ),
         ),
     );
-    actions.push({
-      type: 'add_item',
-      productId: product.id,
-      // The count next to this mention, in its own part of the message: "naan 3, chicken
-      // biryani" and "naan 3 chicken biryani" give the biryani 1 and the naan 3.
-      quantity: quantityOfMention(product, alias, text, products) ?? 1,
-      variantId: variant?.id,
-      modifierIds: modifiers.map((m) => m.id),
+    named.push({
+      at,
+      action: {
+        type: 'add_item',
+        productId: product.id,
+        // The count next to this mention, in its own part of the message: "naan 3, chicken
+        // biryani" and "naan 3 chicken biryani" give the biryani 1 and the naan 3.
+        quantity: quantityOfMention(product, alias, countText, products) ?? 1,
+        variantId: variant?.id,
+        modifierIds: modifiers.map((m) => m.id),
+      },
     });
   }
+  const actions: BotAction[] = named.sort((a, b) => a.at - b.at).map((entry) => entry.action);
   const details: Extract<BotAction, { type: 'set_details' }> = { type: 'set_details' };
   if (/\b(pickup|pick up|takeaway|take away)\b|پک اپ|لے جاؤں|لے جاوں/u.test(value))
     details.fulfillment = 'pickup';
@@ -1534,6 +2107,7 @@ export function parseActions(
 const CORRECTION_TRACES = new Set([
   'ambiguous_addition_prevented',
   'item_choice_resolved',
+  'deal_choice_resolved',
   'browse_cart_mutation_prevented',
   'unconfirmed_model_action_rejected',
   'fresh_confirmation_required',
@@ -1770,16 +2344,41 @@ export function processTurn(
     return [...chatHosts].some((known) => host === known || host.endsWith(`.${known}`));
   };
   const invents = (text: string) => inventsLink(text, hosts, fromChat);
+  // The deals this turn sells (shared/deals.ts), and their names, longest first, so a check
+  // never reads a deal's name as words: "Deal 2 saves you money" states no saving, and "egg in
+  // the zinger deal?" asks about a dish.
+  const deals = products.filter((product) => product.companyId === company.id && product.deal);
+  const dealLabels = deals
+    .flatMap((product) => [product.name, ...product.aliases])
+    .map((label) => normalize(label))
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length);
+  const withoutDeals = (text: string, by: string) =>
+    dealLabels.reduce(
+      (rest, label) =>
+        rest.replace(
+          new RegExp(
+            `(?<![\\p{L}\\p{N}])${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}])`,
+            'gu',
+          ),
+          by,
+        ),
+      normalize(text),
+    );
   // The menu page's own address is not an outcome claim, whatever words its slug holds, and
   // nor is saying the restaurant takes a payment method it does take. The cart is read when the
   // text is checked, so a cart this turn started afresh (an order staff never closed) is no
   // longer the submitted one: "your order has been placed" is not true of it.
-  const claims = (text: string) =>
-    unsafeModelText(
-      input.menuLink ? text.replaceAll(input.menuLink, '') : text,
-      conversation.cart.status === 'submitted' && next.cart.status === 'submitted',
-      paymentMethods(company),
+  const claims = (text: string) => {
+    const wording = input.menuLink ? text.replaceAll(input.menuLink, '') : text;
+    return (
+      unsafeModelText(
+        wording,
+        conversation.cart.status === 'submitted' && next.cart.status === 'submitted',
+        paymentMethods(company),
+      ) || claimsSaving(wording)
     );
+  };
   // An allergy reassurance only in the owner's own approved words, quoted exactly.
   const ownerWording = [
     ...company.faqs.map((faq) => faq.answer),
@@ -1788,6 +2387,16 @@ export function processTurn(
   const assures = (text: string) =>
     assuresSafety(text) &&
     !ownerWording.some((owner) => !!text.trim() && owner === normalize(text));
+  // A saving or discount only in the engine's words, once there are deals, unless the owner
+  // wrote that very phrase (an approved answer, a rule, a deal's description).
+  const savingWording = deals.length
+    ? [...ownerWording, ...deals.map((deal) => normalize(deal.description))]
+    : [];
+  const claimsSaving = (text: string) =>
+    deals.length > 0 &&
+    [...withoutDeals(text, ' ').matchAll(SAVING_CLAIM)].some(
+      (match) => !savingWording.some((owner) => owner.includes(match[0].trim())),
+    );
   const unsafe = (text: string) => claims(text) || assures(text) || invents(text);
   // The menu page link is filled in (or left out) where each text is chosen, before any
   // check reads it: a text left empty counts as missing, so the turn never goes silent.
@@ -1801,6 +2410,12 @@ export function processTurn(
       reply: next.messages.find((m) => m.id === `${input.messageId}:reply`)?.text ?? '',
       traces: ['duplicate_message_ignored'],
     };
+  // A deal choice asked about a deal that was since deleted can't be answered.
+  if (
+    next.pendingDealChoice &&
+    !deals.some((deal) => deal.id === next.pendingDealChoice!.productId)
+  )
+    delete next.pendingDealChoice;
   next.language = languageOf(customerWords(input.text, input.action), next.language);
   if (configuration.language !== 'auto') next.language = configuration.language;
   next.botVersion = company.bot?.published?.version;
@@ -1840,9 +2455,22 @@ export function processTurn(
   const shownAt = turnInstant(input);
   const reviewAge = cart.reviewedAt ? Date.parse(shownAt) - Date.parse(cart.reviewedAt) : NaN;
   const reviewFresh = reviewAge >= 0 && reviewAge <= REVIEW_FRESH_MS;
+  // Deal times are read on the restaurant's clock at that same moment.
+  const clock = deals.length ? localClock(company.timezone, shownAt) : undefined;
+  // A deal in the cart that isn't on now stops the whole cart from being priced: named, with
+  // how to take it out, and nothing stays confirmable (a cart reviewed at 14:58 for a deal on
+  // until 15:00 is not placed at 15:01).
+  const dealsOn = () => {
+    const problem = dealProblem(company, products, cart, lang, clock);
+    if (!problem) return;
+    if (cart.status === 'awaiting_confirmation') unreview(cart);
+    traces.push('deal_not_on');
+    throw new Error(problem);
+  };
   // The review text this turn shows, so finish() records which reply carried it.
   let shownReview: string | undefined;
   const showReview = () => {
+    dealsOn();
     const text = review(company, products, cart, lang, shownAt);
     if (cart.status === 'awaiting_confirmation') shownReview = text;
     return text;
@@ -1866,13 +2494,17 @@ export function processTurn(
     modelResponse?.text ?? '',
     ...(actions ?? []).map((action) => (action.type === 'answer' ? action.text : '')),
   ];
+  // A deal's name is a dish's: "is there egg in the zinger deal?" asks what a dish contains.
+  const asksAllergy = (text: string) =>
+    asksAboutAllergens(text) ||
+    (dealLabels.length > 0 && asksAboutAllergens(withoutDeals(text, 'dish')));
   const allergyQuestion =
     !input.action &&
-    (asksAboutAllergens(input.text) ||
+    (asksAllergy(input.text) ||
       (aiWording.some((text) => ALLERGEN_CONTEXT_ASSURANCE.test(normalize(text))) &&
         namesAvoidedAllergen(input.text, products, company.id)) ||
       (!!lastAsked &&
-        asksAboutAllergens(lastAsked.text) &&
+        asksAllergy(lastAsked.text) &&
         /[?؟]/u.test(input.text) &&
         !asksForMenu(input.text) &&
         (/\b(?:safe|it|its|it's|that|this|them|these|those|bhi|yeh|ye|woh|wo)\b|محفوظ|یہ|وہ|بھی/u.test(
@@ -1891,6 +2523,9 @@ export function processTurn(
   // A cart change refused because the cart was cancelled: only the engine may word that reply.
   let cancelledCartRefused = false;
   let incompleteReviewQuestion: string | undefined;
+  // The deal's open choice, asked once per turn and last; whether this turn asked it.
+  let dealQuestion: string | undefined;
+  let dealAsked = false;
   const finish = (): TurnResult => {
     if (traces.includes('human_mode_message_saved'))
       return { conversation: next, reply: '', traces };
@@ -1948,6 +2583,7 @@ export function processTurn(
         'new_order',
         'menu',
         'clarify_item',
+        'deal_choice_asked',
       ].includes(trace),
     );
     const protectedReply =
@@ -1968,6 +2604,14 @@ export function processTurn(
       // answered normally rather than handed to staff.
       (cart.status === 'cancelled' && (traces.includes('cancel') || cancelledCartRefused));
     if (cartFacts.length) reply = [cartFacts.join('\n'), reply].filter(Boolean).join('\n\n');
+    // The deal's choice comes last, after what was added. An item choice asked in the same
+    // turn goes first: the deal waits and is asked once that is answered.
+    if (
+      dealQuestion &&
+      next.mode === 'bot' &&
+      !(traces.includes('clarify_item') && next.pendingItemChoice)
+    )
+      reply = [reply, dealQuestion].filter(Boolean).join('\n\n');
     // Explanation only: record which source wrote each part of the reply.
     let parts: ReplyPart[] = [];
     const answerByModel = !!modelAnswer && reply.includes(modelAnswer);
@@ -2020,7 +2664,10 @@ export function processTurn(
       modelResponse?.text.trim() &&
       !unsafe(modelResponse.text)
     ) {
-      const modelFirst = traces.includes('menu') || traces.includes('clarify_item');
+      const modelFirst =
+        traces.includes('menu') ||
+        traces.includes('clarify_item') ||
+        traces.includes('deal_choice_asked');
       parts =
         transactional && reply
           ? modelFirst
@@ -2254,14 +2901,109 @@ export function processTurn(
     recapCorrected = requested.some((action) => action.type !== 'cart_summary');
     requested = [{ type: 'cart_summary' }];
   }
+  // The deal whose choice was asked, and the dishes the customer may name by one of its options
+  // ("sprite" for a Sprite 345ml beside the deal's Sprite).
+  const pendingDeal = conversation.pendingDealChoice;
+  const askedDeal = pendingDeal && deals.find((deal) => deal.id === pendingDeal.productId);
+  const optionNamed = (id: string) => {
+    const product = products.find((p) => p.companyId === company.id && p.id === id);
+    return (
+      !!askedDeal &&
+      !!product &&
+      product.id !== askedDeal.id &&
+      askedDeal.deal!.choices.some((group) =>
+        group.options.some(
+          (option) =>
+            contains(input.text, option.name) &&
+            [product.name, ...product.aliases].some(
+              (label) => contains(label, option.name) || contains(option.name, label),
+            ),
+        ),
+      )
+    );
+  };
+  let dealResolved = false;
+  if (!input.action && actions && pendingDeal && askedDeal) {
+    // The engine reads the answer to the deal's choice: it replaces the AI's add of a dish named
+    // by the option, its "which one?" about those, and its own add of the deal. A count the
+    // customer wrote and the AI's picks for later choices are kept.
+    const [answer, ...others] = parseActions(company, products, next, input.text);
+    if (answer?.type === 'add_item' && answer.productId === askedDeal.id && !others.length) {
+      const proposed = requested.find(
+        (action): action is Extract<BotAction, { type: 'add_item' }> =>
+          action.type === 'add_item' && action.productId === askedDeal.id,
+      );
+      const replaced = requested.filter(
+        (action) =>
+          action === proposed ||
+          (action.type === 'add_item' && optionNamed(action.productId)) ||
+          (action.type === 'clarify_item' && action.candidateProductIds.some(optionNamed)),
+      );
+      const chosen = new Set(answer.modifierIds);
+      const later = (proposed?.modifierIds ?? []).filter(
+        (id) =>
+          !chosen.has(id) &&
+          askedDeal.deal!.choices.some(
+            (group) =>
+              group.options.some((option) => option.id === id) &&
+              !group.options.some((option) => chosen.has(option.id)),
+          ),
+      );
+      const resolved: BotAction = {
+        ...answer,
+        quantity:
+          proposed &&
+          (proposed.quantity === pendingDeal.quantity ||
+            mentionsQuantity(input.text, proposed.quantity, products))
+            ? proposed.quantity
+            : answer.quantity,
+        modifierIds: [...(answer.modifierIds ?? []), ...later],
+        notes: proposed?.notes?.trim() ? proposed.notes : answer.notes,
+      };
+      const same = (ids?: string[]) =>
+        JSON.stringify([...new Set([...pendingDeal.picked, ...(ids ?? [])])].sort()) ===
+        JSON.stringify([...new Set(resolved.modifierIds)].sort());
+      requested = [resolved, ...requested.filter((action) => !replaced.includes(action))];
+      dealResolved = true;
+      if (
+        replaced.some((action) => action !== proposed) ||
+        !proposed ||
+        !same(proposed.modifierIds)
+      ) {
+        correctedInterpretation = true;
+        traces.push('deal_choice_resolved');
+      }
+    }
+  }
   if (
+    !dealResolved &&
     !input.action &&
     actions &&
     requested.some((action) => action.type === 'add_item' || action.type === 'clarify_item')
   ) {
     const deterministic = parseActions(company, products, next, input.text);
     const first = deterministic[0];
-    if (first?.type === 'clarify_item' && requested.some((action) => action.type === 'add_item')) {
+    // The AI answering the deal's choice ("sprite wala") is no "which Sprite?" about drinks.
+    const answersDeal =
+      first?.type === 'clarify_item' &&
+      !!askedDeal &&
+      requested.some((action) => action.type === 'add_item' && action.productId === askedDeal.id) &&
+      first.candidateProductIds.every(optionNamed);
+    if (answersDeal) {
+      const kept = requested.filter(
+        (action) =>
+          !(action.type === 'add_item' && optionNamed(action.productId)) &&
+          !(action.type === 'clarify_item' && action.candidateProductIds.every(optionNamed)),
+      );
+      if (kept.length !== requested.length) {
+        requested = kept;
+        correctedInterpretation = true;
+        traces.push('deal_choice_resolved');
+      }
+    } else if (
+      first?.type === 'clarify_item' &&
+      requested.some((action) => action.type === 'add_item')
+    ) {
       // The dish to choose is asked about. The AI's additions of other dishes stand ("karahi 4
       // naan" with two karahis: the naan), added first so the choice stays open. A count that
       // may be the next dish's (the 4) is not the choice's: the AI's count for it, else 1.
@@ -2304,7 +3046,7 @@ export function processTurn(
       const quantityFor = (proposed: number) =>
         !pending || explicit
           ? first.quantity
-          : proposed === pending.quantity || mentionsQuantity(input.text, proposed)
+          : proposed === pending.quantity || mentionsQuantity(input.text, proposed, products)
             ? proposed
             : first.quantity;
       requested = requested.map((action) => {
@@ -2373,25 +3115,51 @@ export function processTurn(
           notes: action.notes ?? '',
           originalText: action.originalText ?? input.text,
         };
+        // Deals told apart by price, and by when they are on if not now.
+        const unavailable = (product: Product) => {
+          if (!product.deal)
+            return product.available
+              ? ''
+              : say(lang, ' · Unavailable', ' · دستیاب نہیں', ' · available nahi');
+          const when = product.deal.state === 'later' ? dealTimes(product, lang, clock) : '';
+          return ` — ${money(product.price)}${
+            when
+              ? say(lang, ` · on ${when}`, ` · ${when} دستیاب`, ` · ${when} available`)
+              : product.deal.state === 'sold_out'
+                ? say(lang, ' · sold out', ' · سامان ختم', ' · sold out')
+                : product.available
+                  ? ''
+                  : say(lang, ' · Unavailable', ' · دستیاب نہیں', ' · available nahi')
+          }`;
+        };
         reply = `${say(lang, 'Which one would you like?', 'آپ کون سا لینا چاہیں گے؟', 'Aap kaun sa lena chahenge?')}\n${candidates
-          .map(
-            (product, index) =>
-              `${index + 1}. ${product.name}${product.available ? '' : say(lang, ' · Unavailable', ' · دستیاب نہیں', ' · available nahi')}`,
-          )
+          .map((product, index) => `${index + 1}. ${product.name}${unavailable(product)}`)
           .join('\n')}`;
         continue;
       }
       if (action.type === 'menu') {
-        reply = menu(company, products, lang, action.query, !!modelResponse, input.menuLink);
+        reply = menu(
+          company,
+          products,
+          lang,
+          action.query,
+          !!modelResponse,
+          input.menuLink,
+          shownAt,
+        );
         continue;
       }
       if (action.type === 'cart_summary') {
-        reply = cartSummary(company, products, cart, lang);
+        // A deal that isn't on now is marked, with how to take it out.
+        const problem = dealProblem(company, products, cart, lang, clock);
+        if (problem) traces.push('deal_not_on');
+        reply = cartSummary(company, products, cart, lang, problem);
         continue;
       }
       if (action.type === 'new_order') {
         startNewCart(cart);
         delete next.pendingItemChoice;
+        delete next.pendingDealChoice;
         reply = say(
           lang,
           'Started a new cart. What would you like?',
@@ -2402,6 +3170,7 @@ export function processTurn(
       }
       if (action.type === 'cancel') {
         delete next.pendingItemChoice;
+        delete next.pendingDealChoice;
         if (cart.status === 'submitted') {
           traces.push(`cancel_submitted:${cart.orderId}`);
           next.mode = 'human';
@@ -2464,6 +3233,7 @@ export function processTurn(
       ) {
         startNewCart(cart);
         delete next.pendingItemChoice;
+        delete next.pendingDealChoice;
         traces.push('new_order');
       }
       if (cart.status === 'submitted') {
@@ -2487,15 +3257,77 @@ export function processTurn(
         continue;
       }
       if (action.type === 'add_item') {
-        if (!Number.isInteger(action.quantity) || action.quantity < 1 || action.quantity > 50)
+        const product = products.find(
+          (p) => p.id === action.productId && p.companyId === company.id,
+        );
+        // The deal whose choice was asked before this turn: its earlier picks, count and notes
+        // carry on into this answer.
+        const pending =
+          !dealAsked && product?.deal && next.pendingDealChoice?.productId === product.id
+            ? next.pendingDealChoice
+            : undefined;
+        let add = action;
+        if (product?.deal) {
+          if (product.deal.state !== 'on') {
+            traces.push('deal_not_on');
+            throw new Error(dealRefusal(product, lang, clock));
+          }
+          // One pick per choice; an unknown id, or two from one choice, is asked again.
+          const ids = action.modifierIds ?? [];
+          const picks = product.deal.choices.flatMap((group) => {
+            const named = group.options.filter((option) => ids.includes(option.id));
+            if (named.length) return named.length === 1 ? [named[0]!.id] : [];
+            const earlier = group.options.find((option) => pending?.picked.includes(option.id));
+            return earlier ? [earlier.id] : [];
+          });
+          // The count asked about, unless the customer wrote a new one ("sprite, make it 3").
+          const quantity =
+            !pending ||
+            input.action ||
+            action.quantity === pending.quantity ||
+            mentionsQuantity(input.text, action.quantity, products)
+              ? action.quantity
+              : pending.quantity;
+          add = {
+            ...action,
+            quantity,
+            modifierIds: picks,
+            notes: action.notes?.trim() ? action.notes : (pending?.notes ?? action.notes),
+          };
+          if (picks.length < product.deal.choices.length) {
+            if (!Number.isInteger(quantity) || quantity < 1 || quantity > 50)
+              throw new Error('Choose a quantity between 1 and 50.');
+            // A deal in the cart that isn't on is named first.
+            dealsOn();
+            // One question a turn: a second deal waiting for its choices is not added.
+            if (dealAsked) {
+              const asked = deals.find((deal) => deal.id === next.pendingDealChoice!.productId)!;
+              dealQuestion = dealChoiceQuestion(asked, next.pendingDealChoice!, lang, true);
+              continue;
+            }
+            next.pendingDealChoice = {
+              productId: product.id,
+              quantity,
+              picked: [...picks].sort(),
+              notes: (add.notes ?? '').slice(0, 300),
+            };
+            dealAsked = true;
+            dealQuestion = dealChoiceQuestion(product, next.pendingDealChoice, lang);
+            traces.push('deal_choice_asked');
+            continue;
+          }
+        }
+        if (!Number.isInteger(add.quantity) || add.quantity < 1 || add.quantity > 50)
           throw new Error('Choose a quantity between 1 and 50.');
+        // A deal in the cart that isn't on is named, never priced into a general error.
+        dealsOn();
         const trial: Cart = structuredClone(cart);
         const line = {
-          productId: action.productId,
-          quantity: action.quantity,
-          variantId: action.variantId,
-          modifierIds: [...(action.modifierIds ?? [])].sort(),
-          notes: (action.notes ?? '').slice(0, 300),
+          productId: add.productId,
+          quantity: add.quantity,
+          variantId: add.variantId,
+          modifierIds: [...(add.modifierIds ?? [])].sort(),
+          notes: (add.notes ?? '').slice(0, 300),
         };
         const same = trial.items.find(
           (i) =>
@@ -2509,29 +3341,44 @@ export function processTurn(
         // Validate all lines without requiring delivery details during cart building.
         const quote = quoteCart(company, products, { ...trial, fulfillment: 'pickup' });
         cart.items = trial.items;
+        // A deal choice asked before this turn is answered by this addition, or set aside by
+        // another one; one waiting behind the item choice this answers is asked now.
+        const waiting = conversation.pendingDealChoice && next.pendingDealChoice && !dealAsked;
+        if (pending) {
+          delete next.pendingDealChoice;
+          traces.push('deal_choice_answered');
+        } else if (
+          waiting &&
+          conversation.pendingItemChoice?.candidateProductIds.includes(add.productId)
+        ) {
+          const asked = deals.find((deal) => deal.id === next.pendingDealChoice!.productId)!;
+          dealAsked = true;
+          dealQuestion = dealChoiceQuestion(asked, next.pendingDealChoice!, lang);
+          traces.push('deal_choice_asked');
+        } else if (waiting) delete next.pendingDealChoice;
         delete next.pendingItemChoice;
         invalidate(cart);
         settleFulfillment();
-        const product = products.find(
-          (p) => p.id === action.productId && p.companyId === company.id,
-        )!;
+        const quoted = quote.items[same ? trial.items.indexOf(same) : trial.items.length - 1]!;
         if (modelResponse) {
-          const quoted = quote.items[same ? trial.items.indexOf(same) : trial.items.length - 1]!;
           cartFacts.push(
             say(
               lang,
-              `Added ${action.quantity} × ${product.name}${quoted.variant ? ` (${quoted.variant})` : ''}${quoted.modifiers.length ? ` + ${quoted.modifiers.join(', ')}` : ''} — ${money(quoted.unitPrice)} each.${line.notes ? ` Notes: ${line.notes}` : ''}`,
-              `${action.quantity} × ${product.name} شامل کر دیا — فی عدد ${money(quoted.unitPrice)}۔`,
-              `${action.quantity} × ${product.name} add kar diya — ${money(quoted.unitPrice)} each.`,
+              `Added ${add.quantity} × ${product!.name}${quoted.variant ? ` (${quoted.variant})` : ''}${quoted.modifiers.length ? ` + ${quoted.modifiers.join(', ')}` : ''} — ${money(quoted.unitPrice)} each.${line.notes ? ` Notes: ${line.notes}` : ''}`,
+              `${add.quantity} × ${product!.name} شامل کر دیا — فی عدد ${money(quoted.unitPrice)}۔`,
+              `${add.quantity} × ${product!.name} add kar diya — ${money(quoted.unitPrice)} each.`,
             ),
           );
-        } else
+        } else {
+          // A deal's picks are said back ("Deal 1 (Drink: Sprite)").
+          const name = `${product!.name}${quoted.includes && quoted.variant ? ` (${quoted.variant})` : ''}`;
           reply = say(
             lang,
-            `Added ${action.quantity} × ${product.name}. Add anything else, or send “review”.`,
-            `${action.quantity} × ${product.name} شامل کر دیا۔ مزید چیز بتائیں یا “جائزہ” لکھیں۔`,
-            `${action.quantity} × ${product.name} add kar diya. Aur kuch chahiye, ya “review” likhein.`,
+            `Added ${add.quantity} × ${name}. Add anything else, or send “review”.`,
+            `${add.quantity} × ${name} شامل کر دیا۔ مزید چیز بتائیں یا “جائزہ” لکھیں۔`,
+            `${add.quantity} × ${name} add kar diya. Aur kuch chahiye, ya “review” likhein.`,
           );
+        }
         continue;
       }
       if (action.type === 'remove_item') {
@@ -2605,6 +3452,7 @@ export function processTurn(
         const refused =
           cart.fulfillment && fulfillmentRefusal(company, cart.fulfillment, lang, true);
         if (refused) throw new Error(refused);
+        dealsOn();
         incompleteReviewQuestion = modelResponse ? missingDetails(company, cart, lang) : undefined;
         reply = incompleteReviewQuestion
           ? cartSummary(company, products, cart, lang)
@@ -2643,6 +3491,8 @@ export function processTurn(
           if (cart.status === 'awaiting_confirmation') unreview(cart);
           continue;
         }
+        // Its deals are judged now, not when the review was shown.
+        dealsOn();
         const missing = missingDetails(company, cart, lang);
         if (missing) {
           reply = missing;

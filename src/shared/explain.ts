@@ -97,6 +97,9 @@ const STEP_LABELS: Record<string, string> = {
   order_status: 'Told the customer where their order is',
   allergy_question_guarded: 'Answered an allergy question safely',
   allergy_assurance_ignored: 'Dropped an allergy promise',
+  deal_choice_asked: 'Asked for a deal’s choice',
+  deal_choice_answered: 'Added a deal with the customer’s choices',
+  deal_not_on: 'Said a deal isn’t on now',
 };
 
 const CORRECTION_LABELS: Record<string, string> = {
@@ -106,6 +109,8 @@ const CORRECTION_LABELS: Record<string, string> = {
   ambiguous_addition_prevented:
     'The AI added an item, but the name matched several dishes, so the customer was asked to choose.',
   item_choice_resolved: 'The customer’s answer settled an earlier “which one?” question.',
+  deal_choice_resolved:
+    'The customer answered the deal’s choice, so the engine added the deal with it in place of what the AI proposed.',
   browse_cart_mutation_prevented:
     'The customer was only browsing, so the AI’s cart change was undone and the menu was shown.',
   unconfirmed_model_action_rejected:
@@ -116,7 +121,7 @@ const CORRECTION_LABELS: Record<string, string> = {
   invalid_model_grounding_ignored:
     'The AI referenced facts that don’t exist, so its wording was dropped.',
   unsafe_model_response_ignored:
-    'The AI’s wording stated prices or a confirmation, so it was dropped.',
+    'The AI’s wording stated prices, a saving or discount, or a confirmation, so it was dropped.',
   invalid_model_prompt_ignored:
     'The AI’s follow-up question didn’t fit the order so far, so its wording was dropped.',
   response_fallback: 'There was no usable reply text, so a built-in next question was sent.',
