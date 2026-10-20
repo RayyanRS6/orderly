@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   asksAboutAllergens,
+  asksForPerson,
   createConversation,
   parseActions,
   processTurn,
@@ -631,5 +632,400 @@ describe('the AI’s wording about deals', () => {
     expect(describeCorrection('unsafe_model_response_ignored')).toBe(
       'The AI’s wording stated prices, a saving or discount, or a confirmation, so it was dropped.',
     );
+  });
+});
+
+describe('a deal word in a message that orders dishes, on a menu without deals', () => {
+  const dastarkhwan = seedCompanies[0]!;
+  const menu = seedProducts.filter((p) => p.companyId === dastarkhwan.id);
+  const biryani = menu.find((p) => p.name === 'Chicken Biryani')!;
+  const naan = menu.find((p) => p.name === 'Butter Naan')!;
+  const add = (product: Product, quantity: number): BotAction => ({
+    type: 'add_item',
+    productId: product.id,
+    quantity,
+    modifierIds: [],
+  });
+  const delivery: BotAction = { type: 'set_details', fulfillment: 'delivery' };
+  const added = (n: number) => `Added ${n} × Chicken Biryani. Add anything else, or send “review”.`;
+  const unsure = 'I’m not certain about that, so I’ve asked a staff member to help.';
+  const ok: ModelResponse = { text: 'Anything else?', askFor: 'anything_else' };
+
+  // Each is read, and answered, exactly as main (before deals) did.
+  it.each<[string, BotAction[], string[], string]>([
+    ['Can I get 2 chicken biryani as a meal for two?', [add(biryani, 2)], ['add_item'], added(2)],
+    ['2 biryani dena, koi offer hai?', [add(biryani, 2)], ['add_item'], added(2)],
+    [
+      '1 chicken biryani meal bhej do',
+      [add(biryani, 1)],
+      ['add_item'],
+      '1 × Chicken Biryani add kar diya. Aur kuch chahiye, ya “review” likhein.',
+    ],
+    [
+      '2 biryani bhej do, family meal ke liye',
+      [add(biryani, 2)],
+      ['add_item'],
+      '2 × Chicken Biryani add kar diya. Aur kuch chahiye, ya “review” likhein.',
+    ],
+    [
+      '2 biryani aur 3 naan. Koi deal hai?',
+      [add(biryani, 2), add(naan, 3)],
+      ['add_item', 'add_item'],
+      'Added 3 × Butter Naan. Add anything else, or send “review”.',
+    ],
+    [
+      'add 2 naan, show deals',
+      [add(naan, 2)],
+      ['add_item'],
+      'Added 2 × Butter Naan. Add anything else, or send “review”.',
+    ],
+    [
+      '2 chicken biryani please. Do you offer delivery?',
+      [add(biryani, 2), delivery],
+      ['add_item', 'set_details'],
+      'What name should I put on the order?',
+    ],
+    ['do you offer delivery?', [delivery], ['set_details'], 'What would you like to order?'],
+    [
+      'Do you offer cash on delivery?',
+      [delivery],
+      ['set_details'],
+      'What would you like to order?',
+    ],
+    [
+      'what do you offer?',
+      [{ type: 'answer', text: '' }],
+      ['answer', 'grounded_model_answer', 'handoff'],
+      unsure,
+    ],
+    ['2 chicken biryani, how long will the meal take?', [add(biryani, 2)], ['add_item'], added(2)],
+    [
+      'whats the best meal?',
+      [{ type: 'answer', text: '' }],
+      ['answer', 'grounded_model_answer', 'handoff'],
+      unsure,
+    ],
+  ])('reads “%s” as before', (text, parsed, traces, reply) => {
+    const c = chat(dastarkhwan);
+    expect(parseActions(dastarkhwan, menu, c.conversation, text)).toEqual(parsed);
+    const result = c.send(text, { products: menu });
+    expect(result.traces).toEqual(traces);
+    expect(result.reply).toBe(reply);
+  });
+
+  it.each<[string, BotAction[], string[], string]>([
+    [
+      'Can I get 2 chicken biryani as a meal for two?',
+      [add(biryani, 2)],
+      ['add_item'],
+      'Added 2 × Chicken Biryani — Rs. 450 each.\nItems subtotal: Rs. 900.\n\nAnything else?',
+    ],
+    [
+      '2 biryani aur 3 naan. Koi deal hai?',
+      [add(biryani, 2), add(naan, 3)],
+      ['add_item', 'add_item'],
+      'Added 2 × Chicken Biryani — Rs. 450 each.\nAdded 3 × Butter Naan — Rs. 100 each.\nItems subtotal: Rs. 1,200.\n\nAnything else?',
+    ],
+    [
+      '2 chicken biryani please. Do you offer delivery?',
+      [add(biryani, 2), delivery],
+      ['add_item', 'set_details'],
+      'Added 2 × Chicken Biryani — Rs. 450 each.\nItems subtotal: Rs. 900.\n\nAnything else?',
+    ],
+    [
+      'I want 2 chicken biryani. Do you offer home delivery?',
+      [add(biryani, 2)],
+      ['add_item'],
+      'Added 2 × Chicken Biryani — Rs. 450 each.\nItems subtotal: Rs. 900.\n\nAnything else?',
+    ],
+  ])('keeps the AI’s order of “%s”, as before', (text, actions, traces, reply) => {
+    const c = chat(dastarkhwan);
+    const result = c.send(text, { products: menu, actions, response: ok });
+    expect(result.traces).toEqual(traces);
+    expect(result.reply).toBe(reply);
+    expect(c.conversation.cart.items.map((item) => [item.productId, item.quantity])).toEqual(
+      actions.flatMap((a) => (a.type === 'add_item' ? [[a.productId, a.quantity]] : [])),
+    );
+  });
+
+  it('keeps the AI’s "…meal?" order at Bun & Co., as before', () => {
+    const c = chat();
+    const result = c.send('Can I get a crispy chicken meal?', {
+      products: seed,
+      actions: [add(crispy, 1)],
+      response: ok,
+    });
+    expect(result.traces).toEqual(['add_item']);
+    expect(result.reply).toBe(
+      'Added 1 × Crispy Chicken — Rs. 620 each.\nItems subtotal: Rs. 620.\n\nAnything else?',
+    );
+  });
+
+  it.each(['any offers?', 'deal hai kya', 'deals dikhao', 'koi offer hai', 'any combos'])(
+    'still answers the deal question “%s” with the menu, adding nothing',
+    (text) => {
+      const c = chat(dastarkhwan);
+      expect(parseActions(dastarkhwan, menu, c.conversation, text)).toEqual([
+        { type: 'menu', query: 'deals' },
+      ]);
+      const result = c.send(text, { products: menu });
+      expect(result.reply).toContain('We couldn’t find “deals” on the menu. Here is our menu:');
+      expect(result.conversation.cart.items).toEqual([]);
+    },
+  );
+});
+
+describe('"meal" and "combo" as words of dishes’ names, on a menu without deals', () => {
+  const menu = [
+    dish('zinger', 'Zinger Burger', { category: 'Burgers' }),
+    dish('chicken-burger', 'Chicken Burger', { category: 'Burgers' }),
+    dish('zinger-meal', 'Zinger Meal', { category: 'Meals' }),
+    dish('kids-meal', 'Kids Meal', { category: 'Meals' }),
+    dish('chicken-combo', 'Chicken Combo', { category: 'Meals' }),
+    dish('wrap', 'Chicken Wrap', { category: 'Wraps' }),
+    dish('family-combo', 'Family Combo', { category: 'Meals' }),
+    dish('fries', 'Fries', { category: 'Sides' }),
+  ];
+  // Each is read, and answered, exactly as main (before deals) did.
+  it.each([
+    [
+      'meal',
+      ['which zinger-meal | kids-meal ×1'],
+      'Which one would you like?\n1. Zinger Meal\n2. Kids Meal',
+    ],
+    [
+      'meals?',
+      ['which kids-meal | zinger-meal ×1'],
+      'Which one would you like?\n1. Kids Meal\n2. Zinger Meal',
+    ],
+    [
+      'koi meal hai?',
+      ['which kids-meal | zinger-meal ×1'],
+      'Which one would you like?\n1. Kids Meal\n2. Zinger Meal',
+    ],
+    [
+      'combo',
+      ['which chicken-combo | family-combo ×1'],
+      'Which one would you like?\n1. Chicken Combo\n2. Family Combo',
+    ],
+    [
+      'any combos?',
+      ['which chicken-combo | family-combo ×1'],
+      'Which one would you like?\n1. Chicken Combo\n2. Family Combo',
+    ],
+    [
+      '3 zinger meals',
+      ['add zinger-meal ×3'],
+      'Added 3 × Zinger Meal. Add anything else, or send “review”.',
+    ],
+    [
+      '2 zinger meals?',
+      ['add zinger-meal ×2'],
+      'Added 2 × Zinger Meal. Add anything else, or send “review”.',
+    ],
+    [
+      '2 chicken combos',
+      ['add chicken-combo ×2'],
+      'Added 2 × Chicken Combo. Add anything else, or send “review”.',
+    ],
+    [
+      'family combos?',
+      ['add family-combo ×1'],
+      'Added 1 × Family Combo. Add anything else, or send “review”.',
+    ],
+  ])('reads “%s” as before', (text, parsed, reply) => {
+    expect(parse(text, menu)).toEqual(parsed);
+    expect(chat().send(text, { products: menu }).reply).toBe(reply);
+  });
+
+  it('keeps the AI’s "which meal?" and its add of the meals named', () => {
+    const which = chat().send('meal', {
+      products: menu,
+      actions: [
+        { type: 'clarify_item', candidateProductIds: ['zinger-meal', 'kids-meal'], quantity: 1 },
+      ],
+      response: { text: 'Anything else?', askFor: 'anything_else' },
+    });
+    expect(which.traces).toEqual(['clarify_item', 'invalid_model_prompt_ignored']);
+    expect(which.reply).toBe('Which one would you like?\n1. Zinger Meal\n2. Kids Meal');
+    const c = chat();
+    const result = c.send('2 zinger meals?', {
+      products: menu,
+      actions: [{ type: 'add_item', productId: 'zinger-meal', quantity: 2, modifierIds: [] }],
+      response: { text: 'Anything else?', askFor: 'anything_else' },
+    });
+    expect(result.traces).toEqual(['add_item']);
+    expect(lines(c)).toEqual(['zinger-meal ×2']);
+  });
+});
+
+describe('a deal word beside dishes, on a menu with deals', () => {
+  const add = (product: Product, quantity: number): BotAction => ({
+    type: 'add_item',
+    productId: product.id,
+    quantity,
+    modifierIds: [],
+  });
+
+  it('adds the dishes named, and asks which deal only for a deal ordered in its own part', () => {
+    expect(parse('2 zinger burger aur ek deal chahiye')).toEqual([
+      'add zinger-burger ×2',
+      'which deal-1 | deal-2 | deal-3 | zinger-deal | lunch-deal ×1',
+    ]);
+    expect(parse('2 zinger burger, koi deal hai?')).toEqual(['add zinger-burger ×2']);
+    expect(parse('2 loaded fries please, any other deals?')).toEqual([`add ${fries.id} ×2`]);
+    expect(parse('Can I get 2 loaded fries as a meal for two?')).toEqual([`add ${fries.id} ×2`]);
+    expect(parse('I want 2 loaded fries. Do you offer home delivery?')).toEqual([
+      `add ${fries.id} ×2`,
+      'set_details',
+    ]);
+    // With no dish named, a deal word still asks for the deals or orders one.
+    expect(parse('koi deal hai?')).toEqual(['menu deals']);
+    expect(parse('deal mangwana hai')).toEqual([
+      'which deal-1 | deal-2 | deal-3 | zinger-deal | lunch-deal ×1',
+    ]);
+  });
+
+  it('keeps the AI’s additions beside its "which deal?" and its answer about the deals', () => {
+    const ok: ModelResponse = { text: 'Sure!', askFor: 'none' };
+    const whichDeal: BotAction = {
+      type: 'clarify_item',
+      candidateProductIds: ['deal-1', 'deal-2', 'deal-3', 'zinger-deal', 'lunch-deal'],
+      quantity: 1,
+    };
+    // Also where the parser finds only the dish: its "which deal?" is not that dish again.
+    for (const [text, dish] of [
+      ['2 zinger burger aur ek deal chahiye', zinger],
+      ['I want 2 loaded fries and a deal', fries],
+    ] as const) {
+      const c = chat();
+      const result = c.send(text, { actions: [add(dish, 2), whichDeal], response: ok });
+      expect(result.traces).toEqual(['add_item', 'clarify_item']);
+      expect(lines(c)).toEqual([`${dish.id} ×2`]);
+      expect(c.conversation.pendingItemChoice?.candidateProductIds).toHaveLength(5);
+    }
+    for (const [text, actions] of [
+      ['2 loaded fries please, any other deals?', [add(fries, 2)]],
+      ['I want 2 loaded fries. Do you offer home delivery?', [add(fries, 2)]],
+      [
+        'deal 1 aur 2 fries. deal 2 hai?',
+        [
+          { type: 'add_item', productId: 'deal-1', quantity: 1, modifierIds: ['o-coke'] },
+          add(fries, 2),
+        ],
+      ],
+    ] as [string, BotAction[]][]) {
+      const order = chat();
+      const turn = order.send(text, { actions, response: ok });
+      expect(turn.traces).not.toContain('browse_cart_mutation_prevented');
+      expect(lines(order)).toEqual(
+        actions.flatMap((a) =>
+          a.type === 'add_item'
+            ? [`${a.productId} ×${a.quantity}${a.modifierIds?.length ? ` [${a.modifierIds}]` : ''}`]
+            : [],
+        ),
+      );
+    }
+  });
+});
+
+describe('a named deal in a statement that ends in "hai"', () => {
+  it.each([
+    ['deal 2, mera naam Ali hai', ['add deal-2 ×1', 'set_details']],
+    ['2 zinger deal bhej do, address gulberg hai', ['add zinger-deal ×2']],
+    ['deal 2 bhej dein, ghar DHA phase 5 mein hai', ['add deal-2 ×1']],
+    ['deal 2 pickup karna hai', ['add deal-2 ×1', 'set_details']],
+    ['deal 2 mangwani hai', ['add deal-2 ×1']],
+    ['deal 2 mangwani hai?', ['add deal-2 ×1']],
+    ['ek deal 2 aur ek zinger deal, jaldi hai', ['add deal-2 ×1', 'add zinger-deal ×1']],
+    ['ڈیل 2، میرا نام علی ہے', ['add deal-2 ×1', 'set_details']],
+  ])('orders it: “%s”', (text, parsed) => {
+    expect(parse(text)).toEqual(parsed);
+  });
+
+  it.each([
+    ['deal 2 hai', 'menu Deal 2'],
+    ['deal 2 hai?', 'menu Deal 2'],
+    ['deal 2 hai kya', 'menu Deal 2'],
+    ['zinger deal milegi', 'menu Zinger Deal'],
+    ['deal 2 available hai', 'menu Deal 2'],
+    ['ڈیل 2 ہے؟', 'menu Deal 2'],
+  ])('still shows the deal asked about: “%s”', (text, shown) => {
+    expect(parse(text)).toEqual([shown]);
+  });
+
+  it('keeps the AI’s add of the deal and the details given with it', () => {
+    const c = chat();
+    const result = c.send('deal 2, pickup, mera naam Ali hai', {
+      actions: [
+        { type: 'add_item', productId: 'deal-2', quantity: 1, modifierIds: [] },
+        { type: 'set_details', fulfillment: 'pickup', customerName: 'Ali' },
+      ],
+      response: { text: 'Thanks Ali! Anything else?', askFor: 'anything_else' },
+    });
+    expect(result.traces).toEqual(['add_item', 'set_details']);
+    expect(lines(c)).toEqual(['deal-2 ×1']);
+    expect(c.conversation.cart).toMatchObject({ fulfillment: 'pickup', customerName: 'Ali' });
+  });
+});
+
+describe('a deal whose name holds a question word or "person"', () => {
+  const half = deal('half', 'Half Price Tuesday');
+  const always = deal('always', 'Always Available Combo', { choices: [] });
+  const urdu = deal('urdu', 'قیمت ڈیل', { choices: [] });
+  const products = catalog('13:00', [half, always, urdu]);
+
+  it('is added by its name, from Test your bot’s Add button and with the AI', () => {
+    // What the Add button sends for it (Conversations addText).
+    const local = chat();
+    expect(local.send('Add 1 Half Price Tuesday with Sprite', { products }).reply).toBe(
+      'Added 1 × Half Price Tuesday (Drink: Sprite). Add anything else, or send “review”.',
+    );
+    expect(lines(local)).toEqual(['half ×1 [o-sprite]']);
+    const ai = chat();
+    const result = ai.send('Add 1 Half Price Tuesday with Sprite', {
+      products,
+      actions: [{ type: 'add_item', productId: 'half', quantity: 1, modifierIds: ['o-sprite'] }],
+      response: { text: '', askFor: 'none' },
+    });
+    expect(result.traces).toEqual(['add_item']);
+    expect(lines(ai)).toEqual(['half ×1 [o-sprite]']);
+    expect(parse('1 always available combo', products)).toEqual(['add always ×1']);
+    expect(parse('1 قیمت ڈیل', products)).toEqual(['add urdu ×1']);
+  });
+
+  it('still shows it when asked about its price or whether it is on', () => {
+    expect(parse('how much is half price tuesday', products)).toEqual(['menu Half Price Tuesday']);
+    expect(parse('half price tuesday price?', products)).toEqual(['menu Half Price Tuesday']);
+    expect(parse('is always available combo available?', products)).toEqual([
+      'menu Always Available Combo',
+    ]);
+  });
+
+  it('reads "2 Person Deal" as the deal, never as asking for a person', () => {
+    const people = catalog('13:00', [
+      deal('two-person', '2 Person Deal', { choices: [] }),
+      deal('four-person', '4 Person Deal', { choices: [] }),
+    ]);
+    expect(parse('Add 1 2 Person Deal', people)).toEqual(['add two-person ×1']);
+    expect(parse('2 person deal', people)).toEqual(['add two-person ×1']);
+    expect(parse('ek 4 person deal', people)).toEqual(['add four-person ×1']);
+    expect(parse('I want to talk to a person', people)).toEqual(['handoff']);
+    expect(asksForPerson('2 person deal chahiye', people)).toBe(false);
+    expect(asksForPerson('two 2 person deals', people)).toBe(false);
+    expect(asksForPerson('2 person deal, aur staff se baat', people)).toBe(true);
+    // Without that deal, as before.
+    expect(asksForPerson('2 person deal chahiye')).toBe(true);
+    // A chat paused for staff is taken back by the bot later, unless a person was asked for.
+    const paused = {
+      ...createConversation(company.id, '923001234567', 'whatsapp', at('12:00')),
+      mode: 'human' as const,
+      botPausedAt: at('12:55'),
+    };
+    const send = (text: string) =>
+      processTurn(company, people, paused, { messageId: text, text, now: at('13:00') })
+        .conversation;
+    expect(send('2 person deal chahiye').botPausedAt).toBe(at('12:55'));
+    expect(send('I need a person').botPausedAt).toBeUndefined();
   });
 });

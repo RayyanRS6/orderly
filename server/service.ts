@@ -572,7 +572,7 @@ export async function handleTurn(
               detail: `${sanitizeError(error)} This message needs a staff reply; the bot answers the customer’s next message from ${AI_ERROR_PAUSE_MS / 60000} minutes on.`,
             },
           });
-        if (!asksForPerson(input.text))
+        if (!asksForPerson(input.text, catalog))
           return await saveLimitPause(repo, company, conversation, input, error);
         // Asking for a person needs no AI: the engine hands the chat to staff for good, and
         // the bot does not take it back when the limit resets.

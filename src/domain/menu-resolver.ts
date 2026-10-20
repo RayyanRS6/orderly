@@ -17,6 +17,9 @@ export const DEAL_WORDS = new Set([
   'ڈیلز',
   'ڈیلیں',
 ]);
+// Of those, the ones that only ever mean deals. "combo", "offer" and "meal" may also be a word of
+// a dish's own name ("Kids Meal", "Family Combo").
+export const ONLY_DEAL_WORDS = new Set(['deal', 'deals', 'ڈیل', 'ڈیلز', 'ڈیلیں']);
 
 const STOP_WORDS = new Set([
   'add',
@@ -195,7 +198,7 @@ const sameWord = (input: string, label: string) => {
 // Where one item's part of a message ends: punctuation, a new line, or a word joining two items
 // ("naan 3, chicken wali", "naan 4\nchicken 1", "tikka 2 aur chicken wali"). A count belongs to
 // the dish in its own part only.
-const CLAUSE_BREAK = /[,،;.۔|\n!?؟؛]+|(?<=^|\s)(?:aur|and|bhi|also|plus|or|&|اور)(?=\s|$)/iu;
+export const CLAUSE_BREAK = /[,،;.۔|\n!?؟؛]+|(?<=^|\s)(?:aur|and|bhi|also|plus|or|&|اور)(?=\s|$)/iu;
 const clausesOf = (text: string) =>
   text
     .split(CLAUSE_BREAK)
@@ -749,8 +752,18 @@ export function resolveItemMention(
           let tokenScore = 0;
           for (const input of meaningful) {
             if (candidate === input) tokenScore = Math.max(tokenScore, 500);
-            // "deal" is not a typo of "daal", nor "deals" of anything.
-            if (input.length < 4 || DEAL_WORDS.has(input)) continue;
+            // "deal" is not a typo of "daal", nor "deals" of anything. "meals" is still the
+            // "meal" of a Zinger Meal, scored as the one-letter typo it was read as before.
+            if (DEAL_WORDS.has(input)) {
+              if (
+                !ONLY_DEAL_WORDS.has(input) &&
+                candidate !== input &&
+                candidate.replace(/s$/u, '') === input.replace(/s$/u, '')
+              )
+                tokenScore = Math.max(tokenScore, 280);
+              continue;
+            }
+            if (input.length < 4) continue;
             const limit = input.length >= 8 ? 2 : 1;
             if (candidate.length < 4 || Math.abs(candidate.length - input.length) > limit) continue;
             const distance = editDistance(input, candidate);
