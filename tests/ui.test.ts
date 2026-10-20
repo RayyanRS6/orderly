@@ -615,6 +615,35 @@ describe('light public pages', () => {
     expect(heavyImports()).toEqual([]);
   });
 
+  it('keeps the Deals tab’s own helpers out of the menu page', () => {
+    // Every src file the menu page loads, followed as heavyImports follows them.
+    const files = new Set<string>();
+    const walk = (file: string) => {
+      const name = relative(src, file).replaceAll(sep, '/');
+      if (files.has(name)) return;
+      files.add(name);
+      for (const spec of specifiers(real(file))) {
+        if (!spec.startsWith('.')) continue;
+        const target = ['', '.ts', '.tsx', '/index.ts', '/index.tsx']
+          .map((ext) => resolve(dirname(file), spec.split('?')[0] + ext))
+          .find((path) => existsSync(path) && statSync(path).isFile());
+        if (target?.startsWith(src + sep) && /\.tsx?$/.test(target)) walk(target);
+      }
+    };
+    walk(join(src, 'components/MenuPage.tsx'));
+    expect(files).toContain('shared/menu.ts');
+    // Shared chunks carry every export any importer uses, so a helper only the Deals tab needs
+    // would be downloaded by every menu visitor. The page needs only dealSavings, from
+    // shared/menu.ts, so the deal and hours helpers the bot and the dashboard use stay out too.
+    for (const dashboardOnly of [
+      'shared/deal-insights.ts',
+      'lib/deal-form.ts',
+      'shared/deals.ts',
+      'shared/hours.ts',
+    ])
+      expect(files).not.toContain(dashboardOnly);
+  });
+
   it('catches the workspace or the dialog library however the menu page reaches it', () => {
     const adding = (file: string, line: string) => (path: string) =>
       path === join(src, file) ? `${line}\n${real(path)}` : real(path);

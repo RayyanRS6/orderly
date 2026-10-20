@@ -33,6 +33,7 @@ import {
   companySchema,
   chatSchema,
   dealAvailableSchema,
+  dealFieldWords,
   dealOrderSchema,
   dealSchema,
   settingsRevision,
@@ -717,18 +718,22 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
   app.post('/api/deals', async (c) => {
     owner(c.get('role'));
     const company = c.get('company');
-    const body = dealSchema.parse(await c.req.json());
+    const parsed = dealSchema.safeParse(await c.req.json(), { error: dealFieldWords });
+    // The Deals editor shows this in its dialog: one plain sentence, not field paths.
+    if (!parsed.success) throw new PublicError(parsed.error.issues[0]!.message, 400);
+    const body = parsed.data;
     const [deals, products] = await Promise.all([
       repo.listDeals(company.id),
       repo.listProducts(company.id),
     ]);
     const stored = body.id ? deals.find((d) => d.id === body.id) : undefined;
     if (body.id && !stored) throw new PublicError('Deal not found.', 404);
-    if (!stored && deals.length >= MAX_DEALS)
-      throw new PublicError(
+    const tooMany = () =>
+      new PublicError(
         `You can have up to ${MAX_DEALS} deals. Delete one you no longer use first.`,
         409,
       );
+    if (!stored && deals.length >= MAX_DEALS) throw tooMany();
     // Only a link added or changed now must point at the menu. One saved before is kept when its
     // item has gone (a Sheet can give items new ids): the Deals tab warns about it instead.
     const link = (item: { productId?: string; variantId?: string }) =>
@@ -751,6 +756,13 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
       updatedAt: new Date().toISOString(),
     };
     await repo.saveDeal(deal);
+    // Two new deals saved at once (two phones) can both pass the count above. Counting again
+    // after saving, and taking this one back when over the limit, holds it in either store: the
+    // later save always sees both. When each sees the other, both are refused, which is safe.
+    if (!stored && (await repo.listDeals(company.id)).length > MAX_DEALS) {
+      await repo.deleteDeal(company.id, id);
+      throw tooMany();
+    }
     return c.json(deal);
   });
   // Pause or resume at once, say when an item runs out: nothing else is checked or changed.

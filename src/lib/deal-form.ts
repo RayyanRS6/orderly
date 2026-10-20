@@ -1,7 +1,17 @@
 import { useEffect, useState } from 'react';
-import type { Company, Deal, DealSchedule, Product } from '../shared/types';
-import { dealsWorkItOut, openingOverlap } from '../shared/deals';
-import { dealEnded, isNightWindow, toMinute, type Clock, type Window } from '../shared/hours';
+import { money, type Company, type Deal, type DealSchedule, type Product } from '../shared/types';
+import { DEAL_LIMITS } from '../shared/deals';
+import { dealsWorkItOut, openingOverlap } from '../shared/deal-insights';
+import {
+  beforeStartDate,
+  dealEnded,
+  isNightWindow,
+  scheduleNeverOccurs,
+  toMinute,
+  type Clock,
+  type Window,
+} from '../shared/hours';
+import { isPhotoUrl } from '../shared/menu';
 import { pollWhileVisible } from './polling';
 
 // The Deals tab's editor form and the plain rules behind it: night chips, time presets, the
@@ -14,8 +24,8 @@ export const CHIP_DAYS = [1, 2, 3, 4, 5, 6, 0];
 export const SHORT_DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 /** At most this many choice groups, options per group and menu items offered while typing. */
-export const MAX_CHOICES = 5;
-export const MAX_OPTIONS = 25;
+export const MAX_CHOICES = DEAL_LIMITS.choices;
+export const MAX_OPTIONS = DEAL_LIMITS.options;
 const MATCHES = 6;
 
 /** A deal as the dashboard sends it: the server adds the business, position and save time. */
@@ -185,34 +195,125 @@ export function formSchedule(form: DealForm): DealSchedule | undefined {
 export function regularText(form: DealForm, products: Product[]): string {
   if (form.regularTyped) return form.regularPrice;
   const { total } = dealsWorkItOut({ items: namedItems(form) }, products);
-  // Never at or below the deal price (no price typed yet compares false, so it shows).
-  return total > 0 && !(total <= toPaisa(form.price)) ? rupees(total) : '';
+  // Never at or below the deal price (no price typed yet compares false, so it shows), and
+  // never more than the server keeps.
+  return total > 0 && total <= DEAL_LIMITS.price && !(total <= toPaisa(form.price))
+    ? rupees(total)
+    : '';
 }
 const namedItems = (form: Pick<DealForm, 'items'>) => form.items.filter((item) => item.name.trim());
 
-/** What the editor can't save yet, in the owner's words, or '' when it can be sent. */
+const L = DEAL_LIMITS;
+/** Paisa the server keeps as a price or an extra charge: Rs 0 up to Rs 1,000,000. */
+const priceOk = (paisa: number) => Number.isFinite(paisa) && paisa >= 0 && paisa <= L.price;
+// Characters as the server counts them: an emoji is one, not two.
+const chars = (text: string) => [...text].length;
+// 'YYYY-MM-DD' that is a real day, as the server checks it (a date box can hold a 5-digit year).
+function realDate(date: string) {
+  const at = Date.parse(`${date}T00:00:00Z`);
+  return (
+    /^\d{4}-\d{2}-\d{2}$/.test(date) &&
+    Number.isFinite(at) &&
+    new Date(at).toISOString().startsWith(date)
+  );
+}
+
+/**
+ * What the editor can't save yet, in the owner's words, or '' when it can be sent. It checks
+ * everything the server's dealSchema checks, with the same limits (DEAL_LIMITS), so the owner
+ * never sees the server's own wording.
+ */
 export function formProblem(form: DealForm): string {
-  if (!form.name.trim()) return 'Give the deal a name.';
-  if (!Number.isFinite(toPaisa(form.price)) || toPaisa(form.price) < 0)
-    return 'Enter the deal price.';
-  if (!namedItems(form).length) return 'Add what the deal includes.';
+  const name = form.name.trim();
+  if (!name) return 'Give the deal a name.';
+  if (chars(name) > L.name) return `Keep the deal’s name to ${L.name} characters or fewer.`;
+  const price = toPaisa(form.price);
+  if (!Number.isFinite(price) || price < 0) return 'Enter the deal price.';
+  if (price > L.price) return `Keep the deal price to ${money(L.price)} or less.`;
+  if (form.regularTyped && form.regularPrice.trim() && !priceOk(toPaisa(form.regularPrice)))
+    return `Enter a price if bought separately up to ${money(L.price)}, or leave it empty.`;
+  const items = namedItems(form);
+  if (!items.length) return 'Add what the deal includes.';
+  if (items.length > L.items) return `A deal can include up to ${L.items} items.`;
+  if (items.some((item) => chars(item.name.trim()) > L.itemName))
+    return `Keep each included item’s name to ${L.itemName} characters or fewer.`;
   if (
-    namedItems(form).some(
-      (item) => !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 50,
+    items.some(
+      (item) => !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > L.quantity,
     )
   )
-    return 'Give each included item a number from 1 to 50.';
+    return `Give each included item a number from 1 to ${L.quantity}.`;
+  // Menu ids are short, but a CSV can give a size any id: the server keeps 80 characters.
+  const longLink = items.find(
+    (item) => chars(item.productId ?? '') > 80 || chars(item.variantId ?? '') > 80,
+  );
+  if (longLink) return `${longLink.name.trim()} can’t be linked to the menu: tap Unlink.`;
+  const choiceNames = new Set<string>();
+  if (form.choices.length > L.choices) return `A deal can have up to ${L.choices} choices.`;
   for (const group of form.choices) {
-    if (!group.name.trim()) return 'Name each choice, for example Drink.';
-    if (group.options.filter((option) => option.name.trim()).length < 2)
-      return `Give ${group.name.trim()} at least 2 options.`;
+    const groupName = group.name.trim();
+    if (!groupName) return 'Name each choice, for example Drink.';
+    if (chars(groupName) > L.choiceName)
+      return `Keep each choice’s name to ${L.choiceName} characters or fewer.`;
+    // The bot asks for a choice by its name, so two choices can't share one.
+    if (choiceNames.has(groupName.toLowerCase()))
+      return `Two choices are called ${groupName}. Give each its own name, such as ${groupName} 1 and ${groupName} 2.`;
+    choiceNames.add(groupName.toLowerCase());
+    const options = group.options.filter((option) => option.name.trim());
+    if (options.length < 2) return `Give ${groupName} at least 2 options.`;
+    if (options.length > L.options) return `Give ${groupName} at most ${L.options} options.`;
+    const optionNames = new Set<string>();
+    for (const option of options) {
+      const optionName = option.name.trim();
+      if (chars(optionName) > L.optionName)
+        return `Keep each option of ${groupName} to ${L.optionName} characters or fewer.`;
+      // A customer picks an option by its name.
+      if (optionNames.has(optionName.toLowerCase()))
+        return `${groupName} has ${optionName} twice. Keep one of them.`;
+      optionNames.add(optionName.toLowerCase());
+      if (option.extra.trim() && !priceOk(toPaisa(option.extra)))
+        return `Enter the extra charge for ${optionName} up to ${money(L.price)}, or leave it empty.`;
+    }
   }
-  if (form.timed && !form.chips.length)
-    return isNightWindow(formWindow(form))
-      ? 'Choose at least one night.'
-      : 'Choose at least one day.';
-  if (form.timed && form.startDate && form.endDate && form.startDate > form.endDate)
-    return 'The end date is before the start date.';
+  if (form.timed) {
+    const night = isNightWindow(formWindow(form));
+    if (!form.chips.length)
+      return night ? 'Choose at least one night.' : 'Choose at least one day.';
+    if (
+      !form.allDay &&
+      !(Number.isFinite(toMinute(form.start)) && Number.isFinite(toMinute(form.end)))
+    )
+      return 'Enter the time the deal starts and the time it ends.';
+    if ([form.startDate, form.endDate].some((date) => date && !realDate(date)))
+      return 'Use a real date, or leave it empty.';
+    if (form.startDate && form.endDate && form.startDate > form.endDate)
+      return 'The end date is before the start date.';
+    const schedule = formSchedule(form);
+    if (schedule && scheduleNeverOccurs(schedule))
+      return `None of the chosen ${night ? 'nights' : 'days'} falls between the start and end dates.`;
+  }
+  return detailsProblem(form);
+}
+
+/**
+ * The problem in "More details" (description, emoji, photo link, other names), which may be
+ * folded away, so the editor can open it. '' when there is none.
+ */
+export function detailsProblem(
+  form: Pick<DealForm, 'description' | 'emoji' | 'imageUrl' | 'aliases'>,
+): string {
+  if (chars(form.description.trim()) > L.description)
+    return `Keep the description to ${L.description} characters or fewer.`;
+  if (chars(form.emoji.trim()) > L.emoji) return 'Use one emoji, or a few at most.';
+  const photo = form.imageUrl.trim();
+  if (photo && !isPhotoUrl(photo))
+    return 'Use a photo link that starts with https://, or leave it empty.';
+  const others = splitList(form.aliases);
+  if (others.length > L.otherNames)
+    return `Use at most ${L.otherNames} other names (you have ${others.length}).`;
+  const long = others.find((other) => chars(other) > L.otherName);
+  if (long)
+    return `Keep each other name to ${L.otherName} characters or fewer. “${[...long].slice(0, 24).join('')}…” is longer.`;
   return '';
 }
 
@@ -348,15 +449,35 @@ export function dayWords(date: string): string {
 export function scheduleNotice(schedule: DealSchedule | undefined, clock: Clock | undefined) {
   if (!schedule || !clock) return '';
   if (dealEnded(schedule, clock)) return 'Its end date has passed, so customers won’t see it.';
-  if (schedule.startDate && clock.date < schedule.startDate)
+  // As the deal's wording says it: a night after midnight still belongs to the evening before.
+  if (schedule.startDate && beforeStartDate(schedule, clock))
     return `It starts on ${dayWords(schedule.startDate)}.`;
   return '';
 }
 
 const lower = (text: string) => text.trim().toLowerCase();
+// A name as whole words: lower case, letters and numbers of any script, single spaces.
+const words = (text: string) =>
+  text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{M}\p{N}]+/gu, ' ')
+    .trim();
+/** Whether `part` is in the longer `whole` as whole words ("zinger" in "zinger burger"). */
+const partOf = (part: string, whole: string) =>
+  !!part && part !== whole && ` ${whole} `.includes(` ${part} `);
+// "A", "A and B", "A, B and C", "A, B, C and others".
+const listed = (names: string[]) =>
+  names.length > 3
+    ? `${names.slice(0, 3).join(', ')} and others`
+    : names.length > 1
+      ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+      : (names[0] ?? '');
+
 /**
  * Menu items and other deals already called by the deal's name or one of its other names: the
- * bot then has to ask which one the customer means.
+ * bot then has to ask which one the customer means. Also a name that is part of a menu item's
+ * name ("zinger" in Zinger Burger: the bot may take an order for the burger as the deal) or
+ * has one in it ("Biryani Deal": "biryani" alone orders Chicken Biryani, not the deal).
  */
 export function sameNameWarning(
   names: string[],
@@ -367,15 +488,49 @@ export function sameNameWarning(
   const wanted = new Set(names.map(lower).filter(Boolean));
   const clashes = (entry: { name: string; aliases: string[] }) =>
     [entry.name, ...entry.aliases].some((name) => wanted.has(lower(name)));
-  const menu = products.filter(clashes).map((p) => p.name);
+  const same = products.filter(clashes);
+  const menu = same.map((p) => p.name);
   const others = deals.filter((d) => d.id !== selfId && clashes(d)).map((d) => d.name);
   const parts = [
     ...(menu.length ? [`${menu.join(', ')} on your menu`] : []),
     ...(others.length ? [`${others.join(', ')} in your deals`] : []),
   ];
-  return parts.length
-    ? `Same name as ${parts.join(' and ')}. The bot will ask customers which one they mean.`
-    : '';
+  const sentences = parts.length
+    ? [`Same name as ${parts.join(' and ')}. The bot will ask customers which one they mean.`]
+    : [];
+  // Each menu item's names as words, worked out once (the editor checks on every key press).
+  const rest = products
+    .filter((p) => !same.includes(p))
+    .map((p) => ({
+      name: p.name,
+      labels: [p.name, ...p.aliases]
+        .map((text) => ({ text: text.trim(), words: words(text) }))
+        .filter((label) => label.words),
+    }));
+  const typed = new Map(names.map((name) => [words(name), name.trim()] as const));
+  for (const [mine, shown] of typed) {
+    if (!mine) continue;
+    const longer = rest.filter((p) => p.labels.some((label) => partOf(mine, label.words)));
+    if (longer.length) {
+      const one = longer.length === 1 ? longer[0]!.name : 'one of them';
+      sentences.push(
+        `“${shown}” is also part of ${listed(longer.map((p) => p.name))} on your menu, so the bot may take an order for ${one} as this deal. Use a longer name that isn’t part of a menu item’s name.`,
+      );
+      continue;
+    }
+    const inside = rest.flatMap((p) => {
+      // The longest of the item's names that this name has in it.
+      const label = p.labels
+        .filter((l) => partOf(l.words, mine))
+        .sort((a, b) => b.words.length - a.words.length)[0];
+      return label ? [`“${label.text}” alone orders ${p.name}`] : [];
+    });
+    if (inside.length)
+      sentences.push(
+        `To order “${shown}” in chat, customers need its full name: ${listed(inside)}.`,
+      );
+  }
+  return sentences.join(' ');
 }
 
 /** The menu items a typed name may mean, best first: names that start with it, then the rest. */

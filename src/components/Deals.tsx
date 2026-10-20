@@ -19,13 +19,15 @@ import {
 import type { Deal, DealState, Product } from '../shared/types';
 import { money } from '../shared/types';
 import { isPhotoUrl } from '../shared/menu';
-import { dealIncludes, dealSavings, dealState, dealsWorkItOut, dealWhen } from '../shared/deals';
+import { dealIncludes, dealSavings, dealState, dealWhen } from '../shared/deals';
+import { dealsWorkItOut } from '../shared/deal-insights';
 import { isNightWindow, localClock, type Clock as LocalClock } from '../shared/hours';
 import {
   CHIP_DAYS,
   copyChoice,
   dealBody,
   dealToForm,
+  detailsProblem,
   formProblem,
   formSchedule,
   formToBody,
@@ -615,6 +617,8 @@ export function DealEditor({ deal, onDone }: { deal?: Deal; onDone: () => void }
         const problem = formProblem(form);
         if (problem) {
           setError(problem);
+          // Other names and the photo link sit in "More details": show the field to fix.
+          if (problem === detailsProblem(form)) setMore(true);
           return;
         }
         const body = formToBody(form, data.products, deal?.id);
@@ -969,7 +973,7 @@ export function DealEditor({ deal, onDone }: { deal?: Deal; onDone: () => void }
             </Field>
             <Field
               label="Other names, separated by commas"
-              hint="Optional: how customers may ask for it, such as “zinger meal” or “ڈیل 1”."
+              hint="Optional: how customers may ask for it, such as “zinger meal” or “ڈیل 1”. Up to 10, each up to 60 characters."
             >
               <input
                 className="input"

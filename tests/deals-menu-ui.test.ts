@@ -12,6 +12,7 @@ import {
   dealPicks,
   hasTimedDeal,
   loadDraft,
+  menuIsStale,
   notOrderable,
   saveCart,
   saveDraft,
@@ -240,6 +241,35 @@ describe('deals with set times', () => {
     expect(effect).not.toContain('no-store');
     // A hook, so it comes before the page's first early return.
     expect(page.indexOf('const watchDeals')).toBeLessThan(page.indexOf('if (drafted)'));
+  });
+
+  it('reads the menu at once when it comes back from checkout or the order code, if old', () => {
+    // Code made at 14:50 for a 12–3 deal, "Change order" at 15:10: the menu from 14:50 would
+    // still offer the deal, so the refresh reads it again as soon as it resumes.
+    const readAt = Date.parse('2026-10-21T09:50:00.000Z');
+    expect(menuIsStale(readAt, readAt + 20 * 60_000)).toBe(true);
+    expect(menuIsStale(readAt, readAt + 60_000)).toBe(true);
+    // Just read (the page's first load): no second request.
+    expect(menuIsStale(readAt, readAt + 59_999)).toBe(false);
+    expect(menuIsStale(readAt, readAt)).toBe(false);
+    // A phone clock turned back is no reason to trust an old menu.
+    expect(menuIsStale(readAt, readAt - 1)).toBe(true);
+    const page = source();
+    const effect = page.slice(
+      page.indexOf('const watchDeals'),
+      page.indexOf('}, [slug, watchDeals]);'),
+    );
+    // Once when the watch starts, before the minute ticks, then as before.
+    expect(effect).toContain('if (menuIsStale(menuReadAt.current, Date.now())) refresh();');
+    expect(effect.indexOf('refresh();')).toBeLessThan(
+      effect.indexOf('window.setInterval(refresh, 60_000)'),
+    );
+    // Every menu the page shows, however it was read, marks when it was read: set in an effect
+    // that runs before the watch, so the first load is not read twice.
+    const mark = page.indexOf('if (menu) menuReadAt.current = Date.now();');
+    expect(mark).toBeGreaterThan(0);
+    expect(page.slice(mark, mark + 80)).toContain('}, [menu]);');
+    expect(mark).toBeLessThan(page.indexOf('const watchDeals'));
   });
 
   it('asks for the code to be sent now when the order has a deal with set times', () => {
