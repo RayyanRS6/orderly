@@ -1,4 +1,22 @@
-import type { Conversation, Product } from '../shared/types';
+import type { Conversation, DealChoiceOption, Product } from '../shared/types';
+
+/**
+ * Words that ask for deals in general rather than name one: "deal", "combo", "offer", "meal",
+ * "ڈیل". They never match a dish by a typo ("deal" is one letter from "daal").
+ */
+export const DEAL_WORDS = new Set([
+  'deal',
+  'deals',
+  'combo',
+  'combos',
+  'offer',
+  'offers',
+  'meal',
+  'meals',
+  'ڈیل',
+  'ڈیلز',
+  'ڈیلیں',
+]);
 
 const STOP_WORDS = new Set([
   'add',
@@ -129,11 +147,30 @@ function countsAsNumber(tokens: string[], index: number): boolean {
   return !!next && !SOFTENERS.has(next) && !GIVE_VERBS.has(tokens[index - 1] ?? '');
 }
 
-export function quantityFromText(text: string): number {
+// Names holding a number ("Deal 2", "Sprite 1.5L"), as words. Their number is part of the name,
+// never a count.
+const numberedLabels = (catalog: Product[]) =>
+  catalog
+    .flatMap((product) => [product.name, ...product.aliases])
+    .map((label) => normalizeCatalogText(label).split(' ').filter(Boolean))
+    .filter((words) => words.some((word) => /^\d+$/.test(word)));
+// Where in `tokens` a number belongs to such a name written in full: the 2 in "deal 2".
+function namedNumbers(tokens: string[], labels: string[][]): Set<number> {
+  const named = new Set<number>();
+  for (const label of labels)
+    for (let at = 0; at + label.length <= tokens.length; at++)
+      if (label.every((word, k) => tokens[at + k] === word))
+        label.forEach((word, k) => /^\d+$/.test(word) && named.add(at + k));
+  return named;
+}
+
+/** The first count in the text; a number inside a name of `catalog` ("deal 2") is not one. */
+export function quantityFromText(text: string, catalog: Product[] = []): number {
   const value = normalizeCatalogText(text);
-  const numeric = value.match(/(?:^|\s)(\d{1,2})(?:\s|$)/)?.[1];
-  if (numeric) return Math.max(1, Math.min(50, Number(numeric)));
   const tokens = value.split(' ');
+  const named = namedNumbers(tokens, numberedLabels(catalog));
+  const numeric = tokens.find((token, i) => /^\d{1,2}$/.test(token) && !named.has(i));
+  if (numeric) return Math.max(1, Math.min(50, Number(numeric)));
   for (let i = 0; i < tokens.length; i++)
     if (NUMBER_WORDS[tokens[i]!] && countsAsNumber(tokens, i)) return NUMBER_WORDS[tokens[i]!]!;
   return 1;
@@ -196,6 +233,8 @@ interface DishWords {
   // The other dishes' option words ("half" in "karahi half 4 naan"), part of their mention,
   // also when this dish has the same option ("karahi half 4 biryani" with a half biryani).
   otherOptions: Set<string>;
+  // Names with a number in them ("Deal 2"): that number is never a count.
+  numbered: string[][];
   // A count as written ("100 naan", "1000 naan" are refused later), not kept within 1-50.
   exact?: boolean;
 }
@@ -224,9 +263,13 @@ function dishWords(product: Product, catalog: Product[], exact = false): DishWor
     otherOptions: new Set(
       others.flatMap(optionWords).filter((word) => word && !own.includes(word)),
     ),
+    numbered: numberedLabels([product, ...others]),
     exact,
   };
 }
+// Where in `tokens` a number is part of a name (see numberedLabels), for this dish's catalog.
+const namedIn = (tokens: string[], words: DishWords) =>
+  words.numbered.length ? namedNumbers(tokens, words.numbered) : new Set<number>();
 const isOwn = (words: DishWords, token: string) =>
   words.own.some((label) => sameWord(token, label));
 // Where the dish is named: its part of the message, where its words are in it, and the next part.
@@ -291,6 +334,8 @@ function countBefore({ tokens, at }: Mention, words: DishWords): number | undefi
   while (i >= 0 && (words.options.has(tokens[i]!) || MEASURE_WORDS.has(tokens[i]!))) i--;
   if (i < 0) return undefined;
   const token = tokens[i]!;
+  // "deal 2 deal 3": the 2 is Deal 2's name, not a count of Deal 3.
+  if (namedIn(tokens, words).has(i)) return undefined;
   const count =
     digitCount(token, words) ?? (token === 'a' || token === 'an' ? undefined : NUMBER_WORDS[token]);
   if (count === undefined) return undefined;
@@ -313,13 +358,17 @@ function countAfter(
     i++;
   if (tokens[i] === 'x') i++;
   const token = tokens[i];
-  // Nothing after the dish: a next part that is only a count ("biryani, make it 3").
+  // Nothing after the dish: a next part that is only a count ("biryani, make it 3"). The number
+  // of a name there is not one ("deal 2 aur deal 3" is one Deal 2).
   if (token === undefined) {
+    const named = namedIn(next ?? [], words);
     const counts = (next ?? []).filter(
-      (word) => !COUNT_ONLY.has(word) && !SOFTENERS.has(word) && !isOwn(words, word),
+      (word, k) =>
+        !named.has(k) && !COUNT_ONLY.has(word) && !SOFTENERS.has(word) && !isOwn(words, word),
     );
     return counts.length === 1 ? digitCount(counts[0]!, words) : undefined;
   }
+  if (namedIn(tokens, words).has(i)) return undefined;
   const count =
     digitCount(token, words) ??
     (['a', 'an', 'do', 'دو'].includes(token) ? undefined : NUMBER_WORDS[token]);
@@ -405,15 +454,219 @@ export function quantityOfMention(
   const mention = findMention(text, matchAt) ?? findMention(text, matchAt, false);
   return mention && (countBefore(mention, words) ?? countAfter(mention, words));
 }
-/** Whether the text states this count anywhere, as digits or a word that can only be a count. */
-export function mentionsQuantity(text: string, quantity: number): boolean {
-  return normalizeCatalogText(text)
-    .split(' ')
-    .some(
-      (token) =>
-        token.replace(/^x(?=\d)|(?<=\d)x$/, '') === String(quantity) ||
-        (!['a', 'an', 'do', 'دو'].includes(token) && NUMBER_WORDS[token] === quantity),
+/**
+ * Whether the text states this count anywhere, as digits or a word that can only be a count.
+ * The number of a name in `catalog` ("deal 2") is not a count.
+ */
+export function mentionsQuantity(text: string, quantity: number, catalog: Product[] = []): boolean {
+  const tokens = normalizeCatalogText(text).split(' ');
+  const named = namedNumbers(tokens, numberedLabels(catalog));
+  return tokens.some(
+    (token, i) =>
+      !named.has(i) &&
+      (token.replace(/^x(?=\d)|(?<=\d)x$/, '') === String(quantity) ||
+        (!['a', 'an', 'do', 'دو'].includes(token) && NUMBER_WORDS[token] === quantity)),
+  );
+}
+
+// The words of a text with where each one is written and which part of the message (see
+// clausesOf) it is in. Joining words stay, as a name may hold one ("Fish and Chips").
+interface Placed {
+  word: string;
+  start: number;
+  end: number;
+  part: number;
+}
+const CLAUSE_BREAKS = new RegExp(CLAUSE_BREAK.source, 'giu');
+function placedWords(text: string): Placed[] {
+  const breaks = [...text.matchAll(CLAUSE_BREAKS)].map((m) => m.index + m[0].length);
+  const placed: Placed[] = [];
+  for (const m of text.matchAll(/[\p{L}\p{M}\p{N}]+/gu)) {
+    const start = m.index,
+      end = start + m[0].length;
+    const part = breaks.filter((at) => at <= start).length;
+    for (const word of normalizeCatalogText(m[0]).split(' ').filter(Boolean))
+      placed.push({ word, start, end, part });
+  }
+  return placed;
+}
+const isLeadingCount = (word: string | undefined) =>
+  !!word &&
+  (/^\d{1,2}$/.test(word) || (!!NUMBER_WORDS[word] && !['a', 'an', 'do', 'دو'].includes(word)));
+
+export interface DealMention {
+  /** The deal; or the deals a deal word with a shared word could each mean ("lunch deal"). */
+  products: Product[];
+  /** The words that named it, as one phrase of the message ("deal 2", "zinger deal"). */
+  phrase: string;
+  /** Where that phrase starts in the text. */
+  at: number;
+  /** Option ids picked with it in its own part of the message ("deal 1 with sprite"). */
+  picks: string[];
+  /** Every stretch of the text about this deal: its name each time, and its picks. */
+  spans: [number, number][];
+}
+/**
+ * The deals a text names, in the order written. A deal is named only by one of its whole names
+ * (digits included, no typos: "deal 12" is not Deal 1), or by a deal word together with another
+ * word of its name in the same part of the message ("zinger deal" for Zinger Lunch Deal; "lunch
+ * deal" may be several). A deal word next to another number is not a numbered deal ("lunch deal
+ * 3" is not Lunch Deal 1). Paused and ended deals are found by their whole names only, so they
+ * can be refused by name; a deal word alone never offers them. An option of the deal's choices
+ * named in the same part without a count of its own is its pick ("deal 1 with sprite"; the
+ * longer name wins, "diet coke" over "coke"), one per choice in order.
+ */
+export function findDealMentions(
+  products: Product[],
+  companyId: string,
+  text: string,
+): DealMention[] {
+  const deals = products.filter((product) => product.companyId === companyId && product.deal);
+  if (!deals.length) return [];
+  const placed = placedWords(text);
+  const words = placed.map((p) => p.word);
+  const span = (from: number, to: number): [number, number] => [
+    placed[from]!.start,
+    placed[to - 1]!.end,
+  ];
+  const taken = new Set<number>();
+  const free = (from: number, to: number) => {
+    for (let k = from; k < to; k++) if (taken.has(k)) return false;
+    return true;
+  };
+  const mentions: (DealMention & { part: number })[] = [];
+  const mentionOf = (product: Product) =>
+    mentions.find((m) => m.products.length === 1 && m.products[0] === product);
+  // Whole names, longest first.
+  const named = deals
+    .flatMap((product) =>
+      [...new Set([product.name, ...product.aliases].map(normalizeCatalogText))]
+        .filter(Boolean)
+        .flatMap((label) => {
+          const parts = label.split(' ');
+          const found: { product: Product; from: number; to: number }[] = [];
+          for (let at = 0; at + parts.length <= words.length; at++)
+            if (parts.every((part, k) => words[at + k] === part))
+              found.push({ product, from: at, to: at + parts.length });
+          return found;
+        }),
+    )
+    .sort((a, b) => b.to - b.from - (a.to - a.from) || a.from - b.from);
+  for (const { product, from, to } of named) {
+    if (!free(from, to)) continue;
+    for (let k = from; k < to; k++) taken.add(k);
+    const known = mentionOf(product);
+    if (known) known.spans.push(span(from, to));
+    else
+      mentions.push({
+        products: [product],
+        phrase: words.slice(from, to).join(' '),
+        at: placed[from]!.start,
+        picks: [],
+        spans: [span(from, to)],
+        part: placed[from]!.part,
+      });
+  }
+  // A deal word with other words of one deal's name.
+  const offered = deals.filter(
+    (product) => product.deal!.state !== 'paused' && product.deal!.state !== 'ended',
+  );
+  for (let i = 0; i < words.length; i++) {
+    if (taken.has(i) || !DEAL_WORDS.has(words[i]!)) continue;
+    const part = placed[i]!.part;
+    const isNumber = (k: number) =>
+      !taken.has(k) && placed[k]?.part === part && /^\d+$/.test(words[k]!);
+    const near = [i - 1, i + 1].filter(isNumber).map((k) => words[k]!);
+    // A number straight after the deal word names a numbered deal written in other letters
+    // ("ڈیل 1" for Deal 1); one before it is a count.
+    const after = isNumber(i + 1) ? words[i + 1] : undefined;
+    let best = 0;
+    let winners: { product: Product; used: number[] }[] = [];
+    for (const product of offered) {
+      const labels = [product.name, ...product.aliases].flatMap((label) =>
+        normalizeCatalogText(label).split(' ').filter(Boolean),
+      );
+      const numbers = labels.filter((word) => /^\d+$/.test(word));
+      if (numbers.length && near.some((number) => !numbers.includes(number))) continue;
+      const own = new Set(
+        labels.filter(
+          (word) => !DEAL_WORDS.has(word) && !STOP_WORDS.has(word) && !/^\d+$/.test(word),
+        ),
+      );
+      const used = placed.flatMap((p, k) =>
+        p.part === part && !taken.has(k) && own.has(p.word) ? [k] : [],
+      );
+      if (after && numbers.includes(after)) used.push(i + 1);
+      const score = new Set(used.map((k) => words[k])).size;
+      if (!score || score < best) continue;
+      if (score > best) winners = [];
+      best = score;
+      winners.push({ product, used });
+    }
+    if (!winners.length) continue;
+    const used = [...new Set([i, ...winners.flatMap((winner) => winner.used)])].sort(
+      (a, b) => a - b,
     );
+    used.forEach((k) => taken.add(k));
+    const spans = used.map((k) => span(k, k + 1));
+    const known = winners.length === 1 ? mentionOf(winners[0]!.product) : undefined;
+    if (known) known.spans.push(...spans);
+    else
+      mentions.push({
+        products: winners.map((winner) => winner.product),
+        phrase: words.slice(used[0], used.at(-1)! + 1).join(' '),
+        at: placed[used[0]!]!.start,
+        picks: [],
+        spans,
+        part,
+      });
+  }
+  for (const mention of mentions) {
+    if (mention.products.length !== 1) continue;
+    const { choices } = mention.products[0]!.deal!;
+    // Each option name where it is written in the deal's part, without a count of its own.
+    const options = new Map<string, DealChoiceOption[][]>();
+    choices.forEach((group, g) =>
+      group.options.forEach((option) => {
+        const name = normalizeCatalogText(option.name);
+        if (!name) return;
+        const byGroup = options.get(name) ?? choices.map(() => []);
+        byGroup[g]!.push(option);
+        options.set(name, byGroup);
+      }),
+    );
+    const found: { name: string; from: number; to: number }[] = [];
+    const inPart = (k: number) => !taken.has(k) && placed[k]?.part === mention.part;
+    for (const name of options.keys()) {
+      const parts = name.split(' ');
+      for (let at = 0; at + parts.length <= words.length; at++) {
+        if (!parts.every((part, k) => words[at + k] === part && inPart(at + k))) continue;
+        const after = at + parts.length;
+        if (
+          (inPart(at - 1) && isLeadingCount(words[at - 1])) ||
+          (inPart(after) && /^\d{1,2}$/.test(words[after]!))
+        )
+          continue;
+        found.push({ name, from: at, to: after });
+      }
+    }
+    const kept: typeof found = [];
+    for (const f of found.sort((a, b) => b.to - b.from - (a.to - a.from) || a.from - b.from))
+      if (!kept.some((o) => o.from < f.to && f.from < o.to)) kept.push(f);
+    kept.sort((a, b) => a.from - b.from);
+    const used = new Set<(typeof kept)[number]>();
+    choices.forEach((_, g) => {
+      const pick = kept.find((o) => !used.has(o) && options.get(o.name)![g]!.length);
+      if (!pick) return;
+      used.add(pick);
+      mention.picks.push(options.get(pick.name)![g]![0]!.id);
+    });
+    for (const o of kept) {
+      for (let k = o.from; k < o.to; k++) taken.add(k);
+      mention.spans.push(span(o.from, o.to));
+    }
+  }
+  return mentions.sort((a, b) => a.at - b.at).map(({ part: _part, ...mention }) => mention);
 }
 
 export type ItemResolution =
@@ -438,17 +691,31 @@ export function resolveItemMention(
     return 1;
   };
   // With no dish found the count is never used (the AI's prompt still shows it as before).
-  const quantity = quantityFromText(value);
+  const quantity = quantityFromText(value, own);
   const inputTokens = value.split(' ').filter(Boolean);
   if (!value || !own.length) return { kind: 'none', quantity };
+  // Deals are found by their own names only (findDealMentions). They never join the family and
+  // typo matching of dishes below, so "biryani" stays Chicken Biryani beside a Biryani Deal.
+  const [deal] = findDealMentions(own, companyId, text);
+  if (deal) {
+    const count = Math.max(
+      1,
+      Math.min(50, quantityOfMention(deal.products[0]!, deal.phrase, text, own) ?? 1),
+    );
+    return deal.products.length === 1
+      ? { kind: 'unique', product: deal.products[0]!, quantity: count }
+      : { kind: 'ambiguous', products: deal.products, quantity: count };
+  }
+  const dishes = own.some((product) => product.deal) ? own.filter((product) => !product.deal) : own;
+  if (!dishes.length) return { kind: 'none', quantity };
   const labelsById = new Map(
-    own.map((product) => [
+    dishes.map((product) => [
       product.id,
       [product.name, ...product.aliases].map(normalizeCatalogText).filter(Boolean),
     ]),
   );
   const tokenOwners = new Map<string, Set<string>>();
-  for (const product of own)
+  for (const product of dishes)
     for (const label of labelsById.get(product.id)!) {
       for (const token of label.split(' ')) {
         if (!tokenOwners.has(token)) tokenOwners.set(token, new Set());
@@ -460,12 +727,12 @@ export function resolveItemMention(
   // a plain item when flavored products share the same term.
   const meaningful = inputTokens.filter((token) => !STOP_WORDS.has(token) && !/^\d+$/.test(token));
   for (const token of meaningful) {
-    const family = own.filter((product) => tokenOwners.get(token)?.has(product.id));
+    const family = dishes.filter((product) => tokenOwners.get(token)?.has(product.id));
     if (family.length > 1 && meaningful.length === 1)
       return { kind: 'ambiguous', products: family, quantity: countFor(family) };
   }
 
-  const scored = own
+  const scored = dishes
     .map((product) => {
       let score = 0;
       const labels = labelsById.get(product.id)!;
@@ -482,7 +749,8 @@ export function resolveItemMention(
           let tokenScore = 0;
           for (const input of meaningful) {
             if (candidate === input) tokenScore = Math.max(tokenScore, 500);
-            if (input.length < 4) continue;
+            // "deal" is not a typo of "daal", nor "deals" of anything.
+            if (input.length < 4 || DEAL_WORDS.has(input)) continue;
             const limit = input.length >= 8 ? 2 : 1;
             if (candidate.length < 4 || Math.abs(candidate.length - input.length) > limit) continue;
             const distance = editDistance(input, candidate);
@@ -517,10 +785,27 @@ export function resolvePendingItemChoice(
   const value = normalizeCatalogText(text);
   const ordinal = value.match(/^(?:option\s*)?(\d{1,2})$/)?.[1];
   if (ordinal) return candidates[Number(ordinal) - 1];
-  const resolution = resolveItemMention(
-    candidates.filter((p): p is Product => !!p),
-    companyId,
-    text,
+  const present = candidates.filter((p): p is Product => !!p);
+  const resolution = resolveItemMention(present, companyId, text);
+  if (resolution.kind !== 'none')
+    return resolution.kind === 'unique' ? resolution.product : undefined;
+  // The deals asked about are told apart by any other word of their names: "zinger" for Zinger
+  // Lunch Deal, asked beside Biryani Lunch Deal.
+  const said = new Set(value.split(' '));
+  const deals = present.filter(
+    (product) =>
+      product.deal &&
+      [product.name, ...product.aliases].some((label) =>
+        normalizeCatalogText(label)
+          .split(' ')
+          .some(
+            (word) =>
+              said.has(word) &&
+              !DEAL_WORDS.has(word) &&
+              !STOP_WORDS.has(word) &&
+              !/^\d+$/.test(word),
+          ),
+      ),
   );
-  return resolution.kind === 'unique' ? resolution.product : undefined;
+  return deals.length === 1 ? deals[0] : undefined;
 }

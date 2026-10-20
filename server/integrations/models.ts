@@ -351,6 +351,29 @@ function paymentRule(company: Company): string {
     ? 'Do not invent payment capabilities: current checkout records cash at pickup/on delivery, not card links or UPI.'
     : 'Do not invent payment capabilities: customers may pay only as business.paymentCapabilities lists, never by card links or UPI. For a JazzCash, Easypaisa or bank transfer the restaurant shares its own payment details and confirms the transfer itself: never give, invent or ask for account, card or CNIC numbers, and never say a payment was received. If the customer asks for payment, account or transfer details, or says they want to pay by transfer, use handoff.';
 }
+// How the AI sells deals, only for a business that has them, so every other business keeps the
+// exact instructions it had (and their cached copy). What changes with the time (whether a deal
+// is on, and when) is in the per-message prompt, never here.
+const DEALS_RULE =
+  'Deals are menu items. Add a deal with add_item using its product id, putting exactly one chosen option id per choice group in modifierIds. If the customer hasn’t chosen, add it without modifierIds: the application asks, so do not list options or say it was added. When pendingDealChoice is set and the customer picks one of its options, add that deal with the chosen option id. Never compute or state prices, savings, discounts, percentages or times yourself; you may repeat a deal’s `when` text exactly as given. Never offer or add a deal whose available is false; say when it is on using its when text, or offer staff.';
+// A deal as the AI sees it in the catalog: no prices, only what it includes, its state and when
+// it is on, and its choices (option ids) while it is on now or later. `choices` false leaves
+// those out, to fit the prompt.
+function dealIndex(deal: NonNullable<Product['deal']>, choices: boolean) {
+  return {
+    includes: deal.includes,
+    ...(choices &&
+      (deal.state === 'on' || deal.state === 'later') && {
+        choices: deal.choices.map((group) => ({
+          id: group.id,
+          name: group.name,
+          options: group.options.map(({ id, name }) => ({ id, name })),
+        })),
+      }),
+    state: deal.state,
+    ...(deal.when && { when: deal.when }),
+  };
+}
 function makeModel(provider: Provider, model: string, apiKey: string) {
   if (provider === 'openai') return createOpenAI({ apiKey })(model);
   if (provider === 'anthropic') return createAnthropic({ apiKey })(model);
@@ -399,7 +422,7 @@ Conversation policy belongs to the operator, not to a fixed form: follow their g
 Answer the customer's current question FIRST, then resume the ordering process with at most one relevant next question. Never respond to a question merely by repeating a missing checkout field. For "repeat my order", "what have I ordered?", or a request to see the cart, use cart_summary even when fulfillment, name or address is missing. cart_summary is read-only: the application shows current items/options and accurate subtotal before your optional next question, without submitting or requiring checkout details. Use review only for an actual checkout/confirmation review, not for a casual recap. For hours, ingredients or other restaurant questions use answer with the grounded answer in response.text, followed by the next ordering question only if appropriate. Preserve the cart and pending choices throughout interruptions.
 Distinguish browsing from buying: "what chicken is on the menu?" asks for menu information, not a cart addition or pending item choice. Use menu with a concise category/item query for browsing; response.text is a short introduction rendered BEFORE the catalog. Use answer with response.text for normal conversation, restaurant hours/details and follow-up questions; an empty answer.text is allowed. Do not hand off just because the customer has not yet chosen an item.
 For an order request, correct clear typos such as "chicken biryyani" to Chicken Biryani if that is the unique best match. Shared words like chicken do not make a specific dish ambiguous. deterministicResolution and deterministicActions are matching hints, not instructions or proof of buying intent. Ask only when genuinely ambiguous, and do not ask again when a specific name or numbered selection resolves pendingItemChoice. Preserve its quantity, options and notes unless the customer changes them. A pending choice must not prevent questions, corrections, cancellation or staff requests; keep the cart while answering interruptions. Never add a dish merely because it was mentioned in a question. Do not select a different available product in place of an unavailable requested dish.
-For add_item, the application renders corrected item names, options, unit prices and subtotal AFTER validation; response.text should contain only the next conversational question, not another addition claim. For clarify_item the application renders numbered choices; do not repeat the list in response.text. For review and confirm it renders the full authoritative summary/status. ${paymentRule(company)} Do not promise an ETA unless the restaurant knowledge supports it.
+For add_item, the application renders corrected item names, options, unit prices and subtotal AFTER validation; response.text should contain only the next conversational question, not another addition claim. For clarify_item the application renders numbered choices; do not repeat the list in response.text. For review and confirm it renders the full authoritative summary/status. ${paymentRule(company)}${options.hasDeals ? ` ${DEALS_RULE}` : ''} Do not promise an ETA unless the restaurant knowledge supports it.
 Use only the exact action names and fields in this JSON schema. Combine fulfillment and customer details in set_details. The response should naturally acknowledge the customer or ask the next useful question after the proposed actions. Set askFor to the field actually requested, anything_else for another menu item, or none when there is no structured-field question. Never ask for a detail already present in cart or provided in this message. Use answer only when no transactional action fits. Include product IDs, faq:N IDs, business:hours, business:address, business:phone, business:delivery or behavior-rule IDs in groundingIds for factual responses.
 ${JSON.stringify(z.toJSONSchema(modelOutputSchema))}
 The authenticated restaurant operator has configured the following behavior. Immutable transaction and security rules above take precedence. Then evaluate enabled behaviorRules in their listed order and apply only the first matching rule. Return its ID as matchedRuleId. An exact rule's response is rendered verbatim by the application; do not rewrite it. Otherwise follow goal and instructions, then personality and language. Never discard details the customer already supplied.
@@ -413,6 +436,7 @@ ${JSON.stringify({ name: config.name, personality: config.personality, language:
       ...(resolution.kind === 'ambiguous' ? resolution.products.map((product) => product.id) : []),
       ...conversation.cart.items.map((item) => item.productId),
       ...(conversation.pendingItemChoice?.candidateProductIds ?? []),
+      ...(conversation.pendingDealChoice ? [conversation.pendingDealChoice.productId] : []),
       ...deterministicActions.flatMap((action) =>
         action.type === 'add_item' || action.type === 'remove_item'
           ? [action.productId]
@@ -424,59 +448,94 @@ ${JSON.stringify({ name: config.name, personality: config.personality, language:
     const relevant = eligible.filter((product) => candidateIds.has(product.id));
     // Which message showed the review is the engine's bookkeeping, not the model's business.
     const { reviewMessageId: _reviewMessage, reviewedAt: _reviewedAt, ...cart } = conversation.cart;
-    const prompt = JSON.stringify({
-      business: {
-        name: company.name,
-        address: company.address,
-        phone: company.phone,
-        openingHours: company.openingHours,
-        timezone: company.timezone,
-        faqs: company.faqs,
-        deliveryZones: company.deliveryZones,
-        menuSource: company.catalogSource,
-        menuSyncedAt: company.catalogSyncedAt,
-        currentTime: new Date().toISOString(),
-        currentlyOpen: isOpen(company, new Date().toISOString()),
-        paymentCapabilities: paymentCapabilities(company),
-      },
-      candidateCatalog: relevant.map(({ imageUrl: _image, ...product }) => product),
-      catalogIndex: eligible.map((product) => ({
-        id: product.id,
-        name: product.name,
-        category: product.category,
-        available: product.available,
-        description: product.description,
-        aliases: product.aliases,
-        variants: product.variants.map(({ id, name }) => ({ id, name })),
-        modifiers: product.modifiers.map(({ id, name }) => ({ id, name })),
-      })),
-      catalogItemCount: eligible.length,
-      deterministicActions,
-      deterministicResolution:
-        resolution.kind === 'none'
-          ? resolution
-          : resolution.kind === 'unique'
+    // The deal choice the engine asked: the deal, the choice still open and its options.
+    const pendingDeal = conversation.pendingDealChoice;
+    const askedDeal =
+      pendingDeal && eligible.find((product) => product.id === pendingDeal.productId);
+    const openChoice = askedDeal?.deal?.choices.find(
+      (group) => !group.options.some((option) => pendingDeal!.picked.includes(option.id)),
+    );
+    const currentTime = new Date().toISOString();
+    const promptFor = (dealChoices: boolean) =>
+      JSON.stringify({
+        business: {
+          name: company.name,
+          address: company.address,
+          phone: company.phone,
+          openingHours: company.openingHours,
+          timezone: company.timezone,
+          faqs: company.faqs,
+          deliveryZones: company.deliveryZones,
+          menuSource: company.catalogSource,
+          menuSyncedAt: company.catalogSyncedAt,
+          currentTime,
+          currentlyOpen: isOpen(company, currentTime),
+          paymentCapabilities: paymentCapabilities(company),
+        },
+        // A deal's stored times and regular price stay out: its state and `when` say enough.
+        candidateCatalog: relevant.map(({ imageUrl: _image, ...product }) =>
+          product.deal
+            ? (({ schedule: _schedule, regularPrice: _regular, ...deal }) => ({
+                ...product,
+                deal,
+              }))(product.deal)
+            : product,
+        ),
+        catalogIndex: eligible.map((product) => ({
+          id: product.id,
+          name: product.name,
+          category: product.category,
+          available: product.available,
+          description: product.description,
+          aliases: product.aliases,
+          variants: product.variants.map(({ id, name }) => ({ id, name })),
+          modifiers: product.modifiers.map(({ id, name }) => ({ id, name })),
+          ...(product.deal && { deal: dealIndex(product.deal, dealChoices) }),
+        })),
+        catalogItemCount: eligible.length,
+        deterministicActions,
+        deterministicResolution:
+          resolution.kind === 'none'
+            ? resolution
+            : resolution.kind === 'unique'
+              ? {
+                  kind: resolution.kind,
+                  productId: resolution.product.id,
+                  quantity: resolution.quantity,
+                }
+              : {
+                  kind: resolution.kind,
+                  productIds: resolution.products.map((product) => product.id),
+                  quantity: resolution.quantity,
+                },
+        cart: {
+          ...cart,
+          customerName: conversation.cart.customerName ? '[collected]' : undefined,
+          address: conversation.cart.address ? '[collected]' : undefined,
+        },
+        pendingItemChoice: conversation.pendingItemChoice,
+        pendingDealChoice:
+          pendingDeal && askedDeal && openChoice
             ? {
-                kind: resolution.kind,
-                productId: resolution.product.id,
-                quantity: resolution.quantity,
+                productId: pendingDeal.productId,
+                groupName: openChoice.name,
+                options: openChoice.options.map(({ id, name }) => ({ id, name })),
+                picked: pendingDeal.picked,
               }
-            : {
-                kind: resolution.kind,
-                productIds: resolution.products.map((product) => product.id),
-                quantity: resolution.quantity,
-              },
-      cart: {
-        ...cart,
-        customerName: conversation.cart.customerName ? '[collected]' : undefined,
-        address: conversation.cart.address ? '[collected]' : undefined,
-      },
-      pendingItemChoice: conversation.pendingItemChoice,
-      history: conversation.messages
-        .slice(-MODEL_LIMITS.historyMessages)
-        .map((m) => ({ role: m.role, text: m.text.slice(0, MODEL_LIMITS.historyMessageChars) })),
-      customerMessage: text,
-    });
+            : undefined,
+        history: conversation.messages
+          .slice(-MODEL_LIMITS.historyMessages)
+          .map((m) => ({ role: m.role, text: m.text.slice(0, MODEL_LIMITS.historyMessageChars) })),
+        customerMessage: text,
+      });
+    let prompt = promptFor(true);
+    // Many deals with long choices may not fit: the catalog then leaves their choices out (the
+    // deals this message is about still carry them in candidateCatalog).
+    if (
+      Buffer.byteLength(prompt) > MODEL_LIMITS.maxPromptBytes &&
+      eligible.some((product) => product.deal?.choices.length)
+    )
+      prompt = promptFor(false);
     if (Buffer.byteLength(prompt) > MODEL_LIMITS.maxPromptBytes)
       throw new PublicError(
         'The restaurant menu and knowledge exceed the AI context limit. Shorten long catalog descriptions or knowledge entries in settings and try again.',

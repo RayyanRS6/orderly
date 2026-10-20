@@ -426,7 +426,7 @@ describe('explanation wording and flow path', () => {
       'The engine rejected a proposed “add item” (for example a sold-out item, a closed restaurant or a missing detail).',
     );
     expect(describeCorrection('unsafe_model_response_ignored')).toBe(
-      'The AI’s wording stated prices or a confirmation, so it was dropped.',
+      'The AI’s wording stated prices, a saving or discount, or a confirmation, so it was dropped.',
     );
     expect(describeCorrection('a_future_correction')).toBe('a future correction');
     expect(describeStep('behavior_rule:parking')).toBe('Matched your rule');
