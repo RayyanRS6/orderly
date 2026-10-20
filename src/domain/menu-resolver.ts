@@ -439,12 +439,10 @@ function countBefore({ tokens, at }: Mention, words: DishWords): number | undefi
   return countLeads(tokens, i, words) ? count : undefined;
 }
 // `clear`: only a count that can be no other dish's, so not one followed by another dish.
-// `bare`: a bare number counts too ("biryani 3"); without it only "x3", "3x" or a number word.
 function countAfter(
   { tokens, end, next }: Mention,
   words: DishWords,
   clear = false,
-  bare = true,
 ): number | undefined {
   let i = end;
   while (
@@ -459,7 +457,6 @@ function countAfter(
   // of a name there is not one ("deal 2 aur deal 3" is one Deal 2), nor one naming the deal
   // after this one ("deal 2 and 3").
   if (token === undefined) {
-    if (!bare) return undefined;
     const named = namedIn(next ?? [], words);
     const label = words.numberedDeals.find((l) =>
       tokens.some((_, at) => nameEnd(tokens, at, l) === tokens.length),
@@ -477,7 +474,6 @@ function countAfter(
     return counts.length === 1 ? digitCount(counts[0]!, words) : undefined;
   }
   if (namedIn(tokens, words).has(i)) return undefined;
-  if (!bare && !x && /^\d+$/.test(token)) return undefined;
   const count =
     digitCount(token, words) ??
     (['a', 'an', 'do', 'دو'].includes(token) ? undefined : NUMBER_WORDS[token]);
@@ -540,20 +536,6 @@ export function clearQuantityNear(
   const words = dishWords(product, catalog);
   const mention = dishMention(text, words);
   return mention && (countBefore(mention, words) ?? countAfter(mention, words, true));
-}
-/**
- * For a deal, the count next to it that can be nothing else: before it ("2 deal 1"), or after it
- * with an x or in words ("deal 1 x2", "deal 1 teen"). A bare number after a deal may be another
- * deal's number ("deal 2 3"), so it is no such count.
- */
-export function clearDealQuantity(
-  product: Product,
-  text: string,
-  catalog: Product[] = [],
-): number | undefined {
-  const words = dishWords(product, catalog);
-  const mention = dishMention(text, words);
-  return mention && (countBefore(mention, words) ?? countAfter(mention, words, true, false));
 }
 /**
  * The count for one exact mention of a dish ("chicken tikka" in "2 chicken biryani aur 1

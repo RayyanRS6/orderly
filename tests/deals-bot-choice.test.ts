@@ -215,20 +215,23 @@ describe('asking for a deal’s choice', () => {
     expect(c.items).toEqual([]);
   });
 
-  it('applies one pick to every unit asked for, unless a new count is written', () => {
+  it('applies one pick to every unit asked for, and adds the AI’s count as it is', () => {
     const c = chat();
     expect(c.send('2 deal 1').reply).toBe(ASK_DRINK.replace('for Deal 1', 'for 2 × Deal 1'));
     c.send('1');
     expect(c.items).toEqual(['deal-1 ×2 [o-coke]']);
-    // The AI forgetting the count keeps it; a count the customer writes changes it.
-    const ai = chat();
-    ai.send('2 deal 1');
-    ai.send(
-      'coke',
-      [{ type: 'add_item', productId: 'deal-1', quantity: 1, modifierIds: ['o-coke'] }],
-      { text: 'Anything else?', askFor: 'anything_else' },
-    );
-    expect(ai.items).toEqual(['deal-1 ×2 [o-coke]']);
+    // The AI's count is never read again from the text (its prompt carries the count asked
+    // about): 2 is 2, and an AI that forgot the count adds 1.
+    for (const quantity of [2, 1]) {
+      const ai = chat();
+      ai.send('2 deal 1');
+      ai.send(
+        'coke',
+        [{ type: 'add_item', productId: 'deal-1', quantity, modifierIds: ['o-coke'] }],
+        { text: 'Anything else?', askFor: 'anything_else' },
+      );
+      expect(ai.items).toEqual([`deal-1 ×${quantity} [o-coke]`]);
+    }
     const three = chat();
     three.send('2 deal 1');
     three.send(
@@ -300,6 +303,11 @@ describe('the AI and the deal’s choice', () => {
       [{ type: 'add_item', productId: 'sprite-345', quantity: 1, modifierIds: [] }],
       [{ type: 'clarify_item', candidateProductIds: ['sprite-345', 'sprite-15'], quantity: 1 }],
       [{ type: 'answer', text: '' }],
+      // The AI's own answer stands; its Sprite drink beside it is that answer read twice.
+      [
+        { type: 'add_item', productId: 'deal-1', quantity: 1, modifierIds: ['o-sprite'] },
+        { type: 'add_item', productId: 'sprite-345', quantity: 1, modifierIds: [] },
+      ],
     ] as BotAction[][]) {
       const c = chat();
       c.send('deal 1');
@@ -507,7 +515,8 @@ describe('a deal’s choice answered by number after the owner changed it', () =
       c.send(answer!, undefined, undefined, noCoke);
       expect(c.items).toEqual([`deal-1 ×1 [${pick}]`]);
     }
-    // The AI reading "2" against the new list (Fanta) is corrected to what was shown.
+    // The AI's add of the deal is its own reading, even of "2" against the list as it is now
+    // (Fanta): the engine does not pick again for it.
     const ai = chat();
     ai.send('deal 1');
     const result = ai.send(
@@ -516,8 +525,8 @@ describe('a deal’s choice answered by number after the owner changed it', () =
       { text: 'Done.', askFor: 'none' },
       noCoke,
     );
-    expect(result.traces).toContain('deal_choice_resolved');
-    expect(ai.items).toEqual(['deal-1 ×1 [o-sprite]']);
+    expect(result.traces).not.toContain('deal_choice_resolved');
+    expect(ai.items).toEqual(['deal-1 ×1 [o-fanta]']);
   });
 
   it('asks again, from the list as it is now, when the option or the choice asked is gone', () => {
@@ -622,20 +631,39 @@ describe('a "which deal?" answered, then the deal’s own choice', () => {
     expect(c.items).toEqual(['zinger-lunch ×1 [o-sprite]']);
   });
 
-  it.each([
-    ['answer', [{ type: 'answer', text: '' }]],
-    ['"which deal?"', [which]],
-    ['add without the pick', [{ type: 'add_item', productId: 'zinger-lunch', quantity: 1 }]],
-  ] as [string, BotAction[]][])('corrects the AI’s %s on that number', (_, proposal) => {
+  const asked = () => {
     const c = chat();
     c.send('lunch deal', [which], quiet, lunch);
     c.send('1', [{ type: 'add_item', productId: 'zinger-lunch', quantity: 1 }], quiet, lunch);
-    const result = c.send('2', proposal, quiet, lunch);
+    return c;
+  };
+
+  it('reads the number as the drink when the AI changes nothing in the cart', () => {
+    const c = asked();
+    const result = c.send('2', [{ type: 'answer', text: '' }], quiet, lunch);
     expect(result.traces).toContain('deal_choice_resolved');
     expect(result.traces).not.toContain('item_choice_resolved');
     expect(result.reply).not.toContain('Which one would you like?');
     expect(c.items).toEqual(['zinger-lunch ×1 [o-sprite]']);
     expect(c.conversation.pendingItemChoice).toBeUndefined();
+  });
+
+  it('keeps the AI’s own "which deal?" or its add without the pick on that number', () => {
+    const again = asked();
+    expect(again.send('2', [which], quiet, lunch).reply).toContain(
+      'Which one would you like?\n1. Zinger Lunch Deal — Rs. 799\n2. Biryani Lunch Deal — Rs. 799',
+    );
+    expect(again.conversation.pendingItemChoice?.candidateProductIds).toHaveLength(2);
+    const unpicked = asked();
+    const result = unpicked.send(
+      '2',
+      [{ type: 'add_item', productId: 'zinger-lunch', quantity: 1 }],
+      quiet,
+      lunch,
+    );
+    expect(result.traces).toEqual(['add_item', 'deal_choice_asked']);
+    expect(result.reply).toContain('Choose Drink for Zinger Lunch Deal:');
+    expect(unpicked.items).toEqual([]);
   });
 });
 
@@ -701,10 +729,18 @@ describe('a deal’s choice left open when the deal goes off', () => {
     const c = timed();
     c.send('lunch deal', at('14:59'));
     const sprite: BotAction[] = [{ type: 'add_item', productId: 'sprite-345', quantity: 1 }];
-    expect(c.send('just a sprite then', at('15:05'), sprite).reply).toBe(refusal);
+    // "sprite" alone answers the deal, which is no longer on.
+    expect(c.send('sprite', at('15:05'), sprite).reply).toBe(refusal);
     expect(c.conversation.pendingDealChoice).toBeUndefined();
-    c.send('just a sprite then', at('15:06'), sprite);
+    c.send('sprite', at('15:06'), sprite);
     expect(c.conversation.cart.items.map((item) => item.productId)).toEqual(['sprite-345']);
+    // A longer message is the AI's to read: its drink is added, and the question is over.
+    const longer = timed();
+    longer.send('lunch deal', at('14:59'));
+    expect(longer.send('just a sprite then', at('15:05'), sprite).reply).toBe(
+      'Added 1 × Sprite 345ml — Rs. 150 each.\nItems subtotal: Rs. 150.\n\nAnything else?',
+    );
+    expect(longer.conversation.pendingDealChoice).toBeUndefined();
   });
 
   it('is cleared with the refusal when the owner pauses the deal', () => {
@@ -764,7 +800,7 @@ describe('a deal turned down while its choice is asked', () => {
     expect(ai.items).toEqual(['sprite-345 ×1']);
   });
 
-  it('takes the AI’s removal of the deal asked as the deal turned down, and drops its add of it', () => {
+  it('takes the AI’s removal of the deal asked as the deal turned down, and keeps its add of it', () => {
     const removed = chat();
     removed.send('deal 1');
     const result = removed.send(
@@ -778,17 +814,13 @@ describe('a deal turned down while its choice is asked', () => {
     removed.send('sprite', [addOf('sprite-345')], askMore);
     expect(removed.items).toEqual([]);
     expect(removed.conversation.pendingItemChoice?.candidateProductIds).toHaveLength(2);
-    // An AI that adds the deal the customer just turned down is overruled.
+    // An AI that adds the deal is not overruled by the engine's reading of a refusal: the deal
+    // is added as the AI proposed, and its question is over.
     const added = chat();
     added.send('deal 1');
-    const overruled = added.send('deal 1 nahi chahiye', [addOf('deal-1', 1, ['o-coke'])], {
-      text: 'Added Deal 1 with Coke!',
-      askFor: 'none',
-    });
-    expect(overruled.traces).toEqual(['remove_item']);
-    // The AI's wording about its add is not used.
-    expect(overruled.reply).toBe('Theek hai, Deal 1 add nahi kiya.');
-    expect(added.items).toEqual([]);
+    const kept = added.send('deal 1 nahi chahiye', [addOf('deal-1', 1, ['o-coke'])], askMore);
+    expect(kept.traces).toEqual(['add_item', 'deal_choice_answered']);
+    expect(added.items).toEqual(['deal-1 ×1 [o-coke]']);
     expect(added.conversation.pendingDealChoice).toBeUndefined();
   });
 
@@ -854,13 +886,12 @@ describe('the AI’s reading of the choice when the parser reads none', () => {
     }
   });
 
-  it('asks again for an option the customer turned down, or from a list changed since', () => {
+  it('keeps the AI’s pick beside an option turned down, or from a list changed since', () => {
+    // The engine never re-reads the AI's pick: what it adds is what the AI proposed.
     const refused = chat();
     refused.send('deal 1');
-    expect(
-      refused.send('deal 1, sprite nahi', [addOf('deal-1', 1, ['o-sprite'])], askMore).reply,
-    ).toBe('Deal 1 ke liye Drink chunein:\n1. Coke\n2. Sprite\n3. Fanta (+Rs. 50)');
-    expect(refused.items).toEqual([]);
+    refused.send('deal 1, sprite nahi', [addOf('deal-1', 1, ['o-sprite'])], askMore);
+    expect(refused.items).toEqual(['deal-1 ×1 [o-sprite]']);
     const noSprite = sellableCatalog(
       company,
       [...seed, sprite345, sprite15],
@@ -877,10 +908,15 @@ describe('the AI’s reading of the choice when the parser reads none', () => {
     );
     const changed = chat();
     changed.send('deal 1');
+    changed.send('deal 1 option 2', [addOf('deal-1', 1, ['o-fanta'])], askMore, noSprite);
+    expect(changed.items).toEqual(['deal-1 ×1 [o-fanta]']);
+    // A pick the deal no longer has is dropped and asked again.
+    const gone = chat();
+    gone.send('deal 1');
     expect(
-      changed.send('deal 1 option 2', [addOf('deal-1', 1, ['o-fanta'])], askMore, noSprite).reply,
+      gone.send('deal 1 option 2', [addOf('deal-1', 1, ['o-sprite'])], askMore, noSprite).reply,
     ).toBe('Choose Drink for Deal 1:\n1. Coke\n2. Fanta (+Rs. 50)');
-    expect(changed.items).toEqual([]);
+    expect(gone.items).toEqual([]);
   });
 });
 
@@ -902,7 +938,8 @@ describe('a drink of the answer’s name ordered again on its own', () => {
     expect(c.items).toEqual(['deal-1 ×1 [o-sprite]', `sprite-345 ×${count}`]);
   });
 
-  it('drops the AI’s drink when the answer is only said twice, and asks which drink without the AI', () => {
+  it('keeps the AI’s drink also when the answer is said twice, and asks which drink without the AI', () => {
+    // Only the AI reads whether a second "sprite" is a drink of its own.
     const twice = chat();
     twice.send('deal 1');
     twice.send(
@@ -910,7 +947,7 @@ describe('a drink of the answer’s name ordered again on its own', () => {
       [addOf('deal-1', 1, ['o-sprite']), addOf('sprite-345')],
       askMore,
     );
-    expect(twice.items).toEqual(['deal-1 ×1 [o-sprite]']);
+    expect(twice.items).toEqual(['deal-1 ×1 [o-sprite]', 'sprite-345 ×1']);
     // Two drinks are called Sprite here: the deal is added, then which one.
     const local = chat();
     local.send('deal 1');
@@ -959,9 +996,8 @@ describe('a pick made earlier, changed while the next choice is asked', () => {
   it('keeps the earlier pick when only the next choice is answered', () => {
     for (const proposal of [
       undefined,
+      [addOf('deal-3', 1, ['o-fries'])],
       [addOf('deal-3', 1, ['o-fanta', 'o-fries'])],
-      // A drink the customer never wrote is not a change.
-      [addOf('deal-3', 1, ['o-coke', 'o-fries'])],
     ]) {
       const c = chat();
       c.send('deal 3');
@@ -969,5 +1005,11 @@ describe('a pick made earlier, changed while the next choice is asked', () => {
       c.send('fries', proposal, proposal && askMore);
       expect(c.items).toEqual(['deal-3 ×1 [o-fanta, o-fries]']);
     }
+    // The AI's pick for a choice it names is its own, also one made before.
+    const c = chat();
+    c.send('deal 3');
+    c.send('fanta');
+    c.send('fries', [addOf('deal-3', 1, ['o-coke', 'o-fries'])], askMore);
+    expect(c.items).toEqual(['deal-3 ×1 [o-coke, o-fries]']);
   });
 });

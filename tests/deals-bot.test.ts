@@ -926,34 +926,34 @@ describe('a deal word beside dishes, on a menu with deals', () => {
     }
   });
 
-  it('keeps a dish only the AI read beside a question about the deals, and shows the deals', () => {
+  it('keeps what the AI read beside a question about the deals, deals included', () => {
     const ok: ModelResponse = { text: 'Sure!', askFor: 'none' };
     const whichDeal: BotAction = {
       type: 'clarify_item',
       candidateProductIds: ['deal-1', 'deal-2', 'deal-3', 'zinger-deal'],
       quantity: 1,
     };
-    // Urdu script the parser cannot read as a dish: it reads only the deals question.
-    for (const [text, actions, undone] of [
-      ['دو زنگر اور کوئی ڈیل ہے؟', [add(zinger, 2)], false],
-      ['2 زنگر بھیج دیں، کوئی ڈیل بھی ہے؟', [add(zinger, 2)], false],
-      // An order of "a deal" beside it: the deals are shown, never the AI's "which deal?".
-      ['2 زنگر اور ایک ڈیل بھیج دیں', [add(zinger, 2), whichDeal], true],
-      // Nor a deal the AI adds for a question.
+    // Urdu script the parser cannot read as a dish: it reads only the deals question, which
+    // takes the place of nothing the AI proposed, its "which deal?" or its deal either.
+    for (const [text, actions, cart] of [
+      ['دو زنگر اور کوئی ڈیل ہے؟', [add(zinger, 2)], ['zinger-burger ×2']],
+      ['2 زنگر بھیج دیں، کوئی ڈیل بھی ہے؟', [add(zinger, 2)], ['zinger-burger ×2']],
+      ['2 زنگر اور ایک ڈیل بھیج دیں', [add(zinger, 2), whichDeal], ['zinger-burger ×2']],
       [
         '2 زنگر، کوئی ڈیل ہے؟',
         [add(zinger, 2), { type: 'add_item', productId: 'deal-2', quantity: 1, modifierIds: [] }],
-        true,
+        ['zinger-burger ×2', 'deal-2 ×1'],
       ],
-    ] as [string, BotAction[], boolean][]) {
+    ] as [string, BotAction[], string[]][]) {
       expect(parse(text)).toEqual(['menu deals']);
       const c = chat();
       const result = c.send(text, { actions, response: ok });
-      expect(lines(c)).toEqual(['zinger-burger ×2']);
+      expect(lines(c)).toEqual(cart);
       expect(result.reply).toContain('2 × Zinger Burger');
-      expect(result.reply).toContain('🎁 Deal 1 — Rs. 799');
-      expect(result.traces.includes('browse_cart_mutation_prevented')).toBe(undone);
-      expect(c.conversation.pendingItemChoice).toBeUndefined();
+      expect(result.traces).not.toContain('browse_cart_mutation_prevented');
+      expect(c.conversation.pendingItemChoice?.candidateProductIds).toEqual(
+        actions.includes(whichDeal) ? whichDeal.candidateProductIds : undefined,
+      );
     }
     // A question only about the deals adds nothing the AI proposed.
     const asked = chat();
@@ -1296,13 +1296,14 @@ describe('numbered deals written in Urdu, as combos or meals, or with "no" or "n
     expect(lines(neither)).toEqual([]);
   });
 
-  it('lets a count beside a deal change the AI’s only where it can be nothing else', () => {
-    // No Deal 5: a bare 5 after Deal 2 may be the AI's count or not; the AI's reading stands.
+  it('keeps the AI’s count for a deal, whatever is written beside it', () => {
+    // The engine never counts a deal the AI added again from the text.
     for (const [text, quantity, cart] of [
       ['deal 2 5 de dein', 1, 'deal-2 ×1'],
       ['deal 2 5 de dein', 5, 'deal-2 ×5'],
-      ['deal 2 x3', 1, 'deal-2 ×3'],
-      ['3 deal 2', 1, 'deal-2 ×3'],
+      ['deal 2 x3', 1, 'deal-2 ×1'],
+      ['deal 2 x3', 3, 'deal-2 ×3'],
+      ['3 deal 2', 1, 'deal-2 ×1'],
     ] as const) {
       const c = listed();
       send(c, text, [add('deal-2', quantity)]);
@@ -1516,14 +1517,17 @@ describe('deals sharing a name with another deal or a dish', () => {
         'Added 1 × Ramadan Deal. Add anything else, or send “review”.',
       );
       expect(lines(c)).toEqual(['new ×1']);
-      // The AI unsure between them: the live one.
+      // The AI unsure between them is asked as it proposed, the one not on marked.
       const ai = chat();
-      ai.send('1 ramadan deal', {
+      const result = ai.send('1 ramadan deal', {
         products,
         actions: [{ type: 'clarify_item', candidateProductIds: ['old', 'new'], quantity: 1 }],
         response: { text: '', askFor: 'none' },
       });
-      expect(lines(ai)).toEqual(['new ×1']);
+      expect(result.reply).toBe(
+        'Which one would you like?\n1. Ramadan Deal — Rs. 799 · Unavailable\n2. Ramadan Deal — Rs. 899',
+      );
+      expect(lines(ai)).toEqual([]);
     }
   });
 

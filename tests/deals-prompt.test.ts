@@ -211,8 +211,10 @@ describe('what the AI is told about deals', () => {
     ).not.toHaveProperty('pendingDealChoice');
     conversation.pendingDealChoice = { productId: 'deal-1', quantity: 2, picked: [], notes: '' };
     const { data } = await call(catalog(), { hasDeals: true }, conversation, 'sprite');
+    // With the count asked about: the AI's count for the answer is the one added.
     expect(data.pendingDealChoice).toEqual({
       productId: 'deal-1',
+      quantity: 2,
       groupName: 'Drink',
       options: [
         { id: 'o-coke', name: 'Coke' },
