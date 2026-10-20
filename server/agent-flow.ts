@@ -17,6 +17,8 @@ import {
   PROVIDER_NAMES,
 } from '../src/shared/models.js';
 import { isOpen } from '../src/domain/engine.js';
+import { dealState } from '../src/shared/deals.js';
+import { localClock } from '../src/shared/hours.js';
 import type { Repository } from './repository.js';
 import { appMode, env } from './config.js';
 import { readiness } from './readiness.js';
@@ -50,9 +52,10 @@ export async function buildAgentFlow(
   role: Role,
 ): Promise<AgentFlow> {
   const mode = appMode();
-  const [products, integrations, connection, checks, summary, testOrders, live, sandbox] =
+  const [products, deals, integrations, connection, checks, summary, testOrders, live, sandbox] =
     await Promise.all([
       repo.listProducts(company.id),
+      repo.listDeals(company.id),
       repo.getIntegrations(company.id),
       repo.getWhatsAppConnection(company.id),
       readiness(repo, company),
@@ -90,6 +93,9 @@ export async function buildAgentFlow(
   const approved = !!company.privacy?.aiDataApproved;
   const profile = generationProfile(ai.provider, ai.model);
   const available = products.filter((product) => product.available);
+  // Deals on sale at this moment, judged as the bot judges them (the restaurant's clock).
+  const clock = localClock(company.timezone, new Date().toISOString());
+  const dealsOn = deals.filter((deal) => dealState(deal, products, clock) === 'on').length;
   const sheets = integrations.find((integration) => integration.kind === 'sheets');
   const meta = integrations.find((integration) => integration.kind === 'whatsapp');
   const linked = connection?.provider === 'baileys';
@@ -395,6 +401,7 @@ export async function buildAgentFlow(
         value: company.catalogSource === 'sheets' ? 'Google Sheet' : 'Orderly menu',
       },
       { label: 'Items', value: `${products.length} (${available.length} available)` },
+      ...(deals.length ? [{ label: 'Deals', value: `${dealsOn} on now of ${deals.length}` }] : []),
       ...(company.catalogSource === 'sheets'
         ? [{ label: 'Last synced', value: company.catalogSyncedAt ?? 'Never' }]
         : []),

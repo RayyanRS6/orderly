@@ -211,6 +211,7 @@ export function AgentFlow() {
     data.readiness,
     data.aiConnection,
     data.products?.length,
+    data.deals?.length,
   ]);
   const load = useCallback(async () => {
     const id = ++request.current;
@@ -544,7 +545,9 @@ export function AgentFlow() {
               node={current}
               explanation={replay?.message.explanation}
               productName={(id) =>
-                data.products.find((product) => product.id === id)?.name ?? 'a removed item'
+                data.products.find((product) => product.id === id)?.name ??
+                data.deals?.find((deal) => deal.id === id)?.name ??
+                'a removed item'
               }
               onOpen={() => go(current.page)}
             />
