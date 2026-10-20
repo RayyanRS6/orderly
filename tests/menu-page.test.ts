@@ -19,7 +19,13 @@ import {
   type PublicMenu,
   type WebCart,
 } from '../src/shared/menu';
-import type { Company, Conversation, ModelInterpretation, Product } from '../src/shared/types';
+import type {
+  Company,
+  Conversation,
+  Deal,
+  ModelInterpretation,
+  Product,
+} from '../src/shared/types';
 import type { WhatsAppConnection } from '../src/shared/whatsapp';
 import { buildWebOrder } from '../src/domain/web-order';
 import { defaultBot } from '../src/shared/bot';
@@ -88,6 +94,22 @@ async function turnOn(companyId = company.id) {
   const stored = (await repo.getCompany(companyId))!;
   return repo.setMenuLink(companyId, true, stored.slug);
 }
+// A deal as the Deals tab saves it.
+const savedDeal = (fields: Partial<Deal> = {}): Deal => ({
+  id: randomUUID(),
+  companyId: company.id,
+  name: 'Deal 1',
+  description: '',
+  emoji: '🎁',
+  aliases: [],
+  price: 79900,
+  items: [{ name: 'Chicken Biryani', quantity: 1 }],
+  choices: [],
+  available: true,
+  position: 1,
+  updatedAt: new Date().toISOString(),
+  ...fields,
+});
 
 describe('public menu page', () => {
   it('answers without sign-in while the private API still needs it', async () => {
@@ -153,6 +175,38 @@ describe('public menu page', () => {
       { kind: 'whatsapp', configured: true, status: 'connected', config: { phoneNumberId: '1' } },
       encryptSecret('meta-token'),
     );
+    // A saved deal shows only what the page needs: never its stored times, its order, its other
+    // names, its links to menu items or a photo that isn't https.
+    const deal = savedDeal({
+      name: 'Zinger Deal',
+      description: 'Lunch for one',
+      imageUrl: 'http://cdn.example/deal.jpg',
+      aliases: ['zinger combo secret'],
+      regularPrice: 104900,
+      items: [
+        { name: 'Chicken Biryani', quantity: 1, productId: seedProducts[0]!.id },
+        { name: 'Drink', quantity: 1 },
+      ],
+      choices: [
+        {
+          id: 'drink',
+          name: 'Drink',
+          options: [
+            { id: 'coke', name: 'Coke', price: 0 },
+            { id: 'fanta', name: 'Fanta', price: 5000 },
+          ],
+        },
+      ],
+      schedule: {
+        days: [0, 1, 2, 3, 4, 5, 6],
+        start: '00:00',
+        end: '00:00',
+        startDate: '2020-01-01',
+        endDate: '2099-12-31',
+      },
+      position: 7,
+    });
+    await repo.saveDeal(deal);
     await turnOn();
     const text = await (await call('/public/menu/dastarkhwan')).text();
     for (const key of [
@@ -165,10 +219,35 @@ describe('public menu page', () => {
       'modelVerification',
       'faqs',
       'catalogSource',
+      'schedule',
+      'startDate',
+      'endDate',
+      'position',
+      'updatedAt',
+      'productId',
     ])
       expect(text, key).not.toContain(`"${key}"`);
     expect(text).not.toContain('secret-fingerprint');
     expect(text).not.toContain('phoneNumberId');
+    expect(text).not.toContain('zinger combo secret');
+    expect(text).not.toContain('http://cdn.example');
+    expect((JSON.parse(text) as PublicMenu).categories[0]!.items[0]).toEqual({
+      id: deal.id,
+      name: 'Zinger Deal',
+      description: 'Lunch for one',
+      price: 79900,
+      available: true,
+      emoji: '🎁',
+      variants: [],
+      modifiers: [],
+      deal: {
+        includes: ['1 × Chicken Biryani', '1 × Drink'],
+        choices: deal.choices,
+        regularPrice: 104900,
+        state: 'on',
+        when: 'All day · until 31 Dec 2099',
+      },
+    });
   });
 
   it('lists deals first and keeps sold-out dishes visible as unavailable', async () => {
@@ -197,6 +276,36 @@ describe('public menu page', () => {
     ]);
     const daal = menu.categories.flatMap((c) => c.items).find((i) => i.name === 'Daal Makhani');
     expect(daal?.available).toBe(false);
+  });
+
+  it('shows saved deals and a "deals" category of menu items as one section, deals first', async () => {
+    await repo.saveProduct({
+      ...seedProducts[0]!,
+      id: randomUUID(),
+      name: 'Family Deal',
+      category: 'deals',
+    });
+    await repo.saveDeal(savedDeal({ name: 'Deal 2', position: 2 }));
+    await repo.saveDeal(savedDeal({ name: 'Deal 1', position: 1 }));
+    await turnOn();
+    const menu = (await (await call('/public/menu/dastarkhwan')).json()) as PublicMenu;
+    expect(menu.categories.filter((c) => /^deals?$/i.test(c.name.trim()))).toHaveLength(1);
+    const [deals] = menu.categories;
+    // The section keeps the menu's own spelling, and the bot's category wording matches it.
+    expect(deals!.name).toBe('deals');
+    expect(deals!.items.map((i) => [i.name, i.deal?.state])).toEqual([
+      ['Deal 1', 'on'],
+      ['Deal 2', 'on'],
+      ['Family Deal', undefined],
+    ]);
+    expect(menu.categories.map((c) => c.name).slice(1)).toEqual([
+      'Rice & Biryani',
+      'Karahi & Handi',
+      'BBQ',
+      'Breads & Sides',
+      'Drinks',
+      'Desserts',
+    ]);
   });
 
   it('is 404 when off or unknown, and refuses other sites', async () => {

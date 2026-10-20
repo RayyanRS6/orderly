@@ -8,6 +8,7 @@ import type {
   Language,
   Order,
   Product,
+  ProductDeal,
   TurnInput,
   TurnResult,
 } from '../src/shared/types.js';
@@ -25,11 +26,12 @@ import {
   type MenuLinkStatus,
   type MenuSession,
   type PublicMenu,
+  type PublicMenuDeal,
   type PublicMenuItem,
   type WebCart,
 } from '../src/shared/menu.js';
 import { connectionMatches, customerKeys } from '../src/shared/whatsapp.js';
-import { sellableCatalog } from '../src/shared/deals.js';
+import { dealSavings, sellableCatalog } from '../src/shared/deals.js';
 import {
   botConfig,
   cashOnly,
@@ -152,6 +154,24 @@ export async function menuLinkStatus(repo: Repository, company: Company): Promis
   };
 }
 
+// A deal's public block, field by field: never its schedule, order, other names or item links.
+// Paused and ended deals never get here (sellableCatalog leaves them out); anything not on or
+// later shows as sold out.
+function publicDeal(p: Product, deal: ProductDeal): PublicMenuDeal {
+  const saving = dealSavings(p);
+  return {
+    includes: [...deal.includes],
+    choices: deal.choices.map(({ id, name, options }) => ({
+      id,
+      name,
+      options: options.map(({ id, name, price }) => ({ id, name, price })),
+    })),
+    // Only a real saving, which the page shows as "You save".
+    ...(saving !== undefined && { regularPrice: p.price + saving }),
+    state: deal.state === 'on' || deal.state === 'later' ? deal.state : 'sold_out',
+    ...(deal.when && { when: deal.when }),
+  };
+}
 const publicItem = (p: Product): PublicMenuItem => ({
   id: p.id,
   name: p.name,
@@ -162,6 +182,7 @@ const publicItem = (p: Product): PublicMenuItem => ({
   ...(isPhotoUrl(p.imageUrl) && { imageUrl: p.imageUrl }),
   variants: p.variants.map(({ id, name, price }) => ({ id, name, price })),
   modifiers: p.modifiers.map(({ id, name, price }) => ({ id, name, price })),
+  ...(p.deal && { deal: publicDeal(p, p.deal) }),
 });
 /** The page's menu: chosen public fields only. Never refreshes a Sheets menu. */
 export async function publicMenu(repo: Repository, slug: string, now: string): Promise<PublicMenu> {
@@ -185,6 +206,7 @@ export async function publicMenu(repo: Repository, slug: string, now: string): P
   const fulfillment = offeredFulfillment(company);
   const open = isOpen(company, now);
   const whatsappNumber = await whatsappNumberFor(repo, company.id).catch(() => undefined);
+  // A deal on now counts as something to order, so a menu of deals alone can take orders.
   const reason =
     !fulfillment || !products.some((p) => p.available)
       ? 'unavailable'

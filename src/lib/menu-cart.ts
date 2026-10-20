@@ -1,5 +1,11 @@
 import type { Cart, CartItem, Company, Product } from '../shared/types';
-import { normalizeTypedPhone, type PublicMenu, type WebCart } from '../shared/menu';
+import {
+  normalizeTypedPhone,
+  type PublicMenu,
+  type PublicMenuDeal,
+  type PublicMenuItem,
+  type WebCart,
+} from '../shared/menu';
 import { quoteCart, type CartQuote } from '../domain/pricing';
 import { ApiError } from './api';
 
@@ -52,11 +58,15 @@ export function previewQuote(
   cart: Pick<Cart, 'items' | 'fulfillment' | 'zone'>,
 ): { quote?: CartQuote; error?: string } {
   const company = { id: menu.slug, deliveryZones: menu.restaurant.deliveryZones } as Company;
+  // A deal keeps its public block: its picks with their prices and the includes the order line
+  // copies, so a deal line here is the line the server makes.
   const products = menu.categories.flatMap((category) =>
-    category.items.map(
-      (item) =>
-        ({ ...item, companyId: menu.slug, category: category.name, aliases: [] }) as Product,
-    ),
+    category.items.map((item): Product => ({
+      ...item,
+      companyId: menu.slug,
+      category: category.name,
+      aliases: [],
+    })),
   );
   try {
     return {
@@ -72,6 +82,33 @@ export function previewQuote(
     return { error: error instanceof Error ? error.message : 'Please check your order.' };
   }
 }
+
+/**
+ * Where a deal's picks stand (picks: option id by group id): the first group still to pick (-1
+ * when none), the price of one with the picks' extra charges, and the picked ids in group order.
+ */
+export function dealPicked(deal: PublicMenuDeal, price: number, picks: Record<string, string>) {
+  const chosen = deal.choices.map((group) => group.options.find((o) => o.id === picks[group.id]));
+  return {
+    next: chosen.findIndex((option) => !option),
+    unit: price + chosen.reduce((sum, option) => sum + (option?.price ?? 0), 0),
+    modifierIds: chosen.flatMap((option) => (option ? [option.id] : [])),
+  };
+}
+/** A deal line's picks in the deal's group order ("Drink: Sprite"), whatever order the ids are in. */
+export const dealPicks = (deal: PublicMenuDeal, modifierIds: string[]) =>
+  deal.choices.flatMap((group) => {
+    const option = group.options.find((o) => modifierIds.includes(o.id));
+    return option ? [`${group.name}: ${option.name}`] : [];
+  });
+/** Why an item can't be ordered: a deal outside its times is on again later, not sold out. */
+export const notOrderable = (item: Pick<PublicMenuItem, 'deal'>) =>
+  item.deal?.state === 'later' ? 'Not on now' : 'Sold out';
+/** Whether the menu (or, with ids, those of its items) has a deal that runs only at set times. */
+export const hasTimedDeal = (menu: PublicMenu | undefined, ids?: string[]) =>
+  !!menu?.categories.some((category) =>
+    category.items.some((item) => item.deal?.when && (!ids || ids.includes(item.id))),
+  );
 
 /** A typed number the way the customer knows it ("+92 300 1234567"), or undefined if invalid. */
 export function typedPhoneLabel(value: string): string | undefined {
@@ -177,6 +214,8 @@ export interface DraftCode {
   code: string;
   expiresAt: string;
   whatsappUrl: string;
+  /** Set by the page: the order has a deal that runs only at set times, so the code can't wait. */
+  timedDeal?: true;
 }
 /**
  * The order code, until it expires. Opening WhatsApp often reloads this tab, so the code and
@@ -188,7 +227,7 @@ export function loadDraft(slug: string, now = Date.now()): DraftCode | undefined
       sessionStorage.getItem(key(slug, 'draft')) ?? 'null',
     );
     if (!value) return undefined;
-    const { code, expiresAt, whatsappUrl } = value;
+    const { code, expiresAt, whatsappUrl, timedDeal } = value;
     if (
       typeof code === 'string' &&
       typeof expiresAt === 'string' &&
@@ -196,7 +235,7 @@ export function loadDraft(slug: string, now = Date.now()): DraftCode | undefined
       whatsappUrl.startsWith('https://wa.me/') &&
       Date.parse(expiresAt) > now
     )
-      return { code, expiresAt, whatsappUrl };
+      return { code, expiresAt, whatsappUrl, ...(timedDeal === true && { timedDeal }) };
     sessionStorage.removeItem(key(slug, 'draft'));
     sessionStorage.removeItem(key(slug, 'cart'));
   } catch {

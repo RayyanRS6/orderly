@@ -20,17 +20,23 @@ import {
   waMeUrl,
   type MenuSession,
   type PublicMenu,
+  type PublicMenuDeal,
   type PublicMenuItem,
   type WebCart,
 } from '../shared/menu';
+import { dealSavings } from '../shared/deals';
 import {
   addLine,
   checkoutProblem,
   count,
+  dealPicked,
+  dealPicks,
+  hasTimedDeal,
   loadCart,
   loadDraft,
   loadToken,
   menuLoadFailure,
+  notOrderable,
   orderFailure,
   previewQuote,
   saveCart,
@@ -261,6 +267,86 @@ function OptionPicker({
   );
 }
 
+/**
+ * A deal's picks, one per choice group. Nothing is picked for the customer (the bot always asks
+ * too), and Add can always be tapped: until every group is picked it names the next one and
+ * moves there.
+ */
+function DealPicker({
+  item,
+  deal,
+  onAdd,
+}: {
+  item: PublicMenuItem;
+  deal: PublicMenuDeal;
+  onAdd: (line: Omit<CartItem, 'notes'>) => void;
+}) {
+  const [picks, setPicks] = useState<Record<string, string>>({});
+  const [quantity, setQuantityValue] = useState(1);
+  const firstOptions = useRef<(HTMLInputElement | null)[]>([]);
+  const { next, unit, modifierIds } = dealPicked(deal, item.price, picks);
+  return (
+    <div className="mt-3 space-y-3 rounded-2xl bg-paper p-3">
+      {deal.choices.map((group, index) => (
+        <fieldset key={group.id} className="space-y-1.5">
+          <legend className="field-label">{group.name}</legend>
+          {group.options.map((option, place) => (
+            <label
+              key={option.id}
+              className="flex items-center gap-2.5 text-[13px] text-stone-700 max-md:min-h-11"
+            >
+              <input
+                ref={
+                  place === 0
+                    ? (input) => {
+                        firstOptions.current[index] = input;
+                      }
+                    : undefined
+                }
+                type="radio"
+                name={`deal-${item.id}-${group.id}`}
+                className="size-4 accent-brand-600"
+                checked={picks[group.id] === option.id}
+                onChange={() => setPicks((current) => ({ ...current, [group.id]: option.id }))}
+              />
+              <span className="flex-1">{option.name}</span>
+              {option.price > 0 && (
+                <span className="tabular-nums text-stone-500">+{money(option.price)}</span>
+              )}
+            </label>
+          ))}
+        </fieldset>
+      ))}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <Stepper
+          value={quantity}
+          label={item.name}
+          min={1}
+          onChange={(value) => setQuantityValue(Math.max(1, Math.min(50, value)))}
+        />
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={() =>
+            next >= 0
+              ? firstOptions.current[next]?.focus()
+              : onAdd({ productId: item.id, quantity, modifierIds })
+          }
+        >
+          {next >= 0 ? (
+            `Choose ${deal.choices[next]!.name}`
+          ) : (
+            <>
+              <Plus className="size-4" />
+              Add · {money(unit * quantity)}
+            </>
+          )}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function ItemCard({
   item,
   ordering,
@@ -276,9 +362,17 @@ export function ItemCard({
   onPick: (open: boolean) => void;
   onAdd: (line: Omit<CartItem, 'notes'>) => void;
 }) {
-  const options = item.variants.length > 0 || item.modifiers.length > 0;
+  const { deal } = item;
+  const options = item.variants.length > 0 || item.modifiers.length > 0 || !!deal?.choices.length;
   const toggle = useRef<HTMLButtonElement>(null);
   const action = options ? (picking ? 'Close' : 'Choose') : 'Add';
+  const saving = deal && dealSavings(item);
+  const added = (line: Omit<CartItem, 'notes'>) => {
+    onAdd(line);
+    onPick(false);
+    // The picker (and its focused Add) goes away: keep focus on this dish.
+    toggle.current?.focus();
+  };
   return (
     <article className="card p-4">
       <div className="flex gap-4">
@@ -288,7 +382,7 @@ export function ItemCard({
           <div className="flex flex-wrap items-start justify-between gap-2" aria-live="polite">
             <h3 className="text-[15px] leading-snug font-semibold text-ink">{item.name}</h3>
             {!item.available ? (
-              <Badge>Sold out</Badge>
+              <Badge>{notOrderable(item)}</Badge>
             ) : inCart > 0 ? (
               <Badge tone="green">{`${inCart} in order`}</Badge>
             ) : null}
@@ -303,7 +397,36 @@ export function ItemCard({
             {money(
               item.variants.length ? Math.min(...item.variants.map((v) => v.price)) : item.price,
             )}
+            {saving !== undefined && (
+              <s className="ml-2 text-[12.5px] font-normal text-stone-400">
+                {money(item.price + saving)}
+              </s>
+            )}
           </p>
+          {saving !== undefined && (
+            <Badge tone="green" className="mt-1.5">{`You save ${money(saving)}`}</Badge>
+          )}
+          {deal && deal.includes.length > 0 && (
+            <p className="mt-1.5 text-xs leading-relaxed text-stone-600">
+              Includes: {deal.includes.join(' · ')}
+            </p>
+          )}
+          {deal?.choices.map((group) => (
+            <p key={group.id} className="mt-1 text-xs leading-relaxed text-stone-500">
+              {group.name}:{' '}
+              {group.options
+                .map((o) => (o.price > 0 ? `${o.name} +${money(o.price)}` : o.name))
+                .join(', ')}
+            </p>
+          ))}
+          {deal?.when && (
+            <div className="mt-2">
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-paper px-2.5 py-1 text-xs font-medium text-stone-600">
+                <Clock className="size-3.5" />
+                {deal.when}
+              </span>
+            </div>
+          )}
           {item.variants.length > 0 && (
             <p className="mt-1 text-xs leading-relaxed text-stone-600">
               {item.variants.map((v) => `${v.name} ${money(v.price)}`).join(' · ')}
@@ -333,17 +456,16 @@ export function ItemCard({
           )}
         </div>
       </div>
-      {ordering && picking && options && (
-        <OptionPicker
-          item={item}
-          onAdd={(line) => {
-            onAdd(line);
-            onPick(false);
-            // The picker (and its focused Add) goes away: keep focus on this dish.
-            toggle.current?.focus();
-          }}
-        />
-      )}
+      {/* Only while it can be ordered: a fresh menu can take a deal off until later. */}
+      {ordering &&
+        picking &&
+        options &&
+        item.available &&
+        (deal ? (
+          <DealPicker item={item} deal={deal} onAdd={added} />
+        ) : (
+          <OptionPicker item={item} onAdd={added} />
+        ))}
     </article>
   );
 }
@@ -545,6 +667,33 @@ export function MenuPage({ slug }: { slug: string }) {
     });
   }, [checkout]);
 
+  // Deals with set times start and end while the page is open, so the menu is read again every
+  // minute while it is on screen, and on coming back to it. Never during checkout, where the
+  // lines must not change under the customer (Place order is checked again anyway).
+  const watchDeals = hasTimedDeal(menu) && !checkout && !drafted && !placed;
+  useEffect(() => {
+    if (!watchDeals) return;
+    let live = true;
+    const refresh = () => {
+      if (document.visibilityState !== 'visible') return;
+      api<PublicMenu>(`/public/menu/${slug}`).then(
+        (value) => {
+          if (!live) return;
+          setMenu(value);
+          if (value.restaurant.fulfillment !== 'both') setFulfillment(value.restaurant.fulfillment);
+        },
+        () => undefined,
+      );
+    };
+    const timer = window.setInterval(refresh, 60_000);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      live = false;
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', refresh);
+    };
+  }, [slug, watchDeals]);
+
   // Checkout has its own history entry so the phone's Back button closes it. Every way out of
   // checkout comes through here and drops that entry, so Back never lands on a stale one.
   const leaveCheckout = () => {
@@ -575,6 +724,11 @@ export function MenuPage({ slug }: { slug: string }) {
           <p className="mt-3 text-[13px] leading-relaxed text-stone-500">
             Your order is placed only after you send the message. The code works for 30 minutes.
           </p>
+          {drafted.timedDeal && (
+            <p className="mt-2 text-[13px] leading-relaxed font-medium text-brand-800">
+              Send it now: deals only run at their set times.
+            </p>
+          )}
           <p className="mt-2 text-[13px] leading-relaxed text-stone-500">
             Already sent it? The restaurant’s reply in WhatsApp confirms your order, or tells you
             what to fix.
@@ -727,8 +881,13 @@ export function MenuPage({ slug }: { slug: string }) {
           cart: web,
           expectedTotal: priced.quote.total,
         });
-        saveDraft(slug, created);
-        setDrafted(created);
+        // A deal with set times can end before the code is sent: the code screen says so.
+        const ids = cart.map((line) => line.productId);
+        const draft: DraftCode = hasTimedDeal(menu, ids)
+          ? { ...created, timedDeal: true }
+          : created;
+        saveDraft(slug, draft);
+        setDrafted(draft);
       } else {
         setPlaced(
           await api<Placed>(`/public/menu/${slug}/orders`, undefined, {
@@ -815,10 +974,13 @@ export function MenuPage({ slug }: { slug: string }) {
           {cart.map((line, index) => {
             const item = items.find((i) => i.id === line.productId);
             const quoted = itemsOnly.quote?.items[index];
-            const options = [
-              item?.variants.find((v) => v.id === line.variantId)?.name,
-              ...line.modifierIds.map((id) => item?.modifiers.find((m) => m.id === id)?.name),
-            ].filter(Boolean);
+            // A deal's picks in its group order ("Drink: Sprite · Side: Fries").
+            const options = item?.deal
+              ? dealPicks(item.deal, line.modifierIds)
+              : [
+                  item?.variants.find((v) => v.id === line.variantId)?.name,
+                  ...line.modifierIds.map((id) => item?.modifiers.find((m) => m.id === id)?.name),
+                ].filter(Boolean);
             return (
               // Keyed by the line itself, so removing one row doesn't hand its focused
               // button to the next dish.
@@ -830,7 +992,7 @@ export function MenuPage({ slug }: { slug: string }) {
                   <p className="text-[14px] font-semibold text-ink">
                     {item?.name ?? 'No longer on the menu'}
                   </p>
-                  {item && !item.available && <Badge>Sold out</Badge>}
+                  {item && !item.available && <Badge>{notOrderable(item)}</Badge>}
                   {options.length > 0 && (
                     <p className="text-xs text-stone-500">{options.join(' · ')}</p>
                   )}
