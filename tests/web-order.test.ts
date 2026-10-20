@@ -4,8 +4,9 @@ import { createConversation } from '../src/domain/engine';
 import { defaultBot } from '../src/shared/bot';
 import { seedCompanies, seedProducts } from '../src/shared/seed';
 import { explanationHeadline } from '../src/shared/explain';
+import { sellableCatalog } from '../src/shared/deals';
 import type { WebCart } from '../src/shared/menu';
-import type { Company, Conversation, Product } from '../src/shared/types';
+import type { Company, Conversation, Deal, Product } from '../src/shared/types';
 
 const company = seedCompanies[0]!;
 const products = seedProducts.filter((p) => p.companyId === company.id);
@@ -243,5 +244,134 @@ describe('menu page orders', () => {
 
   it('prices a page cart the same way as the chat', () => {
     expect(quoteWebCart(company, products, pickup).quote.total).toBe(220000);
+  });
+});
+
+describe('deals ordered from the menu page', () => {
+  // `now` is Friday 15:00 in Karachi.
+  const every = [0, 1, 2, 3, 4, 5, 6];
+  const deal = (fields: Partial<Deal> = {}): Deal => ({
+    id: 'deal-1',
+    companyId: company.id,
+    name: 'Deal 1',
+    description: '',
+    emoji: '🎁',
+    aliases: [],
+    price: 79900,
+    regularPrice: 104900,
+    items: [
+      { name: 'Chicken Biryani', quantity: 1, productId: biryani.id },
+      { name: 'Drink', quantity: 1 },
+    ],
+    choices: [
+      {
+        id: 'drink',
+        name: 'Drink',
+        options: [
+          { id: 'coke', name: 'Coke', price: 0 },
+          { id: 'sprite', name: 'Sprite', price: 0 },
+          { id: 'fanta', name: 'Fanta', price: 5000 },
+        ],
+      },
+      {
+        id: 'side',
+        name: 'Side',
+        options: [
+          { id: 'fries', name: 'Fries', price: 0 },
+          { id: 'raita', name: 'Raita', price: 3000 },
+        ],
+      },
+    ],
+    available: true,
+    position: 1,
+    updatedAt: earlier,
+    ...fields,
+  });
+  const dealCart = (modifierIds: string[], line: Partial<WebCart['items'][number]> = {}) => ({
+    ...pickup,
+    items: [{ productId: 'deal-1', quantity: 1, modifierIds, notes: '', ...line }],
+  });
+  // As the server sells it: at `now`, keeping a paused or ended deal the cart holds.
+  const sold = (d: Deal, keep = true) =>
+    sellableCatalog(company, products, [d], now, keep ? { keepIds: [d.id] } : {});
+
+  it('orders a deal as one line with its picks in group order, and drops a pending question', () => {
+    const asked: Conversation = {
+      ...chat(),
+      pendingDealChoice: { productId: 'deal-1', quantity: 1, picked: [], notes: '' },
+    };
+    const { order, reply, conversation } = build(
+      dealCart(['raita', 'sprite']),
+      { expectedTotal: 82900 },
+      company,
+      asked,
+      sold(deal()),
+    );
+    expect(order.items).toEqual([
+      {
+        productId: 'deal-1',
+        name: 'Deal 1',
+        quantity: 1,
+        unitPrice: 82900,
+        variant: 'Drink: Sprite, Side: Raita',
+        modifiers: [],
+        notes: '',
+        total: 82900,
+        choices: [
+          { group: 'Drink', option: 'Sprite' },
+          { group: 'Side', option: 'Raita' },
+        ],
+        includes: ['1 × Chicken Biryani', '1 × Drink'],
+      },
+    ]);
+    expect(reply).toContain('1 × Deal 1 (Drink: Sprite, Side: Raita) — Rs. 829');
+    expect(conversation.pendingDealChoice).toBeUndefined();
+    expect(conversation.pendingItemChoice).toBeUndefined();
+    // The picks' order in the cart changes nothing.
+    expect(
+      build(dealCart(['sprite', 'raita']), {}, company, chat(), sold(deal())).order.items,
+    ).toEqual(order.items);
+  });
+
+  it.each([
+    [
+      'later',
+      deal({ schedule: { days: every, start: '18:00', end: '22:00' } }),
+      'Deal 1 is unavailable right now. It is on Every day 18:00–22:00. Remove it to continue.',
+    ],
+    [
+      'ended',
+      deal({ schedule: { days: every, start: '00:00', end: '00:00', endDate: '2026-10-15' } }),
+      'Deal 1 is unavailable right now. It has ended. Remove it to continue.',
+    ],
+    [
+      'sold out',
+      deal({ items: [{ name: 'Daal Makhani', quantity: 1, productId: daal.id }] }),
+      'Deal 1 is unavailable right now. It is sold out. Remove it to continue.',
+    ],
+    [
+      'paused',
+      deal({ available: false }),
+      'Deal 1 is unavailable right now. Remove it to continue.',
+    ],
+  ])('refuses a deal that is %s as unavailable, so the page reloads the menu', (_, d, message) => {
+    const cart = dealCart(['coke', 'fries']);
+    expect(refusal(() => build(cart, {}, company, chat(), sold(d))).code).toBe('unavailable');
+    expect(() => quoteWebCart(company, sold(d), cart)).toThrow(message);
+    // A path that forgot to keep the cart's deal still refuses it.
+    expect(refusal(() => build(cart, {}, company, chat(), sold(d, false))).code).toBe(
+      'unavailable',
+    );
+  });
+
+  it.each([
+    ['a missing pick', dealCart(['coke']), 'Choose Side for Deal 1: Fries, Raita.'],
+    ['an unknown pick', dealCart(['coke', 'chips']), 'Invalid choice for Deal 1.'],
+    ['two picks from one group', dealCart(['coke', 'sprite', 'fries']), 'Choose one Drink'],
+    ['the same pick twice', dealCart(['coke', 'coke', 'fries']), 'cannot be selected twice'],
+    ['a size', dealCart(['coke', 'fries'], { variantId: 'large' }), 'Invalid option for Deal 1.'],
+  ])('refuses %s as invalid', (_, cart, message) => {
+    expect(refusal(() => build(cart, {}, company, chat(), sold(deal()))).code).toBe('invalid');
+    expect(() => quoteWebCart(company, sold(deal()), cart)).toThrow(message);
   });
 });

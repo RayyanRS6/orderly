@@ -24,6 +24,18 @@ export interface PublicMenuOption {
   name: string;
   price: number;
 }
+/**
+ * What the page shows of a deal: what it includes ("1 × Fries"), the picks it needs with any
+ * extra charge, the owner's price if bought separately (only when it is a saving), whether it is
+ * on now and when it runs. Never its stored times, order, other names or item links.
+ */
+export interface PublicMenuDeal {
+  includes: string[];
+  choices: { id: string; name: string; options: PublicMenuOption[] }[];
+  regularPrice?: number;
+  state: 'on' | 'later' | 'sold_out';
+  when?: string;
+}
 export interface PublicMenuItem {
   id: string;
   name: string;
@@ -34,6 +46,8 @@ export interface PublicMenuItem {
   imageUrl?: string;
   variants: PublicMenuOption[];
   modifiers: PublicMenuOption[];
+  /** Only on a deal. Its `available` says whether it can be ordered right now. */
+  deal?: PublicMenuDeal;
 }
 export interface PublicMenu {
   slug: string;
