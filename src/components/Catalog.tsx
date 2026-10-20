@@ -119,6 +119,16 @@ export function Catalog() {
           <ChevronRight className="size-3" />
         </button>
       </div>
+      <p className="-mt-3 mb-4 pl-1 text-xs text-stone-500">
+        Combos and time-limited offers live in{' '}
+        <button
+          className="inline-flex items-center font-semibold text-brand-700 underline-offset-4 transition-colors hover:text-brand-800 hover:underline max-md:min-h-11"
+          onClick={() => navigate('deals')}
+        >
+          Deals
+        </button>
+        .
+      </p>
       {data.company.catalogSyncedAt && (
         <p className="mb-4 pl-1 font-mono text-[11px] tracking-[0.02em] text-stone-500">
           Last catalog sync: {shortDate(data.company.catalogSyncedAt)}

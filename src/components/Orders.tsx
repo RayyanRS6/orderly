@@ -1066,6 +1066,12 @@ function OrderDetails({
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-semibold text-ink">{item.name}</p>
                     {item.variant && <p className="mt-1 text-xs text-stone-500">{item.variant}</p>}
+                    {/* A deal line: what the bundle holds, so the kitchen sees every part. */}
+                    {Array.isArray(item.includes) && item.includes.length > 0 && (
+                      <p className="mt-1 text-[11px] text-stone-500">
+                        Includes: {item.includes.join(' · ')}
+                      </p>
+                    )}
                     {item.modifiers.length > 0 && (
                       <p className="mt-1 text-xs text-stone-500">{item.modifiers.join(', ')}</p>
                     )}

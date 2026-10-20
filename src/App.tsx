@@ -23,6 +23,7 @@ import {
   ShoppingBag,
   SlidersHorizontal,
   Sparkles,
+  TicketPercent,
   Users,
   Workflow,
   X,
@@ -81,6 +82,7 @@ const navigation = [
   { id: 'orders', label: 'Orders', icon: ShoppingBag },
   { id: 'inbox', label: 'Inbox', icon: MessageSquare },
   { id: 'menu', label: 'Menu', icon: BookOpen },
+  { id: 'deals', label: 'Deals', icon: TicketPercent },
   { id: 'playground', label: 'Test your bot', icon: FlaskConical },
   { id: 'bot', label: 'Bot settings', icon: SlidersHorizontal },
   { id: 'flow', label: 'Agent flow', icon: Workflow },
@@ -103,6 +105,16 @@ function PeopleUnavailable() {
   return <ErrorNotice message="The People page couldn’t load. Reload the page and try again." />;
 }
 const peopleNav = { id: 'people', label: 'People', icon: Users } as const;
+// Deals load when the page is opened, so the workspace every phone downloads stays small.
+const Deals = lazy(() =>
+  import('./components/Deals').then(
+    (m) => ({ default: m.Deals }),
+    () => ({ default: DealsUnavailable }),
+  ),
+);
+function DealsUnavailable() {
+  return <ErrorNotice message="The Deals page couldn’t load. Reload the page and try again." />;
+}
 type Configuration = {
   mode: 'demo' | 'live';
   supabaseUrl?: string;
@@ -962,6 +974,11 @@ export default function App() {
               {page === 'overview' && <Overview />}
               {page === 'orders' && <Orders />}
               {page === 'menu' && <Catalog />}
+              {page === 'deals' && (
+                <Suspense fallback={<p className="text-sm text-stone-500">Loading deals…</p>}>
+                  <Deals />
+                </Suspense>
+              )}
               {page === 'inbox' && <Inbox />}
               <div hidden={page !== 'playground'}>
                 <Playground active={page === 'playground'} />

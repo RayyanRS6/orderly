@@ -149,7 +149,7 @@ The Terms and the deletion page promise that Orderly deletes a whole workspace o
 
    If the business uses or used a linked phone (the last query shows `baileys`, or the owner says it moved from a linked phone to the official route), confirm that the gateway ended that session: Railway → `gateway` → logs show `SESSION_DISCONNECTED` or `SESSION_RETIRED` with that connection id after step 3. If neither appears and the provider is `baileys`, press **Disconnect** in Orderly again once the gateway answers (it logs `SESSION_DISCONNECTED` even for a session it no longer has); in every case the owner removes Orderly under Linked devices. Do not go on to step 6 before this: once the rows are gone, Orderly answers that session's events with 200 and ignores them, so nothing would ever end a session the gateway missed, and it would stay linked on Railway, still receiving and decrypting the restaurant's chats.
 
-6. **Delete the workspace** in one transaction. Traces and orders point at chats without a cascade, so they go first; deleting the `companies` row then removes everything else of that business (chats and their messages, receipts, jobs, menu, menu page, integrations and their encrypted secrets, the WhatsApp connection, usage, limits, blocks, alert settings, retention policy and memberships). If the id and slug do not name one business, it stops and nothing is deleted. The last line records who did it, in the audit table, which keeps no message text:
+6. **Delete the workspace** in one transaction. Traces and orders point at chats without a cascade, so they go first; deleting the `companies` row then removes everything else of that business (chats and their messages, receipts, jobs, menu, deals, menu page, integrations and their encrypted secrets, the WhatsApp connection, usage, limits, blocks, alert settings, retention policy and memberships). If the id and slug do not name one business, it stops and nothing is deleted. The last line records who did it, in the audit table, which keeps no message text:
 
    ```sql
    begin;
@@ -176,6 +176,7 @@ The Terms and the deletion page promise that Orderly deletes a whole workspace o
      (select count(*) from public.jobs where company_id = '<id>') jobs,
      (select count(*) from public.integrations where company_id = '<id>') integrations,
      (select count(*) from public.whatsapp_connections where company_id = '<id>') whatsapp,
+     (select count(*) from public.deals where company_id = '<id>') deals,
      (select count(*) from public.company_memberships where company_id = '<id>') members;
    ```
 

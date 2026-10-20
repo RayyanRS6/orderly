@@ -5,6 +5,7 @@ export type Page =
   | 'overview'
   | 'orders'
   | 'menu'
+  | 'deals'
   | 'inbox'
   | 'playground'
   | 'bot'

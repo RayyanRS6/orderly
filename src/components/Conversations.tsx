@@ -20,6 +20,8 @@ import { api } from '../lib/api';
 import { readTestChat, saveTestChat, testChatMatches } from '../lib/test-chat';
 import type { PageResult, Message } from '../shared/types';
 import { quoteCart } from '../domain/engine';
+import { sellableCatalog } from '../shared/deals';
+import { useNow } from '../lib/deal-form';
 import { useAction, useWorkspace } from '../lib/workspace';
 import { cn, label } from '../lib/utils';
 import {
@@ -144,6 +146,8 @@ export function Playground({ active = true }: { active?: boolean }) {
   const [restoring, setRestoring] = useState(!!saved.conversationId);
   const restoreGeneration = useRef(0);
   const [details, setDetails] = useState(false);
+  // Deals are on or off by the clock: look again every minute while this page is open.
+  const now = useNow(active && !!data.deals?.length);
   useEffect(() => {
     if (!saved.conversationId) return;
     let mounted = true;
@@ -229,10 +233,22 @@ export function Playground({ active = true }: { active?: boolean }) {
     });
     return sent;
   }
+  // The menu as the bot sells it at this moment: deals first, then the menu items. A deal
+  // already in the cart stays listed even when paused or ended, so its line keeps its name.
+  const catalog = sellableCatalog(
+    data.company,
+    data.products,
+    data.deals ?? [],
+    new Date(now).toISOString(),
+    { keepIds: conversation?.cart.items.map((item) => item.productId) },
+  );
+  const onMenu = catalog.filter(
+    (product) => product.deal?.state !== 'paused' && product.deal?.state !== 'ended',
+  );
   let total: number | undefined;
   try {
     if (conversation?.cart.items.length)
-      total = quoteCart(data.company, data.products, conversation.cart).total;
+      total = quoteCart(data.company, catalog, conversation.cart).total;
   } catch {
     /* The authoritative review will explain unavailable options. */
   }
@@ -420,7 +436,7 @@ export function Playground({ active = true }: { active?: boolean }) {
             ) : (
               <div className="stagger space-y-2">
                 {conversation.cart.items.map((item, i) => {
-                  const product = data.products.find((p) => p.id === item.productId);
+                  const product = catalog.find((p) => p.id === item.productId);
                   return (
                     <div
                       key={`${item.productId}-${i}`}
@@ -434,8 +450,16 @@ export function Playground({ active = true }: { active?: boolean }) {
                           {item.quantity} × {product?.name || 'Unavailable item'}
                         </p>
                         <p className="mt-0.5 text-xs text-stone-500">
-                          {product?.variants.find((v) => v.id === item.variantId)?.name}
-                          {item.modifierIds.length ? ` · ${item.modifierIds.length} extras` : ''}
+                          {product?.deal ? (
+                            dealPicks(product, item.modifierIds)
+                          ) : (
+                            <>
+                              {product?.variants.find((v) => v.id === item.variantId)?.name}
+                              {item.modifierIds.length
+                                ? ` · ${item.modifierIds.length} extras`
+                                : ''}
+                            </>
+                          )}
                         </p>
                       </div>
                       {conversation.cart.status !== 'submitted' && (
@@ -513,12 +537,12 @@ export function Playground({ active = true }: { active?: boolean }) {
               </p>
             </div>
             <div className="stagger max-h-80 space-y-1 overflow-y-auto p-2">
-              {data.products.map((product) => (
+              {onMenu.map((product) => (
                 <button
                   key={product.id}
                   className="group flex w-full items-center gap-3 rounded-2xl p-2.5 text-left transition-colors duration-200 hover:bg-white/80 disabled:opacity-40"
                   disabled={!product.available || conversation?.cart.status === 'submitted'}
-                  title={!product.available ? 'Sold out' : undefined}
+                  title={!product.available ? dealNote(product) || 'Sold out' : undefined}
                   onClick={() => setSelected(product)}
                 >
                   <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-paper text-2xl shadow-[inset_0_0_0_1px_rgb(14_6_4/0.05)] transition-transform duration-300 ease-[var(--ease-spring)] group-enabled:group-hover:-rotate-6 group-enabled:group-hover:scale-110">
@@ -529,6 +553,7 @@ export function Playground({ active = true }: { active?: boolean }) {
                     <span className="mt-1 block text-xs tabular-nums text-stone-500">
                       {product.variants.length ? 'From ' : ''}
                       {money(product.price)}
+                      {dealNote(product) && ` · ${dealNote(product)}`}
                     </span>
                   </span>
                   <Plus className="size-7 shrink-0 rounded-full bg-ink/[0.05] p-1.5 text-stone-500 group-enabled:group-hover:bg-brand-500 group-enabled:group-hover:text-ink transition-[background-color,color,transform] duration-300 ease-[var(--ease-soft)] group-enabled:group-hover:shadow-[0_8px_16px_-8px_rgb(255_105_44/0.9)]" />
@@ -618,26 +643,56 @@ export function Playground({ active = true }: { active?: boolean }) {
           loading={pending === 'add'}
           close={() => setSelected(undefined)}
           add={async (action) => {
-            const variant = selected.variants.find((item) => item.id === action.variantId)?.name;
-            const extras = selected.modifiers
-              .filter((item) => action.modifierIds?.includes(item.id))
-              .map((item) => item.name);
-            const message = [
-              `Add ${action.quantity} ${selected.name}`,
-              variant ? `option ${variant}` : '',
-              extras.length ? `with ${extras.join(' and ')}` : '',
-              action.notes ? `note: ${action.notes}` : '',
-            ]
-              .filter(Boolean)
-              .join(', ');
-            if (await send(message, 'add')) setSelected(undefined);
+            if (await send(addText(selected, action), 'add')) setSelected(undefined);
           }}
         />
       )}
     </>
   );
 }
-function AddItem({
+/** What the Add dialog sends: "Add 2 Chicken Karahi, option Full, with Extra butter". */
+export function addText(product: Product, action: Extract<BotAction, { type: 'add_item' }>) {
+  const variant = product.variants.find((item) => item.id === action.variantId)?.name;
+  const extras = product.modifiers
+    .filter((item) => action.modifierIds?.includes(item.id))
+    .map((item) => item.name);
+  // A deal's picks go in the same part of the message as the deal ("Add 1 Deal 1 with Sprite /
+  // Fries"): after a comma or "and" the bot would read them as dishes of their own.
+  const picks = product.deal ? pickNames(product, action.modifierIds ?? []) : [];
+  return [
+    `Add ${action.quantity} ${product.name}${picks.length ? ` with ${picks.join(' / ')}` : ''}`,
+    variant ? `option ${variant}` : '',
+    extras.length ? `with ${extras.join(' and ')}` : '',
+    action.notes ? `note: ${action.notes}` : '',
+  ]
+    .filter(Boolean)
+    .join(', ');
+}
+/** A deal's picked option names, in its choice groups' order. */
+function pickNames(product: Product, optionIds: string[]): string[] {
+  return (product.deal?.choices ?? []).flatMap((group) =>
+    group.options.filter((option) => optionIds.includes(option.id)).map((option) => option.name),
+  );
+}
+/** A deal line's picks as order lines word them: "Drink: Sprite, Side: Fries". */
+function dealPicks(product: Product, optionIds: string[]): string {
+  return (product.deal?.choices ?? [])
+    .flatMap((group) =>
+      group.options
+        .filter((option) => optionIds.includes(option.id))
+        .map((option) => `${group.name}: ${option.name}`),
+    )
+    .join(', ');
+}
+/** Why a deal on the list can't be added now, or undefined for a menu item or a deal that's on. */
+function dealNote(product: Product): string | undefined {
+  if (product.deal?.state === 'later')
+    return product.deal.when ? `Not on now · ${product.deal.when}` : 'Not on now';
+  if (product.deal?.state === 'sold_out') return 'Sold out';
+  return undefined;
+}
+
+export function AddItem({
   product,
   loading,
   close,
@@ -652,7 +707,10 @@ function AddItem({
   const [quantity, setQuantity] = useState(1);
   const [variant, setVariant] = useState(product.variants[0]?.id || '');
   const [extras, setExtras] = useState<string[]>([]);
+  // A deal's pick in each choice group, by group id. Nothing is picked for the customer.
+  const [picks, setPicks] = useState<Record<string, string>>({});
   const [notes, setNotes] = useState('');
+  const choices = product.deal?.choices ?? [];
   return (
     <Modal
       open
@@ -660,7 +718,13 @@ function AddItem({
         if (!open) close();
       }}
       title={product.name}
-      description={product.description}
+      description={
+        product.deal
+          ? [product.description, `Includes: ${product.deal.includes.join(' · ')}`]
+              .filter(Boolean)
+              .join(' ')
+          : product.description
+      }
     >
       <form
         className="space-y-4"
@@ -671,7 +735,9 @@ function AddItem({
             productId: product.id,
             quantity,
             variantId: variant || undefined,
-            modifierIds: extras,
+            modifierIds: product.deal
+              ? choices.flatMap((group) => (picks[group.id] ? [picks[group.id]!] : []))
+              : extras,
             notes,
           });
         }}
@@ -699,6 +765,34 @@ function AddItem({
             />
           </Field>
         )}
+        {choices.map((group) => (
+          <fieldset key={group.id}>
+            <legend className="field-label">{group.name}</legend>
+            {group.options.map((option) => (
+              <label
+                className="my-1 flex cursor-pointer items-center justify-between gap-3 rounded-xl border border-transparent px-3 py-2.5 text-sm transition-colors hover:bg-white has-checked:border-brand-500/30 has-checked:bg-brand-500/[0.07]"
+                key={option.id}
+              >
+                <span className="flex items-center gap-2.5">
+                  <input
+                    className="size-4 shrink-0"
+                    type="radio"
+                    name={`pick-${group.id}`}
+                    required
+                    checked={picks[group.id] === option.id}
+                    onChange={() => setPicks({ ...picks, [group.id]: option.id })}
+                  />
+                  {option.name}
+                </span>
+                {option.price > 0 && (
+                  <span className="font-medium tabular-nums text-stone-500">
+                    + {money(option.price)}
+                  </span>
+                )}
+              </label>
+            ))}
+          </fieldset>
+        ))}
         {product.modifiers.length > 0 && (
           <fieldset>
             <legend className="field-label">Extras</legend>

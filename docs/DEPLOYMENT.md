@@ -19,10 +19,12 @@ For a new installation, apply every file in `supabase/migrations` in filename or
 | `202610200001_prelaunch_fixes.sql` (pre-launch fixes, part 1)                                          | New. Apply **before** pushing the backend (§7).                              |
 | `202610200002_order_followups.sql` (pre-launch fixes, part 2)                                          | New. Apply **after** the dashboard deploy (§7).                              |
 | `202610200003_order_flow.sql` (the shorter order flow)                                                 | New. Apply **before** pushing the backend, and run again after it (§7a).     |
+| `202610210001_deals.sql` (deals)                                                                       | New. Apply **before** pushing the backend, after the read-only check (§7b).  |
 
 - `202610200001_prelaunch_fixes.sql`: staff alerts go to each subscriber's own email, also for a linked phone that stopped working, and automatic notices no longer hide a customer waiting for staff; erasure and export find every format of a number; a message that failed for good goes into its chat; AI reply defaults of 1,500 an hour (100 per customer) with an 80% warning; pipeline health; a daily purge of old operational rows; a ledger of applied migrations.
 - `202610200002_order_followups.sql`: queues the reminder for an order staff have not accepted after 15 minutes, ends waiting reminders when WhatsApp is disconnected, and again clears AI limits saved as the old defaults (an older dashboard tab can save them after part 1).
 - `202610200003_order_flow.sql`: Accept takes an order straight to Preparing (no separate Accepted step and no recorded call first; an optional staff note is saved with the change), then Ready for a pickup order or Out for delivery for a delivery order, then Completed; the counts for the Orders page tabs; orders still Accepted become Preparing.
+- `202610210001_deals.sql`: the `deals` table for the **Deals** tab (combos and time-limited offers, kept apart from the menu items), one id space for menu items and deals, and a deal branch in the order check; a menu item's order line is checked exactly as before.
 
 Use the [exact launch guide](ORDERLY-LAUNCH-STEPS-2026-09-18.md) for client setup (its 18 October note lists what changed since) and the [audit closure](ORDERLY-AUDIT-CLOSURE-2026-09-18.md) for the September record.
 
@@ -223,6 +225,8 @@ Each business can switch on a public menu page at `/m/<slug>` (**Your menu → M
 
 Photos are optional `https://` links: the menu editor's **Photo link** field, or an `image` (also `image_url` or `photo`) column in a CSV import or after column J in the menu Sheet. A bad link is skipped, never failing a sync. Photos are never sent to the AI.
 
+Deals (the **Deals** tab: combos and offers that run only on set days, hours or dates) come first on the page, in one section with any menu items in a "Deals" category, and are sold only while they are on: the page shows a deal that is not on yet with its times and no Add button, and the backend checks the times again when an order is placed or a code is sent. Deals are edited in Orderly whatever the menu source: CSV imports and Sheets refreshes leave them alone. A deal that links a menu item whose id changed (a Sheet without an id column gives a renamed item a new id) keeps its text and shows a warning in the Deals tab.
+
 Apply the SQL by hand in the Supabase SQL editor, in order, **before** pushing the backend that uses it:
 
 1. `202610190001_menu_page.sql` (the link table and `set_menu_link`).
@@ -308,6 +312,79 @@ The steps: Pending → Accept → Preparing → Ready (pickup) or Out for delive
 5. **Dashboard:** build with `VITE_API_BASE_URL` and `VITE_API_REGION` set (§2), deploy, and ask staff to reload every open Orderly tab. A tab from before still works with the new backend (its Accept goes to Preparing and its "Mark ready" still moves a delivery order on), but it shows the old steps.
 
 **Rollback:** dashboard first (`npx wrangler rollback <previous version>`), then the backend (revert the commit on `main`). The SQL can stay: the older backend never calls the new functions, and it moves a Preparing order on as before. Orders moved from Accepted to Preparing are not moved back.
+
+## 7b. Release order (deals, October 2026)
+
+Deals are combos and time-limited offers in their own **Deals** tab (§6). The SQL adds the `deals` table and a deal branch to the order check, and keeps menu items and deals from sharing an id; the running backend and dashboard keep working with it. Run it at a quiet hour; each step needs the owner's OK.
+
+1. **Backup:** `npm run backup:db` (as §7, step 1).
+2. **Compare first (read-only):** the SQL replaces `validate_order_snapshot` with the repo's body plus a deal branch, so production must still run the repo's bodies. Run this in the SQL editor:
+
+   ```sql
+   select proname, md5(replace(prosrc, chr(13), '')) from pg_proc
+   where pronamespace = 'public'::regnamespace
+     and proname in ('validate_order_snapshot', 'enforce_json_references', 'replace_products')
+   order by proname;
+   ```
+
+   It must print exactly these, the repo's migrations before `202610210001_deals.sql` (worked out in PGlite by `tests/deals-dashboard-docs.test.ts`). If any line differs, stop: production has a change the repo does not, and the SQL would undo it.
+
+   | Function                  | md5                                |
+   | ------------------------- | ---------------------------------- |
+   | `enforce_json_references` | `2af34226db1b1b7fb1f66dab73f2288e` |
+   | `replace_products`        | `ea1a4147a92067cf1daaf16453910238` |
+   | `validate_order_snapshot` | `1f160056ecd252bdb07d9a58d67a5ed7` |
+
+3. **SQL:** paste `supabase/migrations/202610210001_deals.sql` into the SQL editor and run it. Each statement waits at most 5 seconds for a lock, and it is safe to run again. Check that `select name from public.orderly_schema_migrations;` lists it, and run the comparison again: `validate_order_snapshot` now prints `1461eb1b4c1bdad400bb1525c6efe123` and the other two are unchanged.
+4. **Live check:** replace `<test business id>` with your test business's id (`select id, slug from public.companies;`) and run the block below. It saves a deal, checks that a menu item cannot take the deal's id, places a pickup order for 2 of the deal with a Fanta pick, then stops with an error on purpose, so nothing is kept. It must end with the error `Deals live check passed. Nothing was saved.`; any other error means the SQL is not right: roll back (below) before going on.
+
+   ```sql
+   do $$
+   declare
+     business text := '<test business id>';
+     deal text := gen_random_uuid()::text;
+     chat text := gen_random_uuid()::text;
+     sale text := gen_random_uuid()::text;
+   begin
+     insert into public.deals(id, company_id, data) values (deal, business, jsonb_build_object(
+       'id', deal, 'companyId', business, 'name', 'Live check', 'price', 50000, 'available', true,
+       'items', '[{"name":"Check","quantity":1}]'::jsonb,
+       'choices', '[{"id":"g","name":"Drink","options":[{"id":"a","name":"Coke","price":0},{"id":"b","name":"Fanta","price":5000}]}]'::jsonb));
+     begin
+       insert into public.products(id, company_id, data) values (deal, business, jsonb_build_object('id', deal, 'companyId', business));
+       raise exception 'A menu item could take a deal''s id';
+     exception when others then
+       if sqlerrm <> 'Menu item ID is already in use' then raise; end if;
+     end;
+     insert into public.conversations(id, company_id, customer_phone, channel, version, updated_at, data)
+       values (chat, business, 'live-check-' || chat, 'demo', 0, now(), jsonb_build_object(
+         'id', chat, 'companyId', business, 'customerPhone', 'live-check-' || chat, 'channel', 'demo', 'version', 0));
+     insert into public.orders(id, company_id, conversation_id, submission_key, created_at, updated_at, data)
+       values (sale, business, chat, 'live-check-' || sale, now(), now(), jsonb_build_object(
+         'id', sale, 'companyId', business, 'conversationId', chat, 'submissionKey', 'live-check-' || sale,
+         'status', 'pending', 'fulfillment', 'pickup', 'customerName', 'Live check',
+         'items', jsonb_build_array(jsonb_build_object('productId', deal, 'name', 'Live check', 'quantity', 2,
+           'unitPrice', 55000, 'variant', 'Drink: Fanta', 'modifiers', '[]'::jsonb, 'notes', '', 'total', 110000,
+           'choices', '[{"group":"Drink","option":"Fanta"}]'::jsonb, 'includes', '["1 × Check"]'::jsonb)),
+         'subtotal', 110000, 'deliveryFee', 0, 'total', 110000));
+     raise exception 'Deals live check passed. Nothing was saved.';
+   end $$;
+   ```
+
+5. **Backend:** push to `main`. A newer backend before the SQL shows no deals (one warning in the function logs) and answers a deal save with 503 "Apply the 202610210001_deals.sql database migration first".
+6. **Dashboard:** build with `VITE_API_BASE_URL` and `VITE_API_REGION` set (§2), deploy, and ask staff to reload every open Orderly tab (kitchen tablets too) before the owner adds the first deal: an older tab has no Deals tab, and its order view shows a deal's picks but not what the deal includes. The Deals tab reminds the owner once.
+
+**Rollback**, in this order:
+
+0. **Pause every deal first**, so no version of Orderly sells one. It can be undone (resume each deal in the Deals tab):
+
+   ```sql
+   update public.deals set data = jsonb_set(data, '{available}', 'false');
+   ```
+
+1. **Dashboard:** `npx wrangler rollback <previous version>`.
+2. **Backend:** revert the commit on `main` and push. A cart that still holds a deal then behaves like one with a deleted item ("An item is unavailable. Remove it or ask staff for help.").
+3. **The SQL can stay:** the older backend never reads deals or sends deal lines, and menu-item orders are checked exactly as before. Only if the functions must go too, and only once the older backend is live, run `.local/backups/rollback-deals.sql` from the operator's laptop in the SQL editor. In one transaction it puts `validate_order_snapshot` back exactly (`1f160056ecd252bdb07d9a58d67a5ed7` again), drops the triggers that keep menu items and deals from sharing an id and their function, and deletes the ledger row. It keeps the `deals` table and every deal: dropping the table is a separate step, only with the owner's OK and only after exporting its rows. The file is not in Git, so keep a copy with the password manager or the encrypted backups.
 
 ## 8. Owner actions outside the code
 

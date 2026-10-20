@@ -6,6 +6,7 @@ export const pages = [
   'orders',
   'inbox',
   'menu',
+  'deals',
   'playground',
   'bot',
   'flow',
