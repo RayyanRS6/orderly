@@ -150,21 +150,35 @@ function countsAsNumber(tokens: string[], index: number): boolean {
   return !!next && !SOFTENERS.has(next) && !GIVE_VERBS.has(tokens[index - 1] ?? '');
 }
 
-// Names holding a number ("Deal 2", "Sprite 1.5L"), as words. Their number is part of the name,
-// never a count.
-const numberedLabels = (catalog: Product[]) =>
+const isNumber = (word: string | undefined) => !!word && /^\d+$/.test(word);
+// Deal names holding a number ("Deal 2"), as words. Their number is part of the name, never a
+// count, and a bare number after one may name another deal ("deal 2 and 3"). Dishes count as
+// they always have ("Platter 1", "Sprite 1.5L").
+const numberedDeals = (catalog: Product[]) =>
   catalog
+    .filter((product) => product.deal)
     .flatMap((product) => [product.name, ...product.aliases])
     .map((label) => normalizeCatalogText(label).split(' ').filter(Boolean))
-    .filter((words) => words.some((word) => /^\d+$/.test(word)));
-// Of those, the deals' names. Only these are read across "and" ("deal 2 and 3"), so dishes
-// count as they always have.
-const numberedDeals = (catalog: Product[]) =>
-  numberedLabels(catalog.filter((product) => product.deal));
-const isNumber = (word: string | undefined) => !!word && /^\d+$/.test(word);
-// A deal name's "deal" may be written "deals": "deals 2 and 4".
-const writes = (token: string | undefined, word: string, deal: boolean) =>
-  token === word || (deal && ONLY_DEAL_WORDS.has(word) && token === `${word}s`);
+    .filter((words) => words.some(isNumber));
+// Words a deal's number goes with: "deal no 2", "ڈیل نمبر 2", "number 3 deal".
+const NUMBER_SIGNS = new Set(['no', 'number', 'num', 'nmbr', 'nambar', 'نمبر']);
+// A deal name's deal word may be written as another word only ever meaning deals ("deals 2 and
+// 4", "ڈیل 2") or as its plural ("combos 2 and 3").
+const writes = (token: string | undefined, word: string) =>
+  token === word ||
+  (DEAL_WORDS.has(word) && !!token && (ONLY_DEAL_WORDS.has(token) || token === `${word}s`));
+// Where a deal name written from `at` in `tokens` ends, or -1. "No" or "number" may come between
+// its deal word and its number ("deal no 2", "ڈیل نمبر 2").
+function nameEnd(tokens: string[], at: number, label: string[]): number {
+  let k = at;
+  for (const [n, word] of label.entries()) {
+    if (isNumber(word) && DEAL_WORDS.has(label[n - 1] ?? '') && NUMBER_SIGNS.has(tokens[k] ?? ''))
+      k++;
+    if (!writes(tokens[k], word)) return -1;
+    k++;
+  }
+  return k;
+}
 const NUMBER_JOINERS = new Set(['and', 'aur', 'or', 'اور']);
 // What may follow a number that names another deal: the end, "and", another number, a softener
 // or a verb ("deal 2 aur 3 chahiye"). Any other word is what the number counts ("deal 2 aur 3
@@ -199,36 +213,57 @@ function namedAfter(
   }
   return found;
 }
-// Where in `tokens` a number belongs to such a name written in full: the 2 in "deal 2", and, for
-// the names of `deals`, the 3 in "deal 2 and 3" with a Deal 3.
-function namedNumbers(tokens: string[], labels: string[][], deals: string[][] = []): Set<number> {
+// Where in `tokens` a number belongs to such a deal name written in full: the 2 in "deal 2" and
+// "deal no 2", and the 3 in "deal 2 and 3" with a Deal 3.
+function namedNumbers(tokens: string[], labels: string[][]): Set<number> {
   const named = new Set<number>();
-  const dealNames = new Set(deals.map((label) => label.join(' ')));
-  for (const label of labels) {
-    const deal = dealNames.has(label.join(' '));
-    for (let at = 0; at + label.length <= tokens.length; at++)
-      if (label.every((word, k) => writes(tokens[at + k], word, deal))) {
-        label.forEach((word, k) => isNumber(word) && named.add(at + k));
-        if (deal)
-          for (const next of namedAfter(tokens, label, at + label.length, (name) =>
-            dealNames.has(name),
-          ))
-            named.add(next.at);
-      }
-  }
+  const known = new Set(labels.map((label) => label.join(' ')));
+  for (const label of labels)
+    for (let at = 0; at < tokens.length; at++) {
+      const end = nameEnd(tokens, at, label);
+      if (end < 0) continue;
+      for (let k = at; k < end; k++) if (isNumber(tokens[k])) named.add(k);
+      for (const next of namedAfter(tokens, label, end, (name) => known.has(name)))
+        named.add(next.at);
+    }
   return named;
 }
 
-/** The first count in the text; a number inside a name of `catalog` ("deal 2") is not one. */
+/** The first count in the text; a number inside a deal name of `catalog` ("deal 2") is not one. */
 export function quantityFromText(text: string, catalog: Product[] = []): number {
   const value = normalizeCatalogText(text);
   const tokens = value.split(' ');
-  const named = namedNumbers(tokens, numberedLabels(catalog), numberedDeals(catalog));
+  const named = namedNumbers(tokens, numberedDeals(catalog));
   const numeric = tokens.find((token, i) => /^\d{1,2}$/.test(token) && !named.has(i));
   if (numeric) return Math.max(1, Math.min(50, Number(numeric)));
   for (let i = 0; i < tokens.length; i++)
     if (NUMBER_WORDS[tokens[i]!] && countsAsNumber(tokens, i)) return NUMBER_WORDS[tokens[i]!]!;
   return 1;
+}
+
+/**
+ * The count of a deal ordered by a deal word alone ("2 deal chahiye", "do deals", "deal x2"):
+ * right before the deal word, or after it with an x. A bare number after it, or beside "no" or
+ * "number", may be the deal's own ("deal 7", "deal no 2", "2 number deal"), and a number
+ * elsewhere is another detail ("deal bhej do, phase 5").
+ */
+export function dealWordCount(text: string): number {
+  const tokens = normalizeCatalogText(text).split(' ');
+  const i = tokens.findIndex((token) => DEAL_WORDS.has(token));
+  if (i < 0) return 1;
+  const before = tokens[i - 1] ?? '';
+  const sign = tokens[i - 2] ?? '';
+  const after = (tokens[i + 1] === 'x' ? `x${tokens[i + 2] ?? ''}` : (tokens[i + 1] ?? '')).match(
+    /^x(\d{1,2})$|^(\d{1,2})x$/,
+  );
+  const count = /^\d{1,2}$/.test(before)
+    ? NUMBER_SIGNS.has(sign) || ADDRESS_WORDS.has(sign)
+      ? undefined
+      : Number(before)
+    : NUMBER_WORDS[before] && countsAsNumber(tokens, i - 1)
+      ? NUMBER_WORDS[before]
+      : undefined;
+  return Math.max(1, Math.min(50, count ?? Number(after?.[1] ?? after?.[2] ?? 1)));
 }
 
 // Words that may sit between a count and the dish: "2 full karahi", "3 plate biryani".
@@ -288,9 +323,8 @@ interface DishWords {
   // The other dishes' option words ("half" in "karahi half 4 naan"), part of their mention,
   // also when this dish has the same option ("karahi half 4 biryani" with a half biryani).
   otherOptions: Set<string>;
-  // Names with a number in them ("Deal 2"): that number is never a count.
-  numbered: string[][];
-  // Of those, the deals' ("deal 2 and 3" names Deal 3).
+  // Deal names with a number in them ("Deal 2"): that number is never a count, and "deal 2 and
+  // 3" names Deal 3.
   numberedDeals: string[][];
   // A count as written ("100 naan", "1000 naan" are refused later), not kept within 1-50.
   exact?: boolean;
@@ -320,16 +354,13 @@ function dishWords(product: Product, catalog: Product[], exact = false): DishWor
     otherOptions: new Set(
       others.flatMap(optionWords).filter((word) => word && !own.includes(word)),
     ),
-    numbered: numberedLabels([product, ...others]),
     numberedDeals: numberedDeals([product, ...others]),
     exact,
   };
 }
-// Where in `tokens` a number is part of a name (see numberedLabels), for this dish's catalog.
+// Where in `tokens` a number is part of a deal's name (see numberedDeals), for this catalog.
 const namedIn = (tokens: string[], words: DishWords) =>
-  words.numbered.length
-    ? namedNumbers(tokens, words.numbered, words.numberedDeals)
-    : new Set<number>();
+  words.numberedDeals.length ? namedNumbers(tokens, words.numberedDeals) : new Set<number>();
 const isOwn = (words: DishWords, token: string) =>
   words.own.some((label) => sameWord(token, label));
 // Where the dish is named: its part of the message, where its words are in it, and the next part.
@@ -405,10 +436,12 @@ function countBefore({ tokens, at }: Mention, words: DishWords): number | undefi
   return countLeads(tokens, i, words) ? count : undefined;
 }
 // `clear`: only a count that can be no other dish's, so not one followed by another dish.
+// `bare`: a bare number counts too ("biryani 3"); without it only "x3", "3x" or a number word.
 function countAfter(
   { tokens, end, next }: Mention,
   words: DishWords,
   clear = false,
+  bare = true,
 ): number | undefined {
   let i = end;
   while (
@@ -416,17 +449,17 @@ function countAfter(
     (isOwn(words, tokens[i]!) || words.options.has(tokens[i]!) || WALA.has(tokens[i]!))
   )
     i++;
-  if (tokens[i] === 'x') i++;
+  const x = tokens[i] === 'x';
+  if (x) i++;
   const token = tokens[i];
   // Nothing after the dish: a next part that is only a count ("biryani, make it 3"). The number
   // of a name there is not one ("deal 2 aur deal 3" is one Deal 2), nor one naming the deal
   // after this one ("deal 2 and 3").
   if (token === undefined) {
+    if (!bare) return undefined;
     const named = namedIn(next ?? [], words);
-    const label = words.numberedDeals.find(
-      (l) =>
-        l.length <= tokens.length &&
-        l.every((word, k) => writes(tokens[tokens.length - l.length + k], word, true)),
+    const label = words.numberedDeals.find((l) =>
+      tokens.some((_, at) => nameEnd(tokens, at, l) === tokens.length),
     );
     const known = new Set(words.numberedDeals.map((l) => l.join(' ')));
     if (label)
@@ -441,6 +474,7 @@ function countAfter(
     return counts.length === 1 ? digitCount(counts[0]!, words) : undefined;
   }
   if (namedIn(tokens, words).has(i)) return undefined;
+  if (!bare && !x && /^\d+$/.test(token)) return undefined;
   const count =
     digitCount(token, words) ??
     (['a', 'an', 'do', 'دو'].includes(token) ? undefined : NUMBER_WORDS[token]);
@@ -505,6 +539,20 @@ export function clearQuantityNear(
   return mention && (countBefore(mention, words) ?? countAfter(mention, words, true));
 }
 /**
+ * For a deal, the count next to it that can be nothing else: before it ("2 deal 1"), or after it
+ * with an x or in words ("deal 1 x2", "deal 1 teen"). A bare number after a deal may be another
+ * deal's number ("deal 2 3"), so it is no such count.
+ */
+export function clearDealQuantity(
+  product: Product,
+  text: string,
+  catalog: Product[] = [],
+): number | undefined {
+  const words = dishWords(product, catalog);
+  const mention = dishMention(text, words);
+  return mention && (countBefore(mention, words) ?? countAfter(mention, words, true, false));
+}
+/**
  * The count for one exact mention of a dish ("chicken tikka" in "2 chicken biryani aur 1
  * chicken tikka"), before it or else right after it in the mention's own part, as written.
  */
@@ -528,11 +576,11 @@ export function quantityOfMention(
 }
 /**
  * Whether the text states this count anywhere, as digits or a word that can only be a count.
- * The number of a name in `catalog` ("deal 2") is not a count.
+ * The number of a deal's name in `catalog` ("deal 2") is not a count.
  */
 export function mentionsQuantity(text: string, quantity: number, catalog: Product[] = []): boolean {
   const tokens = normalizeCatalogText(text).split(' ');
-  const named = namedNumbers(tokens, numberedLabels(catalog), numberedDeals(catalog));
+  const named = namedNumbers(tokens, numberedDeals(catalog));
   return tokens.some(
     (token, i) =>
       !named.has(i) &&
@@ -587,7 +635,8 @@ export interface DealMention {
  * The deals a text names, in the order written. A deal is named only by one of its whole names
  * (digits included, no typos: "deal 12" is not Deal 1), or by a deal word together with another
  * word of its name in the same part of the message ("zinger deal" for Zinger Lunch Deal; "lunch
- * deal" may be several). A deal word next to another number is not a numbered deal ("lunch deal
+ * deal" may be several), its number with "no" or "number" beside it or not ("ڈیل 2", "deal no
+ * 2", "number 3 deal"). A deal word next to another number is not a numbered deal ("lunch deal
  * 3" is not Lunch Deal 1). Paused and ended deals are found by their whole names only, so they
  * can be refused by name; a deal word alone never offers them, and a deal on offer or a dish of
  * the same name goes first. Two deals on offer of one name, or one named like a dish, are one
@@ -707,11 +756,29 @@ export function findDealMentions(
     if (taken.has(i) || !DEAL_WORDS.has(words[i]!)) continue;
     if (dishAt.some((d) => d.from <= i && i < d.to && d.to - d.from > 1)) continue;
     const part = placed[i]!.part;
-    const numberAt = (k: number) => !taken.has(k) && placed[k]?.part === part && isNumber(words[k]);
-    const near = [i - 1, i + 1].filter(numberAt).map((k) => words[k]!);
-    // A number straight after the deal word names a numbered deal written in other letters
-    // ("ڈیل 1" for Deal 1); one before it is a count.
-    const after = numberAt(i + 1) ? words[i + 1] : undefined;
+    const inPart = (k: number) => !taken.has(k) && placed[k]?.part === part;
+    const numberAt = (k: number) => inPart(k) && isNumber(words[k]);
+    const signAt = (k: number) => inPart(k) && NUMBER_SIGNS.has(words[k]!);
+    // "deal no. 2": the number after a sign may follow its full stop.
+    const signedAt = (k: number) =>
+      numberAt(k) ||
+      (!taken.has(k) &&
+        isNumber(words[k]) &&
+        /^\.\s*$/u.test(text.slice(placed[k - 1]!.end, placed[k]!.start)));
+    // The number of a numbered deal: straight after the deal word, as a name written in other
+    // letters ("ڈیل 1" for Deal 1), or with "no" or "number" beside it ("deal no 2", "number 3
+    // deal", "2 number deal"). A number before the deal word otherwise is a count ("2 ڈیل 1").
+    const [at, sign]: (number | undefined)[] = numberAt(i + 1)
+      ? [i + 1]
+      : signAt(i + 1) && signedAt(i + 2)
+        ? [i + 2, i + 1]
+        : signAt(i - 2) && numberAt(i - 1)
+          ? [i - 1, i - 2]
+          : signAt(i - 1) && numberAt(i - 2)
+            ? [i - 2, i - 1]
+            : [];
+    const after = at === undefined ? undefined : words[at];
+    const near = after ? [after] : [i - 1].filter(numberAt).map((k) => words[k]!);
     let best = 0;
     let winners: { product: Product; used: number[] }[] = [];
     for (const product of offered) {
@@ -728,7 +795,7 @@ export function findDealMentions(
       const used = placed.flatMap((p, k) =>
         p.part === part && !taken.has(k) && own.has(p.word) ? [k] : [],
       );
-      if (after && numbers.includes(after)) used.push(i + 1);
+      if (after && numbers.includes(after)) used.push(at!, ...(sign === undefined ? [] : [sign]));
       const score = new Set(used.map((k) => words[k])).size;
       if (!score || score < best) continue;
       if (score > best) winners = [];
@@ -752,14 +819,15 @@ export function findDealMentions(
         spans,
         part,
       });
-    // "deals 2 and 4": the number after the deal word, then the deals the next numbers make.
+    // "deals 2 and 4", "deal no 2 aur 3": the number after the deal word, then the deals the next
+    // numbers make.
     const numbered =
-      winners.length === 1 && after && used.includes(i + 1)
+      winners.length === 1 && after && at! > i && used.includes(at!)
         ? [winners[0]!.product.name, ...winners[0]!.product.aliases]
             .map((label) => normalizeCatalogText(label).split(' '))
             .find((label) => label.at(-1) === after)
         : undefined;
-    if (numbered) numberedAfter(numbered, i + 2);
+    if (numbered) numberedAfter(numbered, at! + 1);
   }
   for (const mention of mentions) {
     if (mention.products.length !== 1) continue;
@@ -937,7 +1005,18 @@ export function resolvePendingItemChoice(
   );
   const value = normalizeCatalogText(text);
   const ordinal = value.match(/^(?:option\s*)?(\d{1,2})$/)?.[1];
-  if (ordinal) return candidates[Number(ordinal) - 1];
+  // A number past the list may be the number on one listed deal's name: "10" for "4. Deal 10".
+  if (ordinal) {
+    if (Number(ordinal) <= candidates.length) return candidates[Number(ordinal) - 1];
+    const named = candidates.filter(
+      (p): p is Product =>
+        !!p?.deal &&
+        [p.name, ...p.aliases].some((label) =>
+          normalizeCatalogText(label).split(' ').includes(ordinal),
+        ),
+    );
+    return named.length === 1 ? named[0] : undefined;
+  }
   const present = candidates.filter((p): p is Product => !!p);
   const resolution = resolveItemMention(present, companyId, text);
   if (resolution.kind !== 'none')

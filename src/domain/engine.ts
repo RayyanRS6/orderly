@@ -22,13 +22,14 @@ import { money } from '../shared/types';
 import { effectiveAiLimits, MODEL_LIMITS } from '../shared/models';
 import {
   CLAUSE_BREAK,
+  clearDealQuantity,
   clearQuantityNear,
   DEAL_WORDS,
+  dealWordCount,
   findDealMentions,
   mentionsQuantity,
   normalizeCatalogText,
   ONLY_DEAL_WORDS,
-  quantityFromText,
   quantityNear,
   quantityOfMention,
   resolveItemMention,
@@ -1660,6 +1661,25 @@ const blanked = (value: string, spans: [number, number][]) =>
         `${text.slice(0, start)}${','.padEnd(end - start, ' ')}${text.slice(end)}`,
       value,
     );
+// The text with these stretches (merged where they overlap) each read as another item that ends
+// its part of the message: one word written there that is not in `own` nor a number ("chicken"
+// for "chicken burger" beside a Burger, "deal" for "deal 1"), then "item" (so no number after
+// it reads as "deal 2" again) and a break. A count before a stretch stays with it: "zinger, 2
+// zinger deal" is one zinger, where `blanked` would leave the 2 alone in a part of its own.
+function masked(value: string, spans: [number, number][], own: Set<string>): string {
+  const merged: [number, number][] = [];
+  for (const [start, end] of [...spans].sort((a, b) => a[0] - b[0])) {
+    const last = merged.at(-1);
+    if (last && start <= last[1]) last[1] = Math.max(last[1], end);
+    else merged.push([start, end]);
+  }
+  return merged.reduceRight((text, [start, end]) => {
+    const word = normalizeCatalogText(text.slice(start, end))
+      .split(' ')
+      .find((w) => w && !own.has(w) && !/^\d+$/.test(w));
+    return `${text.slice(0, start)} ${word ? `${word} ` : ''}item , ${text.slice(end)}`;
+  }, value);
+}
 // A deal's picks from option names the customer gave ("sprite"): one per choice, in order.
 function picksNamed(product: Product, names: string[]): string[] {
   const used = new Set<string>();
@@ -1898,6 +1918,8 @@ export function parseActions(
             );
     return [{ type: 'menu', query }];
   }
+  // Deals are named by their own words only, with any picks written beside them.
+  const dealMentions = findDealMentions(products, company.id, value);
   if (conversation.pendingItemChoice && !browsing) {
     const selected = resolvePendingItemChoice(
       products,
@@ -1905,7 +1927,9 @@ export function parseActions(
       conversation.pendingItemChoice,
       text,
     );
-    if (selected) {
+    // Two deals named ("deal 2 aur 3", "deal 2 3") answer the list with both: the message is
+    // read as any other, so neither is lost and no count is taken from the other's number.
+    if (selected && !(selected.deal && dealMentions.length > 1)) {
       const requested = [
         ...conversation.pendingItemChoice.requestedOptionNames,
         ...requestedOptions([selected], text),
@@ -1947,8 +1971,6 @@ export function parseActions(
         },
       ];
   }
-  // Deals are named by their own words only, with any picks written beside them.
-  const dealMentions = findDealMentions(products, company.id, value);
   // What is left once the deals and their picks are taken out names dishes only, so "1 zinger
   // deal" never also adds a Zinger burger. Without a deal named it is the message itself.
   const dealSpans = dealMentions.flatMap((mention) => mention.spans);
@@ -2009,7 +2031,7 @@ export function parseActions(
   if (loose.length && onlyAboutDeals(value)) return [{ type: 'menu', query: 'deals' }];
   if (loose.length && hasDeals && earlyResolution.kind === 'none') {
     if (DEAL_ASK.test(value)) return [{ type: 'menu', query: 'deals' }];
-    if (DEAL_ORDER.test(value)) return [someDeal(quantityFromText(text, products), text)];
+    if (DEAL_ORDER.test(value)) return [someDeal(dealWordCount(text), text)];
   } else if (loose.length && hasDeals) {
     // "2 zinger burger aur ek deal chahiye": the burgers, then which deal, by the count in its
     // own part of the message (the dishes' names taken out).
@@ -2022,7 +2044,7 @@ export function parseActions(
         .find((p) => looseDealWords(own, p).length) ?? '';
     const deal =
       DEAL_ORDER.test(part) && resolveItemMention(dishes, company.id, part).kind === 'none'
-        ? someDeal(quantityFromText(part, products), part)
+        ? someDeal(dealWordCount(part), part)
         : undefined;
     if (deal?.type !== 'menu') dealOrdered = deal;
   }
@@ -2141,6 +2163,23 @@ export function parseActions(
               o.end - o.start > place.end - place.start,
           ),
     );
+  // A dish's count is read in the message with its line breaks, where each deal named and each
+  // longer name the dish sits in before it is another item (see masked): "zinger, 2 zinger
+  // deal" is one zinger, "2 chicken burger aur 1 burger" one burger.
+  const breaks = normalize(text.trim().replace(/\s*\n\s*/gu, '\u0000'));
+  const lined = breaks.length === value.length ? breaks.replace(/\u0000/gu, '\n') : value;
+  const countIn = (product: Product, covers: [number, number][] = []) =>
+    dealSpans.length || covers.length
+      ? masked(
+          lined,
+          [...dealSpans, ...covers],
+          new Set(
+            [product.name, ...product.aliases].flatMap((label) =>
+              normalizeCatalogText(label).split(' '),
+            ),
+          ),
+        )
+      : text;
   const matches = found
     .flatMap(({ product, alias, places }) => {
       const nested = places.filter((place) => within(place, product.id).length);
@@ -2150,18 +2189,28 @@ export function parseActions(
             product,
             alias,
             at: rest.indexOf(normalize(alias)),
-            countText: dealSpans.length ? rest : text,
+            countText: countIn(product),
           },
         ];
       const first = places
         .filter((place) => !nested.includes(place))
         .sort((a, b) => a.start - b.start || b.end - b.start - (a.end - a.start))[0];
       if (!first) return [];
-      // Its count is read with the longer names it sits in taken out.
-      const covers = nested.flatMap((place) =>
-        within(place, product.id).map((o): [number, number] => [o.start, o.end]),
-      );
-      return [{ product, alias: first.alias, at: first.start, countText: blanked(rest, covers) }];
+      // Its count is read with the longer names it sits in before that taken out; those after it
+      // are read as written, as without nesting ("burger, 2 chicken burger").
+      const covers = nested
+        .filter((place) => place.start < first.start)
+        .flatMap((place) =>
+          within(place, product.id).map((o): [number, number] => [o.start, o.end]),
+        );
+      return [
+        {
+          product,
+          alias: first.alias,
+          at: first.start,
+          countText: countIn(product, covers),
+        },
+      ];
     })
     .sort((a, b) => a.at - b.at);
   if (!matches.length && !dealMentions.length) {
@@ -3293,11 +3342,18 @@ export function processTurn(
         ? next.pendingItemChoice
         : undefined;
       const product = products.find((p) => p.id === first.productId);
-      const explicit = !!product && clearQuantityNear(product, input.text, products) !== undefined;
+      // A deal's count overrides the AI's only where it can be nothing else ("2 deal 1", "deal 1
+      // x2"): a bare number after a deal may be another deal's ("deal 2 3").
+      const explicit =
+        !!product &&
+        (product.deal ? clearDealQuantity : clearQuantityNear)(product, input.text, products) !==
+          undefined;
       const quantityFor = (proposed: number) =>
-        !pending || explicit
+        explicit || (!pending && !product?.deal)
           ? first.quantity
-          : proposed === pending.quantity || mentionsQuantity(input.text, proposed, products)
+          : !pending ||
+              proposed === pending.quantity ||
+              mentionsQuantity(input.text, proposed, products)
             ? proposed
             : first.quantity;
       requested = requested.map((action) => {

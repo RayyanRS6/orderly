@@ -1100,6 +1100,256 @@ describe('numbered deals named together: "deal 2 and 3"', () => {
     expect(parse('deal 1 aur 2 chahiye', menu)).toEqual(['add deal-1 ×2']);
     expect(parse('platter 2, make it 3', menu)).toEqual(['add platter-2 ×3']);
   });
+
+  it('counts dishes named "Deal N" beside other dishes as before on a menu without deals', () => {
+    // What main (c5704f5) gives for the same messages: a number in a dish's name is no name.
+    const plain = (id: string, name: string) =>
+      dish(id, name, { category: 'Deals', emoji: '🍱', price: 50000 });
+    const menu = [
+      plain('student', 'Student Deal'),
+      plain('midnight', 'Midnight Deal'),
+      plain('mighty', 'Mighty Meal'),
+      plain('plain-1', 'Deal 1'),
+      plain('plain-2', 'Deal 2'),
+      plain('plain-3', 'Deal 3'),
+    ];
+    expect(parse('midnight deal aur 3 deal 1', menu)).toEqual([
+      'add midnight ×1',
+      'add plain-1 ×3',
+    ]);
+    expect(parse('midnight deal, 2 deal 2', menu)).toEqual(['add midnight ×1', 'add plain-2 ×2']);
+    expect(parse('mighty meal and 3 deal 3', menu)).toEqual(['add mighty ×1', 'add plain-3 ×3']);
+    expect(parse('student deal 2 please', menu)).toEqual(['add student ×2', 'add plain-2 ×1']);
+    expect(parse('deal 1 or deal 2 3', menu)).toEqual(['add plain-1 ×1', 'add plain-2 ×3']);
+    expect(parse('deal 2 2 please', menu)).toEqual([
+      'which student | midnight | plain-1 | plain-2 | plain-3 ×2',
+    ]);
+    // The AI's 2 × Deal 2 asked about, then picked by its place in the list.
+    const c = chat();
+    const twice: BotAction = {
+      type: 'add_item',
+      productId: 'plain-2',
+      quantity: 2,
+      modifierIds: [],
+    };
+    const ok: ModelResponse = { text: '', askFor: 'none' };
+    c.send('deal 2 2 please', { products: menu, actions: [twice], response: ok });
+    expect(c.conversation.pendingItemChoice?.quantity).toBe(2);
+    c.send('4', { products: menu, actions: [twice], response: ok });
+    expect(lines(c)).toEqual(['plain-2 ×2']);
+  });
+});
+
+describe('numbered deals written in Urdu, as combos or meals, or with "no" or "number"', () => {
+  const numbered = [1, 2, 3, 10].map((k) =>
+    deal(`deal-${k}`, `Deal ${k}`, { position: k, choices: [] }),
+  );
+  const products = catalog('13:00', numbered);
+  const ok: ModelResponse = { text: 'Anything else?', askFor: 'anything_else' };
+  const add = (productId: string, quantity = 1): BotAction => ({
+    type: 'add_item',
+    productId,
+    quantity,
+    modifierIds: [],
+  });
+  // "ek deal chahiye": the engine lists the deals on, "1. Deal 1 … 4. Deal 10".
+  const listed = (menu = products) => {
+    const c = chat();
+    c.send('ek deal chahiye', { products: menu });
+    expect(c.conversation.pendingItemChoice).toBeDefined();
+    return c;
+  };
+  const send = (c: ReturnType<typeof chat>, text: string, actions: BotAction[], menu = products) =>
+    c.send(text, { products: menu, actions, response: ok });
+
+  it.each([
+    ['ڈیل 2 اور 3', ['add deal-2 ×1', 'add deal-3 ×1']],
+    ['ڈیل ۲ اور ۳', ['add deal-2 ×1', 'add deal-3 ×1']],
+    ['ڈیل 2، 3', ['add deal-2 ×1', 'add deal-3 ×1']],
+    ['ڈیل 2 اور 10', ['add deal-2 ×1', 'add deal-10 ×1']],
+    ['2 ڈیل 1', ['add deal-1 ×2']],
+    ['deal no 2 chahiye', ['add deal-2 ×1']],
+    ['deal no. 2 chahiye', ['add deal-2 ×1']],
+    ['deal number 10 bhej dein', ['add deal-10 ×1']],
+    ['ڈیل نمبر 2 چاہیے', ['add deal-2 ×1']],
+    ['number 3 deal bhej dein', ['add deal-3 ×1']],
+    ['2 number deal chahiye', ['add deal-2 ×1']],
+    ['deal no 2 aur 3', ['add deal-2 ×1', 'add deal-3 ×1']],
+    // A number named with "deal" or "no" is no count, even with no such deal.
+    ['deal no 7 chahiye', ['which deal-1 | deal-2 | deal-3 | deal-10 ×1']],
+    ['deal 7 chahiye', ['which deal-1 | deal-2 | deal-3 | deal-10 ×1']],
+    ['2 deal chahiye', ['which deal-1 | deal-2 | deal-3 | deal-10 ×2']],
+  ])('reads “%s” by the deal’s number', (text, parsed) => {
+    expect(parse(text, products)).toEqual(parsed);
+  });
+
+  it('reads "combos 2 and 10" and "meals 1 and 3" as one of each', () => {
+    const combos = catalog(
+      '13:00',
+      [1, 2, 3, 10].map((k) => deal(`combo-${k}`, `Combo ${k}`, { position: k, choices: [] })),
+    );
+    expect(parse('combos 2 and 10', combos)).toEqual(['add combo-2 ×1', 'add combo-10 ×1']);
+    expect(parse('combos 2, 3', combos)).toEqual(['add combo-2 ×1', 'add combo-3 ×1']);
+    const meals = catalog(
+      '13:00',
+      [1, 2, 3].map((k) => deal(`meal-${k}`, `Meal ${k}`, { position: k, choices: [] })),
+    );
+    expect(parse('meals 1 and 3', meals)).toEqual(['add meal-1 ×1', 'add meal-3 ×1']);
+    // Answering "which combo?" with two, the AI's one of each stands.
+    const c = listed(combos);
+    send(c, 'combos 2 and 10', [add('combo-2'), add('combo-10')], combos);
+    expect(lines(c)).toEqual(['combo-2 ×1', 'combo-10 ×1']);
+  });
+
+  it('keeps the AI’s add of a deal named by its number, and refuses one not on', () => {
+    for (const text of ['deal number 2 chahiye', 'deal no 2 de dein', 'ڈیل نمبر 2 چاہیے']) {
+      const c = chat();
+      const result = send(c, text, [add('deal-2')]);
+      expect(result.traces).toEqual(['add_item']);
+      expect(lines(c)).toEqual(['deal-2 ×1']);
+    }
+    // Only Deal 1 is on: Deal 2 is refused, never 2 × Deal 1.
+    const dinner = catalog('13:00', [
+      deal('deal-1', 'Deal 1', { choices: [] }),
+      deal('deal-2', 'Deal 2', {
+        position: 2,
+        choices: [],
+        schedule: { days: [0, 1, 2, 3, 4, 5, 6], start: '19:00', end: '23:00' },
+      }),
+    ]);
+    for (const text of ['deal number 2 chahiye', 'deal no 2 de dein', 'ڈیل نمبر 2 چاہیے']) {
+      const c = chat();
+      expect(c.send(text, { products: dinner }).reply).toMatch(/^Deal 2 /);
+      expect(lines(c)).toEqual([]);
+    }
+  });
+
+  it('reads two deals named after "which deal?" as both, keeping the AI’s count', () => {
+    const c = listed();
+    const read = (text: string) => show(parseActions(company, products, c.conversation, text));
+    expect(read('deal 2 aur 3')).toEqual(['add deal-2 ×1', 'add deal-3 ×1']);
+    expect(read('ڈیل 2 اور 3')).toEqual(['add deal-2 ×1', 'add deal-3 ×1']);
+    expect(read('deal 2 3 de dein')).toEqual(['add deal-2 ×1', 'add deal-3 ×1']);
+    for (const [text, actions, cart] of [
+      ['ڈیل 2 اور 10', [add('deal-2'), add('deal-10')], ['deal-2 ×1', 'deal-10 ×1']],
+      ['deal 2 3 de dein', [add('deal-2', 3)], ['deal-2 ×3']],
+      ['deal 2 3 de dein', [add('deal-2'), add('deal-3')], ['deal-2 ×1', 'deal-3 ×1']],
+      ['deal 1 2 chahiye', [add('deal-1', 2)], ['deal-1 ×2']],
+    ] as [string, BotAction[], string[]][]) {
+      const answer = listed();
+      send(answer, text, actions);
+      expect(lines(answer)).toEqual(cart);
+      expect(answer.conversation.pendingItemChoice).toBeUndefined();
+    }
+  });
+
+  it('takes a number past the "which deal?" list as the number on a listed deal', () => {
+    const local = listed();
+    local.send('10', { products });
+    expect(lines(local)).toEqual(['deal-10 ×1']);
+    const ai = listed();
+    const result = send(ai, '10', [add('deal-10')]);
+    expect(result.traces).not.toContain('ambiguous_addition_prevented');
+    expect(lines(ai)).toEqual(['deal-10 ×1']);
+    // A place in the list is still that place; a number that is neither is asked again.
+    const place = listed();
+    place.send('4', { products });
+    expect(lines(place)).toEqual(['deal-10 ×1']);
+    const neither = listed();
+    expect(neither.send('7', { products }).reply).toBe(
+      'Aap kaun sa lena chahenge?\n1. Deal 1 — Rs. 799\n2. Deal 2 — Rs. 799\n3. Deal 3 — Rs. 799\n4. Deal 10 — Rs. 799',
+    );
+    expect(lines(neither)).toEqual([]);
+  });
+
+  it('lets a count beside a deal change the AI’s only where it can be nothing else', () => {
+    // No Deal 5: a bare 5 after Deal 2 may be the AI's count or not; the AI's reading stands.
+    for (const [text, quantity, cart] of [
+      ['deal 2 5 de dein', 1, 'deal-2 ×1'],
+      ['deal 2 5 de dein', 5, 'deal-2 ×5'],
+      ['deal 2 x3', 1, 'deal-2 ×3'],
+      ['3 deal 2', 1, 'deal-2 ×3'],
+    ] as const) {
+      const c = listed();
+      send(c, text, [add('deal-2', quantity)]);
+      expect(lines(c)).toEqual([cart]);
+    }
+  });
+});
+
+describe('a dish named inside a longer name, with a count beside the longer one', () => {
+  const ok: ModelResponse = { text: '', askFor: 'none' };
+
+  it('gives the shorter-named dish its own count, as main did', () => {
+    // What main (c5704f5) gives for the same messages on menus without deals.
+    expect(parse('burger single, 2 chicken burger', seed)).toEqual([
+      `add ${smash.id} ×1`,
+      `add ${crispy.id} ×2`,
+    ]);
+    for (const text of ['burger\n2 chicken burger', 'burger aur 2 chicken burger'])
+      expect(parse(text, seed)).toEqual([`add ${smash.id} ×1`, `add ${crispy.id} ×2`]);
+    const breads = [
+      dish('naan', 'Naan', { category: 'Breads' }),
+      dish('garlic-naan', 'Garlic Naan', { category: 'Breads' }),
+    ];
+    expect(parse('naan aur 4 garlic naan', breads)).toEqual(['add naan ×1', 'add garlic-naan ×4']);
+    expect(parse('2 garlic naan aur 3 naan', breads)).toEqual([
+      'add garlic-naan ×2',
+      'add naan ×3',
+    ]);
+    const meals = [zinger, dish('zinger-meal', 'Zinger Meal', { category: 'Meals' })];
+    for (const text of ['zinger, 2 zinger meal', 'bhai zinger burger ,Zinger Meal x2'])
+      expect(parse(text, meals)).toEqual(['add zinger-burger ×1', 'add zinger-meal ×2']);
+    const halves = [
+      { id: 'half', name: 'Half', price: 0 },
+      { id: 'full', name: 'Full', price: 0 },
+    ];
+    const karahi = [
+      dish('chicken-karahi', 'Chicken Karahi', { aliases: ['karahi'], variants: halves }),
+      dish('mutton-karahi', 'Mutton Karahi', { variants: halves }),
+    ];
+    expect(parse('chicken karahi half, 2 mutton karahi full', karahi)).toEqual([
+      'add chicken-karahi ×1',
+      'add mutton-karahi ×2',
+    ]);
+    // The whole order, as reviewed.
+    const c = chat();
+    c.send('burger single, 2 chicken burger', { products: seed });
+    expect(lines(c)).toEqual([`${smash.id} ×1`, `${crispy.id} ×2`]);
+  });
+
+  it('keeps a deal named after a dish from giving the dish its count', () => {
+    expect(parse('zinger, 2 zinger deal')).toEqual(['add zinger-burger ×1', 'add zinger-deal ×2']);
+    expect(parse('fries aur 2 deal 1')).toEqual([`add ${fries.id} ×1`, 'add deal-1 ×2']);
+  });
+
+  it('asks "which burger?" for the count written by it, with the AI', () => {
+    const menu = [
+      dish('chicken-burger', 'Chicken Burger', { category: 'Burgers', aliases: ['burger'] }),
+      dish('beef-burger', 'Beef Burger', { category: 'Burgers', aliases: ['burger'] }),
+      zinger,
+    ];
+    const c = chat();
+    c.send('burger, 2 zinger burger', {
+      products: menu,
+      actions: [
+        {
+          type: 'clarify_item',
+          candidateProductIds: ['chicken-burger', 'beef-burger'],
+          quantity: 1,
+        },
+        { type: 'add_item', productId: 'zinger-burger', quantity: 2, modifierIds: [] },
+      ],
+      response: ok,
+    });
+    expect(c.conversation.pendingItemChoice?.quantity).toBe(1);
+    c.send('chicken', {
+      products: menu,
+      actions: [{ type: 'add_item', productId: 'chicken-burger', quantity: 1, modifierIds: [] }],
+      response: ok,
+    });
+    expect(lines(c)).toEqual(['zinger-burger ×2', 'chicken-burger ×1']);
+  });
 });
 
 describe('a saving the owner wrote, and AI wording that only starts the same way', () => {
