@@ -5,6 +5,7 @@ import type {
   Cart,
   Company,
   Conversation,
+  DealChoiceOption,
   Language,
   ModelResponse,
   ModelTextOutcome,
@@ -1702,6 +1703,111 @@ const TAKEN_BACK_AFTER =
 const COUNT_BEFORE =
   /(?:^|[^\p{L}\p{N}])(?:\d{1,2}|x\d{1,2}|one|two|three|ek|aik|teen|ایک|تین|(?<!(?:de|dey|kar|kr|le|bhej|la|دے|کر)\s)(?:do|دو))\s*x?\s*$/u;
 const COUNT_AFTER = /^\s*x?\d{1,2}x?(?![\p{L}\p{N}])/u;
+/**
+ * Where these option names (normalized) are written in `named` as picks, in order: not inside a
+ * longer dish name written there ("loaded fries", "sprite 345ml"), not taken back ("no sprite",
+ * "sprite nahi"), and without a count of their own where a dish carries the name ("1 sprite").
+ * Of names that overlap, the longest.
+ */
+function writtenPicks(names: string[], named: string, dishes: Product[]) {
+  const labels = [
+    ...new Set(dishes.flatMap((dish) => [dish.name, ...dish.aliases]).map((l) => normalize(l))),
+  ];
+  const longer = labels.filter((label) =>
+    names.some((name) => label !== name && occurrencesOf(label, name).length),
+  );
+  const rest = blanked(
+    named,
+    longer.flatMap((label) => occurrencesOf(named, label)),
+  );
+  const sold = (name: string) => labels.some((label) => occurrencesOf(label, name).length);
+  const written = names
+    .flatMap((name) => occurrencesOf(rest, name).map(([start, end]) => ({ name, start, end })))
+    .sort((a, b) => b.end - b.start - (a.end - a.start) || a.start - b.start);
+  const all: typeof written = [];
+  for (const w of written) if (!all.some((f) => f.start < w.end && w.start < f.end)) all.push(w);
+  return all
+    .filter(
+      ({ name, start, end }) =>
+        !TAKEN_BACK_BEFORE.test(rest.slice(0, start)) &&
+        !TAKEN_BACK_AFTER.test(rest.slice(end)) &&
+        !(
+          sold(name) &&
+          (COUNT_BEFORE.test(rest.slice(0, start)) || COUNT_AFTER.test(rest.slice(end)))
+        ),
+    )
+    .sort((a, b) => a.start - b.start);
+}
+// "One more", "another", "extra", "alag se": the option's drink ordered beside the deal's answer.
+const ANOTHER_BEFORE =
+  /(?:^|[^\p{L}\p{N}])(?:one more|another|ek aur|aik aur|aur ek|aur aik|extra|alag)\s*$/u;
+const ANOTHER_AFTER = /^\s*(?:alag|separately|separate|extra)(?![\p{L}\p{N}])/u;
+/**
+ * The deal's answer named a second time on its own, with a count or "one more", "extra", "alag
+ * se" beside it ("sprite, aur ek sprite alag se", "pepsi, and one more pepsi"): the message
+ * without the answer, which orders that drink as well. Otherwise undefined: "pepsi, haan pepsi
+ * hi" is one answer said twice. `named` is the message with deals' names blanked.
+ */
+function orderedAgain(name: string, named: string, dishes: Product[]): string | undefined {
+  const option = normalize(name);
+  const longer = dishes
+    .flatMap((dish) => [dish.name, ...dish.aliases])
+    .map((label) => normalize(label))
+    .filter((label) => label !== option && occurrencesOf(label, option).length);
+  const rest = blanked(
+    named,
+    longer.flatMap((label) => occurrencesOf(named, label)),
+  );
+  const places = occurrencesOf(rest, option);
+  const apart = ([start, end]: [number, number]) =>
+    COUNT_BEFORE.test(rest.slice(0, start)) ||
+    COUNT_AFTER.test(rest.slice(end)) ||
+    ANOTHER_BEFORE.test(rest.slice(0, start)) ||
+    ANOTHER_AFTER.test(rest.slice(end));
+  const answer = places.find((place) => !apart(place));
+  return answer && places.some(apart) ? blanked(named, [answer]) : undefined;
+}
+// Words that turn down the deal whose choice is asked ("nahi", "rehne do", "remove", "skip"),
+// and words that may come with them. Wanting words ("chahiye", "want") turn it down only
+// right after "nahi", "don't" or "not": "nahi, deal 1 chahiye" still orders it.
+const DECLINES = new Set(
+  'no not nope nah nahi nahin nai nhi mat dont don never nevermind leave cancel skip remove delete hatao hata rehne rehnay chhoro chhor chor choro chhod chhodo forget نہیں مت رہنے چھوڑ چھوڑیں چھوڑو ہٹا ہٹائیں ہٹاؤ نکال نکالیں منسوخ'.split(
+    ' ',
+  ),
+);
+const WITH_DECLINES = new Set(
+  'do dein den karo kar kardo krdo kr dena it that this the a any i me mujhe muje ye yeh wo woh please pls plz thanks thank thx you ok okay ji jee bhai abhi ab bas sorry about mind t chahiye chahye chaiye chahie want need add دیں دو کریں کرو کر مجھے یہ وہ جی بس ابھی اب چاہیے چاہئے'.split(
+    ' ',
+  ),
+);
+const WANTED = /\b(?:chahiye|chahye|chaiye|chahie|want|need|add)\b|چاہیے|چاہئے/u;
+const NOT_WANTED =
+  /\b(?:do not|don['’]?t|not|no)\s+(?:want|add|need)\b|\b(?:nahi|nahin|nai|nhi)\s+(?:chahiye|chahye|chaiye|chahie)\b|نہیں\s*(?:چاہیے|چاہئے)/u;
+/**
+ * The deal whose choice is asked, turned down: "deal 1 nahi chahiye", "ڈیل 1 نہیں چاہیے", "nahi
+ * rehne do", "no thanks", "remove deal 1", "skip the deal". Nothing else may be said beside the
+ * refusal but the deal's name (as the bot reads deals' names) or a deal word, so "no sprite",
+ * "nahi, 2", "deal 1 nahi, deal 2" or "drink nahi chahiye" are not.
+ */
+function declinesDeal(products: Product[], product: Product, value: string): boolean {
+  const options = new Set(
+    product.deal!.choices.flatMap((group) =>
+      group.options.map((o) => normalizeCatalogText(o.name)),
+    ),
+  );
+  const named = findDealMentions(products, product.companyId, value)
+    .filter((mention) => mention.products.includes(product))
+    .flatMap((mention) => mention.spans)
+    .filter(([start, end]) => !options.has(normalizeCatalogText(value.slice(start, end))));
+  const words = normalizeCatalogText(named.length ? blanked(value, named) : value)
+    .split(' ')
+    .filter(Boolean);
+  return (
+    words.some((word) => DECLINES.has(word)) &&
+    words.every((word) => DECLINES.has(word) || WITH_DECLINES.has(word) || DEAL_WORDS.has(word)) &&
+    (!WANTED.test(value) || NOT_WANTED.test(value))
+  );
+}
 // Words that may come with a bare answer to the deal's choice: "sprite wala please", "option 2",
 // "sprite theek hai", "sprite de do".
 const ANSWER_WORDS = new Set(
@@ -1742,33 +1848,7 @@ function answeredPicks(
     return pending.groupId === asked.id && asked.options.some((o) => o.id === id) ? [id] : [];
   }
   const names = [...new Set(open.flatMap((group) => group.options.map((o) => normalize(o.name))))];
-  const labels = [
-    ...new Set(dishes.flatMap((dish) => [dish.name, ...dish.aliases]).map((l) => normalize(l))),
-  ];
-  const longer = labels.filter((label) =>
-    names.some((name) => label !== name && occurrencesOf(label, name).length),
-  );
-  const rest = blanked(
-    named,
-    longer.flatMap((label) => occurrencesOf(named, label)),
-  );
-  const sold = (name: string) => labels.some((label) => occurrencesOf(label, name).length);
-  const written = names
-    .flatMap((name) => occurrencesOf(rest, name).map(([start, end]) => ({ name, start, end })))
-    .sort((a, b) => b.end - b.start - (a.end - a.start) || a.start - b.start);
-  const all: typeof written = [];
-  for (const w of written) if (!all.some((f) => f.start < w.end && w.start < f.end)) all.push(w);
-  const found = all
-    .filter(
-      ({ name, start, end }) =>
-        !TAKEN_BACK_BEFORE.test(rest.slice(0, start)) &&
-        !TAKEN_BACK_AFTER.test(rest.slice(end)) &&
-        !(
-          sold(name) &&
-          (COUNT_BEFORE.test(rest.slice(0, start)) || COUNT_AFTER.test(rest.slice(end)))
-        ),
-    )
-    .sort((a, b) => a.start - b.start);
+  const found = writtenPicks(names, named, dishes);
   if (!found.length) return undefined;
   if (open.length === 1 || found.length === 1) {
     if (new Set(found.map((f) => f.name)).size !== 1) return undefined;
@@ -1811,6 +1891,14 @@ const onlyAboutDeals = (text: string) =>
     .split(' ')
     .filter(Boolean)
     .every((word) => DEAL_WORDS.has(word) || DEAL_FILLERS.has(word));
+// The same with the words read as the bot reads them, so "کوئی" (which loses its hamza) counts:
+// on a menu with deals, a message only about them keeps no dish the AI added.
+const READ_FILLERS = new Set([...DEAL_FILLERS].map(normalizeCatalogText));
+const asksOnlyAboutDeals = (text: string) =>
+  normalizeCatalogText(text)
+    .split(' ')
+    .filter(Boolean)
+    .every((word) => DEAL_WORDS.has(word) || DEAL_FILLERS.has(word) || READ_FILLERS.has(word));
 const DEAL_ORDER = new RegExp(
   [
     "\\b(?:chahiye|chahye|chaiye|chahie|chahiyen|dena|de do|dedo|de dein|de den|lena|lunga|lungi|lenge|want|need|add|order|mangwana|mangwani|mangwa do|mangwa dein|bhejna|bhej do|bhej dein|bhej den|karna|karni|i ?['’]?ll (?:take|have)|give me|get me|can i (?:get|have))\\b",
@@ -1883,6 +1971,11 @@ export function parseActions(
     return [{ type: 'new_order' }];
   if (asksToCancelOrder(text)) return [{ type: 'cancel' }];
   if (asksForPerson(text, own)) return [{ type: 'handoff' }];
+  // The deal whose choice is asked, turned down: taken off, so no later "sprite" adds it. A deal
+  // waiting behind a dish's "which one?" is not what a "no" answers.
+  const declined = own.find((p) => p.deal && p.id === conversation.pendingDealChoice?.productId);
+  if (declined && !conversation.pendingItemChoice && declinesDeal(products, declined, value))
+    return [{ type: 'remove_item', productId: declined.id }];
   if (/\b(?:do not|don't|dont|not|no)\s+(?:want|add|need)|نہیں چاہیے|nahi chahiye/u.test(value))
     return [{ type: 'answer', text: '' }];
   if (
@@ -1986,24 +2079,69 @@ export function parseActions(
     !browsing &&
     dealMentions.every((mention) => mention.products.includes(askedDeal))
   ) {
-    const picks = answeredPicks(
-      askedDeal,
-      pendingDeal,
-      value,
-      asked,
-      own.filter((p) => !p.deal),
-    );
+    const drinks = own.filter((p) => !p.deal);
+    const picks = answeredPicks(askedDeal, pendingDeal, value, asked, drinks);
     // No new pick (a number from a list since changed): the add asks the choice again.
-    if (picks)
+    if (picks) {
+      // Picks written beside the deal's name replace those made before for the same choice
+      // ("Add 1 Deal 3 with Sprite / Wings" after "coke").
+      const choice = (id: string) =>
+        askedDeal.deal!.choices.findIndex((group) => group.options.some((o) => o.id === id));
+      const said = dealMentions
+        .flatMap((mention) => mention.picks)
+        .filter((id) => !picks.some((pick) => choice(pick) === choice(id)));
+      const earlier = pendingDeal.picked.filter(
+        (id) => !said.some((pick) => choice(pick) === choice(id)),
+      );
+      // The answer's drink ordered again on its own is added too ("sprite, aur ek sprite alag
+      // se"), by the dishes that carry that name.
+      const again = askedDeal
+        .deal!.choices.flatMap((group) => group.options)
+        .filter((option) => picks.includes(option.id))
+        .flatMap((option): BotAction[] => {
+          const rest = orderedAgain(option.name, asked, drinks);
+          if (rest === undefined) return [];
+          const found = resolveItemMention(
+            drinks.filter((p) =>
+              [p.name, ...p.aliases].some(
+                (label) => occurrencesOf(normalize(label), option.name).length,
+              ),
+            ),
+            company.id,
+            rest,
+          );
+          if (found.kind === 'unique')
+            return [
+              {
+                type: 'add_item',
+                productId: found.product.id,
+                quantity: found.quantity,
+                modifierIds: [],
+              },
+            ];
+          return found.kind === 'ambiguous'
+            ? [
+                {
+                  type: 'clarify_item',
+                  candidateProductIds: found.products.slice(0, 12).map((p) => p.id),
+                  quantity: found.quantity,
+                  requestedOptionNames: requestedOptions(found.products, rest),
+                  originalText: text,
+                },
+              ]
+            : [];
+        });
       return [
         {
           type: 'add_item',
           productId: askedDeal.id,
           quantity: pendingDeal.quantity,
-          modifierIds: [...pendingDeal.picked, ...picks],
+          modifierIds: [...earlier, ...said, ...picks],
           notes: pendingDeal.notes,
         },
+        ...again,
       ];
+    }
   }
   const hasDeals = own.some((p) => p.deal);
   const dishes = own.filter((p) => !p.deal);
@@ -3197,10 +3335,41 @@ export function processTurn(
             group.options.some((o) => normalizeCatalogText(o.name).split(' ').includes(word)),
           ),
       );
-    if (
+    // The answer's drink ordered again on its own ("sprite, aur ek sprite alag se"): the AI's
+    // add of it stays beside the deal.
+    const apart = new Set(
+      others.flatMap((action) =>
+        action.type === 'add_item'
+          ? [action.productId]
+          : action.type === 'clarify_item'
+            ? action.candidateProductIds
+            : [],
+      ),
+    );
+    if (answer?.type === 'remove_item' && answer.productId === askedDeal.id && !others.length) {
+      // The deal turned down ("deal 1 nahi chahiye", "nahi rehne do"): the engine takes it off,
+      // so its question is over, and the AI's add of it or "which deal?" with it is dropped.
+      const adds = (action: BotAction) =>
+        (action.type === 'add_item' && action.productId === askedDeal.id) ||
+        (action.type === 'clarify_item' && action.candidateProductIds.includes(askedDeal.id));
+      if (requested.some(adds)) correctedInterpretation = true;
+      requested = [
+        ...requested.filter(
+          (action) =>
+            !adds(action) && !(action.type === 'remove_item' && action.productId === askedDeal.id),
+        ),
+        answer,
+      ];
+      dealResolved = true;
+    } else if (
       answer?.type === 'add_item' &&
       answer.productId === askedDeal.id &&
-      !others.length &&
+      others.every(
+        (action) =>
+          (action.type === 'add_item' && optionNamed(action.productId)) ||
+          (action.type === 'clarify_item' &&
+            action.candidateProductIds.every((id) => optionNamed(id))),
+      ) &&
       (bare ||
         requested.some((action) => action.type === 'add_item' || action.type === 'clarify_item'))
     ) {
@@ -3217,25 +3386,59 @@ export function processTurn(
       const replaced = requested.filter(
         (action) =>
           action === proposed ||
-          (action.type === 'add_item' && optionNamed(action.productId, answered)) ||
+          (action.type === 'add_item' &&
+            !apart.has(action.productId) &&
+            optionNamed(action.productId, answered)) ||
           (action.type === 'clarify_item' &&
-            (action.candidateProductIds.some((id) => optionNamed(id, answered)) ||
+            ((!action.candidateProductIds.some((id) => apart.has(id)) &&
+              action.candidateProductIds.some((id) => optionNamed(id, answered))) ||
               action.candidateProductIds.includes(askedDeal.id))),
       );
-      // The AI's picks for the choices after the one asked; never its own reading of the one
-      // asked, which the engine read (or asks again, from a list the owner changed).
+      // Whether an option's name is written as a pick, or only taken back or with a count of its
+      // own ("sprite nahi", "aur 1 sprite").
+      const written = withoutDeals(input.text, ',');
+      const dishes = products.filter((p) => p.companyId === company.id && !p.deal);
+      const picked = (option: DealChoiceOption) =>
+        writtenPicks([normalize(option.name)], written, dishes).length > 0;
+      const refused = (option: DealChoiceOption) =>
+        !picked(option) && occurrencesOf(written, option.name).length > 0;
+      // The AI's picks for the choices after the one asked. Its reading of the one asked only
+      // where the engine read none, the customer did not turn that option down, and the list is
+      // still the one the customer saw ("deal 1 with sprit"); from a list the owner changed
+      // since, the choice is asked again.
       const chosen = new Set(answer.modifierIds);
       const asked = openChoice(askedDeal, pendingDeal.picked);
+      const listChanged =
+        !!asked &&
+        !!pendingDeal.optionIds &&
+        (pendingDeal.groupId !== asked.id ||
+          pendingDeal.optionIds.join() !== asked.options.map((option) => option.id).join());
       const later = (proposed?.modifierIds ?? []).filter(
         (id) =>
           !chosen.has(id) &&
           askedDeal.deal!.choices.some(
             (group) =>
-              group !== asked &&
+              (group !== asked ||
+                (!listChanged && !group.options.some((o) => o.id === id && refused(o)))) &&
               group.options.some((option) => option.id === id) &&
               !group.options.some((option) => chosen.has(option.id)),
           ),
       );
+      // A choice made before that the AI reads as changed, to an option written in the message
+      // and not taken back ("sorry, coke not fanta. and fries"): the AI's pick replaces it.
+      const changed = askedDeal.deal!.choices.flatMap((group) => {
+        const before = group.options.find((option) => pendingDeal.picked.includes(option.id));
+        const named = group.options.filter((option) => proposed?.modifierIds?.includes(option.id));
+        return before &&
+          chosen.has(before.id) &&
+          named.length === 1 &&
+          named[0] !== before &&
+          picked(named[0]!)
+          ? [{ before: before.id, after: named[0]!.id }]
+          : [];
+      });
+      // The count: the AI's where it is the one asked about or written; else one written where
+      // it can be nothing else ("2 deal 1", "deal 1 x2"), else the one asked about.
       const resolved: BotAction = {
         ...answer,
         quantity:
@@ -3243,13 +3446,27 @@ export function processTurn(
           (proposed.quantity === pendingDeal.quantity ||
             mentionsQuantity(input.text, proposed.quantity, products))
             ? proposed.quantity
-            : answer.quantity,
-        modifierIds: [...(answer.modifierIds ?? []), ...later],
+            : (clearDealQuantity(askedDeal, input.text, products) ?? pendingDeal.quantity),
+        modifierIds: [
+          ...(answer.modifierIds ?? []).filter((id) => !changed.some((c) => c.before === id)),
+          ...changed.map((c) => c.after),
+          ...later,
+        ],
         notes: proposed?.notes?.trim() ? proposed.notes : answer.notes,
       };
-      const same = (ids?: string[]) =>
-        JSON.stringify([...new Set([...pendingDeal.picked, ...(ids ?? [])])].sort()) ===
-        JSON.stringify([...new Set(resolved.modifierIds)].sort());
+      // The picks as the add reads them: those named, else the one made before, per choice.
+      const picks = (ids: string[] = []) =>
+        askedDeal
+          .deal!.choices.flatMap((group) => {
+            const named = group.options.filter((option) => ids.includes(option.id));
+            return (
+              named.length
+                ? named
+                : group.options.filter((option) => pendingDeal.picked.includes(option.id))
+            ).map((option) => option.id);
+          })
+          .join();
+      const same = (ids?: string[]) => picks(ids) === picks(resolved.modifierIds);
       requested = [resolved, ...requested.filter((action) => !replaced.includes(action))];
       dealResolved = true;
       if (
@@ -3375,9 +3592,28 @@ export function processTurn(
       first?.type === 'menu' &&
       requested.some((action) => action.type === 'add_item' || action.type === 'clarify_item')
     ) {
-      requested = deterministic;
-      correctedInterpretation = true;
-      traces.push('browse_cart_mutation_prevented');
+      // A question about the deals beside a dish only the AI read ("2 چکن بریانی بھیج دیں، کوئی
+      // ڈیل ہے؟"): the AI's dish stays and the deals are shown. A deal is never added by it.
+      const dish = (id: string) => !deals.some((deal) => deal.id === id);
+      const kept =
+        first.query === 'deals' && deals.length && !asksOnlyAboutDeals(input.text)
+          ? requested.filter(
+              (action) =>
+                (action.type === 'add_item' && dish(action.productId)) ||
+                (action.type === 'clarify_item' &&
+                  action.candidateProductIds.length > 0 &&
+                  action.candidateProductIds.every(dish)),
+            )
+          : [];
+      const undone = requested.some(
+        (action) =>
+          (action.type === 'add_item' || action.type === 'clarify_item') && !kept.includes(action),
+      );
+      requested = [...deterministic, ...kept];
+      if (undone) {
+        correctedInterpretation = true;
+        traces.push('browse_cart_mutation_prevented');
+      }
     }
   }
   if (requested.length > 8) {
@@ -3713,6 +3949,24 @@ export function processTurn(
         continue;
       }
       if (action.type === 'remove_item') {
+        // The deal whose choice is asked, turned down or taken off: it is not added, and its
+        // question is over, so a later "sprite" is the drink. One already in the cart stays.
+        const declined =
+          next.pendingDealChoice?.productId === action.productId
+            ? deals.find((deal) => deal.id === action.productId)
+            : undefined;
+        if (declined) {
+          delete next.pendingDealChoice;
+          const name = declined.name;
+          const kept = cart.items.some((item) => item.productId === declined.id);
+          reply = say(
+            lang,
+            `Okay, ${name} is not added.${kept ? ` The ${name} already in your cart stays: send “remove ${name}” to take it out.` : ''}`,
+            `ٹھیک ہے، ${name} شامل نہیں کیا۔${kept ? ` ٹوکری میں پہلے سے موجود ${name} رہے گا: اسے نکالنے کے لیے “remove ${name}” لکھیں۔` : ''}`,
+            `Theek hai, ${name} add nahi kiya.${kept ? ` Cart mein pehle se mojood ${name} rahega: nikalne ke liye “remove ${name}” likhein.` : ''}`,
+          );
+          continue;
+        }
         const remaining = cart.items.filter((i) => i.productId !== action.productId);
         if (remaining.length === cart.items.length)
           throw new Error('That item is not in your cart.');

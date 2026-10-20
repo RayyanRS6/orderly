@@ -927,6 +927,42 @@ describe('a deal word beside dishes, on a menu with deals', () => {
       );
     }
   });
+
+  it('keeps a dish only the AI read beside a question about the deals, and shows the deals', () => {
+    const ok: ModelResponse = { text: 'Sure!', askFor: 'none' };
+    const whichDeal: BotAction = {
+      type: 'clarify_item',
+      candidateProductIds: ['deal-1', 'deal-2', 'deal-3', 'zinger-deal'],
+      quantity: 1,
+    };
+    // Urdu script the parser cannot read as a dish: it reads only the deals question.
+    for (const [text, actions, undone] of [
+      ['دو زنگر اور کوئی ڈیل ہے؟', [add(zinger, 2)], false],
+      ['2 زنگر بھیج دیں، کوئی ڈیل بھی ہے؟', [add(zinger, 2)], false],
+      // An order of "a deal" beside it: the deals are shown, never the AI's "which deal?".
+      ['2 زنگر اور ایک ڈیل بھیج دیں', [add(zinger, 2), whichDeal], true],
+      // Nor a deal the AI adds for a question.
+      [
+        '2 زنگر، کوئی ڈیل ہے؟',
+        [add(zinger, 2), { type: 'add_item', productId: 'deal-2', quantity: 1, modifierIds: [] }],
+        true,
+      ],
+    ] as [string, BotAction[], boolean][]) {
+      expect(parse(text)).toEqual(['menu deals']);
+      const c = chat();
+      const result = c.send(text, { actions, response: ok });
+      expect(lines(c)).toEqual(['zinger-burger ×2']);
+      expect(result.reply).toContain('2 × Zinger Burger');
+      expect(result.reply).toContain('🎁 Deal 1 — Rs. 799');
+      expect(result.traces.includes('browse_cart_mutation_prevented')).toBe(undone);
+      expect(c.conversation.pendingItemChoice).toBeUndefined();
+    }
+    // A question only about the deals adds nothing the AI proposed.
+    const asked = chat();
+    const only = asked.send('کوئی ڈیل ہے؟', { actions: [add(zinger, 1)], response: ok });
+    expect(only.traces).toContain('browse_cart_mutation_prevented');
+    expect(lines(asked)).toEqual([]);
+  });
 });
 
 describe('a named deal in a statement that ends in "hai"', () => {

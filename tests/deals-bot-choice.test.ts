@@ -716,3 +716,257 @@ describe('a deal’s choice left open when the deal goes off', () => {
     expect(c.conversation.pendingDealChoice).toBeUndefined();
   });
 });
+
+const askMore: ModelResponse = { text: 'Anything else?', askFor: 'anything_else' };
+const addOf = (productId: string, quantity = 1, modifierIds: string[] = []): BotAction => ({
+  type: 'add_item',
+  productId,
+  quantity,
+  modifierIds,
+});
+
+describe('a deal turned down while its choice is asked', () => {
+  it.each([
+    'deal 1 nahi chahiye',
+    'nahi rehne do',
+    'no thanks',
+    'remove deal 1',
+    'cancel deal 1',
+    'ڈیل 1 نہیں چاہیے',
+    'i don’t want the deal',
+  ])('takes it off on “%s”, so a later drink is that drink', (text) => {
+    // Without the AI: the refusal is said back, and nothing is added.
+    const local = chat();
+    local.send('deal 1');
+    const refused = local.send(text);
+    expect(refused.traces).toEqual(['remove_item']);
+    expect(local.conversation.pendingDealChoice).toBeUndefined();
+    expect(local.items).toEqual([]);
+    // "sprite" now asks which Sprite drink, as on any menu, never the deal.
+    expect(local.send('sprite').reply).toBe(
+      'Which one would you like?\n1. Sprite 345ml\n2. Sprite 1.5L',
+    );
+    // The AI answering the refusal in words: the engine still takes the deal off, and the AI’s
+    // Sprite drink next is a drink (which of the two Sprites), not the deal.
+    const ai = chat();
+    ai.send('deal 1');
+    ai.send(text, [{ type: 'answer', text: '' }], { text: 'No problem.', askFor: 'none' });
+    expect(ai.conversation.pendingDealChoice).toBeUndefined();
+    const sprite = ai.send('sprite', [addOf('sprite-345')], askMore);
+    expect(sprite.traces).not.toContain('deal_choice_answered');
+    expect(ai.items).toEqual([]);
+    expect(ai.conversation.pendingItemChoice?.candidateProductIds.sort()).toEqual([
+      'sprite-15',
+      'sprite-345',
+    ]);
+    ai.send('sprite 345ml', [addOf('sprite-345')], askMore);
+    expect(ai.items).toEqual(['sprite-345 ×1']);
+  });
+
+  it('takes the AI’s removal of the deal asked as the deal turned down, and drops its add of it', () => {
+    const removed = chat();
+    removed.send('deal 1');
+    const result = removed.send(
+      'nahi deal 1 rehne do, hata do',
+      [{ type: 'remove_item', productId: 'deal-1' }],
+      { text: 'Done.', askFor: 'none' },
+    );
+    expect(result.reply).toBe('Theek hai, Deal 1 add nahi kiya.\n\nDone.');
+    expect(result.traces).not.toContain('validation_failed:remove_item');
+    expect(removed.conversation.pendingDealChoice).toBeUndefined();
+    removed.send('sprite', [addOf('sprite-345')], askMore);
+    expect(removed.items).toEqual([]);
+    expect(removed.conversation.pendingItemChoice?.candidateProductIds).toHaveLength(2);
+    // An AI that adds the deal the customer just turned down is overruled.
+    const added = chat();
+    added.send('deal 1');
+    const overruled = added.send('deal 1 nahi chahiye', [addOf('deal-1', 1, ['o-coke'])], {
+      text: 'Added Deal 1 with Coke!',
+      askFor: 'none',
+    });
+    expect(overruled.traces).toEqual(['remove_item']);
+    // The AI's wording about its add is not used.
+    expect(overruled.reply).toBe('Theek hai, Deal 1 add nahi kiya.');
+    expect(added.items).toEqual([]);
+    expect(added.conversation.pendingDealChoice).toBeUndefined();
+  });
+
+  it('keeps one already in the cart, and says how to take it out', () => {
+    const c = chat();
+    c.send('deal 1 with coke');
+    c.send('ek aur deal 1');
+    expect(c.conversation.pendingDealChoice?.productId).toBe('deal-1');
+    expect(c.send('remove deal 1').reply).toBe(
+      'Okay, Deal 1 is not added. The Deal 1 already in your cart stays: send “remove Deal 1” to take it out.',
+    );
+    expect(c.items).toEqual(['deal-1 ×1 [o-coke]']);
+    expect(c.conversation.pendingDealChoice).toBeUndefined();
+    c.send('remove deal 1');
+    expect(c.items).toEqual([]);
+  });
+
+  it('keeps the question for what does not turn the deal down', () => {
+    for (const text of [
+      'no sprite',
+      'drink nahi chahiye',
+      'nahi, deal 1 chahiye',
+      'nahi 2',
+      'nahi coke',
+      'deal 1 nahi, deal 3',
+      'no, make it 2',
+    ]) {
+      const c = chat();
+      c.send('deal 1');
+      expect(parseActions(company, products, c.conversation, text)).not.toContainEqual({
+        type: 'remove_item',
+        productId: 'deal-1',
+      });
+      c.send(text, [{ type: 'answer', text: '' }], { text: 'Which drink?', askFor: 'none' });
+      expect(c.conversation.pendingDealChoice?.productId).toBe('deal-1');
+    }
+    // A deal waiting behind a dish's "which one?": a "nahi" answers the dish question.
+    const waiting = chat();
+    waiting.send(
+      'deal 1 aur burger',
+      [
+        addOf('deal-1'),
+        { type: 'clarify_item', candidateProductIds: [smash.id, crispy.id], quantity: 1 },
+      ],
+      { text: '', askFor: 'none' },
+    );
+    expect(parseActions(company, products, waiting.conversation, 'nahi')).not.toContainEqual({
+      type: 'remove_item',
+      productId: 'deal-1',
+    });
+  });
+});
+
+describe('the AI’s reading of the choice when the parser reads none', () => {
+  it('takes the AI’s pick where the deal is named again with an answer only the AI reads', () => {
+    for (const text of ['deal 1 with sprit', 'deal 1 option 2', 'ڈیل 1 کے لیے سپرائٹ']) {
+      const c = chat();
+      c.send('deal 1');
+      const result = c.send(text, [addOf('deal-1', 1, ['o-sprite'])], askMore);
+      expect(result.traces).not.toContain('deal_choice_asked');
+      expect(c.items).toEqual(['deal-1 ×1 [o-sprite]']);
+      expect(c.conversation.pendingDealChoice).toBeUndefined();
+    }
+  });
+
+  it('asks again for an option the customer turned down, or from a list changed since', () => {
+    const refused = chat();
+    refused.send('deal 1');
+    expect(
+      refused.send('deal 1, sprite nahi', [addOf('deal-1', 1, ['o-sprite'])], askMore).reply,
+    ).toBe('Deal 1 ke liye Drink chunein:\n1. Coke\n2. Sprite\n3. Fanta (+Rs. 50)');
+    expect(refused.items).toEqual([]);
+    const noSprite = sellableCatalog(
+      company,
+      [...seed, sprite345, sprite15],
+      [
+        deal(
+          'deal-1',
+          'Deal 1',
+          [{ ...drink, options: [drink.options[0]!, drink.options[2]!] }],
+          1,
+        ),
+      ],
+      now,
+      { all: true },
+    );
+    const changed = chat();
+    changed.send('deal 1');
+    expect(
+      changed.send('deal 1 option 2', [addOf('deal-1', 1, ['o-fanta'])], askMore, noSprite).reply,
+    ).toBe('Choose Drink for Deal 1:\n1. Coke\n2. Fanta (+Rs. 50)');
+    expect(changed.items).toEqual([]);
+  });
+});
+
+describe('a drink of the answer’s name ordered again on its own', () => {
+  it.each([
+    ['sprite, aur ek sprite alag se', 1],
+    ['sprite, and one more sprite separately', 1],
+    ['sprite aur ek extra sprite', 1],
+    ['sprite, aur 2 sprite bhi', 2],
+  ] as const)('keeps the AI’s drink beside the deal on “%s”', (text, count) => {
+    const c = chat();
+    c.send('deal 1');
+    const result = c.send(
+      text,
+      [addOf('deal-1', 1, ['o-sprite']), addOf('sprite-345', count)],
+      askMore,
+    );
+    expect(result.traces).not.toContain('deal_choice_resolved');
+    expect(c.items).toEqual(['deal-1 ×1 [o-sprite]', `sprite-345 ×${count}`]);
+  });
+
+  it('drops the AI’s drink when the answer is only said twice, and asks which drink without the AI', () => {
+    const twice = chat();
+    twice.send('deal 1');
+    twice.send(
+      'sprite, haan sprite hi',
+      [addOf('deal-1', 1, ['o-sprite']), addOf('sprite-345')],
+      askMore,
+    );
+    expect(twice.items).toEqual(['deal-1 ×1 [o-sprite]']);
+    // Two drinks are called Sprite here: the deal is added, then which one.
+    const local = chat();
+    local.send('deal 1');
+    expect(local.send('sprite, aur ek sprite alag se').reply).toMatch(
+      /^Which one would you like\?\n1\. Sprite (?:345ml|1\.5L)\n2\. Sprite (?:345ml|1\.5L)$/u,
+    );
+    expect(local.items).toEqual(['deal-1 ×1 [o-sprite]']);
+    local.send('sprite 345ml');
+    expect(local.items).toEqual(['deal-1 ×1 [o-sprite]', 'sprite-345 ×1']);
+  });
+});
+
+describe('a pick made earlier, changed while the next choice is asked', () => {
+  it('takes the AI’s change to an option the customer wrote, at its price', () => {
+    const c = chat();
+    c.send('deal 3');
+    c.send('fanta');
+    const result = c.send(
+      'sorry, coke not fanta. and fries',
+      [addOf('deal-3', 1, ['o-coke', 'o-fries'])],
+      askMore,
+    );
+    expect(result.reply).toContain('Added 1 × Deal 3 (Drink: Coke, Side: Fries) — Rs. 799 each.');
+    expect(result.traces).not.toContain('deal_choice_resolved');
+    expect(c.items).toEqual(['deal-3 ×1 [o-coke, o-fries]']);
+  });
+
+  it('takes the Add dialog’s picks in Test your bot, with and without the AI', () => {
+    const local = chat();
+    local.send('deal 3');
+    local.send('coke');
+    local.send('Add 1 Deal 3 with Sprite / Wings');
+    expect(local.items).toEqual(['deal-3 ×1 [o-sprite, o-wings]']);
+    const ai = chat();
+    ai.send('deal 3');
+    ai.send('coke');
+    const result = ai.send(
+      'Add 1 Deal 3 with Sprite / Wings',
+      [addOf('deal-3', 1, ['o-sprite', 'o-wings'])],
+      askMore,
+    );
+    expect(result.reply).toContain('Rs. 899 each.');
+    expect(ai.items).toEqual(['deal-3 ×1 [o-sprite, o-wings]']);
+  });
+
+  it('keeps the earlier pick when only the next choice is answered', () => {
+    for (const proposal of [
+      undefined,
+      [addOf('deal-3', 1, ['o-fanta', 'o-fries'])],
+      // A drink the customer never wrote is not a change.
+      [addOf('deal-3', 1, ['o-coke', 'o-fries'])],
+    ]) {
+      const c = chat();
+      c.send('deal 3');
+      c.send('fanta');
+      c.send('fries', proposal, proposal && askMore);
+      expect(c.items).toEqual(['deal-3 ×1 [o-fanta, o-fries]']);
+    }
+  });
+});

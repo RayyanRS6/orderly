@@ -1,6 +1,14 @@
 import { useEffect, useState } from 'react';
-import { money, type Company, type Deal, type DealSchedule, type Product } from '../shared/types';
+import {
+  money,
+  type Company,
+  type Deal,
+  type DealSchedule,
+  type DealState,
+  type Product,
+} from '../shared/types';
 import { DEAL_LIMITS } from '../shared/deals';
+import { normalizeCatalogText } from '../domain/menu-resolver';
 import { dealsWorkItOut, openingOverlap } from '../shared/deal-insights';
 import {
   beforeStartDate,
@@ -456,12 +464,9 @@ export function scheduleNotice(schedule: DealSchedule | undefined, clock: Clock 
 }
 
 const lower = (text: string) => text.trim().toLowerCase();
-// A name as whole words: lower case, letters and numbers of any script, single spaces.
-const words = (text: string) =>
-  text
-    .toLowerCase()
-    .replace(/[^\p{L}\p{M}\p{N}]+/gu, ' ')
-    .trim();
+// A name as whole words, as the bot reads it: lower case, letters and numbers of any script,
+// single spaces ("Chicken-Biryani" is "chicken biryani").
+const words = normalizeCatalogText;
 /** Whether `part` is in the longer `whole` as whole words ("zinger" in "zinger burger"). */
 const partOf = (part: string, whole: string) =>
   !!part && part !== whole && ` ${whole} `.includes(` ${part} `);
@@ -474,23 +479,28 @@ const listed = (names: string[]) =>
       : (names[0] ?? '');
 
 /**
- * Menu items and other deals already called by the deal's name or one of its other names: the
- * bot then has to ask which one the customer means. Also a name that is part of a menu item's
- * name ("zinger" in Zinger Burger: the bot may take an order for the burger as the deal) or
- * has one in it ("Biryani Deal": "biryani" alone orders Chicken Biryani, not the deal).
+ * Menu items and other deals already called by the deal's name or one of its other names, as
+ * the bot reads names ("Deal-1" is "Deal 1"): the bot then has to ask which one the customer
+ * means. Another deal of that name that is paused or ended (`state`) is not asked about: the
+ * bot sells this one while it is off. Also a name that is part of a menu item's name ("zinger"
+ * in Zinger Burger: the bot may take an order for the burger as the deal) or has one in it
+ * ("Biryani Deal": "biryani" alone orders Chicken Biryani, not the deal).
  */
 export function sameNameWarning(
   names: string[],
   products: Pick<Product, 'id' | 'name' | 'aliases'>[],
-  deals: Pick<Deal, 'id' | 'name' | 'aliases'>[],
+  deals: (Pick<Deal, 'id' | 'name' | 'aliases'> & { state?: DealState })[],
   selfId?: string,
 ): string {
-  const wanted = new Set(names.map(lower).filter(Boolean));
+  const wanted = new Set(names.map(words).filter(Boolean));
   const clashes = (entry: { name: string; aliases: string[] }) =>
-    [entry.name, ...entry.aliases].some((name) => wanted.has(lower(name)));
+    [entry.name, ...entry.aliases].some((name) => wanted.has(words(name)));
   const same = products.filter(clashes);
   const menu = same.map((p) => p.name);
-  const others = deals.filter((d) => d.id !== selfId && clashes(d)).map((d) => d.name);
+  const alike = deals.filter((d) => d.id !== selfId && clashes(d));
+  const off = (d: (typeof alike)[number]) => d.state === 'paused' || d.state === 'ended';
+  const others = alike.filter((d) => !off(d)).map((d) => d.name);
+  const resting = alike.filter(off).map((d) => `${d.name} (${d.state})`);
   const parts = [
     ...(menu.length ? [`${menu.join(', ')} on your menu`] : []),
     ...(others.length ? [`${others.join(', ')} in your deals`] : []),
@@ -498,6 +508,12 @@ export function sameNameWarning(
   const sentences = parts.length
     ? [`Same name as ${parts.join(' and ')}. The bot will ask customers which one they mean.`]
     : [];
+  if (resting.length) {
+    const it = resting.length > 1 ? 'they are' : 'it is';
+    sentences.push(
+      `Same name as ${listed(resting)} in your deals. While ${it} off, the bot sells this one; if ${resting.length > 1 ? 'one comes' : 'it comes'} back on, the bot will ask customers which one they mean.`,
+    );
+  }
   // Each menu item's names as words, worked out once (the editor checks on every key press).
   const rest = products
     .filter((p) => !same.includes(p))

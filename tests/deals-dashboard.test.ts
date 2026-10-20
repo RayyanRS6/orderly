@@ -613,6 +613,44 @@ describe('the deal form', () => {
     expect(sameNameWarning(['biryani'], menu, [], undefined)).toContain('Chicken Biryani');
   });
 
+  it('says what the bot does with a paused or ended deal of the same name', () => {
+    // The bot sells the deal that is on; it asks which one only once both are on.
+    expect(sameNameWarning(['Deal 1'], menu, [{ ...deal(), state: 'paused' }], 'd-new')).toBe(
+      'Same name as Deal 1 (paused) in your deals. While it is off, the bot sells this one; if it comes back on, the bot will ask customers which one they mean.',
+    );
+    expect(
+      sameNameWarning(
+        ['Deal 1'],
+        menu,
+        [
+          { ...deal(), state: 'ended' },
+          { ...deal({ id: 'd-two' }), state: 'paused' },
+        ],
+        'd-new',
+      ),
+    ).toBe(
+      'Same name as Deal 1 (ended) and Deal 1 (paused) in your deals. While they are off, the bot sells this one; if one comes back on, the bot will ask customers which one they mean.',
+    );
+    // On now, later today or sold out: still asked about.
+    for (const state of ['on', 'later', 'sold_out'] as const)
+      expect(sameNameWarning(['Deal 1'], menu, [{ ...deal(), state }], 'd-new')).toBe(
+        'Same name as Deal 1 in your deals. The bot will ask customers which one they mean.',
+      );
+  });
+
+  it('counts names that differ only by punctuation or spacing as the same, as the bot does', () => {
+    expect(sameNameWarning(['Deal-1'], menu, [deal()], 'd-new')).toBe(
+      'Same name as Deal 1 in your deals. The bot will ask customers which one they mean.',
+    );
+    // The same name as a menu item, not a longer name with "biryani" in it.
+    expect(sameNameWarning(['Chicken-Biryani'], menu, [], undefined)).toBe(
+      'Same name as Chicken Biryani on your menu. The bot will ask customers which one they mean.',
+    );
+    expect(sameNameWarning(['  chicken   biryani! '], menu, [], undefined)).toBe(
+      'Same name as Chicken Biryani on your menu. The bot will ask customers which one they mean.',
+    );
+  });
+
   it('warns when a deal’s name is part of a menu item’s name, or has one in it', () => {
     // "zinger" for a Zinger Deal, with Zinger Burger on the menu: the bot may sell the deal to
     // someone ordering the burger, so the owner is told before saving.
@@ -883,6 +921,10 @@ describe('the deal editor', () => {
     expect(editor(deal({ aliases: ['chicken'] }), [])).toContain(
       '“chicken” is also part of Chicken Biryani, Chicken Karahi',
     );
+    // Another deal of the name that is paused is said to be off, as the bot treats it.
+    const beside = editor(deal({ id: 'd-new' }), [deal({ available: false })]);
+    expect(beside).toContain('Same name as Deal 1 (paused) in your deals. While it is off');
+    expect(beside).not.toContain('Same name as Deal 1 in your deals.');
   });
 });
 

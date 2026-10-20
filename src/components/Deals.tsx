@@ -602,10 +602,11 @@ export function DealEditor({ deal, onDone }: { deal?: Deal; onDone: () => void }
   const saving = Number.isFinite(price) && regular ? toPaisa(regular) - price : undefined;
   const schedule = formSchedule(form);
   const night = form.timed && isNightWindow(formWindow(form));
+  // Another deal of the same name that is paused or ended is not asked about by the bot.
   const sameName = sameNameWarning(
     [form.name, ...splitList(form.aliases)],
     data.products,
-    deals,
+    deals.map((d) => ({ ...d, state: dealState(d, data.products, clock) })),
     deal?.id,
   );
   return (
