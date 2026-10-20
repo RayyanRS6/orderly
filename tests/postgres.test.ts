@@ -42,8 +42,8 @@ async function rpc(name: string, args: unknown[]) {
     args,
   );
 }
-function pendingOrder(channel: Conversation['channel'] = 'whatsapp') {
-  let conversation = createConversation(company.id, '+923000000099', channel, now());
+function pendingOrder(channel: Conversation['channel'] = 'whatsapp', phone = '+923000000099') {
+  let conversation = createConversation(company.id, phone, channel, now());
   const turn = (action: BotAction) => {
     const result = processTurn(company, products, conversation, {
       messageId: randomUUID(),
@@ -93,6 +93,7 @@ const chain = [
   '202610190003_menu_purge_schedule.sql',
   '202610200001_prelaunch_fixes.sql',
   '202610200002_order_followups.sql',
+  '202610200003_order_flow.sql',
 ];
 // PGlite cannot install pg_cron, pg_net or Vault: their schemas are stubbed and the extension
 // lines skipped, as in scheduler.test.ts.
@@ -853,6 +854,176 @@ describe('real Postgres migrations and transactional invariants', () => {
     await expect(
       rpc('update_order_status', [company.id, order.id, 'accepted', 'completed', now(), []]),
     ).rejects.toThrow('Invalid order status');
+  });
+  it('set_order_status: Accept goes straight to preparing, needs no call, and keeps a note', async () => {
+    const { conversation, order } = pendingOrder();
+    order.phoneConfirmationRequired = true;
+    await commit(conversation, order);
+    const note = { text: 'Called, all fine', at: now(), actorId: ownerId };
+    await expect(
+      rpc('set_order_status', [company.id, order.id, 'pending', 'accepted', now(), []]),
+    ).rejects.toThrow('Invalid order status');
+    expect(
+      await rpc('set_order_status', [
+        company.id,
+        order.id,
+        'pending',
+        'preparing',
+        now(),
+        [],
+        null,
+        null,
+        note,
+      ]),
+    ).toMatchObject({ status: 'preparing', staffNote: note });
+    // Another staff member's competing change loses, and another business cannot touch it.
+    expect(
+      await rpc('set_order_status', [company.id, order.id, 'pending', 'rejected', now(), []]),
+    ).toBeNull();
+    expect(
+      await rpc('set_order_status', [other.id, order.id, 'preparing', 'ready', now(), []]),
+    ).toBeNull();
+    await expect(
+      rpc('set_order_status', [
+        company.id,
+        order.id,
+        'preparing',
+        'ready',
+        now(),
+        [],
+        null,
+        null,
+        { ...note, text: 'x'.repeat(501) },
+      ]),
+    ).rejects.toThrow('Invalid staff note');
+    await expect(
+      rpc('set_order_status', [company.id, order.id, 'preparing', 'out_for_delivery', now(), []]),
+    ).rejects.toThrow('Pickup orders cannot go out for delivery');
+    expect(
+      await rpc('set_order_status', [company.id, order.id, 'preparing', 'ready', now(), []]),
+    ).toMatchObject({ status: 'ready', staffNote: note });
+    expect(
+      await rpc('set_order_status', [company.id, order.id, 'ready', 'completed', now(), []]),
+    ).toMatchObject({ status: 'completed' });
+  });
+  it('set_order_status: a delivery order goes out for delivery', async () => {
+    const { conversation, order } = pendingOrder();
+    await commit(conversation, order);
+    await db.query(
+      `update orders set data=jsonb_set(data,'{fulfillment}','"delivery"') where id=$1`,
+      [order.id],
+    );
+    await rpc('set_order_status', [company.id, order.id, 'pending', 'preparing', now(), []]);
+    expect(
+      await rpc('set_order_status', [
+        company.id,
+        order.id,
+        'preparing',
+        'out_for_delivery',
+        now(),
+        [],
+      ]),
+    ).toMatchObject({ status: 'out_for_delivery' });
+    expect(await rpc('order_status_counts', [company.id, false])).toMatchObject({
+      out_for_delivery: 1,
+    });
+    expect(
+      await rpc('set_order_status', [
+        company.id,
+        order.id,
+        'out_for_delivery',
+        'completed',
+        now(),
+        [],
+      ]),
+    ).toMatchObject({ status: 'completed' });
+  });
+  it('order_status_counts: the steps staff act on, older accepted orders as preparing', async () => {
+    const before = (await rpc('order_status_counts', [company.id, false])) as Record<
+      string,
+      number
+    >;
+    const placed = ['+923000000101', '+923000000102', '+923000000103'].map((phone) =>
+      pendingOrder('whatsapp', phone),
+    );
+    for (const { conversation, order } of placed)
+      expect(await commit(conversation, order)).toBe(true);
+    // One from before this flow, still 'accepted', and one ready for pickup.
+    await db.query(`update orders set data=jsonb_set(data,'{status}','"accepted"') where id=$1`, [
+      placed[0]!.order.id,
+    ]);
+    await rpc('set_order_status', [
+      company.id,
+      placed[1]!.order.id,
+      'pending',
+      'preparing',
+      now(),
+      [],
+    ]);
+    await rpc('set_order_status', [
+      company.id,
+      placed[1]!.order.id,
+      'preparing',
+      'ready',
+      now(),
+      [],
+    ]);
+    expect(await rpc('order_status_counts', [company.id, false])).toEqual({
+      pending: before.pending! + 1,
+      preparing: before.preparing! + 1,
+      ready: before.ready! + 1,
+      out_for_delivery: before.out_for_delivery!,
+    });
+    // Sandbox chats are counted apart, as workspace_summary counts them.
+    expect(await rpc('order_status_counts', [other.id, true])).toEqual({
+      pending: 0,
+      preparing: 0,
+      ready: 0,
+      out_for_delivery: 0,
+    });
+  });
+  it('202610200003 moves older accepted orders, and their unsent notices, to preparing', async () => {
+    const { conversation, order } = pendingOrder('whatsapp', '+923000000104');
+    expect(await commit(conversation, order)).toBe(true);
+    const old = { ...order, status: 'accepted' };
+    await db.query(`update orders set data=$2 where id=$1`, [order.id, old]);
+    const notice = {
+      id: randomUUID(),
+      companyId: company.id,
+      kind: 'whatsapp_send',
+      payload: { orderId: order.id, reference: order.reference, status: 'accepted' },
+      status: 'pending',
+      attempts: 0,
+      nextRunAt: now(),
+      createdAt: now(),
+    };
+    await rpc('insert_job', [notice]);
+    // An order that already moved on keeps its old 'accepted' notice out of date, so a retry
+    // never sends it late.
+    const moved = pendingOrder('whatsapp', '+923000000105');
+    expect(await commit(moved.conversation, moved.order)).toBe(true);
+    await db.query(`update orders set data=$2 where id=$1`, [
+      moved.order.id,
+      { ...moved.order, status: 'preparing' },
+    ]);
+    const stale = {
+      ...notice,
+      id: randomUUID(),
+      status: 'failed',
+      payload: { orderId: moved.order.id, reference: moved.order.reference, status: 'accepted' },
+    };
+    await rpc('insert_job', [stale]);
+    await db.exec(migrationSql('202610200003_order_flow.sql'));
+    expect(await scalar(`select data as value from orders where id=$1`, [order.id])).toMatchObject({
+      status: 'preparing',
+      updatedAt: order.updatedAt,
+    });
+    expect(
+      await scalar(`select data->'payload'->>'status' as value from jobs where id=$1`, [notice.id]),
+    ).toBe('preparing');
+    expect(
+      await scalar(`select data->'payload'->>'status' as value from jobs where id=$1`, [stale.id]),
+    ).toBe('accepted');
   });
   it('a stale spreadsheet completion cannot mark a newer order update synced', async () => {
     const { conversation, order } = pendingOrder();

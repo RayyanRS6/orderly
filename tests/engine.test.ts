@@ -537,14 +537,40 @@ describe('language and opening hours', () => {
 describe('restaurant status transitions', () => {
   it('enforces valid transitions and fulfillment', () => {
     const order = turn(reviewed(), 'confirm').order!;
+    expect(order.fulfillment).toBe('pickup');
     expect(() => transitionOrder(order, 'completed', now)).toThrow();
-    let next = transitionOrder(order, 'accepted', now);
-    next = transitionOrder(next, 'preparing', now);
+    // Accept goes straight to preparing: there is no separate 'accepted' step.
+    expect(() => transitionOrder(order, 'accepted', now)).toThrow();
+    let next = transitionOrder(order, 'preparing', now);
+    expect(() => transitionOrder(next, 'out_for_delivery', now)).toThrow(
+      'Pickup orders cannot go out for delivery.',
+    );
     next = transitionOrder(next, 'ready', now);
     expect(() => transitionOrder(next, 'out_for_delivery', now)).toThrow();
     next = transitionOrder(next, 'completed', now);
-    expect(() => transitionOrder(next, 'accepted', now)).toThrow();
+    expect(() => transitionOrder(next, 'preparing', now)).toThrow();
     expect(order.status).toBe('pending');
+    // A delivery order goes out for delivery after preparing (the dashboard's next step). A
+    // dashboard from before this flow, still open, offers only 'ready': that stays allowed, and
+    // the order still goes out for delivery from there.
+    const delivery = transitionOrder({ ...order, fulfillment: 'delivery' }, 'preparing', now);
+    const out = transitionOrder(delivery, 'out_for_delivery', now);
+    expect(transitionOrder(out, 'completed', now).status).toBe('completed');
+    expect(
+      transitionOrder(transitionOrder(delivery, 'ready', now), 'out_for_delivery', now).status,
+    ).toBe('out_for_delivery');
+    // Orders from before this flow: 'accepted' is prepared next, and a delivery order already
+    // 'ready' still goes out for delivery.
+    expect(transitionOrder({ ...order, status: 'accepted' }, 'preparing', now).status).toBe(
+      'preparing',
+    );
+    expect(
+      transitionOrder(
+        { ...order, fulfillment: 'delivery', status: 'ready' },
+        'out_for_delivery',
+        now,
+      ).status,
+    ).toBe('out_for_delivery');
   });
 });
 

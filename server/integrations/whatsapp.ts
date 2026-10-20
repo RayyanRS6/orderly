@@ -46,17 +46,23 @@ export class WhatsAppAdapter implements ChannelAdapter {
       throw new PublicError('Numeric business account and phone number IDs are required.');
     let after = '';
     for (let page = 0; page < 20; page++) {
-      const result = await this.request(`${wabaId}/phone_numbers?fields=id&limit=100${after ? `&after=${encodeURIComponent(after)}` : ''}`);
+      const result = await this.request(
+        `${wabaId}/phone_numbers?fields=id&limit=100${after ? `&after=${encodeURIComponent(after)}` : ''}`,
+      );
       if (result.data?.some((number: { id: string }) => number.id === phoneNumberId)) return;
       const next = result.paging?.cursors?.after;
       if (!result.paging?.next || !next || next === after) break;
       after = next;
     }
-    throw new PublicError('This token does not grant access to that phone number in the selected business account.', 403);
+    throw new PublicError(
+      'This token does not grant access to that phone number in the selected business account.',
+      403,
+    );
   }
   async unsubscribe(): Promise<void> {
     const waba = this.integration.config.wabaId;
-    if (/^\d+$/.test(waba || '')) await this.request(`${waba}/subscribed_apps`, { method: 'DELETE' });
+    if (/^\d+$/.test(waba || ''))
+      await this.request(`${waba}/subscribed_apps`, { method: 'DELETE' });
   }
   async subscribe(): Promise<unknown> {
     const waba = this.integration.config.wabaId;
@@ -167,7 +173,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
           {
             type: 'BODY',
             text: 'Your order {{1}} is now {{2}}.',
-            example: { body_text: [['ORD-12345', 'accepted']] },
+            example: { body_text: [['ORD-12345', 'being prepared']] },
           },
         ],
       }),

@@ -1690,9 +1690,9 @@ export function orderStatusText(
     ),
     preparing: say(
       lang,
-      `Order ${ref} is being prepared.`,
-      `آرڈر ${ref} تیار ہو رہا ہے۔`,
-      `Order ${ref} tayyar ho raha hai.`,
+      `The restaurant has accepted order ${ref} and it is being prepared now.`,
+      `ریسٹورنٹ نے آرڈر ${ref} منظور کر لیا ہے اور یہ اب تیار ہو رہا ہے۔`,
+      `Restaurant ne order ${ref} accept kar liya hai aur ab yeh tayyar ho raha hai.`,
     ),
     ready: pickup
       ? say(
@@ -2748,10 +2748,15 @@ export function processTurn(
   return finish();
 }
 
+// The same steps as SQL set_order_status (202610200003_order_flow.sql). Accept is pending →
+// preparing; 'accepted' is only an older order's current status. The dashboard takes a delivery
+// order from preparing out for delivery (nextOrderStep); preparing → ready stays allowed for one,
+// because a dashboard from before this flow, still open, offers only that (then ready → out for
+// delivery).
 const transitions: Record<OrderStatus, OrderStatus[]> = {
-  pending: ['accepted', 'rejected', 'cancelled'],
+  pending: ['preparing', 'rejected', 'cancelled'],
   accepted: ['preparing', 'cancelled'],
-  preparing: ['ready', 'cancelled'],
+  preparing: ['ready', 'out_for_delivery', 'cancelled'],
   ready: ['out_for_delivery', 'completed', 'cancelled'],
   out_for_delivery: ['completed', 'cancelled'],
   completed: [],

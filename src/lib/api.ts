@@ -27,6 +27,21 @@ function apiBaseUrl(): string {
 
   return url.href.replace(/\/+$/, '');
 }
+/**
+ * The Supabase region the backend runs in for this dashboard: the database's own (build-time
+ * VITE_API_REGION, such as ap-southeast-2). Without it Supabase runs each request in the region
+ * nearest the browser, and every database call from there travels to the database's region.
+ */
+function apiRegion(): string {
+  const region = import.meta.env.VITE_API_REGION?.trim();
+  return region && /^[a-z]{2}-[a-z]+-\d$/.test(region) ? region : '';
+}
+function apiUrl(path: string): string {
+  const base = apiBaseUrl();
+  const region = base ? apiRegion() : '';
+  const url = `${base}/api${path}`;
+  return region ? `${url}${url.includes('?') ? '&' : '?'}forceFunctionRegion=${region}` : url;
+}
 
 let onSessionRejected: (() => void) | undefined;
 let tokenSource: (() => Promise<string | undefined>) | undefined;
@@ -171,11 +186,12 @@ export async function api<T>(
   init: Pick<RequestInit, 'cache'> = {},
 ): Promise<T> {
   const send = async (sent?: string) => {
-    const response = await fetch(`${apiBaseUrl()}/api${path}`, {
+    const response = await fetch(apiUrl(path), {
       ...init,
       signal: timeoutSignal(45000),
       method: method || (body !== undefined ? 'POST' : 'GET'),
-      // Content-Type only with a body: a plain GET then needs no CORS preflight.
+      // Content-Type only with a body. (A signed-in request still needs a CORS preflight for its
+      // Authorization and x-company-id headers; the browser keeps that answer for an hour.)
       headers: {
         ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
         ...(companyId ? { 'x-company-id': companyId } : {}),

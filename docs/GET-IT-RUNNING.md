@@ -40,6 +40,7 @@ Follow the release order in [DEPLOYMENT.md](DEPLOYMENT.md) §7: backup, any SQL 
 
    ```powershell
    $env:VITE_API_BASE_URL = 'https://zygsuxgqkeedgcbjhfzx.supabase.co/functions/v1/orderly'
+   $env:VITE_API_REGION = 'ap-southeast-2'
    npm run build:cloudflare
    npx wrangler deploy
    ```

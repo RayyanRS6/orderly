@@ -13,6 +13,7 @@ import type {
   ListFilter,
   PageResult,
   WorkspaceSummary,
+  OrderStageCounts,
   TeamMember,
   BotSettings,
   Message,
@@ -334,11 +335,25 @@ export class SupabaseRepository implements Repository {
     result.items = await this.messagesWithReceipts(companyId, id, result.items);
     return result;
   }
-  getSummary(companyId: string, sandbox: boolean) {
-    return this.rpc<WorkspaceSummary>('workspace_summary', {
-      p_company_id: companyId,
-      p_sandbox: sandbox,
-    });
+  async getSummary(companyId: string, sandbox: boolean) {
+    const [summary, stages] = await Promise.all([
+      this.rpc<WorkspaceSummary>('workspace_summary', {
+        p_company_id: companyId,
+        p_sandbox: sandbox,
+      }),
+      this.client.rpc('order_status_counts', { p_company_id: companyId, p_sandbox: sandbox }),
+    ]);
+    // Before 202610200003_order_flow.sql the Orders page shows only the Pending count. The counts
+    // are extra: when they fail, the rest of the page still loads.
+    if (migrationMissing(stages.error)) {
+      warnOnce('order_status_counts', '202610200003_order_flow.sql');
+      return summary;
+    }
+    if (stages.error) {
+      console.warn('Orderly: the order step counts could not be loaded.');
+      return summary;
+    }
+    return { ...summary, stages: unwrap(stages) as OrderStageCounts };
   }
   async disconnectIntegration(companyId: string, kind: IntegrationKind) {
     const result = await this.client.rpc('disconnect_integration', {
@@ -732,19 +747,22 @@ export class SupabaseRepository implements Repository {
     now: string,
     jobs: Job[] = [],
     automatedConversation?: Conversation,
+    note?: Order['staffNote'],
   ) {
-    return (
-      (await this.rpc<Order | null>('update_order_status', {
-        p_company_id: companyId,
-        p_id: id,
-        p_expected_status: expectedStatus,
-        p_new_status: newStatus,
-        p_now: now,
-        p_jobs: jobs,
-        p_conversation: automatedConversation ?? null,
-        p_expected_version: automatedConversation ? automatedConversation.version - 1 : null,
-      })) ?? undefined
-    );
+    const result = await this.client.rpc('set_order_status', {
+      p_company_id: companyId,
+      p_id: id,
+      p_expected_status: expectedStatus,
+      p_new_status: newStatus,
+      p_now: now,
+      p_jobs: jobs,
+      p_conversation: automatedConversation ?? null,
+      p_expected_version: automatedConversation ? automatedConversation.version - 1 : null,
+      p_note: note ?? null,
+    });
+    if (migrationMissing(result.error))
+      throw new PublicError('Apply the 202610200003_order_flow.sql database migration first.', 503);
+    return (unwrap(result) as Order | null) ?? undefined;
   }
   async setOrderSyncStatus(
     companyId: string,

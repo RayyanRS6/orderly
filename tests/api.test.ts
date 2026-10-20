@@ -7,7 +7,7 @@ import { createApp } from '../server/app';
 import { MemoryRepository, DemoFileRepository } from '../server/repository';
 import { encryptSecret, decryptSecret, verifyMetaSignature } from '../server/security';
 import { makeJob } from '../server/jobs';
-import { handleTurn, processJob } from '../server/service';
+import { handleTurn, processJob, templateStatusWords } from '../server/service';
 import { WhatsAppAdapter } from '../server/integrations/whatsapp';
 import { seedCompanies, seedProducts } from '../src/shared/seed';
 import { createConversation, processTurn } from '../src/domain/engine';
@@ -81,6 +81,55 @@ async function pendingOrder(channel: Conversation['channel'] = 'demo') {
   await repo.commitTurn(company.id, conversation, 0, result.order);
   return { conversation, order: result.order };
 }
+describe('the shorter order flow', () => {
+  it('refuses a note that would be lost because another staff member already made the change', async () => {
+    const { order } = await pendingOrder();
+    expect(
+      (await request(`/orders/${order.id}/status`, { status: 'preparing', note: 'Called' })).status,
+    ).toBe(200);
+    // A second dialog, still showing Pending: its own note is not saved silently.
+    const late = await request(`/orders/${order.id}/status`, {
+      status: 'preparing',
+      note: 'Extra spicy',
+    });
+    expect(late.status).toBe(409);
+    expect((await repo.getOrder(company.id, order.id))!.staffNote?.text).toBe('Called');
+    // The same note again is a harmless retry.
+    expect(
+      (await request(`/orders/${order.id}/status`, { status: 'preparing', note: 'Called' })).status,
+    ).toBe(200);
+  });
+  it('answers first and writes the chat copy afterwards where the runtime allows it', async () => {
+    const { order, conversation } = await pendingOrder();
+    const later: Promise<unknown>[] = [];
+    const app = createApp(repo, { waitUntil: (task) => void later.push(task) });
+    const response = await app.request(`http://127.0.0.1:4000/api/orders/${order.id}/status`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-company-id': company.id,
+        Origin: 'http://127.0.0.1:5173',
+      },
+      body: JSON.stringify({ status: 'preparing' }),
+    });
+    expect(await response.json()).toMatchObject({ status: 'preparing' });
+    expect(later.length).toBeGreaterThan(0);
+    await Promise.all(later);
+    const chat = (await repo.getConversation(company.id, conversation.id))!;
+    expect(chat.messages.at(-1)).toMatchObject({
+      role: 'staff',
+      text: `Order ${order.reference} has been accepted and is being prepared now.`,
+      notice: true,
+    });
+  });
+  it('words the approved template for each step', () => {
+    expect(templateStatusWords('preparing')).toBe('accepted and being prepared');
+    expect(templateStatusWords('ready', 'pickup')).toBe('ready for pickup');
+    expect(templateStatusWords('ready', 'delivery')).toBe('ready');
+    expect(templateStatusWords('out_for_delivery', 'delivery')).toBe('out for delivery');
+    expect(templateStatusWords('completed', 'pickup')).toBe('completed');
+  });
+});
 describe('HTTP and service behavior', () => {
   it('runs a complete order, prevents replay, and keeps it inside its company', async () => {
     let id: string | undefined;
@@ -103,26 +152,33 @@ describe('HTTP and service behavior', () => {
     expect((await repo.listOrders(company.id)).length).toBe(before + 1);
     expect(await repo.getOrder(other.id, placed.order!.id)).toBeUndefined();
     expect(
-      (await request(`/orders/${placed.order!.id}/status`, { status: 'accepted' }, other.id))
+      (await request(`/orders/${placed.order!.id}/status`, { status: 'preparing' }, other.id))
         .status,
     ).toBe(404);
-    expect(
-      (await request(`/orders/${placed.order!.id}/status`, { status: 'accepted' })).status,
-    ).toBe(409);
-    expect(
-      (
-        await request(`/orders/${placed.order!.id}/call`, {
-          outcome: 'confirmed',
-          addressVerified: false,
-          note: 'Confirmed by phone',
-        })
-      ).status,
-    ).toBe(200);
+    // Accept needs no recorded call first; staff's optional note is kept with the order.
+    const accepted = await request(`/orders/${placed.order!.id}/status`, {
+      status: 'preparing',
+      note: ' Confirmed by phone ',
+    });
+    expect(accepted.status).toBe(200);
+    expect(await accepted.json()).toMatchObject({
+      status: 'preparing',
+      staffNote: { text: 'Confirmed by phone' },
+    });
+    // A dashboard from before this flow still says 'accepted': that is 'preparing' now.
     expect(
       (await request(`/orders/${placed.order!.id}/status`, { status: 'accepted' })).status,
     ).toBe(200);
     expect(
       (await request(`/orders/${placed.order!.id}/status`, { status: 'completed' })).status,
+    ).toBe(400);
+    expect(
+      (
+        await request(`/orders/${placed.order!.id}/status`, {
+          status: 'ready',
+          note: 'x'.repeat(501),
+        })
+      ).status,
     ).toBe(400);
   });
   it('rejects a foreign conversation and does not trust caller-supplied tenant fields', async () => {

@@ -1193,15 +1193,16 @@ export function BotSettings() {
               onChange={(e) => update({ requirePhoneConfirmation: e.target.checked })}
             />
             <span>
-              Staff must call the customer and confirm the delivery address before accepting an
-              order.
+              Tell customers that staff will call to confirm the order and delivery address before
+              accepting it.
             </span>
           </label>
           <p className="notice p-4 text-[13px] leading-6">
             After collection: show the priced summary → ask the customer to confirm → save a pending
-            order → sync to the connected order Sheet → staff call and accept → prepare and
-            dispatch. Instructions cannot bypass menu prices, customer confirmation, required
-            details or access controls. Phone calls are performed by your staff.
+            order → sync to the connected order Sheet → staff confirm and accept (it is then being
+            prepared) → ready for pickup or out for delivery → completed. Instructions cannot bypass
+            menu prices, customer confirmation, required details or access controls. Phone calls are
+            made by your staff.
           </p>
         </section>
         <section className="card p-5 sm:p-6 space-y-4">

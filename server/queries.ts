@@ -1,4 +1,4 @@
-import type { Conversation, ListFilter, Order, PageResult, Usage, WorkspaceSummary } from '../src/shared/types';
+import type { Conversation, ListFilter, Order, OrderStageCounts, PageResult, Usage, WorkspaceSummary } from '../src/shared/types';
 export function pageOf<T>(items: T[], filter: ListFilter): PageResult<T> {
   const page = Math.max(1, filter.page ?? 1), pageSize = Math.min(100, Math.max(1, filter.pageSize ?? 50));
   return { items: items.slice((page - 1) * pageSize, page * pageSize), total: items.length, page, pageSize };
@@ -7,6 +7,11 @@ export function orderMatches(o: Order, f: ListFilter) {
   return (!f.search || `${o.reference} ${o.customerName} ${o.customerPhone}`.toLowerCase().includes(f.search.toLowerCase())) &&
     (!f.status || f.status === 'all' || (f.status === 'active' ? ['accepted','preparing','ready','out_for_delivery'].includes(o.status) : o.status === f.status)) &&
     (!f.from || o.createdAt >= f.from) && (!f.to || o.createdAt <= f.to);
+}
+// Mirrors SQL order_status_counts: older 'accepted' orders are being prepared.
+export function stagesOf(orders: Order[]): OrderStageCounts {
+  const count = (...statuses: Order['status'][]) => orders.filter((o) => statuses.includes(o.status)).length;
+  return { pending: count('pending'), preparing: count('preparing', 'accepted'), ready: count('ready'), out_for_delivery: count('out_for_delivery') };
 }
 export function summaryOf(orders: Order[], conversations: Conversation[], usage: Usage[]): WorkspaceSummary {
   const since = new Date().toISOString().slice(0,7);

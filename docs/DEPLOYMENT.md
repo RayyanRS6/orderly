@@ -18,9 +18,11 @@ For a new installation, apply every file in `supabase/migrations` in filename or
 | `202610190001_menu_page.sql`, `202610190002_menu_ordering.sql`, `202610190003_menu_purge_schedule.sql` | Applied by hand for the menu page (§6). [OWNER TO CONFIRM in the SQL editor] |
 | `202610200001_prelaunch_fixes.sql` (pre-launch fixes, part 1)                                          | New. Apply **before** pushing the backend (§7).                              |
 | `202610200002_order_followups.sql` (pre-launch fixes, part 2)                                          | New. Apply **after** the dashboard deploy (§7).                              |
+| `202610200003_order_flow.sql` (the shorter order flow)                                                 | New. Apply **before** pushing the backend, and run again after it (§7a).     |
 
 - `202610200001_prelaunch_fixes.sql`: staff alerts go to each subscriber's own email, also for a linked phone that stopped working, and automatic notices no longer hide a customer waiting for staff; erasure and export find every format of a number; a message that failed for good goes into its chat; AI reply defaults of 1,500 an hour (100 per customer) with an 80% warning; pipeline health; a daily purge of old operational rows; a ledger of applied migrations.
 - `202610200002_order_followups.sql`: queues the reminder for an order staff have not accepted after 15 minutes, ends waiting reminders when WhatsApp is disconnected, and again clears AI limits saved as the old defaults (an older dashboard tab can save them after part 1).
+- `202610200003_order_flow.sql`: Accept takes an order straight to Preparing (no separate Accepted step and no recorded call first; an optional staff note is saved with the change), then Ready for a pickup order or Out for delivery for a delivery order, then Completed; the counts for the Orders page tabs; orders still Accepted become Preparing.
 
 Use the [exact launch guide](ORDERLY-LAUNCH-STEPS-2026-09-18.md) for client setup (its 18 October note lists what changed since) and the [audit closure](ORDERLY-AUDIT-CLOSURE-2026-09-18.md) for the September record.
 
@@ -92,10 +94,13 @@ Build and deploy the frontend separately, and only after the backend for the sam
 
 ```powershell
 $env:VITE_API_BASE_URL = 'https://zygsuxgqkeedgcbjhfzx.supabase.co/functions/v1/orderly'
+$env:VITE_API_REGION = 'ap-southeast-2'
 npm run build:cloudflare
 npx wrangler login
 npx wrangler deploy
 ```
+
+`VITE_API_REGION` is the Supabase project's region (Sydney). The dashboard asks Supabase to run the backend there (`forceFunctionRegion`), beside the database. Without it Supabase runs each request in the region nearest the browser (Mumbai for Pakistan), and every one of the 10–20 database calls a request makes crosses to Sydney: measured on 2026-10-20, a request reaches Sydney only about 30–40 ms later than Mumbai, while each database call from Mumbai costs about 140 ms. The hosted build refuses to start without it.
 
 Alternatively upload the contents of `dist` through Cloudflare's static-site upload flow. `wrangler.jsonc` defines a static-only app with SPA routing. Set the backend's `APP_URL` to the resulting exact HTTPS frontend origin, without a trailing slash. Add that frontend origin to Supabase Auth's site/redirect configuration. Public preview origins are not automatically allowed. Do not put a service-role or provider key in `VITE_*` variables.
 
@@ -264,7 +269,7 @@ SQL is applied by hand, and a push to `main` deploys the backend and can rebuild
    - **This gateway with the older backend** (only if Railway went first, with Wait for CI off): the older backend understands every event it sends and never answers 410, so no linked session is ended. The one window: until the backend deploy finishes, the older backend refuses linked-phone replies once the last heartbeat is over 90 seconds old, while this gateway reports about once a minute instead of every 15 seconds. A reply is refused only while heartbeats cannot reach Orderly for about 20 seconds or more, and its send is tried again a few seconds later (5 tries with growing waits), so it is delayed rather than lost.
    - **This backend with the older gateway** (the usual few minutes between the backend deploy and Railway's): the older gateway's 15-second heartbeats stay well inside the new 3-minute limit. A linked session the new backend answers with 410 (a business that moved to the official route or disconnected while the gateway could not be told) stays queued in the older gateway, retried every 15 seconds, until this gateway starts and ends it.
 
-7. **Dashboard:** build from the commit now on `main` (`git status` is clean and `git rev-parse HEAD` equals `git rev-parse origin/main`): `npm run build:cloudflare` with `VITE_API_BASE_URL` set, then `npx wrangler deploy` (§2). Open the dashboard and reload it once. Open dashboards that were not reloaded get a "please reload the page" message when they connect an AI key or pair a linked phone, but other forms still save from them (step 8).
+7. **Dashboard:** build from the commit now on `main` (`git status` is clean and `git rev-parse HEAD` equals `git rev-parse origin/main`): `npm run build:cloudflare` with `VITE_API_BASE_URL` and `VITE_API_REGION` set, then `npx wrangler deploy` (§2). Open the dashboard and reload it once. Open dashboards that were not reloaded get a "please reload the page" message when they connect an AI key or pair a linked phone, but other forms still save from them (step 8).
 8. **SQL part 2:** ask each restaurant to reload every Orderly tab opened before the release: an older tab fills its AI limits boxes with the old defaults (300 an hour, 30 per customer), and **Save limits** there stores them again. Then paste `supabase/migrations/202610200002_order_followups.sql` and run it. It queues the order reminders, and clears AI limits saved as exactly those old defaults once more, as part 1 did. Never run it earlier: its reminders are handled only by the new backend, and an older worker does not know them and ends each one as a failed job (a staff alert) or as done, unsent. Check that `select name from public.orderly_schema_migrations;` lists it. Later, this read-only check lists any business an older tab saved the old defaults for again; running part 2 again clears them:
 
    ```sql
@@ -291,6 +296,18 @@ To roll back, go in reverse order:
 3. **Gateway**, if the release's gateway went live: Railway → `gateway` → **Deployments** → the deployment before it → **Redeploy** (WhatsApp reconnects briefly). The older gateway works with either backend (step 6).
 4. **Backend:** revert the release commits on `main` and push, then wait for both jobs. A revert that changes a gateway watch path rebuilds the gateway again, from the reverted code. In an emergency, re-running the last good **Deploy Supabase backend** run on `main` from before the release deploys that older code at once: use **Re-run all jobs**, not only `deploy` (the tested bundle is kept for 7 days, so `deploy` alone fails on an older run), and never a run started by hand on another branch (it never deploys). Still revert on `main`, or the next push brings the release back.
 5. **SQL part 1** can stay: the older backend keeps working with it. To remove it too, once the older backend is live, run `.local/backups/rollback-prelaunch-2026-10-20.sql` from the operator's laptop in the SQL editor. It puts back every function both parts replaced and removes what they added, part 2 included, and is safe to run again. It is not in Git, so keep a copy with the password manager or the encrypted backups.
+
+## 7a. Release order (the shorter order flow, October 2026)
+
+The steps: Pending → Accept → Preparing → Ready (pickup) or Out for delivery (delivery) → Completed. The customer is told "accepted and is being prepared now" at Accept. Run it at a quiet hour; each step needs the owner's OK.
+
+1. **Backup:** `npm run backup:db` (as §7, step 1).
+2. **SQL:** paste `supabase/migrations/202610200003_order_flow.sql` into the SQL editor and run it. It only adds `set_order_status` and `order_status_counts` and moves orders still Accepted to Preparing; the running backend keeps using `update_order_status`, `record_call` and its call check, which stay. Check that `select name from public.orderly_schema_migrations;` lists it.
+3. **Backend:** push to `main`. Until it is live, the older backend still accepts orders as Accepted. A newer backend before the SQL answers every status change with 503 "Apply the 202610200003_order_flow.sql database migration first".
+4. **SQL again:** run the same file once more. It moves the orders the older backend accepted meanwhile (and their unsent notices) to Preparing; nothing else changes.
+5. **Dashboard:** build with `VITE_API_BASE_URL` and `VITE_API_REGION` set (§2), deploy, and ask staff to reload every open Orderly tab. A tab from before still works with the new backend (its Accept goes to Preparing and its "Mark ready" still moves a delivery order on), but it shows the old steps.
+
+**Rollback:** dashboard first (`npx wrangler rollback <previous version>`), then the backend (revert the commit on `main`). The SQL can stay: the older backend never calls the new functions, and it moves a Preparing order on as before. Orders moved from Accepted to Preparing are not moved back.
 
 ## 8. Owner actions outside the code
 

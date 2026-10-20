@@ -173,6 +173,13 @@ export default function App() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const toastId = useRef(0);
   const refreshSeq = useRef(0);
+  // Counts changes shown from their own answer (MutateOptions.apply): an /activity check sent
+  // before one of them would show the page as it was, so its answer is dropped, and a full reload
+  // sent before one keeps the orders and counts on screen.
+  const activitySeq = useRef(0);
+  // The business on screen now, for answers that arrive after another one was opened.
+  const openCompany = useRef<string | undefined>(undefined);
+  openCompany.current = data?.company.id;
   const [mobile, setMobile] = useState(false);
   const [help, setHelp] = useState(false);
   const [firstBusiness, setFirstBusiness] = useState(false);
@@ -277,6 +284,7 @@ export default function App() {
   const refresh = useCallback(async () => {
     // Saves no longer block each other, so a slower, older reload must not overwrite a newer one.
     const seq = ++refreshSeq.current;
+    const shown = activitySeq.current;
     const result = await api<Bootstrap>(
       `/bootstrap${route.slug ? `?companySlug=${encodeURIComponent(route.slug)}` : companyId ? `?companyId=${encodeURIComponent(companyId)}` : ''}`,
       companyId,
@@ -285,6 +293,15 @@ export default function App() {
     setData((current) => {
       if (current?.company.id !== result.company.id) return current;
       setStoredCompany(result.company.id);
+      // An order change was shown while this loaded: its orders and counts are newer.
+      if (shown !== activitySeq.current)
+        return {
+          ...result,
+          orders: current.orders,
+          summary: current.summary,
+          traces: current.traces,
+          jobs: current.jobs,
+        };
       return result;
     });
   }, [companyId, route.slug]);
@@ -368,24 +385,25 @@ export default function App() {
   // Paused while the tab is hidden; shown again, it checks at once if a check fell due. Pages
   // fetch their own lists again only when this brings news (ordersChangeKey,
   // conversationsChangeKey), not on every check.
+  const loadActivity = useCallback(async (id: string) => {
+    const seq = activitySeq.current;
+    const activity = await api<Pick<Bootstrap, 'summary' | 'traces' | 'jobs' | 'orders'>>(
+      '/activity',
+      id,
+    );
+    // A change was shown meanwhile: this answer is older than the page.
+    if (seq !== activitySeq.current) return;
+    setData((current) => (current?.company.id === id ? { ...current, ...activity } : current));
+    setError('');
+  }, []);
   useEffect(() => {
     if (!authenticated || !data || !['overview', 'orders', 'inbox', 'activity'].includes(page))
       return;
     return pollWhileVisible(() => {
       if (!savesInFlight.current)
-        void api<Pick<Bootstrap, 'summary' | 'traces' | 'jobs' | 'orders'>>(
-          '/activity',
-          data.company.id,
-        )
-          .then((activity) => {
-            setData((current) =>
-              current?.company.id === data.company.id ? { ...current, ...activity } : current,
-            );
-            setError('');
-          })
-          .catch((e) => setError(`Updates delayed: ${e.message}`));
+        void loadActivity(data.company.id).catch((e) => setError(`Updates delayed: ${e.message}`));
     }, ACTIVITY_POLL_MS);
-  }, [authenticated, !!data, page, refresh]);
+  }, [authenticated, !!data, page, refresh, loadActivity]);
   // Orderly's emergency stop can start or end while this page is open: check it again every few
   // minutes while the page is on screen, so the banner says what is true without a reload.
   useEffect(() => {
@@ -402,7 +420,7 @@ export default function App() {
       path: string,
       body?: unknown,
       method?: string,
-      options: MutateOptions = {},
+      options: MutateOptions<T> = {},
     ): Promise<T> => {
       savesInFlight.current++;
       setSaving(savesInFlight.current);
@@ -442,6 +460,19 @@ export default function App() {
             notify(PAUSED_ONLY, 'info', reloadAction);
           }
         }
+        // The answer is the changed record: the page shows it now, and the latest workspace
+        // (counts, other staff's changes) arrives in the background instead of being waited for.
+        const apply = options.apply;
+        if (apply) {
+          const id = data?.company.id || companyId;
+          // Another business opened meanwhile: this answer is not about what is on screen.
+          if (openCompany.current !== id) return result;
+          activitySeq.current++;
+          setData((current) => (current?.company.id === id ? apply(result, current) : current));
+          void loadActivity(id).catch(() => undefined);
+          if (success) notify(success);
+          return result;
+        }
         try {
           await refresh();
         } catch {
@@ -456,7 +487,7 @@ export default function App() {
         setSaving(savesInFlight.current);
       }
     },
-    [data?.company.id, companyId, refresh, notify, reloadSettings],
+    [data?.company.id, companyId, refresh, notify, reloadSettings, loadActivity],
   );
 
   // Each page gets its own tab title, so open tabs can be told apart and screen readers

@@ -510,7 +510,9 @@ export async function buildAgentFlow(
       { label: 'Handoff message', value: published.handoffMessage ? 'Custom' : 'Default' },
       {
         label: 'Staff phone confirmation',
-        value: published.requirePhoneConfirmation ? 'Required before accepting' : 'Not required',
+        value: published.requirePhoneConfirmation
+          ? 'Customers are told staff will call before accepting'
+          : 'Not mentioned to customers',
       },
     ],
     affects: [
@@ -634,13 +636,15 @@ export async function buildAgentFlow(
     editable: true,
     page: 'orders',
     pageLabel: 'Orders',
-    what: 'A confirmed cart becomes a pending order. Staff accept, prepare and dispatch it in Orders.',
+    what: 'A confirmed cart becomes a pending order. In Orders, staff accept it (it is then being prepared), mark it ready for pickup or out for delivery, then completed.',
     receives: ['The confirmed cart'],
     sends: ['New order to Orders, the Sheet and the staff bell'],
     facts: [
       {
         label: 'Staff phone confirmation',
-        value: published.requirePhoneConfirmation ? 'Required' : 'Not required',
+        value: published.requirePhoneConfirmation
+          ? 'Customers are told to expect a call'
+          : 'Not mentioned',
       },
       { label: 'Currency', value: company.currency },
     ],

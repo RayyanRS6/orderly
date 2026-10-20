@@ -69,9 +69,10 @@ describe('ai-pipeline-2: the order status notice waits for a running turn', () =
     await repo.releaseConversationLock(company.id, chat.id, 'turn');
     expect((await changing).status).toBe(200);
     const saved = (await repo.getConversation(company.id, chat.id))!;
+    // Written after the turn, but dated and placed at the status change, which came first.
     expect(saved.messages.slice(-2).map((m) => [m.role, m.text, !!m.notice])).toEqual([
-      ['assistant', 'Raita added.', false],
       ['staff', `Order ${order.reference} is now rejected.`, true],
+      ['assistant', 'Raita added.', false],
     ]);
     // The route let the chat go again.
     expect(await repo.acquireConversationLock(company.id, chat.id, 'next', lease())).toBe(true);

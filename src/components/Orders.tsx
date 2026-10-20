@@ -15,7 +15,14 @@ import {
   Wallet,
   X,
 } from 'lucide-react';
-import type { Bootstrap, Order, OrderStatus, PageResult, Trace } from '../shared/types';
+import type {
+  Bootstrap,
+  Order,
+  OrderStageCounts,
+  OrderStatus,
+  PageResult,
+  Trace,
+} from '../shared/types';
 import { money } from '../shared/types';
 import { api } from '../lib/api';
 import { ordersCsv, UTF8_BOM } from '../lib/orders-csv';
@@ -30,7 +37,6 @@ import {
   Empty,
   ErrorNotice,
   Field,
-  CustomSelect,
   Modal,
   PageHeading,
   ReadinessLink,
@@ -486,6 +492,7 @@ export function Overview() {
       <OrderDetails
         order={selected ? data.orders.find((o) => o.id === selected.id) || selected : null}
         onClose={() => setSelected(null)}
+        onUpdated={setSelected}
       />
     </>
   );
@@ -501,10 +508,64 @@ const orderEvent = (t: Trace) => /order|cancel/i.test(t.action);
 export function ordersChangeKey(data: Pick<Bootstrap, 'orders' | 'summary' | 'traces'>) {
   const s = data.summary;
   return JSON.stringify([
-    s ? [s.orders, s.pending, s.value] : null,
+    s ? [s.orders, s.pending, s.value, s.stages] : null,
     data.orders.map((o) => [o.id, o.status, o.updatedAt, o.syncStatus]),
     newestEvent(data.traces, orderEvent),
   ]);
+}
+
+// The Orders page tabs follow the steps: pending → preparing → ready (pickup) or out for
+// delivery (delivery) → completed, and the two ways an order stops.
+export const ORDER_TABS = [
+  'all',
+  'pending',
+  'preparing',
+  'ready',
+  'out_for_delivery',
+  'completed',
+  'rejected',
+  'cancelled',
+] as const;
+// The steps waiting on staff show how many orders are at them.
+const COUNTED_TABS = ['pending', 'ready', 'out_for_delivery'] as const;
+export function stageCount(data: Pick<Bootstrap, 'summary'>, tab: string): number | undefined {
+  if (!(COUNTED_TABS as readonly string[]).includes(tab)) return undefined;
+  const stages = data.summary?.stages;
+  if (stages) return stages[tab as keyof OrderStageCounts];
+  // Before the database has the step counts, only Pending has one.
+  return tab === 'pending' ? data.summary?.pending : undefined;
+}
+// A changed order on the page at once, with the counts of the steps it moved between. The
+// counts are of the orders the server counts (sandbox ones only in demo mode); the next
+// background update brings the server's own.
+export function withChangedOrder(current: Bootstrap, before: Order, updated: Order): Bootstrap {
+  const orders = current.orders.map((o) => (o.id === updated.id ? updated : o));
+  const summary = current.summary;
+  if (
+    !summary ||
+    before.status === updated.status ||
+    !!updated.sandbox !== (current.mode === 'demo')
+  )
+    return { ...current, orders };
+  const step = (s: OrderStatus) => (s === 'accepted' ? 'preparing' : s);
+  const stages = summary.stages && { ...summary.stages };
+  const move = (status: OrderStatus, by: number) => {
+    const key = step(status);
+    if (stages && key in stages)
+      stages[key as keyof OrderStageCounts] = Math.max(
+        0,
+        stages[key as keyof OrderStageCounts] + by,
+      );
+  };
+  move(before.status, -1);
+  move(updated.status, 1);
+  const pending =
+    summary.pending - Number(before.status === 'pending') + Number(updated.status === 'pending');
+  return {
+    ...current,
+    orders,
+    summary: { ...summary, pending: Math.max(0, pending), ...(stages && { stages }) },
+  };
 }
 
 export function Orders() {
@@ -654,24 +715,27 @@ export function Orders() {
       <section className="card overflow-hidden">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-4 sm:p-6 border-b border-ink/[0.06]">
           <div className="tab-group flex-wrap" role="group" aria-label="Order filters">
-            {['all', 'pending', 'active', 'completed', 'rejected', 'cancelled'].map((value) => (
-              <button
-                key={value}
-                aria-pressed={filter === value}
-                className="tab-btn"
-                onClick={() => {
-                  setFilter(value);
-                  setPage(1);
-                }}
-              >
-                {label(value)}
-                {value === 'pending' && (
-                  <span className="pop-in ml-1.5 inline-flex min-w-5 justify-center rounded-full bg-brand-500 px-1.5 py-0.5 text-[10px] leading-none font-bold text-ink tabular-nums shadow-[0_4px_10px_-4px_rgb(255_105_44/0.8)] [--d:300ms]">
-                    {data.summary?.pending ?? orders.filter((o) => o.status === 'pending').length}
-                  </span>
-                )}
-              </button>
-            ))}
+            {ORDER_TABS.map((value) => {
+              const count = stageCount(data, value);
+              return (
+                <button
+                  key={value}
+                  aria-pressed={filter === value}
+                  className="tab-btn"
+                  onClick={() => {
+                    setFilter(value);
+                    setPage(1);
+                  }}
+                >
+                  {label(value)}
+                  {count !== undefined && (
+                    <span className="pop-in ml-1.5 inline-flex min-w-5 justify-center rounded-full bg-brand-500 px-1.5 py-0.5 text-[10px] leading-none font-bold text-ink tabular-nums shadow-[0_4px_10px_-4px_rgb(255_105_44/0.8)] [--d:300ms]">
+                      {count}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </div>
           <div className="relative w-full md:w-64 shrink-0">
             <Search className="pointer-events-none absolute left-3.5 top-2.5 size-4 text-stone-400" />
@@ -751,6 +815,14 @@ export function Orders() {
       <OrderDetails
         order={selected ? data.orders.find((o) => o.id === selected.id) || selected : null}
         onClose={() => navigate('orders', undefined, { keepScroll: true })}
+        onUpdated={(updated) => {
+          setSelected(updated);
+          // The row shows the new step now; the list loads again in the background.
+          setResult((current) => ({
+            ...current,
+            items: current.items.map((o) => (o.id === updated.id ? updated : o)),
+          }));
+        }}
       />
     </>
   );
@@ -872,7 +944,59 @@ function OrderTable({
   );
 }
 
-function OrderDetails({ order, onClose }: { order: Order | null; onClose: () => void }) {
+/**
+ * An order's next step: Accept takes it to preparing, then a pickup order is ready and a
+ * delivery order goes out for delivery, then it is completed. An older order still 'accepted'
+ * is prepared next, and an older delivery order already 'ready' goes out for delivery.
+ */
+export function nextOrderStep(order: Pick<Order, 'status' | 'fulfillment'>) {
+  const delivery = order.fulfillment === 'delivery';
+  const next: Partial<Record<OrderStatus, OrderStatus>> = {
+    pending: 'preparing',
+    accepted: 'preparing',
+    preparing: delivery ? 'out_for_delivery' : 'ready',
+    ready: delivery ? 'out_for_delivery' : 'completed',
+    out_for_delivery: 'completed',
+  };
+  return next[order.status];
+}
+/** The button for an order's next step. */
+export function nextStepLabel(order: Pick<Order, 'status' | 'fulfillment'>, next: OrderStatus) {
+  if (order.status === 'pending') return 'Accept order';
+  if (next === 'ready') return 'Mark ready for pickup';
+  if (next === 'completed')
+    return order.fulfillment === 'delivery' ? 'Mark delivered' : 'Mark picked up';
+  return `Mark ${label(next).toLowerCase()}`;
+}
+// What staff are told once the change is saved.
+function changedText(order: Order, status: OrderStatus) {
+  const ref = order.reference;
+  if (status === 'preparing' && order.status === 'pending')
+    return `Order ${ref} accepted. It is being prepared.`;
+  if (status === 'ready') return `Order ${ref} is ready for pickup.`;
+  if (status === 'completed')
+    return order.fulfillment === 'delivery' ? `Order ${ref} delivered.` : `Order ${ref} picked up.`;
+  if (status === 'rejected' || status === 'cancelled') return `Order ${ref} ${status}.`;
+  return `Order ${ref} marked ${label(status).toLowerCase()}.`;
+}
+// A phone number staff can tap to call; anything else (a WhatsApp privacy ID) stays text.
+const callable = (phone: string) => {
+  const digits = phone.replace(/[\s().-]/g, '');
+  return /^\+?\d{7,15}$/.test(digits)
+    ? `tel:${digits.startsWith('+') ? digits : `+${digits}`}`
+    : undefined;
+};
+
+function OrderDetails({
+  order,
+  onClose,
+  onUpdated,
+}: {
+  order: Order | null;
+  onClose: () => void;
+  /** The changed order, as saved, once a status change succeeds. */
+  onUpdated?: (order: Order) => void;
+}) {
   const { data, mutate, notify, clearError } = useWorkspace();
   const { pending, run } = useAction();
   // Stopping an order: rejected while it is pending, cancelled after it was accepted.
@@ -880,33 +1004,35 @@ function OrderDetails({ order, onClose }: { order: Order | null; onClose: () => 
   const [stopOpen, setStopOpen] = useState(false);
   const [stopStatus, setStopStatus] = useState<'rejected' | 'cancelled'>('rejected');
   const [stopError, setStopError] = useState('');
+  // Staff's optional note, saved with Accept (or Reject).
+  const [note, setNote] = useState('');
   // This dialog is reused for every order: an answer about an order no longer shown
   // must not appear as this order's.
   const shown = useRef(order?.id);
   useEffect(() => {
     shown.current = order?.id;
+    setNote('');
   }, [order?.id]);
-  const next: Partial<Record<OrderStatus, OrderStatus>> = {
-    pending: 'accepted',
-    accepted: 'preparing',
-    preparing: 'ready',
-    ready: order?.fulfillment === 'delivery' ? 'out_for_delivery' : 'completed',
-    out_for_delivery: 'completed',
-  };
-  const nextStatus = order ? next[order.status] : undefined;
+  const nextStatus = order ? nextOrderStep(order) : undefined;
+  const savedNote = order?.staffNote?.text || order?.phoneConfirmation?.note;
+  const phoneLink = order ? callable(order.customerPhone) : undefined;
   // The order dialog shows a failure inline, so no notification is needed.
   const update = async (status: OrderStatus) => {
     if (!order) return;
+    const before = order;
+    const text = before.status === 'pending' ? note.trim() : '';
     try {
-      await mutate(`/orders/${order.id}/status`, { status }, undefined, {
-        quiet: true,
-        success:
-          status === 'accepted'
-            ? `Order ${order.reference} accepted.`
-            : status === 'rejected'
-              ? `Order ${order.reference} rejected.`
-              : `Order ${order.reference} marked ${label(status).toLowerCase()}.`,
-      });
+      const updated = await mutate<Order>(
+        `/orders/${order.id}/status`,
+        { status, ...(text && { note: text }) },
+        undefined,
+        {
+          quiet: true,
+          success: changedText(before, status),
+          apply: (changed, current) => withChangedOrder(current, before, changed),
+        },
+      );
+      if (shown.current === before.id) onUpdated?.(updated);
     } catch (e) {
       if (shown.current !== order.id) {
         clearError();
@@ -965,7 +1091,10 @@ function OrderDetails({ order, onClose }: { order: Order | null; onClose: () => 
               <div className="flex items-baseline justify-between gap-3 border-t border-dashed border-ink/15 pt-3 font-semibold text-ink">
                 <dt>
                   Total ·{' '}
-                  {staffPaymentNote(paymentMethodsOf(data.company), order.fulfillment === 'delivery')}
+                  {staffPaymentNote(
+                    paymentMethodsOf(data.company),
+                    order.fulfillment === 'delivery',
+                  )}
                 </dt>
                 <dd className="font-serif text-[28px] leading-none font-normal whitespace-nowrap tabular-nums">
                   {money(order.total)}
@@ -980,12 +1109,33 @@ function OrderDetails({ order, onClose }: { order: Order | null; onClose: () => 
             <div className="mt-5 space-y-2 rounded-2xl border border-ink/[0.05] bg-paper p-4 text-xs text-stone-500">
               <p>
                 <span className="font-semibold text-stone-700">Customer:</span> {order.customerName}{' '}
-                · <span className="whitespace-nowrap tabular-nums">{order.customerPhone}</span>
+                ·{' '}
+                {phoneLink ? (
+                  <a
+                    className="whitespace-nowrap font-semibold text-brand-700 tabular-nums underline-offset-4 hover:underline"
+                    href={phoneLink}
+                  >
+                    {order.customerPhone}
+                  </a>
+                ) : (
+                  <span className="whitespace-nowrap tabular-nums">{order.customerPhone}</span>
+                )}
               </p>
-              {order.address && (
+              {order.address ? (
                 <p>
                   <span className="font-semibold text-stone-700">Deliver to:</span> {order.address}
                   {order.zone && ` (${order.zone})`}
+                </p>
+              ) : (
+                order.fulfillment === 'pickup' && (
+                  <p>
+                    <span className="font-semibold text-stone-700">Pickup</span> from the restaurant
+                  </p>
+                )
+              )}
+              {savedNote && (
+                <p>
+                  <span className="font-semibold text-stone-700">Note:</span> {savedNote}
                 </p>
               )}
               <div className="flex items-center gap-2">
@@ -993,8 +1143,28 @@ function OrderDetails({ order, onClose }: { order: Order | null; onClose: () => 
                 <Status value={order.syncStatus} />
               </div>
             </div>
-            {order.status === 'pending' && order.phoneConfirmationRequired && (
-              <CallConfirmation order={order} />
+            {order.status === 'pending' && (
+              <section className="notice mt-5 space-y-3 p-4 sm:p-5">
+                <h3 className="font-serif text-[22px] leading-[1.1] font-normal tracking-[-0.005em] text-cream">
+                  Confirm, then accept
+                </h3>
+                <p className="text-xs leading-5">
+                  Check the order
+                  {order.fulfillment === 'delivery' ? ' and the delivery address' : ''} with{' '}
+                  {order.customerName} on{' '}
+                  <span className="whitespace-nowrap tabular-nums">{order.customerPhone}</span>.
+                  Accepting tells them it is being prepared.
+                </p>
+                <Field label="Note (optional)">
+                  <input
+                    className="input"
+                    value={note}
+                    maxLength={500}
+                    placeholder="Such as what the customer said on the phone"
+                    onChange={(e) => setNote(e.target.value)}
+                  />
+                </Field>
+              </section>
             )}
             {nextStatus && (
               // Wraps on narrow phones; each button then fills its own row.
@@ -1012,14 +1182,12 @@ function OrderDetails({ order, onClose }: { order: Order | null; onClose: () => 
                 <ActionButton
                   className="btn-primary grow"
                   loading={pending === `status-${order.id}`}
-                  loadingLabel={nextStatus === 'accepted' ? 'Accepting…' : 'Updating…'}
+                  loadingLabel={order.status === 'pending' ? 'Accepting…' : 'Updating…'}
                   onClick={() =>
                     void run(`status-${order.id}`, () => update(nextStatus)).catch(() => undefined)
                   }
                 >
-                  {nextStatus === 'accepted'
-                    ? 'Accept order'
-                    : `Mark ${label(nextStatus).toLowerCase()}`}
+                  {nextStepLabel(order, nextStatus)}
                   <ArrowRight className="size-4" />
                 </ActionButton>
               </div>
@@ -1052,80 +1220,5 @@ function OrderDetails({ order, onClose }: { order: Order | null; onClose: () => 
         confirmLabel={stopStatus === 'rejected' ? 'Reject order' : 'Cancel order'}
       />
     </>
-  );
-}
-
-function CallConfirmation({ order }: { order: Order }) {
-  const { mutate } = useWorkspace();
-  const { pending, run } = useAction();
-  const [outcome, setOutcome] = useState<'confirmed' | 'unreachable' | 'declined'>(
-    order.phoneConfirmation?.outcome ?? 'confirmed',
-  );
-  const [addressVerified, setAddressVerified] = useState(
-    order.phoneConfirmation?.addressVerified ?? false,
-  );
-  const [note, setNote] = useState(order.phoneConfirmation?.note ?? '');
-  return (
-    <section className="notice mt-5 space-y-3 p-4 sm:p-5">
-      <h3 className="font-serif text-[22px] leading-[1.1] font-normal tracking-[-0.005em] text-cream">
-        Phone confirmation required
-      </h3>
-      <p className="text-xs leading-5">
-        Call <span className="whitespace-nowrap tabular-nums">{order.customerPhone}</span>, verify
-        the order and delivery address, then record the outcome. Orderly does not make this phone
-        call.
-      </p>
-      {order.phoneConfirmation && (
-        <p className="text-xs">
-          Last recorded: {order.phoneConfirmation.outcome} · {shortDate(order.phoneConfirmation.at)}
-        </p>
-      )}
-      <Field label="Call outcome">
-        <CustomSelect
-          theme="dark"
-          value={outcome}
-          onChange={(v) => setOutcome(v as typeof outcome)}
-          options={[
-            { value: 'confirmed', label: 'Customer confirmed' },
-            { value: 'unreachable', label: 'Could not reach customer' },
-            { value: 'declined', label: 'Customer declined' },
-          ]}
-        />
-      </Field>
-      {order.fulfillment === 'delivery' && (
-        <label className="flex cursor-pointer items-center gap-2.5 text-sm">
-          <input
-            className="toggle"
-            type="checkbox"
-            checked={addressVerified}
-            onChange={(e) => setAddressVerified(e.target.checked)}
-          />
-          Delivery address verified with customer
-        </label>
-      )}
-      <Field label="Call note (optional)">
-        <input
-          className="input"
-          value={note}
-          maxLength={500}
-          onChange={(e) => setNote(e.target.value)}
-        />
-      </Field>
-      <ActionButton
-        loading={pending === 'call'}
-        loadingLabel="Recording…"
-        onClick={() =>
-          // The order dialog shows a failure inline.
-          void run('call', () =>
-            mutate('/orders/' + order.id + '/call', { outcome, addressVerified, note }, undefined, {
-              dialog: true,
-              success: 'Call outcome recorded.',
-            }),
-          ).catch(() => undefined)
-        }
-      >
-        Record call outcome
-      </ActionButton>
-    </section>
   );
 }

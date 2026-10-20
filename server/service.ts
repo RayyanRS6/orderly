@@ -962,9 +962,23 @@ export function localizedRefusals(text: string, lang: Language): string {
       ),
     );
 }
+// Accept takes an order straight to 'preparing', so that notice says both.
+const englishStatusNotice = (reference: string, status: Order['status']) =>
+  status === 'preparing'
+    ? `Order ${reference} has been accepted and is being prepared now.`
+    : `Order ${reference} is now ${status.replaceAll('_', ' ')}.`;
+// The status words in the approved template "Your order {{1}} is now {{2}}.", sent outside the
+// 24-hour reply window.
+export const templateStatusWords = (status: string, fulfillment?: Order['fulfillment']) =>
+  status === 'preparing'
+    ? 'accepted and being prepared'
+    : status === 'ready' && fulfillment === 'pickup'
+      ? 'ready for pickup'
+      : status.replaceAll('_', ' ');
 /**
  * The customer's notice for an order status change, in their language. English keeps the
- * standard "Order X is now …" line; Urdu and Roman Urdu use the engine's own status wording.
+ * standard "Order X is now …" line (Accept says it was accepted and is being prepared); Urdu and
+ * Roman Urdu use the engine's own status wording.
  */
 export function statusNoticeText(
   company: Company,
@@ -974,7 +988,7 @@ export function statusNoticeText(
   now = new Date().toISOString(),
 ): string {
   const lang = conversation ? noticeLanguage(company, conversation, '') : 'en';
-  if (lang === 'en') return `Order ${order.reference} is now ${status.replaceAll('_', ' ')}.`;
+  if (lang === 'en') return englishStatusNotice(order.reference, status);
   return orderStatusText(
     lang,
     {
@@ -1111,6 +1125,17 @@ export async function queueOrderSync(repo: Repository, order: Order) {
   await repo.insertJob(job);
   await dispatchJob(repo, job);
 }
+export interface StatusChangeOptions {
+  /** The order's chat, already read by the caller: it is not read again. */
+  conversation?: Conversation | null;
+  /** Staff's note, saved on the order with the change. */
+  note?: Order['staffNote'];
+  /**
+   * Runs work after the response is sent (the Edge runtime's waitUntil). Without it the work is
+   * awaited. Starting the saved jobs is such work: the scheduler starts any it misses.
+   */
+  defer?: (task: Promise<unknown>) => void;
+}
 /** `text`: the customer's notice in place of the standard "Order X is now …" line. */
 export async function changeOrderStatus(
   repo: Repository,
@@ -1119,23 +1144,17 @@ export async function changeOrderStatus(
   now = new Date().toISOString(),
   automatedConversation?: Conversation,
   text?: string,
+  options: StatusChangeOptions = {},
 ): Promise<Order> {
   if (order.status === status) return order;
   transitionOrder(order, status, now);
-  const conversation = await repo.getConversation(order.companyId, order.conversationId);
-  if (
-    status === 'accepted' &&
-    order.phoneConfirmationRequired &&
-    (order.phoneConfirmation?.outcome !== 'confirmed' ||
-      (order.fulfillment === 'delivery' && !order.phoneConfirmation.addressVerified))
-  )
-    throw new PublicError(
-      'Record a confirmed customer call and verify the delivery address before accepting.',
-      409,
-    );
-  const connected = (await repo.getIntegrations(order.companyId)).some(
-    (i) => i.kind === 'sheets' && i.configured,
-  );
+  const [conversation, integrations] = await Promise.all([
+    options.conversation !== undefined
+      ? (options.conversation ?? undefined)
+      : repo.getConversation(order.companyId, order.conversationId),
+    repo.getIntegrations(order.companyId),
+  ]);
+  const connected = integrations.some((i) => i.kind === 'sheets' && i.configured);
   const jobs = [];
   if (connected && !order.sandbox && conversation?.channel === 'whatsapp')
     jobs.push(makeJob(order.companyId, 'sheet_sync', { orderId: order.id }));
@@ -1144,7 +1163,7 @@ export async function changeOrderStatus(
       makeJob(order.companyId, 'whatsapp_send', {
         ...jobAddress(conversation),
         conversationId: conversation.id,
-        text: text ?? `Order ${order.reference} is now ${status.replaceAll('_', ' ')}.`,
+        text: text ?? englishStatusNotice(order.reference, status),
         orderId: order.id,
         reference: order.reference,
         status,
@@ -1159,10 +1178,15 @@ export async function changeOrderStatus(
     now,
     jobs,
     automatedConversation,
+    options.note,
   );
   if (!updated)
     throw new PublicError('Another staff member changed this order. Refresh and try again.', 409);
-  for (const job of jobs) await dispatchJob(repo, job);
+  const dispatched = Promise.all(jobs.map((job) => dispatchJob(repo, job)));
+  // Saved already: the scheduler starts any job this misses.
+  if (options.defer)
+    options.defer(dispatched.catch(() => console.warn('Orderly: status jobs await recovery.')));
+  else await dispatched;
   return updated;
 }
 // A customer's order is still waiting for the restaurant (the database queues this job 15
@@ -1638,11 +1662,14 @@ export async function processJob(repo: Repository, id: string) {
       const statusOrder = job.payload.orderId
         ? await repo.getOrder(company.id, String(job.payload.orderId))
         : undefined;
-      // A delayed acceptance notification must not follow a newer cancellation.
-      if (statusOrder && job.payload.status !== statusOrder.status) {
-        await repo.saveJob({ ...job, status: 'done', leaseUntil: undefined, error: undefined });
-        return;
-      }
+      // A delayed acceptance notification must not follow a newer cancellation. The newer step's
+      // own notice goes out instead; the activity log says this one was not sent.
+      if (statusOrder && job.payload.status !== statusOrder.status)
+        return await finishNotSent(
+          repo,
+          job,
+          `Not sent: order ${statusOrder.reference} moved on to ${statusOrder.status.replaceAll('_', ' ')} before this ${String(job.payload.status).replaceAll('_', ' ')} update went out.`,
+        );
       let messageId: string;
       if (typeof job.payload.externalId === 'string') messageId = job.payload.externalId;
       else if (
@@ -1652,7 +1679,7 @@ export async function processJob(repo: Repository, id: string) {
         messageId = await adapter.sendStatusTemplate(
           conversation,
           String(job.payload.reference),
-          String(job.payload.status),
+          templateStatusWords(String(job.payload.status), statusOrder?.fulfillment),
         );
       else {
         const snapshot = structuredClone(conversation);

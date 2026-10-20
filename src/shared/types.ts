@@ -283,6 +283,9 @@ export interface Conversation {
   assignedTo?: string;
   readAt?: string;
 }
+// The steps: pending → preparing (Accept) → ready (pickup) or out_for_delivery (delivery) →
+// completed. 'accepted' is from before Accept went straight to 'preparing': an older order may
+// still have it, and it moves on to 'preparing'.
 export type OrderStatus =
   | 'pending'
   | 'accepted'
@@ -331,6 +334,8 @@ export interface Order {
     at: string;
     actorId: string;
   };
+  /** Staff's own note about the order (such as what the customer said on the phone), saved with a status change. */
+  staffNote?: { text: string; at: string; actorId: string };
   /** Placed on the public menu page (/m/<slug>) instead of in the chat. */
   source?: 'menu_page';
 }
@@ -389,6 +394,14 @@ export interface WorkspaceSummary {
   needsStaff: number;
   monthlySpend: number;
   daily: { date: string; count: number }[];
+  /** Orders waiting at each step staff act on ('preparing' includes older 'accepted' ones). */
+  stages?: OrderStageCounts;
+}
+export interface OrderStageCounts {
+  pending: number;
+  preparing: number;
+  ready: number;
+  out_for_delivery: number;
 }
 export interface ReadinessCheck {
   id: string;

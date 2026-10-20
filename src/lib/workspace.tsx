@@ -29,7 +29,7 @@ export interface ToastAction {
   busyLabel?: string;
   run: () => Promise<unknown> | void;
 }
-export interface MutateOptions {
+export interface MutateOptions<T = unknown> {
   /** Shown as a bottom-right notification once the change is saved. */
   success?: string;
   /** The caller reports a failure itself: no notification. */
@@ -39,6 +39,11 @@ export interface MutateOptions {
    * hidden from screen readers). If no dialog is open any more, it is a notification.
    */
   dialog?: boolean;
+  /**
+   * For a change answered with the changed record (an order's status): puts it on the page at
+   * once. The rest of the workspace then loads in the background, not waited for.
+   */
+  apply?: (result: T, current: Bootstrap) => Bootstrap;
 }
 /** Whether a dialog is open now, so a failure can be shown inside it. */
 export function dialogOpen() {
@@ -73,7 +78,7 @@ export interface WorkspaceContext {
     path: string,
     body?: unknown,
     method?: string,
-    options?: MutateOptions,
+    options?: MutateOptions<T>,
   ) => Promise<T>;
 }
 export const Workspace = createContext<WorkspaceContext | null>(null);

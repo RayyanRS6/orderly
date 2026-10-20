@@ -38,7 +38,7 @@ import type { PipelineHealth, Repository } from '../repository';
 import { transitionOrder } from '../../src/domain/engine';
 import { ACCOUNT_IN_USE, LAST_OWNER_MESSAGE, PublicError } from '../security';
 import { PLATFORM_AUDIT_ID } from '../config';
-import { orderMatches, pageOf, summaryOf } from '../queries';
+import { orderMatches, pageOf, stagesOf, summaryOf } from '../queries';
 import { effectiveAiLimits } from '../../src/shared/models';
 import {
   GATEWAY_HEARTBEAT_STALE_MS,
@@ -857,6 +857,7 @@ export class MemoryRepository implements Repository {
           s.usage.filter((u) => u.companyId === companyId),
         ),
         daily: dailyOrders(orders, businessTimeZone(s.companies.find((c) => c.id === companyId))),
+        stages: stagesOf(orders),
       };
     });
   }
@@ -1341,8 +1342,11 @@ export class MemoryRepository implements Repository {
     now: string,
     jobs: Job[] = [],
     automatedConversation?: Conversation,
+    note?: Order['staffNote'],
   ) {
     return this.mutate((s) => {
+      if (note && (typeof note.text !== 'string' || !note.text || note.text.length > 500))
+        throw new Error('Invalid staff note.');
       const order = s.orders.find((o) => o.companyId === companyId && o.id === id);
       if (!order || order.status !== expectedStatus) return undefined;
       if (automatedConversation) {
@@ -1369,15 +1373,9 @@ export class MemoryRepository implements Repository {
         put(s.conversations, automatedConversation);
       }
       transitionOrder(order, newStatus, now);
-      if (
-        newStatus === 'accepted' &&
-        order.phoneConfirmationRequired &&
-        (order.phoneConfirmation?.outcome !== 'confirmed' ||
-          (order.fulfillment === 'delivery' && !order.phoneConfirmation.addressVerified))
-      )
-        throw new PublicError('Record phone and address confirmation first.', 409);
       order.status = newStatus;
       order.updatedAt = now;
+      if (note) order.staffNote = copy(note);
       if (jobs.some((job) => job.kind === 'sheet_sync')) order.syncStatus = 'pending';
       for (const job of jobs) {
         if (job.companyId !== companyId) throw new Error('Cross-company job.');

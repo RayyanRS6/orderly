@@ -8,6 +8,13 @@ if (!base)
 const url = new URL(base);
 if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash)
   throw new Error('The hosted API base must be a plain HTTPS URL.');
+// Without it each request runs in the Supabase region nearest the browser, and every database
+// call crosses to the database's region (about 140 ms each from Mumbai to Sydney).
+const region = process.env.VITE_API_REGION;
+if (url.hostname.endsWith('.supabase.co') && !/^[a-z]{2}-[a-z]+-\d$/.test(region || ''))
+  throw new Error(
+    "Set VITE_API_REGION to the Supabase project's region (for Orderly: ap-southeast-2) before building the hosted frontend.",
+  );
 // The prerender step below refuses to build while the legal pages still contain
 // "[OWNER TO CONFIRM: …]" placeholders. ALLOW_LEGAL_PLACEHOLDERS=1 builds anyway, only for a
 // build that will not be published.

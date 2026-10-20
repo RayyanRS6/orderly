@@ -15,6 +15,14 @@ const repo = new SupabaseRepository(
   requiredEnv('SUPABASE_SERVICE_ROLE_KEY'),
 );
 const app = createEdgeApp(repo, {
-  waitUntil: typeof EdgeRuntime !== 'undefined' ? (task) => EdgeRuntime.waitUntil(task) : undefined,
+  // A background task that fails must not become an uncaught error, which can stop the worker
+  // with other requests still in it.
+  waitUntil:
+    typeof EdgeRuntime !== 'undefined'
+      ? (task) =>
+          EdgeRuntime.waitUntil(
+            task.catch(() => console.warn('Orderly: a background task failed.')),
+          )
+      : undefined,
 });
 Deno.serve((request) => app.fetch(request));

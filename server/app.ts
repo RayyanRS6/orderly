@@ -7,7 +7,7 @@ import { requestId } from 'hono/request-id';
 import { createClient } from '@supabase/supabase-js';
 import { z, ZodError } from 'zod';
 import type { PipelineHealth, Repository } from './repository.js';
-import type { Company, Integration, IntegrationKind, Role } from '../src/shared/types.js';
+import type { Company, Integration, IntegrationKind, Order, Role } from '../src/shared/types.js';
 import { createConversation, transitionOrder } from '../src/domain/engine.js';
 import { slugify } from '../src/shared/slug.js';
 import { appMode, automationPaused, env, workerLeaseMs } from './config.js';
@@ -431,11 +431,16 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
         mfaVerified = true;
       }
       userId = data.user.id;
-      if (!(await repo.consumeRateLimit(`user:${userId}`, 180))) {
+      // Both at once: neither depends on the other, and each one is a trip to the database.
+      const [withinLimit, companies] = await Promise.all([
+        repo.consumeRateLimit(`user:${userId}`, 180),
+        repo.listAllowedCompanies(userId),
+      ]);
+      if (!withinLimit) {
         c.header('Retry-After', '60');
         throw new PublicError('Too many requests. Please wait a minute.', 429);
       }
-      allowed = await repo.listAllowedCompanies(userId);
+      allowed = companies;
     }
     c.set('userId', userId);
     c.set('mfaVerified', mfaVerified);
@@ -474,8 +479,17 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
       // A status check every few seconds, not a change.
       c.req.path !== '/api/whatsapp/pairing-status' &&
       !c.req.path.startsWith('/api/admin/')
-    )
-      await repo.audit(company.id, userId, `${c.req.method} ${routePattern(c.req.path)}`);
+    ) {
+      const action = `${c.req.method} ${routePattern(c.req.path)}`;
+      // After the response where the runtime allows it: the change is saved already.
+      if (options.waitUntil)
+        options.waitUntil(
+          repo
+            .audit(company.id, userId, action)
+            .catch(() => console.warn(`Orderly: the audit entry for ${action} was not saved.`)),
+        );
+      else await repo.audit(company.id, userId, action);
+    }
   });
   app.route('/api', managementRoutes(repo));
   app.route('/api/admin', adminRoutes(repo));
@@ -716,7 +730,7 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
     );
   });
   app.post('/api/orders/:id/status', async (c) => {
-    const { status } = z
+    const body = z
       .object({
         status: z.enum([
           'pending',
@@ -728,68 +742,100 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
           'rejected',
           'cancelled',
         ]),
+        // Staff's own note, such as what the customer said on the phone, kept with the order.
+        note: z.string().trim().max(500).optional(),
       })
       .parse(await c.req.json());
-    const order = await repo.getOrder(c.get('company').id, c.req.param('id'));
+    // A dashboard from before Accept went straight to 'preparing' still asks for 'accepted'.
+    const status = body.status === 'accepted' ? 'preparing' : body.status;
+    const company = c.get('company');
+    const order = await repo.getOrder(company.id, c.req.param('id'));
     if (!order) throw new PublicError('Order not found.', 404);
+    // Another staff member made this change first: their answer stands, and this note would be
+    // lost without a word (only a change saves a note). The same note again is a harmless retry.
+    if (body.note && order.status === status && order.staffNote?.text !== body.note)
+      throw new PublicError('Another staff member changed this order. Refresh and try again.', 409);
+    const now = new Date().toISOString();
     // Only the order rules' own message reaches staff ("Cannot change …"). Anything else, such
     // as a database failure, is logged and answered with the general error.
     try {
-      transitionOrder(order, status, new Date().toISOString());
+      transitionOrder(order, status, now);
     } catch (error) {
       throw new PublicError(error instanceof Error ? error.message : 'Invalid order transition.');
     }
     // The customer is told in their language; the chat keeps a copy of exactly what was sent.
-    const text = statusNoticeText(
-      c.get('company'),
-      await repo.getConversation(order.companyId, order.conversationId),
-      order,
-      status,
-    );
-    const updated = await changeOrderStatus(repo, order, status, undefined, undefined, text);
+    const conversation = await repo.getConversation(order.companyId, order.conversationId);
+    const text = statusNoticeText(company, conversation, order, status);
+    const updated = await changeOrderStatus(repo, order, status, now, undefined, text, {
+      conversation: conversation ?? null,
+      note: body.note ? { text: body.note, at: now, actorId: c.get('userId') } : undefined,
+      defer: options.waitUntil,
+    });
     // The order already had this status: nothing was sent, so the chat gets no notice either.
     if (updated.status === order.status) return c.json(updated);
-    // The chat's copy of the status message the customer is sent. Marked as a notice, so a
-    // customer still waiting for a staff reply stays under "Needs staff" and in staff alerts.
-    // Written under the chat's lock like a turn, so it never lands in the middle of one (that
-    // turn would start again and pay for its AI call twice). A chat still busy after a few
-    // seconds is written to anyway: the customer has the notice, so the chat needs its copy. A
-    // chat that changed meanwhile is read again.
-    const lockId = randomUUID();
-    let locked = false;
-    for (let wait = 0; wait < NOTICE_LOCK_TRIES; wait++) {
-      locked = await repo.acquireConversationLock(
-        order.companyId,
-        order.conversationId,
-        lockId,
-        new Date(Date.now() + workerLeaseMs()).toISOString(),
-      );
-      if (locked) break;
-      await new Promise((resolve) => setTimeout(resolve, NOTICE_LOCK_WAIT_MS));
-    }
-    try {
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        const conversation = await repo.getConversation(order.companyId, order.conversationId);
-        if (!conversation) break;
-        const at = new Date().toISOString();
-        const next = {
-          ...conversation,
-          version: conversation.version + 1,
-          updatedAt: at,
-          messages: [
-            ...conversation.messages,
-            { id: randomUUID(), role: 'staff' as const, text, createdAt: at, notice: true },
-          ],
-        };
-        if (await repo.saveConversation(next, conversation.version)) break;
-        if (attempt === 3)
-          console.warn('Orderly: an order status notice could not be added to its chat.');
-      }
-    } finally {
-      if (locked) await repo.releaseConversationLock(order.companyId, order.conversationId, lockId);
-    }
+    // Staff get their answer now; the chat's copy follows (it may wait for a busy chat).
+    const copied = addStatusNoticeCopy(order, text, now);
+    if (options.waitUntil) options.waitUntil(copied);
+    else await copied;
     return c.json(updated);
   });
+  // The chat's copy of the status message the customer is sent. Marked as a notice, so a
+  // customer still waiting for a staff reply stays under "Needs staff" and in staff alerts.
+  // Written under the chat's lock like a turn, so it never lands in the middle of one (that turn
+  // would start again and pay for its AI call twice). A chat still busy after a few seconds is
+  // written to anyway: the customer has the notice, so the chat needs its copy. A chat that
+  // changed meanwhile is read again. Never throws: the status change is saved already. The copy is
+  // dated and placed at its status change, so two quick changes waiting on a busy chat still read
+  // in order.
+  async function addStatusNoticeCopy(order: Order, text: string, changedAt: string) {
+    try {
+      const lockId = randomUUID();
+      let locked = false;
+      for (let wait = 0; wait < NOTICE_LOCK_TRIES; wait++) {
+        locked = await repo.acquireConversationLock(
+          order.companyId,
+          order.conversationId,
+          lockId,
+          new Date(Date.now() + workerLeaseMs()).toISOString(),
+        );
+        if (locked) break;
+        await new Promise((resolve) => setTimeout(resolve, NOTICE_LOCK_WAIT_MS));
+      }
+      try {
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          const conversation = await repo.getConversation(order.companyId, order.conversationId);
+          if (!conversation) break;
+          const notice = {
+            id: randomUUID(),
+            role: 'staff' as const,
+            text,
+            createdAt: changedAt,
+            notice: true,
+          };
+          let index = conversation.messages.length;
+          while (index > 0 && conversation.messages[index - 1]!.createdAt > changedAt) index--;
+          const next = {
+            ...conversation,
+            version: conversation.version + 1,
+            updatedAt: new Date().toISOString(),
+            messages: [
+              ...conversation.messages.slice(0, index),
+              notice,
+              ...conversation.messages.slice(index),
+            ],
+          };
+          if (await repo.saveConversation(next, conversation.version)) break;
+          if (attempt === 3)
+            console.warn('Orderly: an order status notice could not be added to its chat.');
+        }
+      } finally {
+        if (locked)
+          await repo.releaseConversationLock(order.companyId, order.conversationId, lockId);
+      }
+    } catch {
+      console.warn('Orderly: an order status notice could not be added to its chat.');
+    }
+  }
   app.post('/api/conversations/:id/mode', async (c) => {
     const { mode } = z.object({ mode: z.enum(['bot', 'human']) }).parse(await c.req.json());
     const conversation = await repo.getConversation(c.get('company').id, c.req.param('id'));

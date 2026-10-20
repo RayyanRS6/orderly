@@ -155,14 +155,18 @@ describe('G3.10/G7.9: the engine answers “where is my order?”', () => {
     [
       'where is my order?',
       'en',
-      'Order ORD-1234ABCD is being prepared.\nLast update: 12 minutes ago.',
+      'The restaurant has accepted order ORD-1234ABCD and it is being prepared now.\nLast update: 12 minutes ago.',
     ],
     [
       'mera order kahan hai?',
       'roman-ur',
-      'Order ORD-1234ABCD tayyar ho raha hai.\nAakhri update: 12 minute pehle.',
+      'Restaurant ne order ORD-1234ABCD accept kar liya hai aur ab yeh tayyar ho raha hai.\nAakhri update: 12 minute pehle.',
     ],
-    ['میرا آرڈر کہاں ہے؟', 'ur', 'آرڈر ORD-1234ABCD تیار ہو رہا ہے۔\nآخری اپڈیٹ: 12 منٹ پہلے۔'],
+    [
+      'میرا آرڈر کہاں ہے؟',
+      'ur',
+      'ریسٹورنٹ نے آرڈر ORD-1234ABCD منظور کر لیا ہے اور یہ اب تیار ہو رہا ہے۔\nآخری اپڈیٹ: 12 منٹ پہلے۔',
+    ],
   ] as const)('“%s” gets the real status in %s', (text, lang, expected) => {
     const result = ask(text, 'preparing', lang);
     expect(result.reply).toBe(expected);
@@ -173,7 +177,9 @@ describe('G3.10/G7.9: the engine answers “where is my order?”', () => {
   });
 
   it('words every status truthfully', () => {
-    expect(ask('order status').reply).toContain('Order ORD-1234ABCD is being prepared.');
+    expect(ask('order status').reply).toContain(
+      'The restaurant has accepted order ORD-1234ABCD and it is being prepared now.',
+    );
     expect(ask('kitni der?', 'pending').reply).toContain(
       'Order ORD-1234ABCD is waiting for the restaurant to accept it.',
     );

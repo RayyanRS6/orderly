@@ -186,6 +186,8 @@ export interface Repository {
     now: string,
     jobs?: Job[],
     automatedConversation?: Conversation,
+    // Saved as order.staffNote with the change. Fails with 503 before 202610200003_order_flow.sql.
+    note?: Order['staffNote'],
   ): Promise<Order | undefined>;
   setOrderSyncStatus(
     companyId: string,

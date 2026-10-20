@@ -120,24 +120,28 @@ describe('customer-wording-4: order status notices in the customer’s language'
     await app
       .repo()
       .saveConversation({ ...placed, language: 'ur', version: placed.version + 1 }, placed.version);
+    // Accept takes the order straight to 'preparing': the notice says both.
     const response = await app.request(`/orders/${order.id}/status`, {
-      body: { status: 'accepted' },
+      body: { status: 'preparing' },
     });
     expect(response.status).toBe(200);
-    const text = `ریسٹورنٹ نے آرڈر ${order.reference} منظور کر لیا ہے۔`;
+    const text = `ریسٹورنٹ نے آرڈر ${order.reference} منظور کر لیا ہے اور یہ اب تیار ہو رہا ہے۔`;
     const send = (await app.repo().listCompanyJobs(company.id)).find(
       (j) => j.kind === 'whatsapp_send' && j.payload.orderId === order.id,
     )!;
-    expect(send.payload).toMatchObject({ text, reference: order.reference, status: 'accepted' });
+    expect(send.payload).toMatchObject({ text, reference: order.reference, status: 'preparing' });
     const notice = (await app.repo().getConversation(company.id, placed.id))!.messages.at(-1)!;
     expect(notice).toMatchObject({ role: 'staff', text, notice: true });
   });
 
-  it('keeps the English line for an English chat', async () => {
+  it('keeps the English line for an English chat, also from a dashboard that still says accepted', async () => {
     const { order, chat: placed } = await placedOrder(app.repo(), '+923001110078');
-    await app.request(`/orders/${order.id}/status`, { body: { status: 'accepted' } });
+    const response = await app.request(`/orders/${order.id}/status`, {
+      body: { status: 'accepted' },
+    });
+    expect(await response.json()).toMatchObject({ status: 'preparing' });
     expect((await app.repo().getConversation(company.id, placed.id))!.messages.at(-1)!.text).toBe(
-      `Order ${order.reference} is now accepted.`,
+      `Order ${order.reference} has been accepted and is being prepared now.`,
     );
   });
 });
