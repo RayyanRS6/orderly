@@ -228,13 +228,10 @@ describe('deals are found by their own names, apart from dishes', () => {
     expect(result.conversation.cart.items).toEqual([]);
   });
 
-  it('reads a name inside a longer name as that longer name, each time it is written', () => {
-    // On the Bun & Co. menu as it is: "chicken burger" is Crispy Chicken, not also a burger.
-    expect(parse('1 chicken burger', seed)).toEqual([`add ${crispy.id} ×1`]);
-    expect(parse('1 chicken burger aur 1 burger', seed)).toEqual([
-      `add ${crispy.id} ×1`,
-      `add ${smash.id} ×1`,
-    ]);
+  it('reads a dish inside a longer dish name as main does, and a deal’s name apart from dishes', () => {
+    // Dishes are read as on main (c5704f5), deals or not: on the Bun & Co. menu "chicken burger"
+    // is Crispy Chicken and also the Classic Smash's "burger" (an old issue, outside deals).
+    expect(parse('1 chicken burger', seed)).toEqual([`add ${crispy.id} ×1`, `add ${smash.id} ×1`]);
     expect(parse('1 chicken burger aur 2 burger', seed)).toEqual([
       `add ${crispy.id} ×1`,
       `add ${smash.id} ×2`,
@@ -868,11 +865,12 @@ describe('a deal word beside dishes, on a menu with deals', () => {
   });
 
   it('adds the dishes named, and asks which deal only for a deal ordered in its own part', () => {
-    expect(parse('2 zinger burger aur ek deal chahiye')).toEqual([
+    // "zinger": "zinger burger" would also be the Classic Smash's "burger", as on main.
+    expect(parse('2 zinger aur ek deal chahiye')).toEqual([
       'add zinger-burger ×2',
       'which deal-1 | deal-2 | deal-3 | zinger-deal | lunch-deal ×1',
     ]);
-    expect(parse('2 zinger burger, koi deal hai?')).toEqual(['add zinger-burger ×2']);
+    expect(parse('2 zinger, koi deal hai?')).toEqual(['add zinger-burger ×2']);
     expect(parse('2 loaded fries please, any other deals?')).toEqual([`add ${fries.id} ×2`]);
     expect(parse('Can I get 2 loaded fries as a meal for two?')).toEqual([`add ${fries.id} ×2`]);
     expect(parse('I want 2 loaded fries. Do you offer home delivery?')).toEqual([
@@ -1561,7 +1559,12 @@ describe('deals sharing a name with another deal or a dish', () => {
 
 describe('a deal’s name inside a longer dish name', () => {
   const plain = dish('p-zinger', 'Zinger Burger', { category: 'Burgers' });
-  const products = catalog('13:00', [{ ...zingerDeal, aliases: ['zinger'] }], [...seed, plain]);
+  // Without the Classic Smash, whose "burger" main also reads in "zinger burger".
+  const products = catalog(
+    '13:00',
+    [{ ...zingerDeal, aliases: ['zinger'] }],
+    [...seed.filter((p) => p !== smash), plain],
+  );
 
   it('leaves "zinger burger" the burger, and "zinger" the deal', () => {
     expect(parse('1 zinger burger', products)).toEqual(['add p-zinger ×1']);

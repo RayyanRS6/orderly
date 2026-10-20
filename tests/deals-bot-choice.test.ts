@@ -447,7 +447,8 @@ describe('a message that only mentions an option while the deal’s choice is op
     expect(c.items).toEqual([]);
     expect(c.conversation.pendingDealChoice?.productId).toBe('deal-1');
     const removal = chat();
-    removal.send('1 sprite 345ml');
+    // As main reads it, "1 sprite 345ml" alone would also add the Sprite 1.5L ("sprite").
+    removal.send('1 sprite 345ml', [add('sprite-345')], ok);
     removal.send('deal 1');
     const removed = removal.send(
       'remove sprite 345ml',

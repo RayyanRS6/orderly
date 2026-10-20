@@ -2,7 +2,7 @@ import type { Conversation, DealChoiceOption, Product } from '../shared/types';
 
 /**
  * Words that ask for deals in general rather than name one: "deal", "combo", "offer", "meal",
- * "ڈیل". They never match a dish by a typo ("deal" is one letter from "daal").
+ * "ڈیل". All but "meal" never match a dish by a typo ("deal" is one letter from "daal").
  */
 export const DEAL_WORDS = new Set([
   'deal',
@@ -20,6 +20,9 @@ export const DEAL_WORDS = new Set([
 // Of those, the ones that only ever mean deals. "combo", "offer" and "meal" may also be a word of
 // a dish's own name ("Kids Meal", "Family Combo").
 export const ONLY_DEAL_WORDS = new Set(['deal', 'deals', 'ڈیل', 'ڈیلز', 'ڈیلیں']);
+// The deal words that never match a dish by a typo, on any menu. "meal" is as much a dish's word
+// ("Kids Meal") as a deal's, so it is read as main reads it.
+const NO_TYPO_WORDS = new Set([...DEAL_WORDS].filter((word) => !/^meals?$/u.test(word)));
 
 const STOP_WORDS = new Set([
   'add',
@@ -749,12 +752,12 @@ export function findDealMentions(
       });
     numberedAfter(words.slice(from, to), to);
   }
-  // A deal word with other words of one deal's name. One in a longer dish name written there
-  // ("kids meal") is that dish's.
+  // A deal word with other words of one deal's name. One in a dish's name written there ("kids
+  // meal", or "combo" for a Family Combo also called that) is that dish's.
   const offered = deals.filter((product) => !gone(product));
   for (let i = 0; i < words.length; i++) {
     if (taken.has(i) || !DEAL_WORDS.has(words[i]!)) continue;
-    if (dishAt.some((d) => d.from <= i && i < d.to && d.to - d.from > 1)) continue;
+    if (dishAt.some((d) => d.from <= i && i < d.to)) continue;
     const part = placed[i]!.part;
     const inPart = (k: number) => !taken.has(k) && placed[k]?.part === part;
     const numberAt = (k: number) => inPart(k) && isNumber(words[k]);
@@ -917,7 +920,7 @@ export function resolveItemMention(
       ? { kind: 'unique', product: deal.products[0]!, quantity: count }
       : { kind: 'ambiguous', products: deal.products, quantity: count };
   }
-  const dishes = own.some((product) => product.deal) ? own.filter((product) => !product.deal) : own;
+  const dishes = own.filter((product) => !product.deal);
   if (!dishes.length) return { kind: 'none', quantity };
   const labelsById = new Map(
     dishes.map((product) => [
@@ -960,17 +963,14 @@ export function resolveItemMention(
           let tokenScore = 0;
           for (const input of meaningful) {
             if (candidate === input) tokenScore = Math.max(tokenScore, 500);
-            // "deal" is not a typo of "daal", nor "deals" of anything. "meals" is still the
-            // "meal" of a Zinger Meal, scored as the one-letter typo it was read as before.
-            if (DEAL_WORDS.has(input)) {
-              if (
-                !ONLY_DEAL_WORDS.has(input) &&
-                candidate !== input &&
-                candidate.replace(/s$/u, '') === input.replace(/s$/u, '')
-              )
-                tokenScore = Math.max(tokenScore, 280);
+            // "deal" is no typo of "daal", nor "deals" of anything; "combos" is still the plural
+            // of a Family Combo's "combo".
+            if (
+              NO_TYPO_WORDS.has(input) &&
+              (ONLY_DEAL_WORDS.has(input) ||
+                candidate.replace(/s$/u, '') !== input.replace(/s$/u, ''))
+            )
               continue;
-            }
             if (input.length < 4) continue;
             const limit = input.length >= 8 ? 2 : 1;
             if (candidate.length < 4 || Math.abs(candidate.length - input.length) > limit) continue;

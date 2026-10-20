@@ -1662,12 +1662,13 @@ const blanked = (value: string, spans: [number, number][]) =>
         `${text.slice(0, start)}${','.padEnd(end - start, ' ')}${text.slice(end)}`,
       value,
     );
-// The text with these stretches (merged where they overlap) each read as another item that ends
-// its part of the message: one word written there that is not in `own` nor a number ("chicken"
-// for "chicken burger" beside a Burger, "deal" for "deal 1"), then "item" (so no number after
-// it reads as "deal 2" again) and a break. A count before a stretch stays with it: "zinger, 2
-// zinger deal" is one zinger, where `blanked` would leave the 2 alone in a part of its own.
-function masked(value: string, spans: [number, number][], own: Set<string>): string {
+// The text with these stretches (deals named, merged where they touch) each read as another item
+// that ends its part of the message: one word written there that is no dish's (`dishWords`) nor
+// a number ("deal" for "deal 1", or for "zinger deal" beside a Zinger Burger), then "item" (so
+// no number after it reads as "deal 2" again) and a break. A count before a stretch stays with
+// it: "zinger, 2 zinger deal" is one zinger, where `blanked` would leave the 2 alone in a part
+// of its own.
+function masked(value: string, spans: [number, number][], dishWords: Set<string>): string {
   const merged: [number, number][] = [];
   for (const [start, end] of [...spans].sort((a, b) => a[0] - b[0])) {
     const last = merged.at(-1);
@@ -1677,7 +1678,7 @@ function masked(value: string, spans: [number, number][], own: Set<string>): str
   return merged.reduceRight((text, [start, end]) => {
     const word = normalizeCatalogText(text.slice(start, end))
       .split(' ')
-      .find((w) => w && !own.has(w) && !/^\d+$/.test(w));
+      .find((w) => w && !dishWords.has(w) && !/^\d+$/.test(w));
     return `${text.slice(0, start)} ${word ? `${word} ` : ''}item , ${text.slice(end)}`;
   }, value);
 }
@@ -2011,8 +2012,14 @@ export function parseActions(
             );
     return [{ type: 'menu', query }];
   }
-  // Deals are named by their own words only, with any picks written beside them.
+  // Deals are named by their own words only, with any picks written beside them. Counts are read
+  // as on a menu without deals, where each deal named is one more item a count may belong to.
   const dealMentions = findDealMentions(products, company.id, value);
+  const hasDeals = own.some((p) => p.deal);
+  const dishes = own.filter((p) => !p.deal);
+  const counted = hasDeals
+    ? [...dishes, ...dealMentions.map((mention) => mention.products[0]!)]
+    : products;
   if (conversation.pendingItemChoice && !browsing) {
     const selected = resolvePendingItemChoice(
       products,
@@ -2031,7 +2038,7 @@ export function parseActions(
       // the one asked about: "3 naan", "naan 3, chicken wali" or "house 12" is not its count,
       // nor the 4 in "chicken wali 4 naan", which may be the naan's.
       const explicitQuantity = !/^option\b/u.test(value)
-        ? clearQuantityNear(selected, text, products)
+        ? clearQuantityNear(selected, text, counted)
         : undefined;
       return [
         {
@@ -2143,8 +2150,6 @@ export function parseActions(
       ];
     }
   }
-  const hasDeals = own.some((p) => p.deal);
-  const dishes = own.filter((p) => !p.deal);
   // A deal ordered by a deal word alone: the one deal on, or which of them.
   const someDeal = (quantity: number, said: string): BotAction => {
     const on = own.filter((p) => p.deal?.state === 'on');
@@ -2265,110 +2270,49 @@ export function parseActions(
           },
     };
   });
+  // The dishes are read as on a menu without deals, in the message with each deal named read as
+  // another item there (see masked): "zinger, 2 zinger deal" is one zinger.
+  const breaks = normalize(text.trim().replace(/\s*\n\s*/gu, '\u0000'));
+  const lined = breaks.length === value.length ? breaks.replace(/\u0000/gu, '\n') : value;
+  const dishText = dealSpans.length
+    ? masked(
+        lined,
+        dealSpans,
+        new Set(
+          dishes
+            .flatMap((p) => [p.name, ...p.aliases])
+            .flatMap((label) => normalizeCatalogText(label).split(' ')),
+        ),
+      )
+    : text;
   // A dish asked about by a word several share ("burger"), beside a deal, is asked about after
   // the deal is added.
-  const dishResolution = dealMentions.length
-    ? resolveItemMention(products, company.id, rest)
+  const dishResolution = hasDeals
+    ? resolveItemMention(dishes, company.id, dishText)
     : earlyResolution;
   if (dishResolution.kind === 'ambiguous' && !distinctMentions)
     return [
       ...named.map((entry) => entry.action),
       clarify(dishResolution.products, dishResolution.quantity),
     ];
-  // A dish named only inside a longer name of another dish is that dish, each time it is
-  // written: "1 chicken burger" is no burger, "1 chicken burger aur 1 burger" is both.
-  const found = dishes
-    .map((product) => {
-      const labels = [product.name, ...product.aliases].filter((alias) => contains(rest, alias));
-      return {
-        product,
-        labels,
-        alias: [...labels].sort((a, b) => b.length - a.length)[0]!,
-        places: labels.flatMap((alias) =>
-          occurrencesOf(rest, alias).map(([start, end]) => ({ alias, start, end })),
-        ),
-      };
-    })
-    .filter((m) => m.labels.length);
-  const within = (place: { start: number; end: number }, id: string) =>
-    found.flatMap((other) =>
-      other.product.id === id
-        ? []
-        : other.places.filter(
-            (o) =>
-              o.start <= place.start &&
-              place.end <= o.end &&
-              o.end - o.start > place.end - place.start,
-          ),
-    );
-  // A dish's count is read in the message with its line breaks, where each deal named and each
-  // longer name the dish sits in before it is another item (see masked): "zinger, 2 zinger
-  // deal" is one zinger, "2 chicken burger aur 1 burger" one burger.
-  const breaks = normalize(text.trim().replace(/\s*\n\s*/gu, '\u0000'));
-  const lined = breaks.length === value.length ? breaks.replace(/\u0000/gu, '\n') : value;
-  const countIn = (product: Product, covers: [number, number][] = []) =>
-    dealSpans.length || covers.length
-      ? masked(
-          lined,
-          [...dealSpans, ...covers],
-          new Set(
-            [product.name, ...product.aliases].flatMap((label) =>
-              normalizeCatalogText(label).split(' '),
-            ),
-          ),
-        )
-      : text;
-  const matches = found
-    .flatMap(({ product, alias, places }) => {
-      const nested = places.filter((place) => within(place, product.id).length);
-      if (!nested.length)
-        return [
-          {
-            product,
-            alias,
-            at: rest.indexOf(normalize(alias)),
-            countText: countIn(product),
-          },
-        ];
-      const first = places
-        .filter((place) => !nested.includes(place))
-        .sort((a, b) => a.start - b.start || b.end - b.start - (a.end - a.start))[0];
-      if (!first) return [];
-      // Its count is read with the longer names it sits in before that taken out; those after it
-      // are read as written, as without nesting ("burger, 2 chicken burger").
-      const covers = nested
-        .filter((place) => place.start < first.start)
-        .flatMap((place) =>
-          within(place, product.id).map((o): [number, number] => [o.start, o.end]),
-        );
-      return [
-        {
-          product,
-          alias: first.alias,
-          at: first.start,
-          countText: countIn(product, covers),
-        },
-      ];
-    })
+  const matches = dishes
+    .map((product) => ({
+      product,
+      alias: [product.name, ...product.aliases]
+        .filter((alias) => contains(rest, alias))
+        .sort((a, b) => b.length - a.length)[0],
+    }))
+    .filter((m): m is { product: Product; alias: string } => !!m.alias)
+    .map((m) => ({ ...m, at: rest.indexOf(normalize(m.alias)) }))
     .sort((a, b) => a.at - b.at);
+  // Beside a deal named, a dish read only by a typo is left to the AI.
   if (!matches.length && !dealMentions.length) {
     const detailLike =
       /(?:my name is|name\s*:|mera naam|mera nam|میرا نام|نام\s*:|address\s*:|pata\s*:|پتہ\s*:|پتا\s*:|\bpickup\b|\bdelivery\b|پک اپ|ڈیلیوری|ڈلیوری)/iu.test(
         text,
       );
-    const resolution = detailLike
-      ? ({ kind: 'none', quantity: 1 } as const)
-      : resolveItemMention(products, company.id, text);
-    if (resolution.kind === 'ambiguous')
-      return [
-        {
-          type: 'clarify_item',
-          candidateProductIds: resolution.products.slice(0, 12).map((product) => product.id),
-          quantity: resolution.quantity,
-          requestedOptionNames: requestedOptions(resolution.products, text),
-          originalText: text,
-        },
-      ];
+    // An ambiguous one was asked about above.
+    const resolution = detailLike ? ({ kind: 'none', quantity: 1 } as const) : dishResolution;
     if (resolution.kind === 'unique') {
       if (
         /^(?:what|how much|is |are |do you have|tell me|kitna|kya)|(?:\bprice\b|\bavailable\b|کتنے|قیمت|دستیاب)/u.test(
@@ -2401,12 +2345,8 @@ export function parseActions(
           1,
           Math.min(
             50,
-            quantityOfMention(
-              sameMention[0]!.product,
-              sameMention[0]!.alias,
-              sameMention[0]!.countText,
-              products,
-            ) ?? 1,
+            quantityOfMention(sameMention[0]!.product, sameMention[0]!.alias, dishText, counted) ??
+              1,
           ),
         ),
         requestedOptionNames: requestedOptions(
@@ -2432,7 +2372,7 @@ export function parseActions(
     /\b(?:do not|don't|dont|not|no)\s+(?:want|add|need)|نہیں چاہیے|nahi chahiye/u.test(value)
   )
     return [{ type: 'answer', text: '' }];
-  for (const { product, alias, at, countText } of matches) {
+  for (const { product, alias, at } of matches) {
     const prefix = rest.slice(Math.max(0, at - 24), at);
     if (/\b(remove|delete|hatao)\b|نکال|ہٹا/u.test(prefix)) {
       named.push({ at, action: { type: 'remove_item', productId: product.id } });
@@ -2456,7 +2396,7 @@ export function parseActions(
         productId: product.id,
         // The count next to this mention, in its own part of the message: "naan 3, chicken
         // biryani" and "naan 3 chicken biryani" give the biryani 1 and the naan 3.
-        quantity: quantityOfMention(product, alias, countText, products) ?? 1,
+        quantity: quantityOfMention(product, alias, dishText, counted) ?? 1,
         variantId: variant?.id,
         modifierIds: modifiers.map((m) => m.id),
       },
