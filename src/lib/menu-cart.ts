@@ -125,6 +125,18 @@ export function typedPhoneLabel(value: string): string | undefined {
   return pakistan ? `+92 ${pakistan[1]} ${pakistan[2]}` : `+${digits}`;
 }
 
+/**
+ * What checkout starts on: delivery wherever the restaurant delivers, unless it has no delivery
+ * area to choose yet (the order could not be placed); pickup only when it only does pickup.
+ */
+export function defaultFulfillment(
+  restaurant: Pick<PublicMenu['restaurant'], 'fulfillment' | 'deliveryZones'>,
+): WebCart['fulfillment'] {
+  if (restaurant.fulfillment === 'both')
+    return restaurant.deliveryZones.length ? 'delivery' : 'pickup';
+  return restaurant.fulfillment;
+}
+
 /** The first thing to fix before Place order. The number is checked the way the server does. */
 export function checkoutProblem(form: {
   mode?: 'link' | 'public';

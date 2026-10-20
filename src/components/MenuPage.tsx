@@ -33,6 +33,7 @@ import {
   count,
   dealPicked,
   dealPicks,
+  defaultFulfillment,
   hasTimedDeal,
   loadCart,
   loadDraft,
@@ -571,7 +572,7 @@ export function MenuPage({ slug }: { slug: string }) {
       return false;
     }
   });
-  const [fulfillment, setFulfillment] = useState<WebCart['fulfillment']>('pickup');
+  const [fulfillment, setFulfillment] = useState<WebCart['fulfillment']>('delivery');
   const [name, setName] = useState('');
   const [address, setAddress] = useState('');
   const [zone, setZone] = useState('');
@@ -595,7 +596,7 @@ export function MenuPage({ slug }: { slug: string }) {
         setMenu(value);
         setFailure(undefined);
         document.title = `${value.restaurant.name} menu`;
-        if (value.restaurant.fulfillment === 'delivery') setFulfillment('delivery');
+        setFulfillment(defaultFulfillment(value.restaurant));
       },
       (e: unknown) => {
         if (live) setFailure(menuLoadFailure(e));
@@ -1032,8 +1033,8 @@ export function MenuPage({ slug }: { slug: string }) {
         </section>
         <section className="card mb-4 space-y-4 p-4">
           {restaurant.fulfillment === 'both' ? (
-            <div className="tab-group" role="group" aria-label="Pickup or delivery">
-              {(['pickup', 'delivery'] as const).map((value) => (
+            <div className="tab-group" role="group" aria-label="Delivery or pickup">
+              {(['delivery', 'pickup'] as const).map((value) => (
                 <button
                   key={value}
                   type="button"

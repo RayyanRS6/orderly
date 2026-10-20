@@ -7,6 +7,7 @@ import { ApiError } from '../src/lib/api';
 import { ItemCard, LinkCheckFailed, MenuPage, OrderingNotice } from '../src/components/MenuPage';
 import {
   checkoutProblem,
+  defaultFulfillment,
   loadCart,
   loadDraft,
   menuLoadFailure,
@@ -173,6 +174,15 @@ describe('typed WhatsApp number', () => {
     expect(checkoutProblem({ ...form, fulfillment: 'delivery' })).toBe(
       'Please choose your delivery area.',
     );
+  });
+
+  it('starts checkout on delivery wherever the restaurant delivers to an area', () => {
+    const zones = [{ name: 'DHA', fee: 15000 }];
+    expect(defaultFulfillment({ fulfillment: 'both', deliveryZones: zones })).toBe('delivery');
+    expect(defaultFulfillment({ fulfillment: 'delivery', deliveryZones: zones })).toBe('delivery');
+    expect(defaultFulfillment({ fulfillment: 'pickup', deliveryZones: zones })).toBe('pickup');
+    // No area to choose yet: a delivery order could not be placed, so pickup comes first.
+    expect(defaultFulfillment({ fulfillment: 'both', deliveryZones: [] })).toBe('pickup');
   });
 
   it('reads the number back the way the customer knows it', () => {
