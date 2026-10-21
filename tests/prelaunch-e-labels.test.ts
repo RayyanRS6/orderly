@@ -94,6 +94,27 @@ describe('wording for what the bot and the pipeline did', () => {
       /if \(data\.jobs\) return;\s*let active = true;\s*api<\{ jobs: Job\[\] \}>\('\/activity'/,
     );
   });
+
+  it('never promises another attempt for failed work', () => {
+    const job = (id: string, status: 'pending' | 'failed') => ({
+      id,
+      companyId: seedCompanies[0]!.id,
+      kind: 'whatsapp_send' as const,
+      payload: {},
+      status,
+      attempts: 1,
+      nextRunAt: '2026-10-20T15:15:00.000Z',
+      error: 'Not sent.',
+      createdAt: '2026-10-20T15:00:00.000Z',
+    });
+    const html = render(
+      Activity,
+      bootstrap({ traces: [], jobs: [job('failed-1', 'failed'), job('pending-1', 'pending')] }),
+      'activity',
+    );
+    expect(html).toContain('Attempt 1 · Stopped, not tried again automatically');
+    expect(html.match(/Next attempt/g)).toHaveLength(1);
+  });
 });
 
 describe('Inbox notes for the new pauses', () => {

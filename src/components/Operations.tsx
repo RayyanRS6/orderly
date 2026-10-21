@@ -131,7 +131,10 @@ export function Activity() {
               </div>
               <p className="mt-2 break-words text-red-700">{j.error}</p>
               <p className="mt-2 font-mono text-[11px] tracking-[0.02em] text-stone-500">
-                Attempt {j.attempts} · Next attempt {shortDate(j.nextRunAt)}
+                {/* A failed job is never run again on its own; only Retry failed work queues it. */}
+                {j.status === 'failed'
+                  ? `Attempt ${j.attempts} · Stopped, not tried again automatically`
+                  : `Attempt ${j.attempts} · Next attempt ${shortDate(j.nextRunAt)}`}
               </p>
             </div>
           ))}

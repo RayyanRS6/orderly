@@ -132,6 +132,10 @@ describe('what the AI is told about deals', () => {
     expect(withDeals.system).toContain(
       'Never compute or state prices, savings, discounts, percentages or times yourself; you may repeat a deal’s `when` text exactly as given.',
     );
+    // A deal ordered again is one more, not a swap of the one in the cart.
+    expect(withDeals.system).toContain(
+      'Ordering a deal that is already in the cart ("ek aur deal 1", "aur ek deal 1 coke ke sath", "one more deal 1 with sprite") adds another one with the options named',
+    );
     // Nothing that changes with the time is in the instructions: the same at another hour.
     vi.setSystemTime(new Date('2026-10-20T11:00:00.000Z'));
     expect((await call(catalog(), { hasDeals: true })).system).toBe(withDeals.system);

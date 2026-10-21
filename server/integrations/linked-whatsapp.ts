@@ -34,7 +34,7 @@ export class LinkedWhatsAppAdapter {
       );
     if (Date.now() - Date.parse(conversation.lastInboundAt) >= 86400000)
       throw new PublicError(
-        'Orderly pauses unofficial replies after 24 hours without a customer message. Contact the customer manually.',
+        'Not sent: the customer last wrote more than 24 hours ago, and WhatsApp doesn’t allow automatic messages from a linked phone after that. Message the customer yourself.',
         422,
       );
     return z.object({ messageId: z.string().min(1) }).parse(
@@ -50,7 +50,7 @@ export class LinkedWhatsAppAdapter {
   }
   async sendStatusTemplate(): Promise<string> {
     throw new PublicError(
-      'The unofficial connection does not support approved Meta templates. Staff must follow up outside the reply window.',
+      'Not sent: the customer last wrote more than 24 hours ago. After that WhatsApp only allows its pre-approved messages, which a linked phone can’t send. Message the customer yourself.',
       422,
     );
   }
