@@ -227,6 +227,30 @@ describe('Full Component Rendering with Workspace.Provider', () => {
     expect(htmlEmpty).toContain('A fresh page for your menu');
   });
 
+  it('shows a menu item’s photo on its card in place of the emoji, as the menu page does', () => {
+    const [first, second] = seedProducts;
+    const photoData = createMockBootstrap({
+      products: [
+        { ...first, emoji: '🍗', imageUrl: 'https://cdn.example/wings.jpg' },
+        // Not https: the menu page leaves it out too, so the card keeps the emoji.
+        { ...second, emoji: '🍟', imageUrl: 'http://cdn.example/fries.jpg' },
+      ],
+    });
+    const html = renderToStaticMarkup(
+      createElement(
+        Workspace.Provider,
+        { value: createMockWorkspaceContext(photoData, 'menu') },
+        createElement(Catalog),
+      ),
+    );
+    expect(html).toMatch(
+      /<img src="https:\/\/cdn\.example\/wings\.jpg"[^>]*class="size-full object-cover"/,
+    );
+    expect(html).not.toContain('🍗');
+    expect(html).not.toContain('http://cdn.example/fries.jpg');
+    expect(html).toContain('🍟');
+  });
+
   it('renders Inbox page with conversations and empty state', () => {
     const normalContext = createMockWorkspaceContext(normalData, 'inbox');
     const html = renderToStaticMarkup(

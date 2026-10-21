@@ -31,6 +31,44 @@ import {
 } from './ui';
 import { MenuLinkCard } from './MenuLinkCard';
 
+/**
+ * A menu card's picture, as customers see it on the menu page: the item's photo, cropped to a
+ * square, in place of its emoji. A photo that fails to load shows the emoji, as it does there.
+ */
+function ProductPicture({ product }: { product: Product }) {
+  // The link that failed, so a photo changed in the editor is tried again.
+  const [broken, setBroken] = useState('');
+  const photo =
+    product.imageUrl && isPhotoUrl(product.imageUrl) && product.imageUrl !== broken
+      ? product.imageUrl
+      : '';
+  return (
+    <div
+      className={cn(
+        'flex size-16 shrink-0 -rotate-3 items-center justify-center overflow-hidden rounded-2xl bg-paper text-[34px] shadow-[inset_0_1px_0_#fff,0_0_0_1px_rgb(14_6_4/0.05),0_10px_20px_-14px_rgb(14_6_4/0.45)] transition-transform duration-500 ease-[var(--ease-spring)] group-hover:rotate-6 group-hover:scale-110',
+        !product.available && 'opacity-60 grayscale',
+      )}
+      aria-hidden
+    >
+      {photo ? (
+        <img
+          src={photo}
+          alt=""
+          width={64}
+          height={64}
+          loading="lazy"
+          decoding="async"
+          referrerPolicy="no-referrer"
+          className="size-full object-cover"
+          onError={() => setBroken(photo)}
+        />
+      ) : (
+        product.emoji || '🍽️'
+      )}
+    </div>
+  );
+}
+
 /** The last non-empty value: a closing dialog keeps its title and content through its exit fade. */
 function useLast<T>(value: T | null) {
   const [last, setLast] = useState(value);
@@ -169,15 +207,7 @@ export function Catalog() {
           {products.map((product) => (
             <article key={product.id} className="card group overflow-hidden">
               <div className="flex items-start gap-4 p-5 sm:p-6">
-                <div
-                  className={cn(
-                    'flex size-16 shrink-0 -rotate-3 items-center justify-center rounded-2xl bg-paper text-[34px] shadow-[inset_0_1px_0_#fff,0_0_0_1px_rgb(14_6_4/0.05),0_10px_20px_-14px_rgb(14_6_4/0.45)] transition-transform duration-500 ease-[var(--ease-spring)] group-hover:rotate-6 group-hover:scale-110',
-                    !product.available && 'opacity-60 grayscale',
-                  )}
-                  aria-hidden
-                >
-                  {product.emoji || '🍽️'}
-                </div>
+                <ProductPicture product={product} />
                 <div className="min-w-0 flex-1">
                   <p className="eyebrow">{product.category}</p>
                   <h2 className="mt-1.5 font-serif text-[23px] leading-[1.05] font-normal tracking-[-0.005em] text-ink">
