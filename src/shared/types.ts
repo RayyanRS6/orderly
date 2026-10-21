@@ -364,7 +364,8 @@ export interface Conversation {
    * The bot asked which option the customer wants for the deal's next unpicked choice group.
    * Cleared wherever pendingItemChoice is. `groupId` and `optionIds` are the choice and its
    * options as last shown, so a number answers the list the customer saw (absent on choices
-   * asked before they were kept).
+   * asked before they were kept). `more`: while it waits behind a dish's "which one?", other deals
+   * in that message were not added, so its question, once asked, says "Then tell me the next deal."
    */
   pendingDealChoice?: {
     productId: string;
@@ -373,6 +374,7 @@ export interface Conversation {
     notes: string;
     groupId?: string;
     optionIds?: string[];
+    more?: boolean;
   };
   testContext?: {
     target: 'draft' | 'published';

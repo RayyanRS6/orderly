@@ -679,6 +679,9 @@ function dealProblem(
 // The deal's first choice with none of these picks.
 const openChoice = (product: Product, picked: string[]) =>
   product.deal?.choices.find((choice) => !choice.options.some((o) => picked.includes(o.id)));
+// Said when other deals in the message were not added, to ask for them.
+const nextDealNote = (lang: Language) =>
+  say(lang, 'Then tell me the next deal.', 'پھر اگلی ڈیل بتائیں۔', 'Phir agli deal batayein.');
 // The deal's choice still to make, as the engine asks it: "Choose Drink for Deal 1:\n1. Coke
 // …\n3. Fanta (+Rs. 50)", or '' with none left. It keeps the list shown in `pending`, so a number
 // answers what the customer saw. `more`: another deal in the message waits for its turn.
@@ -698,9 +701,7 @@ function dealChoiceQuestion(
       (option, index) =>
         `${index + 1}. ${option.name}${option.price > 0 ? ` (+${money(option.price)})` : ''}`,
     )
-    .join(
-      '\n',
-    )}${more ? `\n\n${say(lang, 'Then tell me the next deal.', 'پھر اگلی ڈیل بتائیں۔', 'Phir agli deal batayein.')}` : ''}`;
+    .join('\n')}${more ? `\n\n${nextDealNote(lang)}` : ''}`;
 }
 
 export function isCartSummaryRequest(text: string): boolean {
@@ -1665,7 +1666,14 @@ const blanked = (value: string, spans: [number, number][]) =>
 // a number ("deal" for "deal 1", or for "zinger deal" beside a Zinger Burger), then "item" (so
 // no number after it reads as "deal 2" again) and a break. A count before a stretch stays with
 // it: "zinger, 2 zinger deal" is one zinger, where `blanked` would leave the 2 alone in a part
-// of its own.
+// of its own. A count written straight after one (TRAILING_COUNT) is the deal's and goes with
+// it, so "deal 4 x3 + chicken burger x1" is one burger, unless the next stretch starts there
+// ("deal 2 3" naming Deal 3 too).
+// TRAILING_COUNT: "x3", "×3", "*3", "qty 3", "(3)", "3 dafa", or a number alone ("3", "3x", "- 3")
+// where its part of the message ends with it ("deal 2 2 + chicken burger 3"). A number alone
+// before a dish ("zinger deal 2 chicken burger", "deal 4 2x zinger") may be the dish's: it stays.
+const TRAILING_COUNT =
+  /^\s*(?:(?:x|×|\*|qty)\s*\d{1,2}|\(\s*\d{1,2}\s*\)|\d{1,2}\s*dafa|-?\s*\d{1,2}\s*(?:x|×)?(?=\s*(?:$|[+/,;&|\n!?-]|\.(?!\d))))(?![\p{L}\p{N}])/u;
 function masked(value: string, spans: [number, number][], dishWords: Set<string>): string {
   const merged: [number, number][] = [];
   for (const [start, end] of [...spans].sort((a, b) => a[0] - b[0])) {
@@ -1673,8 +1681,16 @@ function masked(value: string, spans: [number, number][], dishWords: Set<string>
     if (last && start <= last[1]) last[1] = Math.max(last[1], end);
     else merged.push([start, end]);
   }
-  return merged.reduceRight((text, [start, end]) => {
-    const word = normalizeCatalogText(text.slice(start, end))
+  const stretches = merged.map(([start, end], k) => {
+    const count = TRAILING_COUNT.exec(value.slice(end))?.[0].length ?? 0;
+    return {
+      start,
+      named: end,
+      end: end + count <= (merged[k + 1]?.[0] ?? Infinity) ? end + count : end,
+    };
+  });
+  return stretches.reduceRight((text, { start, named, end }) => {
+    const word = normalizeCatalogText(text.slice(start, named))
       .split(' ')
       .find((w) => w && !dishWords.has(w) && !/^\d+$/.test(w));
     return `${text.slice(0, start)} ${word ? `${word} ` : ''}item , ${text.slice(end)}`;
@@ -2110,8 +2126,28 @@ export function parseActions(
   ) {
     const drinks = own.filter((p) => !p.deal);
     const picks = answeredPicks(askedDeal, pendingDeal, value, asked, drinks);
+    // An option named like a dish the open "which one?" asks about ("pepsi" for Pepsi 345ml or
+    // Pepsi 1.5L) answers that question, the one asked last, as on a menu without deals; the deal
+    // is not named, so its choice waits (and the bare-answer rule in processTurn never applies).
+    const names = askedDeal
+      .deal!.choices.flatMap((group) => group.options)
+      .filter((option) => picks?.includes(option.id))
+      .map((option) => option.name);
+    const forDish =
+      !dealMentions.length &&
+      !!conversation.pendingItemChoice?.candidateProductIds.some((id) => {
+        const dish = drinks.find((p) => p.id === id);
+        return (
+          !!dish &&
+          names.some((name) =>
+            [dish.name, ...dish.aliases].some(
+              (label) => contains(label, name) || contains(name, label),
+            ),
+          )
+        );
+      });
     // No new pick (a number from a list since changed): the add asks the choice again.
-    if (picks) {
+    if (picks && !forDish) {
       // Picks written beside the deal's name replace those made before for the same choice
       // ("Add 1 Deal 3 with Sprite / Wings" after "coke").
       const choice = (id: string) =>
@@ -3442,15 +3478,31 @@ export function processTurn(
   // settleDealChoice below), so the order the AI lists its actions in changes nothing:
   // - One question is open at a time. A dish's "which one?" goes first; a deal missing a choice
   //   waits behind it (`queued`: both open before this turn) and is asked once that is over.
-  // - next.pendingDealChoice holds the deal whose choice was open before this turn. Any add of
-  //   that deal in the turn is its answer: its earlier picks and notes carry on into it, and
-  //   once it is added in full its question is over and never asked again.
+  // - `openBefore` is the deal whose choice was open before this turn. Which adds of that deal
+  //   answer it is decided before any runs: one naming any of its options answers it; with
+  //   none, one naming no option restates it (its count, its notes). Those adds, up to the
+  //   count asked, share its earlier picks and notes ("ek pepsi aur ek 7up" for 2 split it);
+  //   once one is added in full its question is over and never asked again. Beside an answer,
+  //   an add naming no option, or one beyond the count asked, is one more of that deal.
   // - Deals added this turn without every choice wait in `missing`, in order. The deal open
   //   before goes first; the first of these is asked after it, and the rest are not added
-  //   ("Then tell me the next deal.").
+  //   ("Then tell me the next deal.", said when that question is asked, even turns later if it
+  //   waits behind a dish's "which one?": `more`).
   // - A deal asked before this turn and passed over for something else is set aside, so a
   //   later "pepsi" is the drink. One that waited and was never asked is never set aside.
   const queued = !!conversation.pendingItemChoice && !!next.pendingDealChoice;
+  let openBefore = next.pendingDealChoice;
+  const openOptions = new Set(
+    deals
+      .find((deal) => deal.id === openBefore?.productId)
+      ?.deal?.choices.flatMap((group) => group.options.map((option) => option.id)),
+  );
+  const answersOpen = (action: BotAction) =>
+    action.type === 'add_item' &&
+    action.productId === openBefore?.productId &&
+    !!action.modifierIds?.some((id) => openOptions.has(id));
+  const openAnswered = requested.some(answersOpen);
+  let openTaken = 0;
   const missing: NonNullable<Conversation['pendingDealChoice']>[] = [];
   let partlyAnswered = false;
   let added = false;
@@ -3462,7 +3514,12 @@ export function processTurn(
     const due =
       partlyAnswered || missing.length > 0 || (!!open && queued && !next.pendingItemChoice);
     if (!due) {
-      if (!open) delete next.pendingDealChoice;
+      if (!open) {
+        delete next.pendingDealChoice;
+        // The deal that waited with others not added, now added in full: the note still goes.
+        if (openBefore?.more && traces.includes('deal_choice_answered'))
+          dealQuestion = nextDealNote(lang);
+      }
       return;
     }
     const queue = [...(open ? [open] : []), ...missing];
@@ -3487,18 +3544,25 @@ export function processTurn(
     if (first) next.pendingDealChoice = first;
     else delete next.pendingDealChoice;
     let question = '';
+    // Deals not added: the note goes with the question asked now, or with the deal that waits
+    // behind a "which one?" until its question is asked.
+    const noted = !!openBefore?.more || more.length > 0;
+    if (first && waits && noted) first.more = true;
     if (first && !waits) {
+      delete first.more;
       question = dealChoiceQuestion(
         deals.find((d) => d.id === first.productId)!,
         first,
         lang,
-        more.length > 0,
+        noted,
       );
       if (!traces.includes('deal_choice_asked')) traces.push('deal_choice_asked');
       // One question at a time: a "which one?" left open from before is over.
       delete next.pendingItemChoice;
     }
-    dealQuestion = [refusal, question].filter(Boolean).join('\n\n') || undefined;
+    // A refused deal that waited with others not added: the note follows the refusal.
+    const note = refusal && !first && noted ? nextDealNote(lang) : '';
+    dealQuestion = [refusal, question, note].filter(Boolean).join('\n\n') || undefined;
   };
   for (const action of requested) {
     traces.push(action.type);
@@ -3577,6 +3641,7 @@ export function processTurn(
         startNewCart(cart);
         delete next.pendingItemChoice;
         delete next.pendingDealChoice;
+        openBefore = undefined;
         missing.length = 0;
         reply = say(
           lang,
@@ -3589,6 +3654,7 @@ export function processTurn(
       if (action.type === 'cancel') {
         delete next.pendingItemChoice;
         delete next.pendingDealChoice;
+        openBefore = undefined;
         missing.length = 0;
         if (cart.status === 'submitted') {
           traces.push(`cancel_submitted:${cart.orderId}`);
@@ -3653,6 +3719,7 @@ export function processTurn(
         startNewCart(cart);
         delete next.pendingItemChoice;
         delete next.pendingDealChoice;
+        openBefore = undefined;
         missing.length = 0;
         traces.push('new_order');
       }
@@ -3680,12 +3747,15 @@ export function processTurn(
         const product = products.find(
           (p) => p.id === action.productId && p.companyId === company.id,
         );
-        // The deal whose choice was open before this turn, wherever this add comes in the turn:
-        // its earlier picks and notes carry on into this answer. The count is the action's own.
-        const pending =
-          product?.deal && next.pendingDealChoice?.productId === product.id
-            ? next.pendingDealChoice
-            : undefined;
+        // The deal whose choice was open before this turn, wherever this add comes in the turn
+        // (see openBefore): an add answering it, or restating it, within the count asked, takes
+        // on its earlier picks and notes. The count is the action's own.
+        const ofOpen =
+          !!product?.deal &&
+          product.id === openBefore?.productId &&
+          (!openAnswered || answersOpen(action));
+        const pending = ofOpen && openTaken < openBefore!.quantity ? openBefore : undefined;
+        if (ofOpen) openTaken += Number.isInteger(action.quantity) ? action.quantity : 0;
         let add = action;
         if (product?.deal) {
           if (product.deal.state !== 'on') {
@@ -3719,9 +3789,10 @@ export function processTurn(
               picked: [...picks].sort(),
               notes: (add.notes ?? '').slice(0, 300),
             };
-            // The deal open before, partly answered, stays open with its next choice; another
-            // waits its turn. Which is asked is settled once every action has run.
-            if (pending) {
+            // The deal open before, partly answered, stays open with its next choice (one line
+            // of it: a second waits too); another waits its turn. Which is asked is settled once
+            // every action has run.
+            if (pending && !partlyAnswered) {
               next.pendingDealChoice = open;
               partlyAnswered = true;
             } else missing.push(open);
@@ -3761,10 +3832,11 @@ export function processTurn(
         const quote = quoteCart(company, products, { ...trial, fulfillment: 'pickup' });
         cart.items = trial.items;
         added = true;
-        // The deal choice open before this turn is answered in full: over, never asked again.
+        // The deal choice open before this turn is answered in full: over, never asked again. A
+        // line of it still open (restated above, partly answered) stays.
         if (pending) {
-          delete next.pendingDealChoice;
-          traces.push('deal_choice_answered');
+          if (next.pendingDealChoice === openBefore) delete next.pendingDealChoice;
+          if (!traces.includes('deal_choice_answered')) traces.push('deal_choice_answered');
         }
         delete next.pendingItemChoice;
         invalidate(cart);
@@ -3804,6 +3876,7 @@ export function processTurn(
           : undefined;
         if (declined) {
           if (next.pendingDealChoice?.productId === declined.id) delete next.pendingDealChoice;
+          if (openBefore?.productId === declined.id) openBefore = undefined;
           for (let k = missing.length - 1; k >= 0; k--)
             if (missing[k]!.productId === declined.id) missing.splice(k, 1);
           const name = declined.name;
