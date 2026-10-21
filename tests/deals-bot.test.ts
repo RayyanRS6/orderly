@@ -955,11 +955,12 @@ describe('a deal word beside dishes, on a menu with deals', () => {
         actions.includes(whichDeal) ? whichDeal.candidateProductIds : undefined,
       );
     }
-    // A question only about the deals adds nothing the AI proposed.
+    // A question only about the deals is a turn about deals: what the AI proposed stands there too
+    // (amendment v4, A5). The engine's reading of it as the deals list replaces nothing.
     const asked = chat();
     const only = asked.send('کوئی ڈیل ہے؟', { actions: [add(zinger, 1)], response: ok });
-    expect(only.traces).toContain('browse_cart_mutation_prevented');
-    expect(lines(asked)).toEqual([]);
+    expect(only.traces).not.toContain('browse_cart_mutation_prevented');
+    expect(lines(asked)).toEqual(['zinger-burger ×1']);
   });
 });
 

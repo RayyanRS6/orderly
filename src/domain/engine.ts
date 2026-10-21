@@ -1671,9 +1671,10 @@ const blanked = (value: string, spans: [number, number][]) =>
 // ("deal 2 3" naming Deal 3 too).
 // TRAILING_COUNT: "x3", "×3", "*3", "qty 3", "(3)", "3 dafa", or a number alone ("3", "3x", "- 3")
 // where its part of the message ends with it ("deal 2 2 + chicken burger 3"). A number alone
-// before a dish ("zinger deal 2 chicken burger", "deal 4 2x zinger") may be the dish's: it stays.
+// before a dish ("zinger deal 2 chicken burger", "deal 4 2x zinger") may be the dish's: it stays,
+// and so does one on the next line ("deal 4\nx2 chicken burger").
 const TRAILING_COUNT =
-  /^\s*(?:(?:x|×|\*|qty)\s*\d{1,2}|\(\s*\d{1,2}\s*\)|\d{1,2}\s*dafa|-?\s*\d{1,2}\s*(?:x|×)?(?=\s*(?:$|[+/,;&|\n!?-]|\.(?!\d))))(?![\p{L}\p{N}])/u;
+  /^[^\S\n]*(?:(?:x|×|\*|qty)[^\S\n]*\d{1,2}|\([^\S\n]*\d{1,2}[^\S\n]*\)|\d{1,2}[^\S\n]*dafa|-?[^\S\n]*\d{1,2}[^\S\n]*(?:x|×)?(?=\s*(?:$|[+/,;&|\n!?-]|\.(?!\d))))(?![\p{L}\p{N}])/u;
 function masked(value: string, spans: [number, number][], dishWords: Set<string>): string {
   const merged: [number, number][] = [];
   for (const [start, end] of [...spans].sort((a, b) => a[0] - b[0])) {
@@ -1926,14 +1927,6 @@ const onlyAboutDeals = (text: string) =>
     .split(' ')
     .filter(Boolean)
     .every((word) => DEAL_WORDS.has(word) || DEAL_FILLERS.has(word));
-// The same with the words read as the bot reads them, so "کوئی" (which loses its hamza) counts:
-// on a menu with deals, a message only about them keeps no dish the AI added.
-const READ_FILLERS = new Set([...DEAL_FILLERS].map(normalizeCatalogText));
-const asksOnlyAboutDeals = (text: string) =>
-  normalizeCatalogText(text)
-    .split(' ')
-    .filter(Boolean)
-    .every((word) => DEAL_WORDS.has(word) || DEAL_FILLERS.has(word) || READ_FILLERS.has(word));
 const DEAL_ORDER = new RegExp(
   [
     "\\b(?:chahiye|chahye|chaiye|chahie|chahiyen|dena|de do|dedo|de dein|de den|lena|lunga|lungi|lenge|want|need|add|order|mangwana|mangwani|mangwa do|mangwa dein|bhejna|bhej do|bhej dein|bhej den|karna|karni|i ?['’]?ll (?:take|have)|give me|get me|can i (?:get|have))\\b",
@@ -2127,14 +2120,18 @@ export function parseActions(
     const drinks = own.filter((p) => !p.deal);
     const picks = answeredPicks(askedDeal, pendingDeal, value, asked, drinks);
     // An option named like a dish the open "which one?" asks about ("pepsi" for Pepsi 345ml or
-    // Pepsi 1.5L) answers that question, the one asked last, as on a menu without deals; the deal
-    // is not named, so its choice waits (and the bare-answer rule in processTurn never applies).
+    // Pepsi 1.5L) answers that question, the one asked last, as on a menu without deals; the
+    // deal's choice waits (and the bare-answer rule in processTurn never applies). Not when the
+    // deal is named, or the deal word ("deal wali sprite"), or that drink is ordered apart beside
+    // it ("sprite, aur ek sprite alag se"): the deal's, then.
     const names = askedDeal
       .deal!.choices.flatMap((group) => group.options)
       .filter((option) => picks?.includes(option.id))
       .map((option) => option.name);
     const forDish =
       !dealMentions.length &&
+      !looseDealWords(own, value).length &&
+      names.every((name) => orderedAgain(name, asked, drinks) === undefined) &&
       !!conversation.pendingItemChoice?.candidateProductIds.some((id) => {
         const dish = drinks.find((p) => p.id === id);
         return (
@@ -2766,12 +2763,20 @@ export function processTurn(
       reply: next.messages.find((m) => m.id === `${input.messageId}:reply`)?.text ?? '',
       traces: ['duplicate_message_ignored'],
     };
-  // A deal choice asked about a deal that was since deleted can't be answered.
+  // The deals not added while a deal waited (see settleDealChoice); a chat saved before they were
+  // kept by id has none.
+  const notAddedOf = (pending?: Conversation['pendingDealChoice']) =>
+    Array.isArray(pending?.more) ? pending.more : [];
+  // A deal choice asked about a deal that was since deleted can't be answered. The deals not added
+  // while it waited are still remembered.
+  let goneMore: string[] = [];
   if (
     next.pendingDealChoice &&
     !deals.some((deal) => deal.id === next.pendingDealChoice!.productId)
-  )
+  ) {
+    goneMore = notAddedOf(next.pendingDealChoice);
     delete next.pendingDealChoice;
+  }
   next.language = languageOf(customerWords(input.text, input.action), next.language);
   if (configuration.language !== 'auto') next.language = configuration.language;
   next.botVersion = company.bot?.published?.version;
@@ -3266,13 +3271,27 @@ export function processTurn(
     recapCorrected = requested.some((action) => action.type !== 'cart_summary');
     requested = [{ type: 'cart_summary' }];
   }
-  // The AI's actions about deals stand: the engine checks them only as it runs them (a deal not on
-  // is refused, a missing or unknown pick is asked, the count is bounded), and its own reading of
-  // the deals never takes their place, drops them or changes their count.
+  // In a turn that involves deals (the message names one, by its name or a deal word; a deal's
+  // choice is open or waits; the AI acts on a deal; or a "which one?" lists deals), the AI's
+  // actions stand for the whole turn, dishes included. The engine checks them only as it runs them
+  // (a deal not on is refused, a missing or unknown pick is asked, the count is bounded) and asks
+  // one question at a time (settleDealChoice). Its own reading of the message serves only a bare
+  // answer to the deal's choice, or the deal turned down (below). Any other turn is weighed
+  // against that reading as on a menu without deals.
   const isDeal = (id: string) => deals.some((deal) => deal.id === id);
   const aboutDeal = (action: BotAction) =>
     ((action.type === 'add_item' || action.type === 'remove_item') && isDeal(action.productId)) ||
     (action.type === 'clarify_item' && action.candidateProductIds.some(isDeal));
+  const dealTurn =
+    deals.length > 0 &&
+    (!!next.pendingDealChoice ||
+      requested.some(aboutDeal) ||
+      !!next.pendingItemChoice?.candidateProductIds.some(isDeal) ||
+      findDealMentions(products, company.id, normalize(input.text)).length > 0 ||
+      looseDealWords(
+        products.filter((product) => product.companyId === company.id),
+        normalize(input.text),
+      ).length > 0);
   // A dish named by one of these options ("Sprite 345ml" by a deal's Sprite).
   const namedBy = (id: string, options: string[]) => {
     const product = products.find((p) => p.companyId === company.id && p.id === id);
@@ -3340,63 +3359,29 @@ export function processTurn(
       // about deals: its question is over, so a later "sprite" is the drink.
       requested = [...requested, answer];
   }
+  // A turn without deals is weighed against the engine's own reading exactly as on a menu
+  // without deals.
   if (
     !input.action &&
     actions &&
+    !dealTurn &&
     requested.some((action) => action.type === 'add_item' || action.type === 'clarify_item')
   ) {
-    // With deals, the parser's reading of them is set aside, and so are the dishes it read from an
-    // option the AI picked for a deal ("sprite" in "sprite wala"): the rest is weighed against the
-    // AI's dishes as on a menu without deals. A question only about the deals shows them still.
-    const picks = new Set(
-      requested.flatMap((action) =>
-        action.type === 'add_item' && isDeal(action.productId) ? (action.modifierIds ?? []) : [],
-      ),
-    );
-    const options = deals
-      .flatMap((deal) => deal.deal!.choices.flatMap((group) => group.options))
-      .filter((option) => picks.has(option.id))
-      .map((option) => option.name);
-    const dishReading = (action: BotAction) =>
-      !aboutDeal(action) &&
-      !(
-        action.type === 'menu' &&
-        (action.query === 'deals'
-          ? !asksOnlyAboutDeals(input.text)
-          : deals.some((deal) => deal.name === action.query))
-      ) &&
-      !(action.type === 'add_item' && namedBy(action.productId, options)) &&
-      !(
-        action.type === 'clarify_item' &&
-        action.candidateProductIds.every((id) => namedBy(id, options))
-      );
-    const deterministic = deals.length ? parse().filter(dishReading) : parse();
+    const deterministic = parse();
     const first = deterministic[0];
-    // A dish's count is read as the parser reads dishes: with the deals named taken out, so the
-    // 4 of "4 zinger deal, aur ek zinger burger" is never the burger's.
-    const dishText = deals.length
-      ? dishTextOf(
-          input.text,
-          products.filter((product) => product.companyId === company.id && !product.deal),
-          findDealMentions(products, company.id, normalize(input.text)).flatMap(
-            (mention) => mention.spans,
-          ),
-        )
-      : input.text;
     if (first?.type === 'clarify_item' && requested.some((action) => action.type === 'add_item')) {
       // The dish to choose is asked about. The AI's additions of other dishes stand ("karahi 4
       // naan" with two karahis: the naan), added first so the choice stays open. A count that
       // may be the next dish's (the 4) is not the choice's: the AI's count for it, else 1.
       const choice = new Set(first.candidateProductIds);
       const others = requested.filter(
-        (action) =>
-          (action.type === 'add_item' && !choice.has(action.productId)) || aboutDeal(action),
+        (action) => action.type === 'add_item' && !choice.has(action.productId),
       );
       const between = products.some(
         (product) =>
           choice.has(product.id) &&
-          quantityNear(product, dishText, products) !== undefined &&
-          clearQuantityNear(product, dishText, products) === undefined,
+          quantityNear(product, input.text, products) !== undefined &&
+          clearQuantityNear(product, input.text, products) === undefined,
       );
       const proposed = requested.find((action) =>
         action.type === 'add_item'
@@ -3412,8 +3397,7 @@ export function processTurn(
     } else if (
       first?.type === 'add_item' &&
       deterministic.length === 1 &&
-      (requested.some((action) => action.type === 'clarify_item' && !aboutDeal(action)) ||
-        next.pendingItemChoice)
+      (requested.some((action) => action.type === 'clarify_item') || next.pendingItemChoice)
     ) {
       // A specific name/ordinal resolves the outstanding choice; keep its options and quantity.
       // The count: one written next to the dish in its own part (the parser's); else the AI's
@@ -3424,15 +3408,15 @@ export function processTurn(
         ? next.pendingItemChoice
         : undefined;
       const product = products.find((p) => p.id === first.productId);
-      const explicit = !!product && clearQuantityNear(product, dishText, products) !== undefined;
+      const explicit = !!product && clearQuantityNear(product, input.text, products) !== undefined;
       const quantityFor = (proposed: number) =>
         !pending || explicit
           ? first.quantity
-          : proposed === pending.quantity || mentionsQuantity(input.text, proposed, products)
+          : proposed === pending.quantity || mentionsQuantity(input.text, proposed)
             ? proposed
             : first.quantity;
       requested = requested.map((action) => {
-        if (action.type === 'clarify_item' && !aboutDeal(action))
+        if (action.type === 'clarify_item')
           return { ...first, quantity: quantityFor(action.quantity) };
         if (action.type === 'add_item' && action.productId === first.productId)
           return {
@@ -3444,24 +3428,15 @@ export function processTurn(
           };
         return action;
       });
-      if (actions.some((action) => action.type === 'clarify_item' && !aboutDeal(action)))
-        correctedInterpretation = true;
+      if (actions.some((action) => action.type === 'clarify_item')) correctedInterpretation = true;
       traces.push('item_choice_resolved');
     } else if (
       first?.type === 'menu' &&
       requested.some((action) => action.type === 'add_item' || action.type === 'clarify_item')
     ) {
-      // Browsing: the menu in place of the AI's dish changes. What it proposed about deals stands.
-      const kept = requested.filter(aboutDeal);
-      const undone = requested.some(
-        (action) =>
-          (action.type === 'add_item' || action.type === 'clarify_item') && !kept.includes(action),
-      );
-      requested = [...deterministic, ...kept];
-      if (undone) {
-        correctedInterpretation = true;
-        traces.push('browse_cart_mutation_prevented');
-      }
+      requested = deterministic;
+      correctedInterpretation = true;
+      traces.push('browse_cart_mutation_prevented');
     }
   }
   if (requested.length > 8) {
@@ -3475,50 +3450,125 @@ export function processTurn(
     return finish();
   }
   // Deals' choices follow ONE rule, settled once every action of the turn has run (see
-  // settleDealChoice below), so the order the AI lists its actions in changes nothing:
-  // - One question is open at a time. A dish's "which one?" goes first; a deal missing a choice
-  //   waits behind it (`queued`: both open before this turn) and is asked once that is over.
+  // settleDealChoice below):
+  // - One question is open at a time. A dish's "which one?" goes first, and one asked this turn
+  //   stays open whatever is added after it; a deal missing a choice waits behind it (`queued`:
+  //   both open before this turn) and is asked once that is over.
   // - `openBefore` is the deal whose choice was open before this turn. Which adds of that deal
-  //   answer it is decided before any runs: one naming any of its options answers it; with
-  //   none, one naming no option restates it (its count, its notes). Those adds, up to the
-  //   count asked, share its earlier picks and notes ("ek pepsi aur ek 7up" for 2 split it);
-  //   once one is added in full its question is over and never asked again. Beside an answer,
-  //   an add naming no option, or one beyond the count asked, is one more of that deal.
+  //   take on its earlier picks and notes is decided before any runs (`ofOpen`), wherever the AI
+  //   lists them. An add naming an option of a choice still open answers it (with none, one naming
+  //   any option re-picks); adds that each name a different one of those choices, for the same
+  //   count, are one line. Those answers, up to the count asked (the ones that make it up exactly,
+  //   when some do), then adds naming no option for what they leave of it, share its picks and
+  //   notes ("ek pepsi aur ek 7up" for 2 split it). Any other add of that deal is one more of it.
+  //   Once one is added in full its question is over and never asked again.
   // - Deals added this turn without every choice wait in `missing`, in order. The deal open
   //   before goes first; the first of these is asked after it, and the rest are not added
-  //   ("Then tell me the next deal.", said when that question is asked, even turns later if it
-  //   waits behind a dish's "which one?": `more`).
-  // - A deal asked before this turn and passed over for something else is set aside, so a
-  //   later "pepsi" is the drink. One that waited and was never asked is never set aside.
+  //   ("Then tell me the next deal."). While a deal waits behind a "which one?", the deals not
+  //   added are kept by id (`more`), and the note is said once, when its question is asked or it
+  //   is gone, if one of them is still neither added nor turned down.
+  // - A deal asked before this turn and passed over for something else is set aside, so a later
+  //   "pepsi" is the drink. One that waited and was never asked is never set aside, nor one whose
+  //   answer never ran (an action before it failed): it keeps its picks and notes.
   const queued = !!conversation.pendingItemChoice && !!next.pendingDealChoice;
   let openBefore = next.pendingDealChoice;
-  const openOptions = new Set(
-    deals
-      .find((deal) => deal.id === openBefore?.productId)
-      ?.deal?.choices.flatMap((group) => group.options.map((option) => option.id)),
-  );
-  const answersOpen = (action: BotAction) =>
-    action.type === 'add_item' &&
-    action.productId === openBefore?.productId &&
-    !!action.modifierIds?.some((id) => openOptions.has(id));
-  const openAnswered = requested.some(answersOpen);
-  let openTaken = 0;
+  let carried = openBefore ? [...notAddedOf(openBefore)] : goneMore;
+  const ofOpen = new Set<BotAction>();
+  const openDeal = deals.find((deal) => deal.id === openBefore?.productId)?.deal;
+  if (openBefore && openDeal) {
+    const asked = openBefore;
+    const count = (action: BotAction) =>
+      action.type === 'add_item' && Number.isInteger(action.quantity) ? action.quantity : 0;
+    const groupsOf = (action: BotAction) =>
+      openDeal.choices.flatMap((group, k) =>
+        action.type === 'add_item' &&
+        group.options.some((option) => action.modifierIds?.includes(option.id))
+          ? [k]
+          : [],
+      );
+    const stillOpen = (k: number) =>
+      !openDeal.choices[k]!.options.some((option) => asked.picked.includes(option.id));
+    const adds = () =>
+      requested.filter(
+        (action) => action.type === 'add_item' && action.productId === asked.productId,
+      );
+    let answers = adds().filter((action) => groupsOf(action).some(stillOpen));
+    const named = answers.map(groupsOf).flat();
+    if (
+      answers.length > 1 &&
+      new Set(named).size === named.length &&
+      named.every(stillOpen) &&
+      answers.every((action) => count(action) === count(answers[0]!))
+    ) {
+      const lines = answers as Extract<BotAction, { type: 'add_item' }>[];
+      const merged: BotAction = {
+        ...lines[0]!,
+        modifierIds: lines.flatMap((action) => action.modifierIds ?? []),
+        notes: lines.find((action) => action.notes?.trim())?.notes ?? lines[0]!.notes,
+      };
+      requested = requested.flatMap((action) =>
+        action === lines[0] ? [merged] : answers.includes(action) ? [] : [action],
+      );
+      answers = [merged];
+    }
+    if (!answers.length) answers = adds().filter((action) => groupsOf(action).length > 0);
+    // Up to the count asked: the answers that make it up exactly, else in the AI's order.
+    const exactly = (from: number, left: number): BotAction[] | undefined => {
+      if (!left) return [];
+      for (let k = from; k < answers.length; k++) {
+        const q = count(answers[k]!);
+        const rest = q > 0 && q <= left ? exactly(k + 1, left - q) : undefined;
+        if (rest) return [answers[k]!, ...rest];
+      }
+      return undefined;
+    };
+    let taken = 0;
+    const within = (action: BotAction) => {
+      const ok = taken < asked.quantity;
+      taken += count(action);
+      return ok;
+    };
+    const total = answers.reduce((sum, action) => sum + count(action), 0);
+    const chosen =
+      total <= asked.quantity ? answers : (exactly(0, asked.quantity) ?? answers.filter(within));
+    taken = chosen.reduce((sum, action) => sum + count(action), 0);
+    for (const action of [...chosen, ...adds().filter((a) => !groupsOf(a).length && within(a))])
+      ofOpen.add(action);
+  }
+  // Whether an add of the deal open before ran with its picks; the deals added or turned down.
+  let openRan = false;
+  const handled = new Set<string>();
+  // The "which one?" asked this turn, and its wording, which stays the question shown.
+  let itemAsked: Conversation['pendingItemChoice'];
+  let itemQuestion = '';
   const missing: NonNullable<Conversation['pendingDealChoice']>[] = [];
   let partlyAnswered = false;
   let added = false;
   const settleDealChoice = () => {
     let open = next.pendingDealChoice;
-    if (open && !partlyAnswered && !queued && (added || missing.length)) open = undefined;
+    if (
+      open &&
+      !partlyAnswered &&
+      !queued &&
+      (added || missing.length) &&
+      (openRan || !ofOpen.size)
+    )
+      open = undefined;
     // Its question is due when this turn left a choice to ask, or when the "which one?" a
     // waiting deal was queued behind is over (answered, or passed over by another addition).
     const due =
       partlyAnswered || missing.length > 0 || (!!open && queued && !next.pendingItemChoice);
+    // The deals not added while a deal waited, less those added or turned down since.
+    const notAdded = carried.filter((id) => !handled.has(id));
     if (!due) {
-      if (!open) {
+      if (open) {
+        if (notAdded.length) open.more = notAdded;
+        else delete open.more;
+      } else {
         delete next.pendingDealChoice;
-        // The deal that waited with others not added, now added in full: the note still goes.
-        if (openBefore?.more && traces.includes('deal_choice_answered'))
-          dealQuestion = nextDealNote(lang);
+        // The deal that waited is gone (added in full, turned down, refused or deleted): the
+        // note still goes, once.
+        if (notAdded.length) dealQuestion = nextDealNote(lang);
       }
       return;
     }
@@ -3540,28 +3590,31 @@ export function processTurn(
         }
       }
     }
-    const [first, ...more] = queue;
+    const [first, ...rest] = queue;
     if (first) next.pendingDealChoice = first;
     else delete next.pendingDealChoice;
-    let question = '';
     // Deals not added: the note goes with the question asked now, or with the deal that waits
     // behind a "which one?" until its question is asked.
-    const noted = !!openBefore?.more || more.length > 0;
-    if (first && waits && noted) first.more = true;
+    const more = [...new Set([...notAdded, ...rest.map((pending) => pending.productId)])];
+    let question = '';
+    if (first && waits) {
+      if (more.length) first.more = more;
+      else delete first.more;
+    }
     if (first && !waits) {
       delete first.more;
       question = dealChoiceQuestion(
         deals.find((d) => d.id === first.productId)!,
         first,
         lang,
-        noted,
+        more.length > 0,
       );
       if (!traces.includes('deal_choice_asked')) traces.push('deal_choice_asked');
       // One question at a time: a "which one?" left open from before is over.
       delete next.pendingItemChoice;
     }
-    // A refused deal that waited with others not added: the note follows the refusal.
-    const note = refusal && !first && noted ? nextDealNote(lang) : '';
+    // A deal refused or dropped, with others not added: the note follows.
+    const note = !first && more.length ? nextDealNote(lang) : '';
     dealQuestion = [refusal, question, note].filter(Boolean).join('\n\n') || undefined;
   };
   for (const action of requested) {
@@ -3616,6 +3669,8 @@ export function processTurn(
         reply = `${say(lang, 'Which one would you like?', 'آپ کون سا لینا چاہیں گے؟', 'Aap kaun sa lena chahenge?')}\n${candidates
           .map((product, index) => `${index + 1}. ${product.name}${unavailable(product)}`)
           .join('\n')}`;
+        itemAsked = next.pendingItemChoice;
+        itemQuestion = reply;
         continue;
       }
       if (action.type === 'menu') {
@@ -3642,6 +3697,7 @@ export function processTurn(
         delete next.pendingItemChoice;
         delete next.pendingDealChoice;
         openBefore = undefined;
+        carried = [];
         missing.length = 0;
         reply = say(
           lang,
@@ -3655,6 +3711,7 @@ export function processTurn(
         delete next.pendingItemChoice;
         delete next.pendingDealChoice;
         openBefore = undefined;
+        carried = [];
         missing.length = 0;
         if (cart.status === 'submitted') {
           traces.push(`cancel_submitted:${cart.orderId}`);
@@ -3720,6 +3777,7 @@ export function processTurn(
         delete next.pendingItemChoice;
         delete next.pendingDealChoice;
         openBefore = undefined;
+        carried = [];
         missing.length = 0;
         traces.push('new_order');
       }
@@ -3748,16 +3806,12 @@ export function processTurn(
           (p) => p.id === action.productId && p.companyId === company.id,
         );
         // The deal whose choice was open before this turn, wherever this add comes in the turn
-        // (see openBefore): an add answering it, or restating it, within the count asked, takes
-        // on its earlier picks and notes. The count is the action's own.
-        const ofOpen =
-          !!product?.deal &&
-          product.id === openBefore?.productId &&
-          (!openAnswered || answersOpen(action));
-        const pending = ofOpen && openTaken < openBefore!.quantity ? openBefore : undefined;
-        if (ofOpen) openTaken += Number.isInteger(action.quantity) ? action.quantity : 0;
+        // (see ofOpen): an add answering it, or restating it, within the count asked, takes on
+        // its earlier picks and notes. The count is the action's own.
+        const pending = ofOpen.has(action) && product?.deal ? openBefore : undefined;
         let add = action;
         if (product?.deal) {
+          handled.add(product.id);
           if (product.deal.state !== 'on') {
             // Its open choice goes with the refusal (kept, since `next` is not rolled back), so
             // the next "sprite" is the Sprite drink, never this deal when it is back on.
@@ -3792,6 +3846,7 @@ export function processTurn(
             // The deal open before, partly answered, stays open with its next choice (one line
             // of it: a second waits too); another waits its turn. Which is asked is settled once
             // every action has run.
+            if (pending) openRan = true;
             if (pending && !partlyAnswered) {
               next.pendingDealChoice = open;
               partlyAnswered = true;
@@ -3835,10 +3890,13 @@ export function processTurn(
         // The deal choice open before this turn is answered in full: over, never asked again. A
         // line of it still open (restated above, partly answered) stays.
         if (pending) {
+          openRan = true;
           if (next.pendingDealChoice === openBefore) delete next.pendingDealChoice;
           if (!traces.includes('deal_choice_answered')) traces.push('deal_choice_answered');
         }
-        delete next.pendingItemChoice;
+        // A "which one?" asked earlier is passed over. One asked this turn, in a turn about deals,
+        // stays the question (one question at a time).
+        if (!(dealTurn && itemAsked)) delete next.pendingItemChoice;
         invalidate(cart);
         settleFulfillment();
         const quoted = quote.items[same ? trial.items.indexOf(same) : trial.items.length - 1]!;
@@ -3868,13 +3926,16 @@ export function processTurn(
         // The deal whose choice is asked, turned down or taken off: it is not added, and its
         // question is over, so a later "sprite" is the drink. One already in the cart stays. So
         // is one asked before this turn that an add beside it passes over ("no deal, only
-        // pepsi"), and one this turn added without its choices.
-        const declined = [next.pendingDealChoice, conversation.pendingDealChoice, ...missing].some(
-          (pending) => pending?.productId === action.productId,
-        )
-          ? deals.find((deal) => deal.id === action.productId)
-          : undefined;
+        // pepsi"), one this turn added without its choices, and one not added while a deal
+        // waited (`carried`).
+        const declined =
+          [next.pendingDealChoice, conversation.pendingDealChoice, ...missing].some(
+            (pending) => pending?.productId === action.productId,
+          ) || carried.includes(action.productId)
+            ? deals.find((deal) => deal.id === action.productId)
+            : undefined;
         if (declined) {
+          handled.add(declined.id);
           if (next.pendingDealChoice?.productId === declined.id) delete next.pendingDealChoice;
           if (openBefore?.productId === declined.id) openBefore = undefined;
           for (let k = missing.length - 1; k >= 0; k--)
@@ -4050,6 +4111,15 @@ export function processTurn(
       break;
     }
   }
+  // The "which one?" asked this turn and still open is shown, whatever the AI listed after it.
+  if (
+    dealTurn &&
+    itemQuestion &&
+    next.mode === 'bot' &&
+    next.pendingItemChoice === itemAsked &&
+    !reply.includes(itemQuestion)
+  )
+    reply = [reply, itemQuestion].filter(Boolean).join('\n\n');
   settleDealChoice();
   if (
     cartFacts.length &&

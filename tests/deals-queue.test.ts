@@ -117,11 +117,16 @@ function chat(menu = products) {
           `${item.productId} ×${item.quantity}${item.modifierIds.length ? ` [${item.modifierIds.join(', ')}]` : ''}${item.notes ? ` "${item.notes}"` : ''}`,
       );
     },
-    // Without `actions`, local rules (no AI).
-    send(text: string, actions?: BotAction[], response: ModelResponse | undefined = ok) {
+    // Without `actions`, local rules (no AI). `on`: the menu at this message, if it changed.
+    send(
+      text: string,
+      actions?: BotAction[],
+      response: ModelResponse | undefined = ok,
+      on: Product[] = menu,
+    ) {
       const result = processTurn(
         company,
-        menu,
+        on,
         conversation,
         { messageId: `m${++n}`, text, now },
         actions,
@@ -580,29 +585,39 @@ describe('a bare answer to a dish’s "which one?" beside an open deal (round 5,
     ]);
   };
 
-  it('reads "pepsi" as the which-one’s answer, not the deal’s drink', () => {
-    for (const actions of [[add('pepsi')], [which(['pepsi', 'pepsi15'])]]) {
-      const c = sizes();
-      const result = c.send('pepsi', actions);
-      // Both sizes are Pepsi: asked again, as on a menu without deals.
-      expect(result.reply).toMatch(/^Which one would you like\?/u);
-      expect(result.traces).not.toContain('deal_choice_resolved');
-      stillWaits(c);
-    }
-    const c = sizes();
-    c.send('pepsi', [add('pepsi')]);
-    const sized = c.send('345ml', [add('pepsi')]);
+  // A turn while a deal's choice waits is about deals: the AI's reading of "pepsi" stands
+  // (amendment v4, A5). Its size asked again keeps the deal waiting; its Pepsi 345ml answers the
+  // size, and the deal's drink is asked next. Never the deal's drink.
+  const sizedThenDrink = (
+    c: ReturnType<typeof chat>,
+    result: { reply: string; traces: string[] },
+  ) => {
+    expect(result.traces).not.toContain('deal_choice_resolved');
+    expect(result.reply).toContain('Added 1 × Pepsi 345ml');
+    expect(result.reply).toContain('Choose Drink for Deal 1:');
     expect(c.items).toEqual(['pepsi ×1']);
+    expect(c.conversation.pendingDealChoice).toMatchObject({ productId: 'd1', picked: [] });
+    expect(c.conversation.pendingItemChoice).toBeUndefined();
+  };
+
+  it('reads "pepsi" as the which-one’s answer, not the deal’s drink', () => {
+    const again = sizes();
+    const result = again.send('pepsi', [which(['pepsi', 'pepsi15'])]);
+    expect(result.reply).toMatch(/^Which one would you like\?/u);
+    expect(result.traces).not.toContain('deal_choice_resolved');
+    stillWaits(again);
+    const sized = again.send('345ml', [add('pepsi')]);
+    expect(again.items).toEqual(['pepsi ×1']);
     expect(sized.reply).toContain('Choose Drink for Deal 1:');
+    const c = sizes();
+    sizedThenDrink(c, c.send('pepsi', [add('pepsi')]));
   });
 
   it('does the same when the deal’s drink was asked before the size', () => {
     const c = chat(wider);
     c.send('deal 1', [add('d1')]);
     c.send('aur ek pepsi', [which(['pepsi', 'pepsi15'])]);
-    const result = c.send('pepsi', [add('pepsi')]);
-    expect(result.traces).not.toContain('deal_choice_resolved');
-    stillWaits(c);
+    sizedThenDrink(c, c.send('pepsi', [add('pepsi')]));
   });
 
   it('does the same on local rules', () => {
@@ -669,12 +684,291 @@ describe('a count written after a deal, beside a dish answering "which one?" (ro
     },
   );
 
-  it('asks which burger for one with no "which one?" open', () => {
+  it('keeps the AI’s "which burger?" for one, or its burger, with no "which one?" open', () => {
     const c = chat(wider);
-    c.send('deal 2 x2 + burger', [add('d2', 2), add('chb')]);
+    c.send('deal 2 x2 + burger', [add('d2', 2), which(['zinger', 'chb'])]);
     expect(c.items).toEqual(['d2 ×2']);
     expect(c.conversation.pendingItemChoice?.quantity).toBe(1);
     c.send('chicken', [add('chb')]);
     expect(c.items).toEqual(['d2 ×2', 'chb ×1']);
+    // A turn naming a deal: the AI's burger stands (amendment v4, A5), never asked over.
+    const ai = chat(wider);
+    const result = ai.send('deal 2 x2 + burger', [add('d2', 2), add('chb')]);
+    expect(result.traces).not.toContain('ambiguous_addition_prevented');
+    expect(ai.items).toEqual(['d2 ×2', 'chb ×1']);
+  });
+
+  it('leaves a count on the next line to the dish there, on local rules', () => {
+    for (const text of ['deal 4\nx2 chicken burger', 'deal 4\n(2) chicken burger']) {
+      const open = chat(wider);
+      open.send('burger', [which(['zinger', 'chb'])]);
+      expect(parseActions(company, wider, open.conversation, text)[0]).toMatchObject({
+        type: 'add_item',
+        productId: 'chb',
+        quantity: 2,
+      });
+      const none = chat(wider);
+      none.send(text);
+      expect(none.items).toEqual(['d4 ×1', 'chb ×2']);
+    }
+  });
+});
+
+// Amendment v4, Q: one question at a time, whatever order the AI lists its actions in.
+describe('a dish’s "which one?" asked beside deals (amendment v4, Q)', () => {
+  it('stays open when the AI lists an add after it', () => {
+    for (const [answer, actions] of [
+      ['Pepsi 1.5L', [add('pepsi15', 3)]],
+      ['2', undefined],
+    ] as [string, BotAction[] | undefined][]) {
+      const c = chat(wider);
+      const result = c.send('can I get 3 × pepsi, and 2 × deal 1 with Pepsi please', [
+        which(['pepsi', 'pepsi15'], 3),
+        add('d1', 2, ['o-pepsi']),
+      ]);
+      expect(result.reply).toMatch(
+        /Which one would you like\?\n1\. Pepsi 345ml\n2\. Pepsi 1\.5L$/u,
+      );
+      expect(c.items).toEqual(['d1 ×2 [o-pepsi]']);
+      expect(c.conversation.pendingItemChoice).toMatchObject({
+        candidateProductIds: ['pepsi', 'pepsi15'],
+        quantity: 3,
+      });
+      c.send(answer, actions);
+      expect(c.items).toEqual(['d1 ×2 [o-pepsi]', 'pepsi15 ×3']);
+    }
+  });
+
+  it('is asked alone, and the deal missing a choice after it, in any order', () => {
+    const deal6 = add('d6', 1, ['o-7up']);
+    const sizes = which(['pepsi', 'pepsi15'], 2);
+    const deal1 = add('d1', 2, ['o-pepsi']);
+    for (const actions of [
+      [deal6, sizes, deal1],
+      [sizes, deal6, deal1],
+      [deal1, deal6, sizes],
+    ]) {
+      const c = chat(wider);
+      const result = c.send('one deal 6 with 7up\n2x pepsi\ndeal 1 qty 2 with pepsi', actions);
+      expect(result.reply).toMatch(
+        /Which one would you like\?\n1\. Pepsi 345ml\n2\. Pepsi 1\.5L$/u,
+      );
+      expect(result.reply).not.toContain('Choose');
+      expect(c.items).toEqual(['d1 ×2 [o-pepsi]']);
+      expect(c.conversation.pendingItemChoice?.quantity).toBe(2);
+      expect(c.conversation.pendingDealChoice).toMatchObject({
+        productId: 'd6',
+        picked: ['o-7up'],
+      });
+      // Once the size is answered, the deal is asked: never dropped.
+      expect(c.send('Pepsi 345ml', [add('pepsi', 2)]).reply).toContain(
+        'Choose Side for Deal 6:\n1. Fries\n2. Wings (+Rs. 100)',
+      );
+      c.send('fries', [add('d6', 1, ['o-fries'])]);
+      expect(c.items).toEqual(['d1 ×2 [o-pepsi]', 'pepsi ×2', 'd6 ×1 [o-7up, o-fries]']);
+    }
+  });
+
+  it('is asked alone beside one more of the open deal and its answer', () => {
+    for (const actions of [
+      [add('d1'), which(['zinger', 'chb']), add('d1', 1, ['o-pepsi'])],
+      [which(['zinger', 'chb']), add('d1'), add('d1', 1, ['o-pepsi'])],
+    ]) {
+      const c = chat();
+      c.send('deal 1 please', [add('d1')]);
+      const result = c.send('ek burger aur ek aur deal 1, pehli mein pepsi', actions);
+      expect(result.reply).toMatch(/Which one would you like\?\n1\. .+\n2\. .+$/u);
+      expect(result.reply).not.toMatch(ASKS_DRINK);
+      expect(c.items).toEqual(['d1 ×1 [o-pepsi]']);
+      expect(c.conversation.pendingItemChoice).toBeDefined();
+      expect(c.conversation.pendingDealChoice).toMatchObject({ productId: 'd1', picked: [] });
+      expect(c.send('chicken', [add('chb')]).reply).toMatch(ASKS_DRINK);
+    }
+  });
+});
+
+describe('the adds that answer the open deal (amendment v4, Q)', () => {
+  const both = (first: BotAction, second: BotAction) => [
+    [first, second],
+    [second, first],
+  ];
+
+  it('answers it only with a choice it still has open, in any order', () => {
+    // The other deal's drink names a choice the open deal has made: it is one more deal.
+    for (const drinkId of ['o-pepsi', 'o-7up'])
+      for (const actions of both(add('d6', 1, [drinkId]), add('d6', 1, ['o-fries']))) {
+        const c = chat();
+        c.send('deal 6', [add('d6')]);
+        c.send('pepsi', [add('d6', 1, ['o-pepsi'])]);
+        const result = c.send('ek aur deal 6, aur pehli mein fries', actions);
+        // The first deal keeps its Pepsi; the other one is asked its side.
+        expect(c.items).toEqual(['d6 ×1 [o-fries, o-pepsi]']);
+        expect(result.reply).toMatch(/Choose Side for Deal 6:|Deal 6 ke liye Side chunein:/u);
+        expect(c.conversation.pendingDealChoice).toMatchObject({
+          productId: 'd6',
+          picked: [drinkId],
+        });
+      }
+    for (const actions of both(add('d5', 1, ['o-7up-1']), add('d5', 1, ['o-mirinda-2']))) {
+      const c = chat();
+      c.send('deal 5', [add('d5')]);
+      c.send('pepsi', [add('d5', 1, ['o-pepsi-1'])]);
+      c.send('ek aur deal 5 7up wali, pehli mein doosra mirinda', actions);
+      expect(c.items).toEqual(['d5 ×1 [o-mirinda-2, o-pepsi-1]']);
+      expect(c.conversation.pendingDealChoice).toMatchObject({
+        productId: 'd5',
+        picked: ['o-7up-1'],
+      });
+    }
+  });
+
+  it('adds one deal whose picks the AI split over two adds', () => {
+    for (const actions of both(add('d6', 1, ['o-pepsi']), add('d6', 1, ['o-fries']))) {
+      const c = chat();
+      c.send('deal 6, mayo nahi', [add('d6', 1, [], 'no mayo')]);
+      const result = c.send('pepsi aur fries', actions);
+      expect(result.reply).not.toContain('Choose');
+      expect(result.reply).not.toContain('Then tell me the next deal.');
+      expect(c.items).toEqual(['d6 ×1 [o-fries, o-pepsi] "no mayo"']);
+      expect(c.conversation.pendingDealChoice).toBeUndefined();
+    }
+    for (const actions of both(add('d6', 2, ['o-pepsi']), add('d6', 2, ['o-fries']))) {
+      const c = chat();
+      c.send('2 deal 6', [add('d6', 2)]);
+      c.send('dono mein pepsi aur fries', actions);
+      expect(c.items).toEqual(['d6 ×2 [o-fries, o-pepsi]']);
+    }
+    for (const actions of both(add('d5', 1, ['o-pepsi-1']), add('d5', 1, ['o-7up-2']))) {
+      const c = chat();
+      c.send('deal 5', [add('d5')]);
+      c.send('pehli pepsi doosri 7up', actions);
+      expect(c.items).toEqual(['d5 ×1 [o-7up-2, o-pepsi-1]']);
+    }
+  });
+
+  it('gives an add naming no choice, within the count asked, its picks and notes', () => {
+    for (const actions of both(add('d1', 1, ['o-pepsi']), add('d1'))) {
+      const c = chat();
+      c.send('2 deal 1, mayo nahi', [add('d1', 2, [], 'no mayo')]);
+      c.send('ek mein pepsi, doosri ka baad mein', actions);
+      expect(c.items).toEqual(['d1 ×1 [o-pepsi] "no mayo"']);
+      expect(c.conversation.pendingDealChoice).toMatchObject({
+        productId: 'd1',
+        quantity: 1,
+        picked: [],
+        notes: 'no mayo',
+      });
+      c.send('7up', [add('d1', 1, ['o-7up'])]);
+      expect(c.items).toEqual(['d1 ×1 [o-pepsi] "no mayo"', 'd1 ×1 [o-7up] "no mayo"']);
+    }
+    for (const actions of both(add('d6', 1, ['o-fries']), add('d6'))) {
+      const c = chat();
+      c.send('2 deal 6', [add('d6', 2)]);
+      c.send('dono mein pepsi', [add('d6', 2, ['o-pepsi'])]);
+      const result = c.send('ek mein fries, doosri ka baad mein', actions);
+      expect(result.reply).toMatch(/Choose Side for Deal 6:|Deal 6 ke liye Side chunein:/u);
+      expect(c.items).toEqual(['d6 ×1 [o-fries, o-pepsi]']);
+      expect(c.conversation.pendingDealChoice).toMatchObject({ picked: ['o-pepsi'] });
+    }
+  });
+
+  it('takes the answers that make up the count asked, whatever the AI lists first', () => {
+    for (const actions of both(add('d1', 1, ['o-7up']), add('d1', 2, ['o-pepsi']))) {
+      const c = chat();
+      c.send('2 deal 1, mayo nahi', [add('d1', 2, [], 'no mayo')]);
+      c.send('dono pepsi, aur ek aur deal 1 7up', actions);
+      expect(c.items.sort()).toEqual(['d1 ×1 [o-7up]', 'd1 ×2 [o-pepsi] "no mayo"']);
+    }
+  });
+
+  it('keeps its picks and notes when the answer never runs', () => {
+    for (const actions of [
+      [add('d6'), add('d6', 60, ['o-fries'])],
+      [add('d6'), { type: 'handoff' } as BotAction, add('d6', 1, ['o-fries'])],
+    ]) {
+      const c = chat();
+      c.send('deal 6, mayo nahi', [add('d6', 1, [], 'no mayo')]);
+      c.send('pepsi', [add('d6', 1, ['o-pepsi'])]);
+      c.send('fries, aur ek aur deal 6', actions);
+      expect(c.items).toEqual([]);
+      expect(c.conversation.pendingDealChoice).toMatchObject({
+        productId: 'd6',
+        picked: ['o-pepsi'],
+        notes: 'no mayo',
+      });
+    }
+    const c = chat();
+    c.send('deal 6, mayo nahi', [add('d6', 1, [], 'no mayo')]);
+    c.send('pepsi', [add('d6', 1, ['o-pepsi'])]);
+    expect(c.send('fries, aur ek aur deal 6', [add('d6'), add('d6', 60, ['o-fries'])]).reply).toBe(
+      'Choose a quantity between 1 and 50.\n\nChoose Side for Deal 6:\n1. Fries\n2. Wings (+Rs. 100)\n\nThen tell me the next deal.',
+    );
+    c.send('fries', [add('d6', 1, ['o-fries'])]);
+    expect(c.items).toEqual(['d6 ×1 [o-fries, o-pepsi] "no mayo"']);
+  });
+});
+
+describe('"Then tell me the next deal." for the deals not added (amendment v4, Q)', () => {
+  const NEXT_DEAL = /Then tell me the next deal\.|Phir agli deal batayein\./u;
+  // Deal 1 waits behind "which burger?", and Deal 3 was not added.
+  function behind() {
+    const c = chat(wider);
+    c.send('deal 1, deal 3 aur ek burger', [add('d1'), add('d3'), which(['zinger', 'chb'])]);
+    expect(c.conversation.pendingDealChoice).toMatchObject({ productId: 'd1', more: ['d3'] });
+    return c;
+  }
+
+  it('is not said once the deal not added is added or turned down', () => {
+    for (const actions of [
+      [add('chb'), add('d1', 1, ['o-pepsi']), add('d3', 1, ['o-pepsi'])],
+      [add('d3', 1, ['o-pepsi']), add('d1', 1, ['o-pepsi']), add('chb')],
+    ]) {
+      const c = behind();
+      const result = c.send('chicken wala, aur dono deals mein pepsi', actions);
+      expect(result.reply).not.toMatch(NEXT_DEAL);
+      expect(c.items.sort()).toEqual(['chb ×1', 'd1 ×1 [o-pepsi]', 'd3 ×1 [o-pepsi]']);
+    }
+    const c = behind();
+    const result = c.send('chicken, deal 3 cancel kar do', [add('chb'), remove('d3')]);
+    expect(result.reply).toMatch(ASKS_DRINK);
+    expect(result.reply).not.toMatch(NEXT_DEAL);
+    const added = behind();
+    expect(added.send('chicken, deal 3 7up', [add('chb'), add('d3', 1, ['o-7up'])]).reply).toMatch(
+      ASKS_DRINK,
+    );
+    expect(added.conversation.pendingDealChoice?.more).toBeUndefined();
+    expect(added.send('pepsi', [add('d1', 1, ['o-pepsi'])]).reply).not.toMatch(NEXT_DEAL);
+  });
+
+  it('is said once when the waiting deal is turned down or deleted', () => {
+    const declined = behind();
+    const result = declined.send('chicken, deal 1 nahi chahiye', [add('chb'), remove('d1')]);
+    expect(result.reply.match(new RegExp(NEXT_DEAL, 'gu'))).toHaveLength(1);
+    expect(declined.conversation.pendingDealChoice).toBeUndefined();
+    const deleted = behind();
+    const gone = wider.filter((product) => product.id !== 'd1');
+    const answered = deleted.send('chicken', [add('chb')], ok, gone);
+    expect(answered.reply.match(new RegExp(NEXT_DEAL, 'gu'))).toHaveLength(1);
+    expect(deleted.send('kuch aur?', [{ type: 'answer', text: '' }], ok, gone).reply).not.toMatch(
+      NEXT_DEAL,
+    );
+  });
+});
+
+describe('a deal word beside the option while a size "which one?" is open (amendment v4, f4)', () => {
+  it('answers the open deal on local rules and in the hint the AI gets', () => {
+    for (const text of ['deal wali pepsi', 'deal mein pepsi', 'pepsi for the deal']) {
+      const c = chat(wider);
+      c.send('deal 1 aur ek pepsi');
+      expect(c.conversation.pendingItemChoice).toBeDefined();
+      expect(parseActions(company, wider, c.conversation, text)[0]).toMatchObject({
+        type: 'add_item',
+        productId: 'd1',
+        modifierIds: ['o-pepsi'],
+      });
+      c.send(text);
+      expect(c.items).toEqual(['d1 ×1 [o-pepsi]']);
+      expect(c.conversation.pendingDealChoice).toBeUndefined();
+    }
   });
 });

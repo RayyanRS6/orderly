@@ -51,36 +51,51 @@ const deal = (
   position,
   updatedAt: '2026-10-01T00:00:00.000Z',
 });
-const products = sellableCatalog(
+const dishes = [
+  dish('pepsi', 'Pepsi 345ml', ['pepsi']),
+  dish('pepsi-15', 'Pepsi 1.5L'),
+  dish('7up', '7up 345ml', ['7up']),
+  dish('zinger', 'Zinger Burger', ['zinger']),
+];
+const deals = [
+  deal('d1', 'Deal 1', 1, [drink]),
+  deal('d2', 'Deal 2', 2),
+  deal('d3', 'Deal 3', 3, [drink]),
+  deal('d4', 'Deal 4', 4),
+  deal('c1', 'Combo 1', 5),
+  deal('c2', 'Combo 2', 6),
+  deal('c3', 'Combo 3', 7),
+  deal('s1', 'Student Deal 1', 8),
+];
+const products = sellableCatalog(company, dishes, deals, now, { all: true });
+// The same with a Chicken Burger beside the Zinger Burger, so "burger" asks which one, and Deal 5
+// with two drinks.
+const drinkN = (n: number): DealChoiceGroup => ({
+  id: `g-drink${n}`,
+  name: `Drink ${n}`,
+  options: drink.options.map((option) => ({ ...option, id: `${option.id}-${n}` })),
+});
+const burgers = sellableCatalog(
   company,
-  [
-    dish('pepsi', 'Pepsi 345ml', ['pepsi']),
-    dish('pepsi-15', 'Pepsi 1.5L'),
-    dish('7up', '7up 345ml', ['7up']),
-    dish('zinger', 'Zinger Burger', ['zinger']),
-  ],
-  [
-    deal('d1', 'Deal 1', 1, [drink]),
-    deal('d2', 'Deal 2', 2),
-    deal('d3', 'Deal 3', 3, [drink]),
-    deal('d4', 'Deal 4', 4),
-    deal('c1', 'Combo 1', 5),
-    deal('c2', 'Combo 2', 6),
-    deal('c3', 'Combo 3', 7),
-    deal('s1', 'Student Deal 1', 8),
-  ],
+  [...dishes, dish('chb', 'Chicken Burger')],
+  [...deals, deal('d5', 'Deal 5', 9, [drinkN(1), drinkN(2)])],
   now,
   { all: true },
 );
 const ok: ModelResponse = { text: 'Anything else?', askFor: 'anything_else' };
-const add = (productId: string, quantity = 1, modifierIds: string[] = []): BotAction => ({
-  type: 'add_item',
-  productId,
-  quantity,
-  modifierIds,
-});
+const add = (
+  productId: string,
+  quantity = 1,
+  modifierIds: string[] = [],
+  notes?: string,
+): BotAction => ({ type: 'add_item', productId, quantity, modifierIds, ...(notes && { notes }) });
 const remove = (productId: string): BotAction => ({ type: 'remove_item', productId });
-function chat() {
+const which = (ids: string[], quantity = 1): BotAction => ({
+  type: 'clarify_item',
+  candidateProductIds: ids,
+  quantity,
+});
+function chat(menu = products) {
   let conversation = createConversation(company.id, '923001234567', 'whatsapp', now);
   let n = 0;
   return {
@@ -96,7 +111,7 @@ function chat() {
     send(text: string, actions: BotAction[]) {
       const result = processTurn(
         company,
-        products,
+        menu,
         conversation,
         { messageId: `m${++n}`, text, now },
         actions,
@@ -292,5 +307,76 @@ describe('the AI’s deal actions stand where the engine reads the message wrong
       expect(result.traces).not.toContain('deal_choice_asked');
       expect(c.items).toEqual(['d1 ×2 [o-pepsi]']);
     }
+  });
+});
+
+// Amendment v4, A5: in a turn about deals the AI's actions stand for the whole turn, dishes
+// included. The engine's own reading of the dishes beside the deals (the round-6 sweep's root
+// causes R2-R6) never asks over, recounts or replaces them.
+describe('the AI’s dish actions stand in a turn about deals (amendment v4, A5)', () => {
+  it('keeps the count of its "which one?" (R2)', () => {
+    for (const text of ['Deal 4, burger qty 2 please', 'deal 4 aur burger 2 dafa']) {
+      const c = chat(burgers);
+      const result = c.send(text, [add('d4'), which(['zinger', 'chb'], 2)]);
+      expect(result.traces).not.toContain('ambiguous_addition_prevented');
+      expect(c.conversation.pendingItemChoice).toMatchObject({
+        candidateProductIds: ['zinger', 'chb'],
+        quantity: 2,
+      });
+      c.send('chicken burger', [add('chb', 2)]);
+      expect(c.items).toEqual(['d4 ×1', 'chb ×2']);
+    }
+  });
+
+  it('keeps its "which one?" beside the answer to an open deal (R3)', () => {
+    for (const text of ['7up. a pepsi', '7up, and pepsi']) {
+      const c = asked();
+      const result = c.send(text, [add('d1', 1, ['o-7up']), which(['pepsi', 'pepsi-15'])]);
+      expect(result.traces).not.toContain('item_choice_resolved');
+      expect(c.items).toEqual(['d1 ×1 [o-7up]']);
+      expect(c.conversation.pendingItemChoice?.candidateProductIds).toEqual(['pepsi', 'pepsi-15']);
+      c.send('Pepsi 1.5L', [add('pepsi-15')]);
+      expect(c.items).toEqual(['d1 ×1 [o-7up]', 'pepsi-15 ×1']);
+    }
+  });
+
+  it('adds a dish named in full beside a deal’s pick of the same drink (R4)', () => {
+    const c = chat(burgers);
+    const result = c.send('can I get 1 deal 5 with pepsi + 2x Pepsi 345ml', [
+      add('d5', 1, ['o-pepsi-1']),
+      add('pepsi', 2),
+    ]);
+    expect(result.reply).not.toContain('Which one would you like?');
+    expect(c.conversation.pendingItemChoice).toBeUndefined();
+    expect(c.items).toEqual(['pepsi ×2']);
+    expect(c.conversation.pendingDealChoice).toMatchObject({
+      productId: 'd5',
+      picked: ['o-pepsi-1'],
+    });
+  });
+
+  it('asks only the "which one?" it asked (R5)', () => {
+    const c = chat(burgers);
+    c.send('burger + 2 deal 1 (Mirinda) no mayo + 7up 345ml (3)', [
+      which(['zinger', 'chb']),
+      add('d1', 2, ['o-mirinda'], 'no mayo'),
+      add('7up', 3),
+    ]);
+    expect(c.conversation.pendingItemChoice?.candidateProductIds).toEqual(['zinger', 'chb']);
+    expect(c.items).toEqual(['d1 ×2 [o-mirinda]', '7up ×3']);
+  });
+
+  it('never turns its "which one?" into more of another dish (R6)', () => {
+    const c = chat(burgers);
+    const result = c.send('can I get 3x 7up, a pepsi, Deal 5 qty 2 pepsi please', [
+      which(['pepsi', 'pepsi-15']),
+      add('d5', 2, ['o-pepsi-1']),
+      add('7up', 3),
+    ]);
+    expect(result.traces).not.toContain('item_choice_resolved');
+    expect(c.items).toEqual(['7up ×3']);
+    expect(c.conversation.pendingItemChoice?.candidateProductIds).toEqual(['pepsi', 'pepsi-15']);
+    expect(c.conversation.pendingDealChoice).toMatchObject({ productId: 'd5', quantity: 2 });
+    expect(result.reply).not.toContain('Choose');
   });
 });
