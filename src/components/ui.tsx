@@ -37,9 +37,10 @@ export function keepOpenForToasts(event: { target: EventTarget | null; preventDe
 /**
  * Our dialogs open from state, not a Radix Trigger, so Radix has nowhere to send focus when
  * they close and it lands on <body>. This remembers what had focus when the dialog opened
- * and returns there (when it still exists).
+ * and returns there (when it still exists). returnTo, when it gives an element still on the
+ * page, goes first: for an action about to remove what opened the dialog.
  */
-export function useReturnFocus() {
+export function useReturnFocus(returnTo?: () => HTMLElement | null | undefined) {
   const opener = useRef<HTMLElement | null>(null);
   return {
     onOpenAutoFocus: () => {
@@ -49,9 +50,12 @@ export function useReturnFocus() {
     onCloseAutoFocus: (event: Event) => {
       // The opener can be gone (a confirmed action removed its button): fall back to the
       // dialog still open underneath, if any, rather than <body>.
-      const target = opener.current?.isConnected
-        ? opener.current
-        : document.querySelector<HTMLElement>('[role="dialog"][data-state="open"]');
+      const chosen = returnTo?.();
+      const target = chosen?.isConnected
+        ? chosen
+        : opener.current?.isConnected
+          ? opener.current
+          : document.querySelector<HTMLElement>('[role="dialog"][data-state="open"]');
       if (!target) return;
       event.preventDefault();
       target.focus();
@@ -295,6 +299,7 @@ export function ConfirmDialog({
   children,
   confirmDisabled,
   confirmTitle,
+  returnFocusTo,
 }: {
   open: boolean;
   onOpenChange: (value: boolean) => void;
@@ -314,8 +319,10 @@ export function ConfirmDialog({
   /** The action can't run yet (with confirmTitle saying why). */
   confirmDisabled?: boolean;
   confirmTitle?: string;
+  /** Where focus goes when it closes, when the action removed what opened it. */
+  returnFocusTo?: () => HTMLElement | null | undefined;
 }) {
-  const returnFocus = useReturnFocus();
+  const returnFocus = useReturnFocus(returnFocusTo);
   return (
     <AlertDialog.Root open={open} onOpenChange={onOpenChange}>
       <AlertDialog.Portal>

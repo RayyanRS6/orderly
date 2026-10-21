@@ -1053,7 +1053,8 @@ export function Businesses() {
               setName('');
               setAddress('');
               setPhone('');
-              switchCompany(company.id);
+              // By its slug: the business list in this closure is from before it existed.
+              switchCompany(company.id, company.slug);
             }).catch(() => undefined);
           }}
         >

@@ -242,6 +242,12 @@ treats WhatsApp as offline.
   under WhatsApp → **Linked devices**. Never delete the business's rows before one of those
   lines appears ([incident runbook](../docs/INCIDENT-RUNBOOK.md) §6): Orderly then no longer
   knows the session, answers its events with 200, and nothing ends it.
+- **A business deleted with Delete business** (People page, from
+  `202610220001_business_deletion.sql`). Orderly presses Disconnect itself first and deletes
+  nothing until the gateway confirms it. It also keeps the business's connection ids, so any later
+  event or heartbeat of that session is answered 410, as for a retired one, and the gateway logs
+  it out and wipes it (`SESSION_RETIRED`). Any other connection Orderly does not know is still
+  answered 200: that alone is not proof enough to end it.
 - **Never two instances on one volume.** Keep replicas at 1, PR environments off, and don't
   duplicate the service or environment with these secrets. A lease blocks a second gateway on
   the same volume, but cannot detect copies elsewhere.

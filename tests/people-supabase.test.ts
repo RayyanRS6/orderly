@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SupabaseRepository } from '../server/storage/supabase';
-import { LAST_OWNER_MESSAGE, PublicError, sanitizeError } from '../server/security';
+import {
+  BUSINESS_BUSY,
+  BUSINESS_DELETED,
+  LAST_OWNER_MESSAGE,
+  PAUSE_BOT_FIRST,
+  PublicError,
+  sanitizeError,
+} from '../server/security';
+import type { Company } from '../src/shared/types';
 
 const client = vi.hoisted(() => ({
   auth: {
@@ -231,6 +239,100 @@ describe('membership errors and account writes', () => {
       [1000, 1999],
     ]);
     expect(client.from).toHaveBeenCalledWith('company_memberships');
+  });
+
+  it('deletes a business by id and slug, and says each refusal in the admin’s words', async () => {
+    const removed = { orders: 3, conversations: 2, products: 5, deals: 1 };
+    client.rpc.mockResolvedValueOnce({ data: removed, error: null });
+    expect(await repo.deleteCompany('company', 'company-slug', user(1).id)).toEqual(removed);
+    expect(client.rpc).toHaveBeenCalledWith('delete_company', {
+      p_company_id: 'company',
+      p_slug: 'company-slug',
+      p_actor_id: user(1).id,
+    });
+    // The check asked before a linked phone is logged out makes the same refusals.
+    client.rpc.mockResolvedValueOnce({ data: null, error: null });
+    await expect(repo.checkCompanyDeletable('company', 'company-slug')).resolves.toBeUndefined();
+    expect(client.rpc).toHaveBeenLastCalledWith('check_company_deletable', {
+      p_company_id: 'company',
+      p_slug: 'company-slug',
+    });
+    const refusals = [
+      [
+        { code: 'PGRST202', message: 'Could not find the function' },
+        503,
+        'Apply the 202610220001_business_deletion.sql database migration first.',
+      ],
+      [
+        { code: 'P0001', message: 'Pause automation before deleting this business' },
+        409,
+        PAUSE_BOT_FIRST,
+      ],
+      [
+        { code: 'P0001', message: 'Wait for running work before deleting this business' },
+        409,
+        BUSINESS_BUSY,
+      ],
+      [{ code: '55P03', message: 'canceling statement due to lock timeout' }, 409, BUSINESS_BUSY],
+      // Staff work that deadlocked with it, or the API's statement timeout: it rolled back.
+      [{ code: '40P01', message: 'deadlock detected' }, 409, BUSINESS_BUSY],
+      [
+        { code: '57014', message: 'canceling statement due to statement timeout' },
+        409,
+        BUSINESS_BUSY,
+      ],
+      [{ code: 'P0001', message: 'Unknown company' }, 404, 'Business not found.'],
+    ] as const;
+    for (const call of [
+      () => repo.deleteCompany('company', 'company-slug', user(1).id),
+      () => repo.checkCompanyDeletable('company', 'company-slug'),
+    ])
+      for (const [error, status, message] of refusals) {
+        client.rpc.mockResolvedValueOnce({ data: null, error });
+        const failed = await failure(call());
+        expect(failed, error.message).toBeInstanceOf(PublicError);
+        expect(failed.status, error.message).toBe(status);
+        expect(failed.message).toBe(message);
+      }
+    client.rpc.mockResolvedValueOnce({ data: null, error: { code: '42501', message: 'secret' } });
+    const other = await failure(repo.deleteCompany('company', 'company-slug', user(1).id));
+    expect(other).not.toBeInstanceOf(PublicError);
+    expect(sanitizeError(other)).not.toContain('secret');
+  });
+
+  it('refuses to save a deleted business back, and saves every other as before', async () => {
+    client.rpc.mockResolvedValueOnce({
+      data: null,
+      error: { code: 'P0001', message: 'This business was deleted and cannot be saved again' },
+    });
+    const company = { id: 'company', slug: 'company-slug' } as Company;
+    const deleted = await failure(repo.saveCompany(company));
+    expect(deleted).toBeInstanceOf(PublicError);
+    expect(deleted.status).toBe(404);
+    expect(deleted.message).toBe(BUSINESS_DELETED);
+    expect(client.rpc).toHaveBeenCalledWith('save_company_settings', { p_company: company });
+    client.rpc.mockResolvedValueOnce({ data: null, error: null });
+    await expect(repo.saveCompany(company)).resolves.toBeUndefined();
+    client.rpc.mockResolvedValueOnce({ data: null, error: { code: '23505', message: 'slug' } });
+    expect(await failure(repo.saveCompany(company))).not.toBeInstanceOf(PublicError);
+  });
+
+  it('knows a deleted business’s WhatsApp connection, and none before the migration', async () => {
+    const maybeSingle = vi.fn();
+    const eq = vi.fn(() => ({ maybeSingle }));
+    client.from.mockReturnValue({ select: () => ({ eq }) });
+    maybeSingle.mockResolvedValueOnce({ data: { id: 'c1' }, error: null });
+    expect(await repo.isDeletedConnection('c1')).toBe(true);
+    expect(client.from).toHaveBeenCalledWith('deleted_whatsapp_connections');
+    expect(eq).toHaveBeenCalledWith('id', 'c1');
+    maybeSingle.mockResolvedValueOnce({ data: null, error: null });
+    expect(await repo.isDeletedConnection('c2')).toBe(false);
+    for (const code of ['42P01', 'PGRST205']) {
+      maybeSingle.mockResolvedValueOnce({ data: null, error: { code, message: 'missing' } });
+      expect(await repo.isDeletedConnection('c3'), code).toBe(false);
+    }
+    maybeSingle.mockResolvedValueOnce({ data: null, error: { code: '57014', message: 'timeout' } });
+    await expect(repo.isDeletedConnection('c4')).rejects.toThrow();
   });
 
   it('lists platform admin IDs', async () => {

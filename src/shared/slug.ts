@@ -17,3 +17,14 @@ export function slugify(name: string): string {
     .replace(/^-+|-+$/g, '');
   return base || 'business';
 }
+
+/**
+ * A business name as typed to confirm deleting it: one Unicode form (NFC), curly quotes made
+ * straight (a phone's keyboard types ’ for '), runs of spaces made one (a page shows them as
+ * one) and none at either end. Letter case still counts.
+ */
+export const typedNameForm = (name: string) =>
+  name.normalize('NFC').replace(/[‘’ʼ]/g, "'").replace(/[“”]/g, '"').replace(/\s+/g, ' ').trim();
+/** The name typed matches the business's, as both the dashboard and the server check it. */
+export const sameTypedName = (typed: string, name: string) =>
+  !!typedNameForm(typed) && typedNameForm(typed) === typedNameForm(name);

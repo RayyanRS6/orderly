@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { createElement, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 // Radix draws dialogs into a portal, which server rendering skips: draw them in place.
 vi.mock('@radix-ui/react-alert-dialog', async () => {
@@ -22,7 +24,13 @@ vi.mock('@radix-ui/react-alert-dialog', async () => {
 });
 import {
   addedMessage,
+  businessDeletedMessage,
+  businessNameMatches,
   changeRequest,
+  deleteBusinessBlocked,
+  deleteBusinessCopy,
+  deleteBusinessRequest,
+  deleteBusinessWait,
   describeChange,
   describeTeamChange,
   groupPeople,
@@ -30,7 +38,7 @@ import {
   personName,
   soleOwnerOf,
 } from '../src/lib/people';
-import { People } from '../src/components/People';
+import { DeleteBusinessButton, DeleteBusinessDialog, People } from '../src/components/People';
 import { SecuritySettings } from '../src/components/Operations';
 import { ConfirmDialog } from '../src/components/ui';
 import { Workspace, type WorkspaceContext } from '../src/lib/workspace';
@@ -250,6 +258,13 @@ describe('people screens', () => {
     expect(html).not.toContain('Existing Supabase user ID');
   });
 
+  it('says on the page that the authenticator is needed to delete accounts and businesses', () => {
+    const source = readFileSync(join(process.cwd(), 'src/components/People.tsx'), 'utf8');
+    expect(source.replace(/\s+/g, ' ')).toContain(
+      'To delete accounts and businesses, turn on authenticator protection in Security & privacy first.',
+    );
+  });
+
   it('draws a non-destructive confirmation in the main colour', () => {
     const props = {
       open: true,
@@ -268,5 +283,123 @@ describe('people screens', () => {
     const danger = renderToStaticMarkup(createElement(ConfirmDialog, props));
     expect(danger).toContain('bg-red-700');
     expect(danger).not.toContain('btn-primary');
+  });
+});
+
+describe('deleting a business', () => {
+  // The confirm button, with its attributes.
+  const confirmButton = (html: string) =>
+    html.match(/<button[^>]*>(?:(?!<\/button>).)*Delete business<\/button>/)?.[0] ?? '';
+  const dialog = (typed: string, extra: { busy?: boolean; error?: string; wait?: string } = {}) =>
+    renderToStaticMarkup(
+      createElement(DeleteBusinessDialog, {
+        open: true,
+        onOpenChange: () => {},
+        name: 'Laziza',
+        typed,
+        onTyped: () => {},
+        busy: false,
+        error: '',
+        onConfirm: () => {},
+        ...extra,
+      }),
+    );
+
+  it('says what goes, in plain words, and that people stay', () => {
+    expect(deleteBusinessCopy('Laziza')).toEqual({
+      title: 'Delete Laziza?',
+      description:
+        'This permanently deletes its menu, deals, chats, orders, settings and WhatsApp connection. It can’t be undone. Its people stay: they just lose access to this business.',
+      confirmLabel: 'Delete business',
+      busyLabel: 'Deleting…',
+      tone: 'danger',
+    });
+    expect(deleteBusinessRequest('a b', '  Laziza ')).toEqual({
+      path: '/admin/businesses/a%20b',
+      method: 'DELETE',
+      body: { name: 'Laziza' },
+    });
+    expect(businessDeletedMessage('Laziza', { peopleLeftWithoutBusiness: 0 })).toBe(
+      'Laziza was deleted.',
+    );
+    expect(businessDeletedMessage('Laziza', { peopleLeftWithoutBusiness: 1 })).toBe(
+      'Laziza was deleted. 1 person is in no business now. You can find them under “Not in any business yet”.',
+    );
+    expect(businessDeletedMessage('Laziza', { peopleLeftWithoutBusiness: 2 })).toContain(
+      '2 people are in no business now.',
+    );
+  });
+
+  it('needs the name typed exactly, spaces around it aside', () => {
+    expect(businessNameMatches('Laziza', 'Laziza')).toBe(true);
+    expect(businessNameMatches('  Laziza ', 'Laziza')).toBe(true);
+    for (const typed of ['', '   ', 'laziza', 'Laziz', 'Laziza Restaurant'])
+      expect(businessNameMatches(typed, 'Laziza'), typed).toBe(false);
+    // As the page shows it and a phone types it: one space for many, either apostrophe, and the
+    // same letters in either Unicode form.
+    expect(businessNameMatches('Fries & Buns', 'Fries  & Buns')).toBe(true);
+    expect(businessNameMatches('Nando’s', "Nando's")).toBe(true);
+    expect(businessNameMatches("Nando's", 'Nando’s')).toBe(true);
+    expect(businessNameMatches('Café', 'Café')).toBe(true);
+    expect(businessNameMatches('Fries', 'Fries & Buns')).toBe(false);
+    expect(businessNameMatches('', '')).toBe(false);
+    // The confirm button stays off until then, and says why.
+    for (const typed of ['', 'laziza', 'Laziz']) {
+      const button = confirmButton(dialog(typed));
+      expect(button, typed).toContain('disabled=""');
+      expect(button, typed).toContain('title="Type Laziza first."');
+    }
+    const ready = dialog(' Laziza ');
+    expect(confirmButton(ready)).not.toContain('disabled');
+    expect(confirmButton(ready)).toContain('bg-red-700');
+    expect(ready).toContain('Delete Laziza?');
+    expect(ready).toContain('Type Laziza to confirm');
+    expect(ready).toContain('value=" Laziza "');
+    // A phone keyboard leaves the name as typed.
+    expect(ready).toMatch(/<input[^>]*autoCorrect="off"[^>]*autoCapitalize="none"/);
+    // While it runs: the box is locked and the button says so; a failure shows inside.
+    const busy = dialog('Laziza', { busy: true, error: 'Something went wrong.' });
+    expect(busy).toContain('Deleting…');
+    expect(busy).toMatch(/<input[^>]*readOnly=""/);
+    expect(busy).toContain('Something went wrong.');
+  });
+
+  it('is off only without the authenticator, which the page note explains', () => {
+    const button = (canDelete: boolean) =>
+      renderToStaticMarkup(
+        createElement(DeleteBusinessButton, { name: 'Laziza', canDelete, onAsk: () => {} }),
+      );
+    expect(deleteBusinessBlocked(true)).toBeUndefined();
+    const ready = button(true);
+    // Its accessible name holds what it shows, for voice control.
+    expect(ready).toContain('aria-label="Delete business Laziza"');
+    expect(ready).toContain('Delete business');
+    expect(ready).toContain('text-red-700');
+    expect(ready).not.toContain('disabled');
+    expect(button(false)).toContain(
+      'title="Turn on authenticator protection in Security &amp; privacy first."',
+    );
+    expect(button(false)).toContain('disabled=""');
+  });
+
+  it('says in the dialog, not a tooltip, what to do for the open business or a bot still on', () => {
+    expect(deleteBusinessWait(false, false)).toBeUndefined();
+    expect(deleteBusinessWait(true, false)).toBe(
+      'This business is open now. Press Open on another business, then come back to People to delete this one.',
+    );
+    expect(deleteBusinessWait(false, true)).toBe(
+      'Its bot is still on. Open it, pause the bot (Bot settings → Pause automation), then open another business and come back to People to delete it.',
+    );
+    expect(deleteBusinessWait(true, true)).toBe(
+      'This business is open now and its bot is on. Pause its bot first (Bot settings → Pause automation), then press Open on another business and come back to People to delete it.',
+    );
+    const wait = deleteBusinessWait(true, false)!;
+    // Even with the name typed, it can't be confirmed, and the name box is not asked for.
+    const html = dialog('Laziza', { wait });
+    expect(html).toContain(wait);
+    expect(html).not.toContain('Type Laziza to confirm');
+    expect(html).not.toContain('<input');
+    expect(confirmButton(html)).toContain('disabled=""');
+    expect(confirmButton(html)).toContain(`title="${wait}"`);
   });
 });

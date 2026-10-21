@@ -1,10 +1,12 @@
 import type {
   Account,
   AddMemberOutcome,
+  DeleteBusinessResult,
   PeopleAccount,
   PeopleDirectory,
   TeamMember,
 } from '../shared/types';
+import { sameTypedName } from '../shared/slug';
 import { shortDate } from './utils';
 
 // Pure helpers for the admin's People page and owners' Team access. Kept apart from
@@ -247,6 +249,59 @@ export function linkedDeviceRequest(companyId: string, allowed: boolean) {
     body: { allowed },
     success: allowed ? 'Linked-phone pairing allowed.' : 'Linked-phone pairing stopped.',
   };
+}
+
+/**
+ * Why the Delete business button is off, or undefined when it is on. Only the authenticator
+ * greys it out (the page says so too); every other reason is told in the dialog.
+ */
+export function deleteBusinessBlocked(canDelete: boolean) {
+  if (!canDelete) return 'Turn on authenticator protection in Security & privacy first.';
+}
+/**
+ * Why this business can't be deleted from here yet, shown in the dialog in place of the name
+ * box, or undefined. Bot settings changes only the business that is open, and the open one
+ * can't be deleted (the dashboard would be left showing a business that is gone).
+ */
+export function deleteBusinessWait(isOpen: boolean, botOn: boolean) {
+  if (isOpen && botOn)
+    return 'This business is open now and its bot is on. Pause its bot first (Bot settings → Pause automation), then press Open on another business and come back to People to delete it.';
+  if (isOpen)
+    return 'This business is open now. Press Open on another business, then come back to People to delete this one.';
+  if (botOn)
+    return 'Its bot is still on. Open it, pause the bot (Bot settings → Pause automation), then open another business and come back to People to delete it.';
+}
+/**
+ * The name typed to confirm matches, as the server checks it: spaces, curly apostrophes and
+ * Unicode forms aren't counted, letter case is.
+ */
+export const businessNameMatches = (typed: string, name: string) => sameTypedName(typed, name);
+/** The admin deleting a whole business for good. */
+export function deleteBusinessCopy(business: string): ChangeCopy {
+  return {
+    title: `Delete ${business}?`,
+    description:
+      'This permanently deletes its menu, deals, chats, orders, settings and WhatsApp connection. It can’t be undone. Its people stay: they just lose access to this business.',
+    confirmLabel: 'Delete business',
+    busyLabel: 'Deleting…',
+    tone: 'danger',
+  };
+}
+/** The request that deletes a business once its name was typed. */
+export function deleteBusinessRequest(companyId: string, typed: string) {
+  return {
+    path: `/admin/businesses/${encodeURIComponent(companyId)}`,
+    method: 'DELETE',
+    body: { name: typed.trim() },
+  };
+}
+/** Said once a business is deleted, with where its people without a business now show. */
+export function businessDeletedMessage(
+  business: string,
+  { peopleLeftWithoutBusiness: left }: Pick<DeleteBusinessResult, 'peopleLeftWithoutBusiness'>,
+) {
+  if (!left) return `${business} was deleted.`;
+  return `${business} was deleted. ${left === 1 ? '1 person is' : `${left} people are`} in no business now. You can find them under “Not in any business yet”.`;
 }
 
 export function describeTeamChange(change: TeamChange, business: string): ChangeCopy {

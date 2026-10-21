@@ -1,5 +1,6 @@
 // Linked-phone gateway fix (fx-3): a session Orderly no longer uses (the business switched to
-// Meta or disconnected while the gateway could not be told) is answered 410, so the gateway ends it.
+// Meta, disconnected while the gateway could not be told, or was deleted) is answered 410, so the
+// gateway ends it.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { MemoryRepository } from '../server/repository';
@@ -129,6 +130,23 @@ describe('a linked-phone session left running after the business moved on', () =
       expect((await post(event({ messageId: `old-${status}` }))).status, status).toBe(200);
     }
     expect(await repo.listCompanyJobs(company.id)).toHaveLength(0);
+  });
+
+  it('is answered 410 once its business was deleted, and an unknown one still 200', async () => {
+    // Deleted with the gateway unreachable: nothing told it, and Orderly has no row for it now.
+    vi.stubEnv('WHATSAPP_GATEWAY_ENABLED', 'false');
+    expect((await disconnectGateway(repo, company.id)).gatewayCleanupPending).toBe(true);
+    vi.stubEnv('WHATSAPP_GATEWAY_ENABLED', 'true');
+    await repo.deleteCompany(company.id, company.slug, 'admin');
+    expect(await repo.findWhatsAppConnection(connection.id)).toBeUndefined();
+    for (const value of [heartbeat(), event(), event({ generation: 2 })]) {
+      const response = await post(value);
+      expect(response.status).toBe(410);
+      expect(await response.json()).toEqual({
+        error: 'Orderly no longer uses this linked-phone session.',
+      });
+    }
+    expect((await post(event({ connectionId: randomUUID() }))).status).toBe(200);
   });
 
   it('is never retired for an unknown connection, a newer generation or the current one', async () => {

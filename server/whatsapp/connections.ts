@@ -345,7 +345,13 @@ export async function receiveGatewayEvent(repo: Repository, event: GatewayEvent)
   const current: StoredConnection | undefined = await repo.findWhatsAppConnection(
     event.connectionId,
   );
-  if (retiredSession(current, event))
+  // A connection of a deleted business (delete_company keeps its id) is ended as a retired one.
+  // Any other unknown connection is dropped quietly: it is not proof enough that Orderly is done
+  // with it.
+  if (
+    retiredSession(current, event) ||
+    (!current && (await repo.isDeletedConnection(event.connectionId)))
+  )
     throw new PublicError('Orderly no longer uses this linked-phone session.', 410);
   if (
     !current ||

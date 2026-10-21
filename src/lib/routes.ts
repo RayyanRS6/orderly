@@ -37,6 +37,19 @@ export function parseRoute(path: string): {
 }
 export const workspacePath = (slug: string, page: Page = 'overview', id?: string) =>
   `/app/${encodeURIComponent(slug)}/${page}${id ? `/${encodeURIComponent(id)}` : ''}`;
+/**
+ * Where opening another business goes: its slug when the caller has it (a business just created
+ * is not in the list on screen yet), else the one in the list. Undefined when neither knows it.
+ */
+export function businessPath(
+  companies: { id: string; slug: string }[],
+  id: string,
+  page: Page,
+  slug?: string,
+) {
+  const known = slug ?? companies.find((c) => c.id === id)?.slug;
+  return known ? workspacePath(known, page) : undefined;
+}
 export function go(path: string, replace = false) {
   window.history[replace ? 'replaceState' : 'pushState']({}, '', path);
   window.dispatchEvent(new PopStateEvent('popstate'));

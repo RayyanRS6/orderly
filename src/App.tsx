@@ -74,7 +74,7 @@ import { Businesses, Integrations, Settings } from './components/Settings';
 import { BotSettings } from './components/BotSettings';
 import { Activity, SecuritySettings } from './components/Operations';
 import { AgentFlow } from './components/AgentFlow';
-import { go, useRoute, workspacePath } from './lib/routes';
+import { businessPath, go, useRoute, workspacePath } from './lib/routes';
 import { ACTIVITY_POLL_MS, CONFIG_POLL_MS, pollWhileVisible } from './lib/polling';
 
 const navigation = [
@@ -526,7 +526,7 @@ export default function App() {
       ?.scrollIntoView({ block: 'nearest' });
   }, [page, !!data]);
 
-  function switchCompany(id: string) {
+  function switchCompany(id: string, slug?: string) {
     if (id === data?.company.id) return;
     setWaitingOrders(undefined);
     setData(null);
@@ -535,8 +535,9 @@ export default function App() {
     // "Reload settings" belongs to the business being left.
     setToasts((current) => current.filter((toast) => !toast.action));
     setCompanyId(id);
-    const company = data?.companies.find((c) => c.id === id);
-    if (company) go(workspacePath(company.slug, page));
+    // Without a path the old business's address stays, and it loads again instead.
+    const path = businessPath(data?.companies ?? [], id, page, slug);
+    if (path) go(path);
     setMobile(false);
   }
   function navigate(value: Page, id?: string, options?: { keepScroll?: boolean }) {
@@ -782,20 +783,9 @@ export default function App() {
             One less thing on your plate.
           </p>
         </div>
-        <button
-          className="mt-3 flex min-h-9 w-full items-center gap-2.5 rounded-full px-3 text-xs font-medium text-cream/65 transition-colors hover:bg-white/[0.06] hover:text-white"
-          onClick={() => {
-            setHelp(true);
-            setMobile(false);
-          }}
-        >
-          <CircleHelp className="size-4 text-cream/40" />
-          Getting started
-          <ArrowRight className="ml-auto size-3.5" />
-        </button>
         {client && (
           <button
-            className="mt-2.5 flex min-h-9.5 w-full items-center justify-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.04] px-4 py-2 text-xs font-semibold text-cream/65 transition-[background-color,color,translate,scale] duration-200 hover:bg-white/[0.08] hover:text-red-300 active:scale-[0.97]"
+            className="mt-3 flex min-h-9.5 w-full items-center justify-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.04] px-4 py-2 text-xs font-semibold text-cream/65 transition-[background-color,color,translate,scale] duration-200 hover:bg-white/[0.08] hover:text-red-300 active:scale-[0.97]"
             onClick={() => void signOutHere(client)}
           >
             <LogOut className="size-3.5" />

@@ -52,6 +52,7 @@ export async function migratedDb() {
   // The seed businesses and their menus, and nothing else.
   async function reset() {
     await db.exec(`reset role; truncate public.companies cascade;
+      truncate public.deleted_companies, public.deleted_whatsapp_connections;
       truncate vault.secrets, net.http_request_queue, net._http_response, cron.job_run_details;`);
     for (const c of seedCompanies)
       await db.query('insert into companies(id,slug,data) values($1,$2,$3)', [c.id, c.slug, c]);

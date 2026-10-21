@@ -160,3 +160,10 @@ export const ACCOUNT_IN_USE = 'This account is already connected to another rest
 export const CATALOG_ID_IN_USE = 'Menu item ID is already in use.';
 export const LAST_OWNER_MESSAGE =
   'Every business needs at least one owner. Add another owner first. You also can’t remove or demote yourself.';
+/** Deleting a business (SQL delete_company), in the admin's words. */
+export const BUSINESS_DELETED = 'This business was deleted.';
+// Bot settings only changes the business that is open, so it says which bot and where.
+export const PAUSE_BOT_FIRST =
+  'Pause the bot of the business you are deleting first: open it, then Bot settings → Pause automation.';
+export const BUSINESS_BUSY =
+  'Orderly is still working on messages for this business. Wait a minute, then try again. Nothing was deleted.';

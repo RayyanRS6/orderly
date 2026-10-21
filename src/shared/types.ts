@@ -569,6 +569,20 @@ export interface PeopleDirectory {
   canDeleteAccounts: boolean;
 }
 export type AddMemberOutcome = 'added' | 'added_waiting' | 'invited';
+/** How much went with a deleted business. */
+export interface DeletedBusiness {
+  orders: number;
+  conversations: number;
+  products: number;
+  deals: number;
+}
+/** The admin's answer after deleting a business on the People page. */
+export interface DeleteBusinessResult {
+  ok: true;
+  removed: DeletedBusiness;
+  /** Its people who are now in no business (their accounts stay). */
+  peopleLeftWithoutBusiness: number;
+}
 export interface RetentionStatus {
   days: number;
   eligibleAfter: string | null;

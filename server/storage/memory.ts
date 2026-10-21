@@ -19,6 +19,7 @@ import type {
   TeamMember,
   Message,
   Account,
+  DeletedBusiness,
 } from '../../src/shared/types';
 import type {
   MenuDraft,
@@ -37,7 +38,15 @@ import {
 } from '../../src/shared/seed';
 import type { PipelineHealth, Repository } from '../repository';
 import { transitionOrder } from '../../src/domain/engine';
-import { ACCOUNT_IN_USE, CATALOG_ID_IN_USE, LAST_OWNER_MESSAGE, PublicError } from '../security';
+import {
+  ACCOUNT_IN_USE,
+  BUSINESS_BUSY,
+  BUSINESS_DELETED,
+  CATALOG_ID_IN_USE,
+  LAST_OWNER_MESSAGE,
+  PAUSE_BOT_FIRST,
+  PublicError,
+} from '../security';
 import { PLATFORM_AUDIT_ID } from '../config';
 import { orderMatches, pageOf, stagesOf, summaryOf } from '../queries';
 import { effectiveAiLimits } from '../../src/shared/models';
@@ -266,6 +275,12 @@ interface State {
   blockedCustomers?: BlockedKey[];
   gatewayNonces?: Record<string, number>;
   whatsappConnections?: WhatsAppConnection[];
+  /**
+   * Stand in for SQL deleted_companies (with the audit_events row delete_company writes, which
+   * outlives the business) and deleted_whatsapp_connections.
+   */
+  deletedCompanies?: { id: string; deletedAt: string; deletedBy: string }[];
+  deletedConnections?: string[];
   retention: Record<string, import('../../src/shared/types').RetentionStatus>;
   companies: Company[];
   products: Product[];
@@ -419,6 +434,23 @@ function incomingHeads(jobs: Job[]): Set<string> {
     }
   }
   return heads;
+}
+
+// Why SQL check_company_deletable (and delete_company) would refuse this business, as a throw.
+function refuseUndeletable(state: State, companyId: string, slug: string): void {
+  const company = state.companies.find((c) => c.id === companyId && c.slug === slug);
+  if (!company) throw new PublicError('Business not found.', 404);
+  if (company.botEnabled) throw new PublicError(PAUSE_BOT_FIRST, 409);
+  if (
+    state.jobs.some(
+      (j) =>
+        j.companyId === companyId &&
+        j.status === 'processing' &&
+        Date.parse(j.leaseUntil ?? '') > Date.now(),
+    ) ||
+    state.locks.some((l) => l.companyId === companyId && Date.parse(l.leaseUntil) > Date.now())
+  )
+    throw new PublicError(BUSINESS_BUSY, 409);
 }
 
 /** Development/test store. Every write commits a cloned snapshot, avoiding mutation leaks. */
@@ -1182,6 +1214,9 @@ export class MemoryRepository implements Repository {
   }
   saveCompany(company: Company) {
     return this.mutate((s) => {
+      // Mirrors SQL refuse_deleted_company.
+      if (s.deletedCompanies?.some((d) => d.id === company.id))
+        throw new PublicError(BUSINESS_DELETED, 404);
       if (s.companies.some((c) => c.slug === company.slug && c.id !== company.id))
         throw new Error('Company slug already exists.');
       const previous = s.companies.find((c) => c.id === company.id);
@@ -1197,6 +1232,65 @@ export class MemoryRepository implements Repository {
       )
         company.catalogSyncedAt = new Date(syncedAt).toISOString();
     });
+  }
+  // Mirrors SQL delete_company: the same refusals, then everything of the business goes (with
+  // its receipts and duplicate keys, as their rows go with it there), and its id and its WhatsApp
+  // connections' ids are kept as deleted.
+  deleteCompany(companyId: string, slug: string, actorId: string) {
+    return this.mutate((s): DeletedBusiness => {
+      refuseUndeletable(s, companyId, slug);
+      const others = <T extends { companyId: string }>(rows: T[]) =>
+        rows.filter((r) => r.companyId !== companyId);
+      const count = (rows: { companyId: string }[]) => rows.length - others(rows).length;
+      const removed = {
+        orders: count(s.orders),
+        conversations: count(s.conversations),
+        products: count(s.products),
+        deals: count(s.deals),
+      };
+      const jobs = new Set(s.jobs.filter((j) => j.companyId === companyId).map((j) => j.id));
+      for (const [key, jobId] of Object.entries(s.dedupe))
+        if (jobs.has(jobId)) delete s.dedupe[key];
+      for (const key of this.receipts.keys())
+        if (key.startsWith(`${companyId}:`)) this.receipts.delete(key);
+      const deletedConnections = (s.deletedConnections ??= []);
+      for (const w of s.whatsappConnections ?? [])
+        if (w.companyId === companyId && !deletedConnections.includes(w.id))
+          deletedConnections.push(w.id);
+      if (!s.deletedCompanies?.some((d) => d.id === companyId))
+        (s.deletedCompanies ??= []).push({
+          id: companyId,
+          deletedAt: new Date().toISOString(),
+          deletedBy: actorId,
+        });
+      s.companies = s.companies.filter((c) => c.id !== companyId);
+      s.products = others(s.products);
+      s.deals = others(s.deals);
+      s.conversations = others(s.conversations);
+      s.orders = others(s.orders);
+      s.integrations = others(s.integrations);
+      s.traces = others(s.traces);
+      s.usage = others(s.usage);
+      s.jobs = others(s.jobs);
+      s.memberships = others(s.memberships);
+      s.reservations = others(s.reservations);
+      s.locks = others(s.locks);
+      delete s.retention[companyId];
+      if (s.menuLinks) s.menuLinks = others(s.menuLinks);
+      if (s.menuLinkUses) s.menuLinkUses = others(s.menuLinkUses);
+      if (s.menuDrafts) s.menuDrafts = others(s.menuDrafts);
+      if (s.aiLimitHits) s.aiLimitHits = others(s.aiLimitHits);
+      if (s.blockedCustomers) s.blockedCustomers = others(s.blockedCustomers);
+      if (s.whatsappConnections) s.whatsappConnections = others(s.whatsappConnections);
+      return removed;
+    });
+  }
+  // Mirrors SQL check_company_deletable.
+  checkCompanyDeletable(companyId: string, slug: string) {
+    return this.read((s) => refuseUndeletable(s, companyId, slug));
+  }
+  isDeletedConnection(id: string) {
+    return this.read((s) => !!s.deletedConnections?.includes(id));
   }
   isAdmin(userId: string) {
     return this.read((s) => s.admins.includes(userId));

@@ -2,10 +2,19 @@ import { Hono, type MiddlewareHandler } from 'hono';
 import { z } from 'zod';
 import type { Repository } from './repository';
 import type { AppEnv } from './management';
-import type { Account, Company, Membership, PeopleDirectory } from '../src/shared/types';
-import { PublicError } from './security';
+import type {
+  Account,
+  Company,
+  DeletedBusiness,
+  Membership,
+  PeopleDirectory,
+} from '../src/shared/types';
+import { sameTypedName } from '../src/shared/slug.js';
+import { BUSINESS_BUSY, PAUSE_BOT_FIRST, PublicError } from './security';
 import { appMode, PLATFORM_AUDIT_ID } from './config';
 import { addMemberByEmail } from './team';
+import { gatewayAvailable } from './whatsapp/client';
+import { disconnectGateway } from './whatsapp/connections';
 
 /** Only the platform admin. Checked on every request; the role set for the open business is not trusted. */
 export const requireAdmin =
@@ -167,6 +176,85 @@ export function adminRoutes(repo: Repository) {
       console.warn('Orderly: admin audit failed after an account deletion.');
     }
     return c.json({ ok: true, removedFrom: businesses.length });
+  });
+  // Deletes a whole business for good, as the runbook's workspace deletion did by hand: its menu,
+  // deals, chats, orders, settings and connections. The admin types its name; its bot must be
+  // paused, and a linked phone is logged out on the gateway first, so it does not stay linked
+  // there. Its people stay, without access to it.
+  app.delete('/businesses/:companyId', async (c) => {
+    const id = companyId.parse(c.req.param('companyId'));
+    const actorId = c.get('userId');
+    // Irreversible, so it needs the authenticator, as deleting an account does.
+    if (!c.get('mfaVerified'))
+      throw new PublicError(
+        'Turn on authenticator protection in Security & privacy before deleting businesses.',
+        403,
+      );
+    if (!(await repo.consumeRateLimit(`admin-delete-business:${actorId}`, 10)))
+      throw new PublicError('Please wait a minute before deleting more businesses.', 429);
+    const { name } = z
+      .object({ name: z.string().max(200) })
+      .strict()
+      .parse(await c.req.json());
+    const stored = await repo.getCompany(id);
+    if (!stored) throw new PublicError('Business not found.', 404);
+    // Spaces, curly apostrophes and Unicode forms aren't counted, as on the page (sameTypedName).
+    if (!sameTypedName(name, stored.name))
+      throw new PublicError('Type the business name exactly to delete it.', 400);
+    // The dashboard would be left showing a business that is gone.
+    if (c.get('company').id === id)
+      throw new PublicError('Open another business first, then delete this one.', 409);
+    if (stored.botEnabled) throw new PublicError(PAUSE_BOT_FIRST, 409);
+    // Everything that can still refuse is asked before WhatsApp is touched, so a refusal here
+    // (running work, or the migration not applied yet) leaves the linked phone as it was.
+    await repo.checkCompanyDeletable(id, stored.slug);
+    // A linked phone is logged out first. Once the business is gone its session's events are
+    // answered 410 (isDeletedConnection), but a session that sends nothing would never hear it.
+    const linked = (await repo.getWhatsAppConnection(id))?.provider === 'baileys';
+    if (linked) {
+      // Switched off, the gateway can't be told and its events aren't read (they get a 503), so
+      // a retry can't help until it is back on.
+      if (!gatewayAvailable())
+        throw new PublicError(
+          'The linked-phone service is switched off, so Orderly can’t log out this business’s linked phone. Turn the linked-phone service back on first, then delete the business.',
+          409,
+        );
+      if ((await disconnectGateway(repo, id)).gatewayCleanupPending)
+        throw new PublicError(
+          'Orderly disconnected WhatsApp but couldn’t log out the linked phone yet, so the business was not deleted. Try again in a few minutes.',
+          409,
+        );
+    }
+    const [memberships, adminIds] = await Promise.all([
+      repo.listAllMemberships(),
+      repo.listAdminIds(),
+    ]);
+    let removed: DeletedBusiness;
+    try {
+      removed = await repo.deleteCompany(id, stored.slug, actorId);
+    } catch (error) {
+      // Work started after the check, and WhatsApp is already off: don't say nothing changed.
+      if (linked && error instanceof PublicError && error.message === BUSINESS_BUSY)
+        throw new PublicError(
+          'Orderly disconnected WhatsApp, but it is still working on messages for this business, so the business was not deleted. Wait a minute, then try again.',
+          409,
+        );
+      throw error;
+    }
+    const peopleLeftWithoutBusiness = memberships.filter(
+      (m) =>
+        m.companyId === id &&
+        !adminIds.includes(m.userId) &&
+        !memberships.some((o) => o.userId === m.userId && o.companyId !== id),
+    ).length;
+    // The business is gone; a failed record must not turn this into an error that a retry would
+    // answer with "not found". delete_company records it under the business's id too.
+    try {
+      await repo.audit(PLATFORM_AUDIT_ID, actorId, `admin.business_deleted ${id}`);
+    } catch {
+      console.warn('Orderly: admin audit failed after a business deletion.');
+    }
+    return c.json({ ok: true, removed, peopleLeftWithoutBusiness });
   });
   return app;
 }

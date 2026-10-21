@@ -1,9 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { createApp } from '../server/app';
+import { makeJob } from '../server/jobs';
 import { MemoryRepository } from '../server/repository';
-import { LAST_OWNER_MESSAGE } from '../server/security';
+import {
+  BUSINESS_BUSY,
+  BUSINESS_DELETED,
+  LAST_OWNER_MESSAGE,
+  PAUSE_BOT_FIRST,
+  PublicError,
+} from '../server/security';
+import { createConversation } from '../src/domain/engine';
 import { seedCompanies } from '../src/shared/seed';
-import type { PeopleDirectory, TeamMember } from '../src/shared/types';
+import type { Deal, PeopleDirectory, TeamMember } from '../src/shared/types';
+import type { WhatsAppConnection } from '../src/shared/whatsapp';
 
 const people = vi.hoisted(() => {
   const jwt = (claims: object) =>
@@ -113,6 +123,7 @@ describe('admin routes refuse everyone but the platform admin', () => {
   ])('refuses %s, even in their own business', async (_name, token) => {
     const listAccounts = vi.spyOn(repo, 'listAccounts');
     const deleteAccount = vi.spyOn(repo, 'deleteAccount');
+    const deleteCompany = vi.spyOn(repo, 'deleteCompany');
     const setMember = vi.spyOn(repo, 'setMember');
     const calls: [string, string, unknown?][] = [
       ['GET', '/admin/people'],
@@ -120,6 +131,8 @@ describe('admin routes refuse everyone but the platform admin', () => {
       ['PUT', `/admin/businesses/${A.id}/members/${ids.STAFF}`, { role: 'owner' }],
       ['DELETE', `/admin/businesses/${A.id}/members/${ids.STAFF}`],
       ['DELETE', `/admin/accounts/${ids.STAFF}`],
+      ['DELETE', `/admin/businesses/${A.id}`, { name: A.name }],
+      ['DELETE', `/admin/businesses/${B.id}`, { name: B.name }],
       ['GET', '/admin/xyz'],
     ];
     for (const [method, path, body] of calls) {
@@ -129,8 +142,10 @@ describe('admin routes refuse everyone but the platform admin', () => {
     }
     expect(listAccounts).not.toHaveBeenCalled();
     expect(deleteAccount).not.toHaveBeenCalled();
+    expect(deleteCompany).not.toHaveBeenCalled();
     expect(setMember).not.toHaveBeenCalled();
     expect(await roleOf(A.id, ids.STAFF)).toBe('staff');
+    expect(await repo.getCompany(B.id)).toBeDefined();
   });
 
   it('keeps owners inside their own business', async () => {
@@ -427,5 +442,273 @@ describe('deleting an account', () => {
     const res = await remove(tokens.adminMfa, ids.STAFF);
     expect(res.status).toBe(200);
     expect((await repo.listAccounts()).some((a) => a.userId === ids.STAFF)).toBe(false);
+  });
+});
+
+describe('deleting a business', () => {
+  // A (the first business) is open unless a test says otherwise.
+  const removeBusiness = (token: string, id: string, name: unknown, company?: string) =>
+    request(token, `/admin/businesses/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      body: { name },
+      company,
+    });
+  const error = async (res: Response) => ((await res.json()) as { error: string }).error;
+  const pause = async (id = B.id) =>
+    repo.saveCompany({ ...(await repo.getCompany(id))!, botEnabled: false });
+  const linkedPhone = (): WhatsAppConnection => ({
+    id: randomUUID(),
+    companyId: B.id,
+    provider: 'baileys',
+    generation: 1,
+    revision: 1,
+    status: 'connected',
+    accountJid: '923000000002@s.whatsapp.net',
+    lastHeartbeatAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+  const inFuture = () => new Date(Date.now() + 120000).toISOString();
+
+  it('needs the authenticator, the exact name, another business open and the bot paused', async () => {
+    const deleteCompany = vi.spyOn(repo, 'deleteCompany');
+    const plain = await removeBusiness(tokens.admin, B.id, B.name);
+    expect(plain.status).toBe(403);
+    expect(await error(plain)).toBe(
+      'Turn on authenticator protection in Security & privacy before deleting businesses.',
+    );
+    for (const typed of ['', 'BUN & CO.', 'Bun & Co', 'Bun & Co. x']) {
+      const wrong = await removeBusiness(tokens.adminMfa, B.id, typed);
+      expect(wrong.status, typed).toBe(400);
+      expect(await error(wrong)).toBe('Type the business name exactly to delete it.');
+    }
+    const open = await removeBusiness(tokens.adminMfa, B.id, B.name, B.id);
+    expect(open.status).toBe(409);
+    expect(await error(open)).toBe('Open another business first, then delete this one.');
+    const botOn = await removeBusiness(tokens.adminMfa, B.id, B.name, A.id);
+    expect(botOn.status).toBe(409);
+    expect(await error(botOn)).toBe(PAUSE_BOT_FIRST);
+    expect((await removeBusiness(tokens.adminMfa, 'no-such-business', 'x')).status).toBe(404);
+    const extra = await request(tokens.adminMfa, `/admin/businesses/${B.id}`, {
+      method: 'DELETE',
+      body: { name: B.name, force: true },
+    });
+    expect(extra.status).toBe(400);
+    expect(deleteCompany).not.toHaveBeenCalled();
+    expect(await repo.getCompany(B.id)).toBeDefined();
+  });
+
+  it('removes only that business, keeps its people, and records it outside any business', async () => {
+    expect(B.name).toBe('Bun & Co.');
+    await pause();
+    const chat = {
+      ...createConversation(B.id, '+923001112222', 'whatsapp', new Date().toISOString()),
+      version: 1,
+    };
+    expect(await repo.saveConversation(chat, 0)).toBe(true);
+    const deal: Deal = {
+      id: randomUUID(),
+      companyId: B.id,
+      name: 'Deal 1',
+      description: '',
+      emoji: '🎁',
+      aliases: [],
+      price: 99900,
+      items: [],
+      choices: [],
+      available: true,
+      position: 1,
+      updatedAt: new Date().toISOString(),
+    };
+    await repo.saveDeal(deal);
+    await repo.audit(B.id, ids.ADMIN, 'test.action');
+    const of = async (id: string) => ({
+      products: (await repo.listProducts(id)).length,
+      conversations: (await repo.listConversations(id)).length,
+      orders: (await repo.listOrders(id)).length,
+      deals: (await repo.listDeals(id)).length,
+      members: (await repo.listMembers(id)).length,
+      traces: (await repo.listTraces(id)).length,
+    });
+    const before = await of(B.id);
+    const other = await of(A.id);
+    const res = await removeBusiness(tokens.adminMfa, B.id, `  ${B.name} `);
+    expect(res.status).toBe(200);
+    const { members: _members, traces: _traces, ...removed } = before;
+    // Its seed menu, chat and order, and the chat and deal above.
+    expect(removed).toEqual({ products: 5, conversations: 2, orders: 1, deals: 1 });
+    // Its only owner is in no other business now; their account stays.
+    expect(await res.json()).toEqual({ ok: true, removed, peopleLeftWithoutBusiness: 1 });
+    expect(await repo.getCompany(B.id)).toBeUndefined();
+    expect(await of(B.id)).toEqual({
+      products: 0,
+      conversations: 0,
+      orders: 0,
+      deals: 0,
+      members: 0,
+      traces: 0,
+    });
+    expect(await of(A.id)).toEqual(other);
+    expect((await repo.listAccounts()).some((a) => a.userId === ids.OTHER)).toBe(true);
+    expect(platformAudit()).toEqual([
+      expect.objectContaining({ actorId: ids.ADMIN, action: `admin.business_deleted ${B.id}` }),
+    ]);
+    expect((await actions(A.id)).filter((a) => /admin|DELETE/.test(a))).toEqual([]);
+    // The People page and the workspace list no longer show it.
+    const directory = (await (
+      await request(tokens.adminMfa, '/admin/people')
+    ).json()) as PeopleDirectory;
+    expect(directory.businesses.map((b) => b.id)).toEqual([A.id]);
+    expect(directory.accounts.find((a) => a.userId === ids.OTHER)?.memberships).toEqual([]);
+    const workspace = (await (await request(tokens.admin, '/bootstrap')).json()) as {
+      companies: { id: string }[];
+    };
+    expect(workspace.companies.map((c) => c.id)).toEqual([A.id]);
+    // A save that raced the deletion cannot bring it back, and a second try finds nothing.
+    await expect(repo.saveCompany({ ...B, botEnabled: false })).rejects.toMatchObject({
+      status: 404,
+      message: BUSINESS_DELETED,
+    });
+    expect((await removeBusiness(tokens.adminMfa, B.id, B.name)).status).toBe(404);
+  });
+
+  it('refuses while work is running, and deletes nothing', async () => {
+    await pause();
+    expect(await repo.acquireConversationLock(B.id, 'chat-1', 'worker', inFuture())).toBe(true);
+    const locked = await removeBusiness(tokens.adminMfa, B.id, B.name);
+    expect(locked.status).toBe(409);
+    expect(await error(locked)).toBe(BUSINESS_BUSY);
+    await repo.releaseConversationLock(B.id, 'chat-1', 'worker');
+    const job = makeJob(B.id, 'sheet_sync', {});
+    expect(await repo.insertJob(job)).toBe(true);
+    expect(await repo.claimJob(job.id, new Date().toISOString(), inFuture())).toBeDefined();
+    const running = await removeBusiness(tokens.adminMfa, B.id, B.name);
+    expect(running.status).toBe(409);
+    expect(await error(running)).toBe(BUSINESS_BUSY);
+    expect(await repo.getCompany(B.id)).toBeDefined();
+    expect(await repo.listProducts(B.id)).toHaveLength(5);
+    expect(platformAudit()).toEqual([]);
+  });
+
+  const gatewayOn = () => {
+    vi.stubEnv('WHATSAPP_GATEWAY_ENABLED', 'true');
+    vi.stubEnv('WHATSAPP_GATEWAY_URL', 'https://gateway.example');
+    vi.stubEnv('WHATSAPP_GATEWAY_SECRET', 'gateway-test-secret-with-more-than-32-characters');
+  };
+  const answeringGateway = () => {
+    const gateway = vi.fn(async (_url: unknown, _init?: RequestInit) =>
+      Response.json({ ok: true }),
+    );
+    vi.stubGlobal('fetch', gateway);
+    return gateway;
+  };
+
+  it('logs a linked phone out first, and deletes nothing while it cannot', async () => {
+    await pause();
+    const connection = linkedPhone();
+    await repo.saveWhatsAppConnection(connection, 0);
+    // The linked-phone service is switched off: a retry can't help, and nothing is touched.
+    const off = await removeBusiness(tokens.adminMfa, B.id, B.name);
+    expect(off.status).toBe(409);
+    expect(await error(off)).toBe(
+      'The linked-phone service is switched off, so Orderly can’t log out this business’s linked phone. Turn the linked-phone service back on first, then delete the business.',
+    );
+    expect(await repo.getWhatsAppConnection(B.id)).toMatchObject({
+      status: 'connected',
+      generation: 1,
+    });
+    expect(await repo.isDeletedConnection(connection.id)).toBe(false);
+    expect(await repo.getCompany(B.id)).toBeDefined();
+    // Switched on, but it can't be reached (every request fails here).
+    gatewayOn();
+    const pending = await removeBusiness(tokens.adminMfa, B.id, B.name);
+    expect(pending.status).toBe(409);
+    expect(await error(pending)).toBe(
+      'Orderly disconnected WhatsApp but couldn’t log out the linked phone yet, so the business was not deleted. Try again in a few minutes.',
+    );
+    expect(await repo.getCompany(B.id)).toBeDefined();
+    expect((await repo.getWhatsAppConnection(B.id))?.status).toBe('disconnected');
+    expect(await repo.isDeletedConnection(connection.id)).toBe(false);
+    // Once it answers, the phone is logged out there and the business goes.
+    const gateway = answeringGateway();
+    const done = await removeBusiness(tokens.adminMfa, B.id, B.name);
+    expect(done.status).toBe(200);
+    expect(gateway).toHaveBeenCalledTimes(1);
+    expect(String(gateway.mock.calls[0]![0])).toBe('https://gateway.example/session');
+    expect(JSON.parse(String(gateway.mock.calls[0]![1]!.body))).toMatchObject({
+      connectionId: connection.id,
+      action: 'disconnect',
+    });
+    expect(await repo.getCompany(B.id)).toBeUndefined();
+    expect(await repo.isDeletedConnection(connection.id)).toBe(true);
+  });
+
+  it('leaves a linked phone linked when running work refuses the deletion', async () => {
+    await pause();
+    await repo.saveWhatsAppConnection(linkedPhone(), 0);
+    gatewayOn();
+    const gateway = answeringGateway();
+    expect(await repo.acquireConversationLock(B.id, 'chat-1', 'worker', inFuture())).toBe(true);
+    const res = await removeBusiness(tokens.adminMfa, B.id, B.name);
+    expect(res.status).toBe(409);
+    expect(await error(res)).toBe(BUSINESS_BUSY);
+    expect(gateway).not.toHaveBeenCalled();
+    expect(await repo.getWhatsAppConnection(B.id)).toMatchObject({
+      status: 'connected',
+      generation: 1,
+    });
+    expect(await repo.getCompany(B.id)).toBeDefined();
+  });
+
+  it('says WhatsApp was disconnected when work starts between the check and the deletion', async () => {
+    await pause();
+    await repo.saveWhatsAppConnection(linkedPhone(), 0);
+    gatewayOn();
+    const gateway = answeringGateway();
+    vi.spyOn(repo, 'deleteCompany').mockRejectedValueOnce(new PublicError(BUSINESS_BUSY, 409));
+    const res = await removeBusiness(tokens.adminMfa, B.id, B.name);
+    expect(res.status).toBe(409);
+    expect(await error(res)).toBe(
+      'Orderly disconnected WhatsApp, but it is still working on messages for this business, so the business was not deleted. Wait a minute, then try again.',
+    );
+    expect(gateway).toHaveBeenCalledTimes(1);
+    expect((await repo.getWhatsAppConnection(B.id))?.status).toBe('disconnected');
+    expect(await repo.getCompany(B.id)).toBeDefined();
+  });
+
+  it('takes the name as the page shows it and a phone types it', async () => {
+    await pause();
+    await repo.saveCompany({ ...(await repo.getCompany(B.id))!, name: 'Nando’s  Grill' });
+    for (const typed of ['Nandos Grill', 'nando’s grill', 'Nando’s'])
+      expect((await removeBusiness(tokens.adminMfa, B.id, typed)).status, typed).toBe(400);
+    const res = await removeBusiness(tokens.adminMfa, B.id, "Nando's Grill");
+    expect(res.status).toBe(200);
+    expect(await repo.getCompany(B.id)).toBeUndefined();
+  });
+
+  it('never calls the gateway for a business on the official route', async () => {
+    await pause();
+    await repo.saveWhatsAppConnection({ ...linkedPhone(), provider: 'meta' }, 0);
+    const res = await removeBusiness(tokens.adminMfa, B.id, B.name);
+    expect(res.status).toBe(200);
+    // The network is stubbed to fail every request: none was made.
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('allows ten tries a minute', async () => {
+    await pause();
+    for (let i = 0; i < 10; i++)
+      expect((await removeBusiness(tokens.adminMfa, B.id, 'wrong')).status).toBe(400);
+    const limited = await removeBusiness(tokens.adminMfa, B.id, B.name);
+    expect(limited.status).toBe(429);
+    expect(await repo.getCompany(B.id)).toBeDefined();
+  });
+
+  it('reports success when only the record failed after the deletion', async () => {
+    await pause();
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(repo, 'audit').mockRejectedValue(new Error('audit down'));
+    const res = await removeBusiness(tokens.adminMfa, B.id, B.name);
+    expect(res.status).toBe(200);
+    expect(await repo.getCompany(B.id)).toBeUndefined();
   });
 });

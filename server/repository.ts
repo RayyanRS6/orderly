@@ -21,6 +21,7 @@ import type {
   BlockedCustomer,
   Account,
   Membership,
+  DeletedBusiness,
 } from '../src/shared/types';
 import type {
   MenuDraft,
@@ -148,7 +149,18 @@ export interface Repository {
   consumeRateLimit(key: string, limit: number): Promise<boolean>;
   listCompanies(): Promise<Company[]>;
   getCompany(id: string): Promise<Company | undefined>;
+  // Refuses a business that was deleted (404), so a save racing the deletion never brings it back.
   saveCompany(company: Company): Promise<void>;
+  // Deletes the business named by its id and slug for good, with everything of it, and keeps its
+  // id and its WhatsApp connections' ids as deleted (202610220001_business_deletion.sql). Refused
+  // (409), deleting nothing, while its bot is on or its work is running; 404 when no business has
+  // this id and slug; 503 before the migration. Answers how much went.
+  deleteCompany(companyId: string, slug: string, actorId: string): Promise<DeletedBusiness>;
+  // Makes deleteCompany's refusals (the same statuses and messages) and changes nothing, so the
+  // admin route can ask before it logs a linked phone out.
+  checkCompanyDeletable(companyId: string, slug: string): Promise<void>;
+  // A WhatsApp connection of a deleted business. False before the migration.
+  isDeletedConnection(id: string): Promise<boolean>;
   // Sets only catalogSyncedAt, and only forwards, leaving every other setting untouched.
   markCatalogSynced(companyId: string, syncedAt: string): Promise<void>;
   getRole(userId: string, companyId: string): Promise<Role | null>;

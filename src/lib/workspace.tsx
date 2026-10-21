@@ -67,7 +67,8 @@ export interface WorkspaceContext {
   auth?: SupabaseClient;
   /** Orderly's emergency stop is on: no business gets automatic replies, and none can turn them on. */
   automationPaused?: boolean;
-  switchCompany: (id: string) => void;
+  /** slug: for a business the list on screen may not have yet (one just created). */
+  switchCompany: (id: string, slug?: string) => void;
   refresh: () => Promise<void>;
   /**
    * Counts "Reload settings" after a save was refused as made from an older copy. Pages that

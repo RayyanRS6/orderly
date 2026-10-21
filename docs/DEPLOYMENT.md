@@ -20,11 +20,13 @@ For a new installation, apply every file in `supabase/migrations` in filename or
 | `202610200002_order_followups.sql` (pre-launch fixes, part 2)                                          | New. Apply **after** the dashboard deploy (§7).                              |
 | `202610200003_order_flow.sql` (the shorter order flow)                                                 | New. Apply **before** pushing the backend, and run again after it (§7a).     |
 | `202610210001_deals.sql` (deals)                                                                       | New. Apply **before** pushing the backend, after the read-only check (§7b).  |
+| `202610220001_business_deletion.sql` (Delete business)                                                 | New. Apply **before** pushing the backend (§7c).                             |
 
 - `202610200001_prelaunch_fixes.sql`: staff alerts go to each subscriber's own email, also for a linked phone that stopped working, and automatic notices no longer hide a customer waiting for staff; erasure and export find every format of a number; a message that failed for good goes into its chat; AI reply defaults of 1,500 an hour (100 per customer) with an 80% warning; pipeline health; a daily purge of old operational rows; a ledger of applied migrations.
 - `202610200002_order_followups.sql`: queues the reminder for an order staff have not accepted after 15 minutes, ends waiting reminders when WhatsApp is disconnected, and again clears AI limits saved as the old defaults (an older dashboard tab can save them after part 1).
 - `202610200003_order_flow.sql`: Accept takes an order straight to Preparing (no separate Accepted step and no recorded call first; an optional staff note is saved with the change), then Ready for a pickup order or Out for delivery for a delivery order, then Completed; the counts for the Orders page tabs; orders still Accepted become Preparing.
 - `202610210001_deals.sql`: the `deals` table for the **Deals** tab (combos and time-limited offers, kept apart from the menu items), one id space for menu items and deals, and a deal branch in the order check; a menu item's order line is checked exactly as before.
+- `202610220001_business_deletion.sql`: `delete_company` for **People → Delete business** (the runbook's workspace deletion in one step), the ids of deleted businesses and their WhatsApp connections, a rule that a deleted business is never saved back, and an index on traces by chat so deleting a busy business stays quick; no existing function changes.
 
 Use the [exact launch guide](ORDERLY-LAUNCH-STEPS-2026-09-18.md) for client setup (its 18 October note lists what changed since) and the [audit closure](ORDERLY-AUDIT-CLOSURE-2026-09-18.md) for the September record.
 
@@ -35,7 +37,7 @@ insert into public.platform_admins(user_id)
 values ('FOUNDER_AUTH_USER_UUID');
 ```
 
-After signing into Orderly, the founder can create the first company. The founder then manages every restaurant’s owners and staff on the **People** page, which only platform admins see: add someone by email (an existing account is added straight away, anyone else gets an invitation), change a role, remove someone from a business, or delete an account. Deleting an account is permanent and needs the founder’s authenticator protection, which is set up in **Security & privacy**. Every business keeps at least one owner, so add the new owner before removing the old one. Owners can also add people by email in their own **Security & privacy** page. Platform admins are still granted only in SQL, as above.
+After signing into Orderly, the founder can create the first company. The founder then manages every restaurant’s owners and staff on the **People** page, which only platform admins see: add someone by email (an existing account is added straight away, anyone else gets an invitation), change a role, remove someone from a business, delete an account, or delete a whole business (§7c). Deleting an account or a business is permanent and needs the founder’s authenticator protection, which is set up in **Security & privacy**. Every business keeps at least one owner, so add the new owner before removing the old one. Owners can also add people by email in their own **Security & privacy** page. Platform admins are still granted only in SQL, as above.
 
 As an emergency fallback only, when the People page can’t be used, an existing Auth user can be assigned by ID:
 
@@ -385,6 +387,41 @@ Deals are combos and time-limited offers in their own **Deals** tab (§6). The S
 1. **Dashboard:** `npx wrangler rollback <previous version>`.
 2. **Backend:** revert the commit on `main` and push. A cart that still holds a deal then behaves like one with a deleted item ("An item is unavailable. Remove it or ask staff for help.").
 3. **The SQL can stay:** the older backend never reads deals or sends deal lines, and menu-item orders are checked exactly as before. Only if the functions must go too, and only once the older backend is live, run `.local/backups/rollback-deals.sql` from the operator's laptop in the SQL editor. In one transaction it puts `validate_order_snapshot` back exactly (`1f160056ecd252bdb07d9a58d67a5ed7` again), drops the triggers that keep menu items and deals from sharing an id and their function, and deletes the ledger row. It keeps the `deals` table and every deal: dropping the table is a separate step, only with the owner's OK and only after exporting its rows. The file is not in Git, so keep a copy with the password manager or the encrypted backups.
+
+## 7c. Release order (Delete business, October 2026)
+
+The admin's **People** page gets a **Delete business** button on each business: the [incident runbook](INCIDENT-RUNBOOK.md) §6 workspace deletion (steps 3 for WhatsApp, 5 and 6) in one step. The SQL adds `delete_company` and `check_company_deletable` (the same refusals, changing nothing, asked before a linked phone is logged out), the tables `deleted_companies` and `deleted_whatsapp_connections`, the trigger `refuse_deleted_company` on `companies`, and the index `traces_conversation` on `traces` (company and chat), so deleting a busy business doesn't read all its traces once per chat; no existing function changes, so the running backend and dashboard keep working with it. Building the index pauses trace writes for a moment. Run it at a quiet hour; each step needs the owner's OK.
+
+1. **Backup:** `npm run backup:db` (as §7, step 1).
+2. **SQL:** paste `supabase/migrations/202610220001_business_deletion.sql` into the SQL editor (its SHA-256, with LF line endings, is `c7df4d5e1792daf682271b6e7386bd3480d0fd8d364fb6e7b58783c02e8ad1bb`) and run it. Each statement waits at most 5 seconds for a lock, and it is safe to run again; it stops before changing anything if `202610210001_deals.sql` is not in the ledger. Check that `select name from public.orderly_schema_migrations;` lists it and that `select to_regprocedure('public.delete_company(text,text,text)');` is not empty.
+3. **Backend:** push to `main`. A newer backend before the SQL answers **Delete business** with 503 "Apply the 202610220001_business_deletion.sql database migration first" and everything else as before. The older backend never calls the new function.
+4. **Dashboard:** build with `VITE_API_BASE_URL` and `VITE_API_REGION` set (§2), deploy, and reload the People page. An older tab has no button.
+
+To delete a business: sign in with the authenticator. With the business to delete open, pause its bot (**Bot settings → Pause automation**). Then open another business, go to **People** → the card of the business to delete → **Delete business**, and type its name exactly. The dialog says what to do instead while that business is open or its bot is on. Running work is checked before WhatsApp is touched: a refusal then ("still working on messages") changes nothing, so wait a minute and press it again. A linked phone is then logged out on the gateway; if the linked-phone service is switched off, nothing is touched and the page says to turn it back on first; if the gateway cannot be reached, WhatsApp is disconnected but nothing is deleted, and the page says to try again in a few minutes. Its people stay; anyone left in no business shows under **Not in any business yet**, to delete there if the owner asked (runbook §6, step 7). The connection ids are kept, so a linked-phone session the gateway still runs for that business is answered 410 and ended there (`SESSION_RETIRED`).
+
+**Rollback:** dashboard first (`npx wrangler rollback <previous version>`), then the backend (revert the commit on `main` and push). Once the older backend is live, a deleted business's linked-phone session is answered 200 again instead of 410, whether the SQL stays or not: only the newer backend reads `deleted_whatsapp_connections`. So before reverting the backend, check that Railway → `gateway` logs show `SESSION_DISCONNECTED` or `SESSION_RETIRED` for the connection of every business deleted with the button (runbook §6, step 5). The SQL can stay: the older backend never calls `delete_company`, and keeping it keeps only the record of deleted ids and the rule that a deleted business is never saved back. Only if it must go too, once the older backend is live, run `.local/backups/rollback-business-deletion.sql` from the operator's laptop in the SQL editor. It keeps the audit rows; it forgets which ids were deleted, so after it a business with a deleted id could be saved back. Before running it, keep a copy of what was deleted (ids and times only, no business data). After it, nothing else records these ids:
+
+```sql
+select id, deleted_at, deleted_by from public.deleted_companies order by deleted_at;
+select id, deleted_at from public.deleted_whatsapp_connections order by deleted_at;
+```
+
+Then run it; it is this, in one transaction:
+
+```sql
+begin;
+set local lock_timeout = '5s';
+drop trigger if exists refuse_deleted_company on public.companies;
+drop function if exists public.refuse_deleted_company();
+drop function if exists public.delete_company(text, text, text);
+drop function if exists public.check_company_deletable(text, text);
+drop index if exists public.traces_conversation;
+drop table if exists public.deleted_whatsapp_connections;
+drop table if exists public.deleted_companies;
+delete from public.orderly_schema_migrations where name = '202610220001_business_deletion.sql';
+notify pgrst, 'reload schema';
+commit;
+```
 
 ## 8. Owner actions outside the code
 

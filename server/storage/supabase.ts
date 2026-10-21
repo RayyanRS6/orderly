@@ -23,6 +23,7 @@ import type {
   BlockedCustomer,
   Account,
   Membership,
+  DeletedBusiness,
 } from '../../src/shared/types';
 import type {
   MenuDraft,
@@ -33,7 +34,15 @@ import type {
   WebOrderOutcome,
 } from '../../src/shared/menu';
 import type { PipelineHealth, Repository } from '../repository';
-import { ACCOUNT_IN_USE, CATALOG_ID_IN_USE, LAST_OWNER_MESSAGE, PublicError } from '../security';
+import {
+  ACCOUNT_IN_USE,
+  BUSINESS_BUSY,
+  BUSINESS_DELETED,
+  CATALOG_ID_IN_USE,
+  LAST_OWNER_MESSAGE,
+  PAUSE_BOT_FIRST,
+  PublicError,
+} from '../security';
 import { env } from '../config';
 
 type Result<T> = { data: T | null; error: { message: string } | null };
@@ -47,6 +56,7 @@ const migrationMissing = (error: { code?: string } | null) =>
 const spamMigrationError = () =>
   new PublicError('Apply the spam protection database migration first.', 503);
 const DEALS_MIGRATION = '202610210001_deals.sql';
+const BUSINESS_DELETION_MIGRATION = '202610220001_business_deletion.sql';
 // A write to the menu or the deals: before the deals migration a deal cannot be saved, and an
 // id the other side uses is refused (SQL enforce_catalog_id) in the owner's words.
 function catalogWrite<T>(result: Result<T> & { error: { code?: string } | null }, deals = false) {
@@ -67,10 +77,30 @@ const BUSY_REFUSALS: [raised: string, message: string][] = [
     'Wait for running work before disconnecting',
     'Wait for running jobs to finish before disconnecting.',
   ],
+  ['Pause automation before deleting this business', PAUSE_BOT_FIRST],
+  ['Wait for running work before deleting this business', BUSINESS_BUSY],
 ];
 function busyRefusal(error: { message?: string } | null) {
   const found = BUSY_REFUSALS.find(([raised]) => error?.message?.includes(raised));
   return found && new PublicError(found[1], 409);
+}
+// delete_company and check_company_deletable, with their refusals in the admin's words.
+function deletionResult<T>(result: Result<T> & { error: { code?: string } | null }) {
+  if (migrationMissing(result.error))
+    throw new PublicError(
+      `Apply the ${BUSINESS_DELETION_MIGRATION} database migration first.`,
+      503,
+    );
+  const busy = busyRefusal(result.error);
+  if (busy) throw busy;
+  // A lock it waited 5 seconds for, staff work on this business that deadlocked with it, or the
+  // API's statement timeout: work on this business was still going on, and the deletion rolled
+  // back, so nothing was deleted.
+  if (['55P03', '40P01', '57014'].includes(result.error?.code ?? ''))
+    throw new PublicError(BUSINESS_BUSY, 409);
+  if (result.error?.message?.includes('Unknown company'))
+    throw new PublicError('Business not found.', 404);
+  return unwrap(result);
 }
 const warned = new Set<string>();
 function warnOnce(name: string, migration = '202610180001_spam_protection.sql') {
@@ -641,7 +671,35 @@ export class SupabaseRepository implements Repository {
     return company && withoutKeyLabel(company);
   }
   async saveCompany(company: Company) {
-    await this.rpc('save_company_settings', { p_company: company });
+    const result = await this.client.rpc('save_company_settings', { p_company: company });
+    // A save that raced the business's deletion (SQL refuse_deleted_company).
+    if (result.error?.message?.includes('This business was deleted'))
+      throw new PublicError(BUSINESS_DELETED, 404);
+    unwrap(result);
+  }
+  async deleteCompany(companyId: string, slug: string, actorId: string) {
+    return deletionResult(
+      await this.client.rpc('delete_company', {
+        p_company_id: companyId,
+        p_slug: slug,
+        p_actor_id: actorId,
+      }),
+    ) as DeletedBusiness;
+  }
+  async checkCompanyDeletable(companyId: string, slug: string) {
+    deletionResult(
+      await this.client.rpc('check_company_deletable', { p_company_id: companyId, p_slug: slug }),
+    );
+  }
+  async isDeletedConnection(id: string) {
+    const result = await this.client
+      .from('deleted_whatsapp_connections')
+      .select('id')
+      .eq('id', id)
+      .maybeSingle();
+    // Nothing was deleted with the button before its migration.
+    if (migrationMissing(result.error)) return false;
+    return !!unwrap(result);
   }
   async markCatalogSynced(companyId: string, syncedAt: string) {
     await this.rpc('mark_catalog_synced', { p_company_id: companyId, p_synced_at: syncedAt });

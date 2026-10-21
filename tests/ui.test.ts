@@ -29,6 +29,7 @@ import { seedCompanies, seedProducts, seedOrders, seedConversations } from '../s
 import type { Bootstrap } from '../src/shared/types';
 import type { PublicMenu } from '../src/shared/menu';
 import { addLine, count, previewQuote, setQuantity } from '../src/lib/menu-cart';
+import { businessPath } from '../src/lib/routes';
 import { MenuPage } from '../src/components/MenuPage';
 
 function createMockBootstrap(overrides: Partial<Bootstrap> = {}): Bootstrap {
@@ -386,6 +387,27 @@ describe('Full Component Rendering with Workspace.Provider', () => {
       createElement(Workspace.Provider, { value: businessesContext }, createElement(Businesses)),
     );
     expect(htmlBusinesses).toContain('Room for every business.');
+  });
+
+  it('opens a business just created, which the list on screen does not have yet', () => {
+    const companies = seedCompanies.map(({ id, slug }) => ({ id, slug }));
+    expect(businessPath(companies, seedCompanies[1].id, 'businesses')).toBe(
+      `/app/${seedCompanies[1].slug}/businesses`,
+    );
+    // Before, nothing knew the new business, so the old one loaded again.
+    expect(businessPath(companies, 'new-id', 'businesses')).toBeUndefined();
+    expect(businessPath(companies, 'new-id', 'businesses', 'new-place-1a2b3c')).toBe(
+      '/app/new-place-1a2b3c/businesses',
+    );
+    const settings = readFileSync('src/components/Settings.tsx', 'utf8');
+    const create = settings.slice(settings.indexOf("void run('create'"));
+    expect(create).toContain('switchCompany(company.id, company.slug);');
+    // One press at a time: the run is skipped while one is going, and the button shows it.
+    expect(create.slice(0, create.indexOf('Create workspace'))).toContain(
+      "loading={pending === 'create'}",
+    );
+    const app = readFileSync('src/App.tsx', 'utf8');
+    expect(app).toContain('const path = businessPath(data?.companies ?? [], id, page, slug);');
   });
 
   it('renders WhatsAppSignup component without throwing', () => {
