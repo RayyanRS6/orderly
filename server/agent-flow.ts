@@ -784,7 +784,7 @@ export async function buildAgentFlow(
     {
       id: 'sheets',
       title: 'Connect the order Sheet',
-      detail: 'Share a spreadsheet with the service account and test it.',
+      detail: 'Follow the steps in Integrations → Google Sheets, then save and test.',
       done: ready('sheets'),
       optional: mode === 'demo',
       page: 'integrations',

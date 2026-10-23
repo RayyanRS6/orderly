@@ -92,6 +92,8 @@ export function ErrorNotice({ message, onDismiss }: { message?: string; onDismis
       <p className="flex-1 font-medium">{message}</p>
       {onDismiss && (
         <button
+          // Inside a form it must not be the button Enter presses: Enter saves the form.
+          type="button"
           className="-m-1 rounded-full p-1 text-red-500 transition-[color,scale] duration-200 hover:text-red-800 active:scale-90"
           aria-label="Dismiss error"
           onClick={onDismiss}

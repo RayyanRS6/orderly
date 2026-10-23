@@ -45,6 +45,8 @@ function google(options: {
   tabs?: string[];
   values?: Record<string, unknown[][]>;
   writeStatus?: number;
+  /** Google's refusal of the first spreadsheet request: its status and error body. */
+  refuse?: [number, unknown];
 }) {
   const calls: { method: string; url: URL }[] = [];
   vi.stubGlobal(
@@ -54,6 +56,7 @@ function google(options: {
       const method = init?.method ?? 'GET';
       calls.push({ method, url });
       if (url.hostname === 'oauth2.googleapis.com') return Response.json({ access_token: 't' });
+      if (options.refuse) return Response.json(options.refuse[1], { status: options.refuse[0] });
       if (!url.pathname.includes('/values/'))
         return Response.json({
           spreadsheetId,
@@ -231,10 +234,69 @@ describe('the Sheets connection test', () => {
     );
     google({ values: orders('Order ID'), writeStatus: 403 });
     await expect(test()).rejects.toThrow(
-      'Share the spreadsheet with the service account as Editor.',
+      'Share the spreadsheet with the service account menu@example.iam.gserviceaccount.com as Editor.',
     );
     google({ values: orders('Customer list') });
     await expect(test()).rejects.toThrow('must be empty or begin with the Order ID header');
+    await expect(test()).rejects.toThrow('add a new empty tab named Orders');
+  });
+
+  it('names the fix when Google refuses the spreadsheet', async () => {
+    // Google's error body: { error: { code, message, status, details } }.
+    const error = (
+      code: number,
+      status: string,
+      message: string,
+      reason?: string,
+    ): [number, unknown] => [
+      code,
+      {
+        error: {
+          code,
+          message,
+          status,
+          ...(reason && {
+            details: [{ '@type': 'type.googleapis.com/google.rpc.ErrorInfo', reason }],
+          }),
+        },
+      },
+    ];
+    google({
+      refuse: error(
+        403,
+        'PERMISSION_DENIED',
+        'Google Sheets API has not been used in project 123 before or it is disabled.',
+        'SERVICE_DISABLED',
+      ),
+    });
+    await expect(test()).rejects.toThrow(
+      'The Google Sheets API is turned off in your Google Cloud project “example”.',
+    );
+    google({ refuse: error(403, 'PERMISSION_DENIED', 'The caller does not have permission') });
+    await expect(test()).rejects.toThrow(
+      'Share the spreadsheet with the service account menu@example.iam.gserviceaccount.com as Editor.',
+    );
+    google({ refuse: error(404, 'NOT_FOUND', 'Requested entity was not found.') });
+    await expect(test()).rejects.toThrow('Google found no spreadsheet at this link.');
+    google({
+      refuse: error(
+        400,
+        'FAILED_PRECONDITION',
+        'This operation is not supported for this document',
+      ),
+    });
+    await expect(test()).rejects.toThrow('This is an Excel file, not a Google Sheet.');
+    // A refusal without a JSON body still gets the general message.
+    google({ refuse: [500, 'oops'] });
+    await expect(test()).rejects.toThrow('Google Sheets request failed.');
+  });
+
+  it('says so when the saved private key is not a key, before calling Google', async () => {
+    const calls = google({});
+    await expect(
+      new GoogleSheetsAdapter(integration(), '-----BEGIN PRIVATE KEY-----\ncut off').test(),
+    ).rejects.toThrow('The saved private key is not a valid Google key.');
+    expect(calls).toHaveLength(0);
   });
 
   it('checks the menu tab when the menu comes from the Sheet', async () => {

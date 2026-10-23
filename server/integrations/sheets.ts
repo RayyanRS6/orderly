@@ -19,6 +19,34 @@ const ORDER_HEADERS = [
   'Status',
 ];
 
+/**
+ * Why Google refused a Sheets request, in words that name the fix. Google answers a disabled
+ * Sheets API and a missing share alike with 403; only the first carries SERVICE_DISABLED.
+ */
+async function sheetsRefusal(response: Response, email?: string): Promise<string> {
+  const body = (await response.json().catch(() => null)) as {
+    error?: { message?: unknown; details?: { reason?: unknown }[] };
+  } | null;
+  const details = Array.isArray(body?.error?.details) ? body.error.details : [];
+  const message = String(body?.error?.message ?? '');
+  if (response.status === 403 && details.some((d) => d?.reason === 'SERVICE_DISABLED')) {
+    // The key's project is in its email: name@PROJECT.iam.gserviceaccount.com.
+    const project = /@([\w-]+)\.iam\.gserviceaccount\.com$/.exec(email ?? '')?.[1];
+    return `The Google Sheets API is turned off in ${project ? `your Google Cloud project “${project}”` : 'the Google Cloud project that made this key'}. Turn it on for that project (step 3b in Connect), wait a few minutes, then test again.`;
+  }
+  if (response.status === 403)
+    return email
+      ? `Share the spreadsheet with the service account ${email} as Editor.`
+      : 'Share the spreadsheet with the service account as Editor.';
+  if (response.status === 404)
+    return 'Google found no spreadsheet at this link. Copy the link of your Sheet again.';
+  if (response.status === 429) return 'Google Sheets is rate limited; synchronization will retry.';
+  // An .xlsx file opened in Google Sheets: the Sheets API only works on Google Sheets files.
+  if (response.status === 400 && /not supported for this document/i.test(message))
+    return 'This is an Excel file, not a Google Sheet. Open it in Google Sheets, choose File → Save as Google Sheets, and connect the new Sheet’s link.';
+  return 'Google Sheets request failed. Verify the spreadsheet and tab names.';
+}
+
 export interface CatalogSource {
   readCatalog(companyId: string): Promise<Product[]>;
 }
@@ -33,13 +61,22 @@ export class GoogleSheetsAdapter implements CatalogSource, OrderDestination {
   private async token(): Promise<string> {
     const email = this.integration.config.clientEmail;
     if (!email || !this.privateKey)
-      throw new PublicError('Add a Google service account email and private key.');
+      throw new PublicError('Upload the Google key file in Integrations → Google Sheets.');
     const now = Math.floor(Date.now() / 1000);
     const b64 = (v: unknown) => Buffer.from(JSON.stringify(v)).toString('base64url');
     const unsigned = `${b64({ alg: 'RS256', typ: 'JWT' })}.${b64({ iss: email, scope: 'https://www.googleapis.com/auth/spreadsheets', aud: 'https://oauth2.googleapis.com/token', iat: now, exp: now + 3600 })}`;
     const signer = createSign('RSA-SHA256');
     signer.update(unsigned);
-    const jwt = `${unsigned}.${signer.sign(this.privateKey.replace(/\\n/g, '\n'), 'base64url')}`;
+    let signature: string;
+    try {
+      signature = signer.sign(this.privateKey.replace(/\\n/g, '\n'), 'base64url');
+    } catch {
+      // A cut-off or mistyped private key, which Node refuses before Google sees it.
+      throw new PublicError(
+        'The saved private key is not a valid Google key. Upload the key file again in Integrations → Google Sheets.',
+      );
+    }
+    const jwt = `${unsigned}.${signature}`;
     const response = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -51,7 +88,7 @@ export class GoogleSheetsAdapter implements CatalogSource, OrderDestination {
     });
     if (!response.ok)
       throw new PublicError(
-        'Google rejected the service account credentials. Check the email and private key.',
+        'Google rejected the service account key. If you made the key just now, wait a minute and test again; otherwise upload a new key file in Integrations → Google Sheets.',
         502,
       );
     const data = (await response.json()) as { access_token: string };
@@ -60,7 +97,7 @@ export class GoogleSheetsAdapter implements CatalogSource, OrderDestination {
   private base(): string {
     const id = this.integration.config.spreadsheetId;
     if (!/^[\w-]{15,150}$/.test(id || ''))
-      throw new PublicError('Enter the spreadsheet ID from its Google Sheets URL.');
+      throw new PublicError('Paste your Google Sheet’s link in Integrations → Google Sheets.');
     return `https://sheets.googleapis.com/v4/spreadsheets/${id}`;
   }
   private sheet(name: string): string {
@@ -74,11 +111,7 @@ export class GoogleSheetsAdapter implements CatalogSource, OrderDestination {
     });
     if (!response.ok)
       throw new PublicError(
-        response.status === 403
-          ? 'Share the spreadsheet with the service account as Editor.'
-          : response.status === 429
-            ? 'Google Sheets is rate limited; synchronization will retry.'
-            : 'Google Sheets request failed. Verify the spreadsheet and tab names.',
+        await sheetsRefusal(response, this.integration.config.clientEmail?.trim()),
         502,
       );
     return response.json();
@@ -161,8 +194,12 @@ export class GoogleSheetsAdapter implements CatalogSource, OrderDestination {
   private async ordersColumn(token: string, sheet: string): Promise<string[][]> {
     const data = await this.request(`/values/${encodeURIComponent(`${sheet}!A:A`)}`, token);
     const values: string[][] = data.values ?? [];
-    if (values.length && values[0]?.[0] !== ORDER_HEADERS[0])
-      throw new PublicError('The orders tab must be empty or begin with the Order ID header.');
+    if (values.length && values[0]?.[0] !== ORDER_HEADERS[0]) {
+      const name = this.integration.config.ordersSheet || 'Orders';
+      throw new PublicError(
+        `Your “${name}” tab already has other data in it. The orders tab must be empty or begin with the Order ID header: rename that tab (for example to Old), add a new empty tab named ${name}, then test again.`,
+      );
+    }
     if (!values.length)
       await this.request(
         `/values/${encodeURIComponent(`${sheet}!A1:M1`)}?valueInputOption=RAW`,

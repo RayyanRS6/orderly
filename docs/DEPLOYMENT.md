@@ -203,16 +203,20 @@ Two gateway codes a linked phone's connection can report. `PAIRING_EXPIRED`: a p
 
 ## 5. Google Sheets
 
-Create a Google Cloud project, enable the Google Sheets API, and create a service account with a key. Share the restaurant’s specific spreadsheet with that service account email as **Editor**. In Orderly, enter the spreadsheet ID, service account email, PEM private key and tab names. The ID is the value between `/d/` and `/edit` in its URL.
+Each restaurant connects its own spreadsheet in **Integrations → Google Sheets**, whose dialog walks the owner through it step by step: make a Sheet with an empty `Orders` tab, create a Google Cloud project, enable the Google Sheets API, create a service account and download its JSON key, and share the Sheet with the service account email as **Editor**. The dialog takes the whole Sheet link and saves only the ID between `/d/` and the next `/`; it reads `client_email` and `private_key` from the uploaded key file. **More options** still takes the email, a PEM key and other tab names by hand. **Save and test** runs the connection test straight after saving.
 
-Use separate `Menu` and `Orders` tabs. The orders tab must be empty or begin with the app’s `Order ID` header. The writer stores thirteen columns and uses `RAW` values to avoid interpreting customer content as spreadsheet formulas. Do not edit the ID column or sort only part of the range; sort entire rows if needed. Keep one writer per orders tab. Different businesses should use different spreadsheets.
+Known blockers. Google Cloud organizations created since 3 May 2024 block service account key creation by default, and this likely includes the standalone organizations Google creates for new Cloud sign-ups, personal Gmail included. Which policy does it varies: the security baseline enforces `iam.managed.disableServiceAccountKeyCreation`, while older organizations and Google’s troubleshooting steps use `iam.disableServiceAccountKeyCreation`. The owner then sees “Service account key creation is disabled”, and the guide sends them to support.
+
+Support for that message, on a screen share with the owner signed in to their console: in **IAM & Admin → IAM**, select the organization above the `Orderly` project and grant the owner **Organization Policy Administrator** (`roles/orgpolicy.policyAdmin`); as the organization’s administrator the owner can grant it to themselves. Then select the `Orderly` project, open **IAM & Admin → Organization policies** and, for each of the two policies above that is enforced, choose **Manage policy → Override parent’s policy**, turn enforcement off and **Set policy**. Wait a minute, then create the JSON key (step 3d of the guide). Only that project changes. A stopgap that needs nothing from the owner’s Google account: create a service account and key for that one business in Orderly’s own Google Cloud project and upload it in their Connect dialog; the owner then only shares their Sheet with that email. Use one service account per business, never one shared by several, so no business can reach another’s Sheet. Work and school Google accounts may also forbid sharing outside the organization, which covers every service account. A disabled Sheets API answers 403 with reason `SERVICE_DISABLED`, which the connection test reports apart from a missing share.
+
+The `Menu` tab is only needed when the menu comes from the Sheet. The orders tab must be empty or begin with the app’s `Order ID` header. The writer stores thirteen columns and uses `RAW` values to avoid interpreting customer content as spreadsheet formulas. Do not edit the ID column or sort only part of the range; sort entire rows if needed. Keep one writer per orders tab. Different businesses should use different spreadsheets.
 
 Orderly rejects an orders tab already assigned to another company, including the default `Orders` tab and differences only in letter case. Separate tabs are supported, but separate spreadsheets provide clearer sharing permissions for different businesses.
 
-For the menu, use these columns in this exact order:
+For the menu, the first row names the columns, in any order; `name`, `category`, `price` and `available` are required:
 
 ```text
-id,name,description,category,price,available,emoji,aliases,variants,modifiers
+id,name,description,category,price,available,emoji,aliases,variants,modifiers,image
 ```
 
 Use the supplied [`public/examples/menu.csv`](../public/examples/menu.csv). Prices in imports are **rupees**; internal prices are integer paisa. Variant prices are the full replacement item price. Extras add to the selected item price. Aliases use `|`; variants/modifiers use JSON arrays with `id`, `name`, and `price`.

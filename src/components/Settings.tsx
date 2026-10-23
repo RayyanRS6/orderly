@@ -33,6 +33,7 @@ import {
   Badge,
   ConfirmDialog,
   CustomSelect,
+  ErrorNotice,
   Field,
   Modal,
   PageHeading,
@@ -40,6 +41,12 @@ import {
 } from './ui';
 import { WhatsAppSignup } from './WhatsAppSignup';
 import { LinkedCleanupNote, WhatsAppConnection } from './WhatsAppConnection';
+import {
+  SHEETS_CONNECTED,
+  SheetsConnect,
+  sheetsConfigForSave,
+  sheetsFormProblem,
+} from './SheetsConnect';
 
 const providers: Record<Provider, { name: string; model: string }> = {
   mock: { name: 'Local demo · no API calls', model: MODEL_DEFAULTS.mock },
@@ -643,11 +650,13 @@ export function Integrations() {
   const [disconnectName, setDisconnectName] = useState('');
   // The old linked-phone session still needs removing on the phone (gatewayCleanupPending).
   const [linkedCleanup, setLinkedCleanup] = useState(false);
-  const { data, mutate, navigate } = useWorkspace();
+  const { data, mutate, navigate, refresh } = useWorkspace();
   const { pending, run } = useAction();
   const [editing, setEditing] = useState<Integration | null>(null);
   const [config, setConfig] = useState<Record<string, string>>({});
   const [secret, setSecret] = useState('');
+  // A step of the Sheets form still to do, shown when Save is clicked too early.
+  const [formProblem, setFormProblem] = useState('');
   const canEdit = data.role !== 'staff';
   // Failures show as a notification from mutate.
   const act = (key: string, path: string, message: string) =>
@@ -773,6 +782,7 @@ export function Integrations() {
                         ),
                       );
                       setSecret('');
+                      setFormProblem('');
                     }}
                   >
                     {integration.configured ? 'Manage connection' : 'Connect'}
@@ -788,7 +798,9 @@ export function Integrations() {
                         act(
                           `test-${integration.kind}`,
                           `/integrations/${integration.kind}/test`,
-                          `${info.title} credentials verified. Live message delivery still needs end-to-end testing.`,
+                          integration.kind === 'sheets'
+                            ? SHEETS_CONNECTED
+                            : `${info.title} credentials verified. Live message delivery still needs end-to-end testing.`,
                         )
                       }
                     >
@@ -883,82 +895,118 @@ export function Integrations() {
           }
         }}
         title={editing ? `Connect ${integrationInfo[editing.kind].title}` : 'Connect'}
-        description="These credentials are only used for the selected business."
+        description={
+          editing?.kind === 'sheets'
+            ? 'Do these steps once. Orderly then copies every order into your Sheet. This connection is only used for the selected business.'
+            : 'These credentials are only used for the selected business.'
+        }
+        wide={editing?.kind === 'sheets'}
+        // The steps send the owner to Google in other tabs: a stray click outside must not
+        // lose the link and key file already given.
+        dismissable={editing?.kind !== 'sheets'}
       >
         {editing && (
           <form
             className="stagger space-y-5"
             onSubmit={(e) => {
               e.preventDefault();
+              const sheets = editing.kind === 'sheets';
+              const problem = sheets ? sheetsFormProblem(config, secret, editing.configured) : '';
+              setFormProblem(problem || '');
+              if (problem) return;
               // Errors show inside this dialog (Modal), so no notification is needed.
               void run('save-connection', async () => {
                 await mutate(
                   `/integrations/${editing.kind}`,
-                  { config, ...(secret.trim() ? { secret: secret.trim() } : {}) },
+                  {
+                    config: sheets ? sheetsConfigForSave(config) : config,
+                    ...(secret.trim() ? { secret: secret.trim() } : {}),
+                  },
                   undefined,
-                  { dialog: true, success: 'Connection saved. Use Test to verify account access.' },
+                  {
+                    dialog: true,
+                    ...(!sheets && {
+                      success: 'Connection saved. Use Test to verify account access.',
+                    }),
+                  },
                 );
+                // The Sheet is tested at once, so a missed step shows here beside the steps.
+                if (sheets)
+                  await mutate('/integrations/sheets/test', {}, undefined, {
+                    dialog: true,
+                    success: SHEETS_CONNECTED,
+                  }).catch((e) => {
+                    // The server marked the connection as failing: the card shows it, too.
+                    void refresh().catch(() => undefined);
+                    throw e;
+                  });
                 setEditing(null);
                 setSecret('');
               }).catch(() => undefined);
             }}
           >
-            {integrationInfo[editing.kind].fields.map(([key, title]) => (
-              <Field key={key} label={title}>
-                <input
-                  className="input"
-                  value={config[key] || ''}
-                  onChange={(e) => setConfig({ ...config, [key]: e.target.value })}
-                  required={['phoneNumberId', 'wabaId', 'spreadsheetId', 'clientEmail'].includes(
-                    key,
-                  )}
-                  autoComplete="off"
-                />
-              </Field>
-            ))}
-            <Field
-              label={integrationInfo[editing.kind].secret}
-              hint={
-                editing.configured
-                  ? 'Leave empty to keep the saved credential. Saved secrets are never shown here.'
-                  : 'Stored encrypted on this server.'
-              }
-            >
-              {editing.kind === 'sheets' ? (
-                <textarea
-                  className="input min-h-32 font-mono text-xs"
-                  value={secret}
-                  onChange={(e) => setSecret(e.target.value)}
-                  placeholder="-----BEGIN PRIVATE KEY-----"
-                  required={!editing.configured}
-                  autoComplete="off"
-                />
-              ) : (
-                <input
-                  className="input"
-                  type="password"
-                  value={secret}
-                  onChange={(e) => setSecret(e.target.value)}
-                  required={!editing.configured}
-                  autoComplete="new-password"
-                />
-              )}
-            </Field>
-            {editing.kind === 'sheets' && (
-              <p className="rounded-2xl border border-ink/[0.06] bg-paper p-3.5 text-xs leading-relaxed text-stone-600">
-                Create separate Menu and Orders tabs. Share this spreadsheet with the service
-                account email as Editor. Menu columns: id, name, description, category, price,
-                available, emoji, aliases, variants, modifiers. Prices in the sheet use PKR rupees.
-              </p>
+            {editing.kind === 'sheets' ? (
+              <SheetsConnect
+                config={config}
+                onConfig={(next) => {
+                  setConfig(next);
+                  setFormProblem('');
+                }}
+                secret={secret}
+                onSecret={(next) => {
+                  setSecret(next);
+                  setFormProblem('');
+                }}
+                keySaved={editing.configured}
+              />
+            ) : (
+              <>
+                {integrationInfo[editing.kind].fields.map(([key, title]) => (
+                  <Field key={key} label={title}>
+                    <input
+                      className="input"
+                      value={config[key] || ''}
+                      onChange={(e) => setConfig({ ...config, [key]: e.target.value })}
+                      required={[
+                        'phoneNumberId',
+                        'wabaId',
+                        'spreadsheetId',
+                        'clientEmail',
+                      ].includes(key)}
+                      autoComplete="off"
+                    />
+                  </Field>
+                ))}
+                <Field
+                  label={integrationInfo[editing.kind].secret}
+                  hint={
+                    editing.configured
+                      ? 'Leave empty to keep the saved credential. Saved secrets are never shown here.'
+                      : 'Stored encrypted on this server.'
+                  }
+                >
+                  <input
+                    className="input"
+                    type="password"
+                    value={secret}
+                    onChange={(e) => setSecret(e.target.value)}
+                    required={!editing.configured}
+                    autoComplete="new-password"
+                  />
+                </Field>
+              </>
+            )}
+            {formProblem && (
+              <ErrorNotice message={formProblem} onDismiss={() => setFormProblem('')} />
             )}
             <ActionButton
               type="submit"
               className="btn-primary w-full"
               loading={pending === 'save-connection'}
-              loadingLabel="Saving…"
+              loadingLabel={editing.kind === 'sheets' ? 'Saving and testing…' : 'Saving…'}
             >
               <KeyRound className="size-4" />
-              Save connection
+              {editing.kind === 'sheets' ? 'Save and test' : 'Save connection'}
             </ActionButton>
           </form>
         )}
