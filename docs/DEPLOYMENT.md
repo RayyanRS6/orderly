@@ -203,7 +203,35 @@ Two gateway codes a linked phone's connection can report. `PAIRING_EXPIRED`: a p
 
 ## 5. Google Sheets
 
-Each restaurant connects its own spreadsheet in **Integrations → Google Sheets**, whose dialog walks the owner through it step by step: make a Sheet with an empty `Orders` tab, create a Google Cloud project, enable the Google Sheets API, create a service account and download its JSON key, and share the Sheet with the service account email as **Editor**. The dialog takes the whole Sheet link and saves only the ID between `/d/` and the next `/`; it reads `client_email` and `private_key` from the uploaded key file. **More options** still takes the email, a PEM key and other tab names by hand. **Save and test** runs the connection test straight after saving.
+### Connect with Google
+
+When `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET` are set, the Sheets dialog leads with **Connect with Google**. The owner picks their Google account and clicks **Allow**; Orderly creates “Orderly – <business> orders” in their Drive with an `Orders` tab (plus a `Menu` tab holding the current menu when the menu source is the Sheet), stores the Google sign-in (a refresh token) encrypted like a key file, and runs the connection test. The only permission asked for is `drive.file`: Orderly can open the files it creates and nothing else in the owner’s Drive. The key-file steps below stay under “Or use your own Google Cloud key file”.
+
+One-time setup in Google Cloud, by the operator:
+
+1. Use two projects: one for testing (left in Testing, with localhost origins) and one for production. Google’s policy wants a project per tier, and an owner removing Orderly ends its access for every client in that project.
+2. In the production project, enable the **Google Sheets API** and the **Google Drive API** (Drive tells Orderly which Google account connected).
+3. **Google Auth Platform → Branding**: app name Orderly, support email, and the home page, `/privacy` and `/terms` links. **Authorized domains**: the dashboard’s top private domain (`meerurayyan.workers.dev` today).
+4. **Audience**: External, then **Publish app** (In production). In Testing, Google ends every sign-in after 7 days.
+5. **Data access**: add only `https://www.googleapis.com/auth/drive.file`.
+6. **Clients → Create client → Web application**, with the dashboard origin (`https://orderly.meerurayyan.workers.dev`) under Authorized JavaScript origins. Copy the client secret straight away: Google shows it once.
+7. **Edge Functions → Secrets**: `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET`. Deploy the backend, then the dashboard, whose security policy allows Google’s sign-in library (`accounts.google.com/gsi/`).
+8. Test with a spare Gmail account: connect, place an order, change its status, then disconnect; Orderly should then be gone from myaccount.google.com/connections. If connecting fails and the function log shows `google_code_exchange` with `redirect_uri_mismatch`, set `GOOGLE_OAUTH_REDIRECT_URI` to the dashboard origin and add that origin under Authorized redirect URIs too.
+
+The domain. Until the brand is verified, Google’s consent screen shows the domain instead of “Orderly”. Google’s policy also wants production apps on a domain the developer owns, verified in Search Console as a DNS domain property, which a workers.dev address cannot be. A custom domain for the dashboard settles both: make it the authorized domain and JavaScript origin, verify it, then run brand verification.
+
+How it behaves:
+
+- Google gives a refresh token only the first time an account allows Orderly. A second business on the same Google account, or a reconnect, reuses a stored one that still works; when there is none, Orderly ends that sign-in and asks the owner to click once more, which shows Google’s consent again.
+- Disconnecting, switching to a key file or deleting the business ends Orderly’s Google access (`/revoke`) only when no other business uses that Google account, because Google ends the whole grant.
+- A refresh token ends when the owner removes Orderly, after six months unused, or when Google ends it. Order copies and menu refreshes then fail with a “Reconnect Google” message on the card. Reconnecting keeps the Sheet when it still opens, and otherwise makes a new one.
+- All restaurants share the production project’s Sheets quota: 300 requests a minute, 60 for each Google account.
+- Google refuses to sign in inside Facebook, Instagram and similar in-app browsers (`disallowed_useragent`); the dialog asks the owner to open the page in Chrome or Safari.
+- Rollback: a backend without this code reads a stored Google sign-in as a key file, so those connections fail. To stop new connections, set `GOOGLE_SHEETS_CONNECT=off`; never remove the client or its secret while restaurants are connected.
+
+### Own key file (advanced)
+
+Each restaurant can instead connect its own spreadsheet in **Integrations → Google Sheets**, whose dialog walks the owner through it step by step: make a Sheet with an empty `Orders` tab, create a Google Cloud project, enable the Google Sheets API, create a service account and download its JSON key, and share the Sheet with the service account email as **Editor**. The dialog takes the whole Sheet link and saves only the ID between `/d/` and the next `/`; it reads `client_email` and `private_key` from the uploaded key file. **More options** still takes the email, a PEM key and other tab names by hand. **Save and test** runs the connection test straight after saving.
 
 Known blockers. Google Cloud organizations created since 3 May 2024 block service account key creation by default, and this likely includes the standalone organizations Google creates for new Cloud sign-ups, personal Gmail included. Which policy does it varies: the security baseline enforces `iam.managed.disableServiceAccountKeyCreation`, while older organizations and Google’s troubleshooting steps use `iam.disableServiceAccountKeyCreation`. The owner then sees “Service account key creation is disabled”, and the guide sends them to support.
 

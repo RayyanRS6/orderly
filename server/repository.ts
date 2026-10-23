@@ -232,6 +232,9 @@ export interface Repository {
     encryptedSecret?: string,
   ): Promise<void>;
   getSecret(companyId: string, kind: IntegrationKind): Promise<string | undefined>;
+  // The businesses whose Sheets connection was made with this Google account ("Connect with
+  // Google"), so ending Orderly's access for one never cuts off another.
+  sheetsCompaniesForGoogleAccount(accountId: string): Promise<string[]>;
   addTrace(trace: Trace): Promise<void>;
   listTraces(companyId: string): Promise<Trace[]>;
   addUsage(usage: Usage): Promise<void>;

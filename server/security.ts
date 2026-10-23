@@ -81,6 +81,7 @@ const SECRET_SETTINGS = [
   'WHATSAPP_GATEWAY_SECRET',
   'HEALTH_CHECK_TOKEN',
   'RESEND_API_KEY',
+  'GOOGLE_OAUTH_CLIENT_SECRET',
 ];
 /**
  * For log lines: hides the server's secrets, the query string of any URL (a network error can
@@ -108,6 +109,9 @@ const scrub = (text: string) =>
     .replace(/\beyJ[\w-]*\.[\w-]+(?:\.[\w-]+)?/g, '[token]')
     .replace(/\b(?:sk|rk|pk)-[\w-]{8,}/g, '[key]')
     .replace(/\bAIza[\w-]{20,}/g, '[key]')
+    // Google access tokens (ya29.…) and refresh tokens (1//…).
+    .replace(/\bya29\.[\w.-]+/g, '[token]')
+    .replace(/\b1\/\/[\w-]{20,}/g, '[token]')
     .replace(/\+?\d(?:[\s-]?\d){9,}/g, '[number]');
 const label = (value: unknown) =>
   typeof value === 'string' || typeof value === 'number' ? String(value).slice(0, 80) : undefined;

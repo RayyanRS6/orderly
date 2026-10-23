@@ -27,6 +27,7 @@ import { appMode, automationPaused } from './config';
 import { addMemberByEmail } from './team';
 import { emailAlertsAvailable } from './integrations/alerts';
 import { disconnectGateway } from './whatsapp/connections';
+import { googleAccessOf, releaseGoogleAccess } from './integrations/google-sheets-connect';
 import { baseSlug, menuLinkStatus, refreshDisplayNumber, whatsappNumberFor } from './menu';
 
 export type AppEnv = {
@@ -415,11 +416,15 @@ export function managementRoutes(repo: Repository) {
     const gatewayCleanupPending =
       kind === 'whatsapp' &&
       !!(await disconnectGateway(repo, c.get('company').id)).gatewayCleanupPending;
+    // Read first: once disconnected, the stored Google access is gone.
+    const google = kind === 'sheets' ? await googleAccessOf(repo, c.get('company').id) : {};
     await repo.disconnectIntegration(c.get('company').id, kind);
+    // Only after the disconnect: a refused one ("wait for running jobs") keeps it working.
+    const googleReleased = !!google.integration && (await releaseGoogleAccess(repo, google));
     await repo.audit(c.get('company').id, c.get('userId'), `integration.${kind}.disconnected`);
     return c.json({
       ok: true,
-      providerRevocationRequired: true,
+      providerRevocationRequired: !googleReleased,
       ...(gatewayCleanupPending && { gatewayCleanupPending }),
     });
   });

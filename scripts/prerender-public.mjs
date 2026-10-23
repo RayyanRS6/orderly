@@ -143,14 +143,17 @@ const apiOrigin = process.env.VITE_API_BASE_URL
   ? new URL(process.env.VITE_API_BASE_URL).origin
   : '';
 const socketOrigin = apiOrigin.replace(/^https:/, 'wss:');
+// Google's sign-in library for "Connect with Google" on the Sheets connection: its script, and
+// the frame, requests and styles Google lists for it under accounts.google.com/gsi/. No
+// Cross-Origin-Opener-Policy header is sent: "same-origin" would cut off Google's popup.
 const csp = [
   "default-src 'self'",
-  "script-src 'self' https://connect.facebook.net",
-  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "script-src 'self' https://connect.facebook.net https://accounts.google.com/gsi/client",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://accounts.google.com/gsi/style",
   "font-src 'self' https://fonts.gstatic.com",
   "img-src 'self' data: https:",
-  `connect-src 'self' ${apiOrigin} ${socketOrigin} https://*.facebook.com https://*.facebook.net`,
-  'frame-src https://*.facebook.com',
+  `connect-src 'self' ${apiOrigin} ${socketOrigin} https://*.facebook.com https://*.facebook.net https://accounts.google.com/gsi/`,
+  'frame-src https://*.facebook.com https://accounts.google.com/gsi/',
   "object-src 'none'",
   "base-uri 'self'",
   "form-action 'self'",

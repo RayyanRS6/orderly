@@ -51,6 +51,7 @@ import {
 } from '../src/shared/models.js';
 import { modelFingerprint } from './integrations/model-catalog.js';
 import { GoogleSheetsAdapter } from './integrations/sheets.js';
+import { GOOGLE_REAUTH } from './integrations/google-oauth.js';
 import { WhatsAppAdapter } from './integrations/whatsapp.js';
 import { decryptSecret, PublicError, redactSecrets } from './security.js';
 import { sanitizeError } from './security.js';
@@ -128,6 +129,17 @@ async function noteMenuSync(repo: Repository, companyId: string, error?: unknown
     ...sheets,
     error: note,
     ...(note && { checkedAt: new Date().toISOString() }),
+  });
+}
+// A problem with the Sheets connection found by background work, shown on its card. Like the
+// menu note, only the note changes, never the status.
+async function noteSheetsError(repo: Repository, companyId: string, message: string) {
+  const sheets = (await repo.getIntegrations(companyId)).find((i) => i.kind === 'sheets');
+  if (!sheets || sheets.error === message) return;
+  await repo.saveIntegration(companyId, {
+    ...sheets,
+    error: message,
+    checkedAt: new Date().toISOString(),
   });
 }
 /**
@@ -1758,6 +1770,9 @@ export async function processJob(repo: Repository, id: string) {
     });
     if (job.kind === 'sheet_sync') {
       await repo.setOrderSyncStatus(job.companyId, String(job.payload.orderId), 'failed');
+      // Retrying can't bring Google's access back; the Sheets card asks to reconnect.
+      if (error instanceof PublicError && error.code === GOOGLE_REAUTH)
+        await noteSheetsError(repo, job.companyId, error.message).catch(() => undefined);
     }
     if (permanent && job.kind === 'whatsapp_send')
       await recordNotSent(

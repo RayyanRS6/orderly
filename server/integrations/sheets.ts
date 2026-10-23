@@ -2,8 +2,9 @@ import { createSign } from 'node:crypto';
 import type { Integration, Order, Product } from '../../src/shared/types.js';
 import { PublicError } from '../security.js';
 import { catalogFromRows, catalogHeaders } from './catalog.js';
+import { GOOGLE_REAUTH, forgetGoogleAccessToken, googleAccessToken } from './google-oauth.js';
 
-const ORDER_HEADERS = [
+export const ORDER_HEADERS = [
   'Order ID',
   'Reference',
   'Created',
@@ -23,26 +24,54 @@ const ORDER_HEADERS = [
  * Why Google refused a Sheets request, in words that name the fix. Google answers a disabled
  * Sheets API and a missing share alike with 403; only the first carries SERVICE_DISABLED.
  */
-async function sheetsRefusal(response: Response, email?: string): Promise<string> {
+async function sheetsRefusal(
+  response: Response,
+  config: Record<string, string>,
+): Promise<{ message: string; code?: string }> {
   const body = (await response.json().catch(() => null)) as {
     error?: { message?: unknown; details?: { reason?: unknown }[] };
   } | null;
   const details = Array.isArray(body?.error?.details) ? body.error.details : [];
   const message = String(body?.error?.message ?? '');
-  if (response.status === 403 && details.some((d) => d?.reason === 'SERVICE_DISABLED')) {
+  const disabled = response.status === 403 && details.some((d) => d?.reason === 'SERVICE_DISABLED');
+  // Connected with Google: the Sheet is one Orderly made, in Orderly's own Google project.
+  if (config.auth === 'oauth') {
+    if (disabled)
+      return { message: 'Google Sheets isn’t turned on for Orderly. Contact Orderly support.' };
+    if (response.status === 403 || response.status === 404)
+      return {
+        message:
+          'Orderly can no longer open your Sheet: it was deleted, or Google no longer lets Orderly use it. Click Reconnect Google in Integrations → Google Sheets to make a new one.',
+        code: GOOGLE_REAUTH,
+      };
+    if (response.status === 429)
+      return { message: 'Google Sheets is rate limited; synchronization will retry.' };
+    // A range naming a tab the owner renamed or deleted.
+    if (response.status === 400 && /unable to parse range/i.test(message))
+      return {
+        message:
+          'Orderly can’t find the Orders or Menu tab in your Sheet. Rename the tab back to “Orders” (or “Menu”), then test again.',
+      };
+    return { message: 'Google Sheets request failed. Orderly will try again.' };
+  }
+  return { message: keyRefusal(response.status, message, disabled, config.clientEmail?.trim()) };
+}
+// Connected with a key file: the owner's own Google Cloud project, and their own share.
+function keyRefusal(status: number, message: string, disabled: boolean, email?: string): string {
+  if (disabled) {
     // The key's project is in its email: name@PROJECT.iam.gserviceaccount.com.
     const project = /@([\w-]+)\.iam\.gserviceaccount\.com$/.exec(email ?? '')?.[1];
     return `The Google Sheets API is turned off in ${project ? `your Google Cloud project “${project}”` : 'the Google Cloud project that made this key'}. Turn it on for that project (step 3b in Connect), wait a few minutes, then test again.`;
   }
-  if (response.status === 403)
+  if (status === 403)
     return email
       ? `Share the spreadsheet with the service account ${email} as Editor.`
       : 'Share the spreadsheet with the service account as Editor.';
-  if (response.status === 404)
+  if (status === 404)
     return 'Google found no spreadsheet at this link. Copy the link of your Sheet again.';
-  if (response.status === 429) return 'Google Sheets is rate limited; synchronization will retry.';
+  if (status === 429) return 'Google Sheets is rate limited; synchronization will retry.';
   // An .xlsx file opened in Google Sheets: the Sheets API only works on Google Sheets files.
-  if (response.status === 400 && /not supported for this document/i.test(message))
+  if (status === 400 && /not supported for this document/i.test(message))
     return 'This is an Excel file, not a Google Sheet. Open it in Google Sheets, choose File → Save as Google Sheets, and connect the new Sheet’s link.';
   return 'Google Sheets request failed. Verify the spreadsheet and tab names.';
 }
@@ -56,11 +85,13 @@ export interface OrderDestination {
 export class GoogleSheetsAdapter implements CatalogSource, OrderDestination {
   constructor(
     private integration: Integration,
-    private privateKey: string,
+    // A service account's private key, or the refresh token of a "Connect with Google".
+    private credential: string,
   ) {}
   private async token(): Promise<string> {
+    if (this.integration.config.auth === 'oauth') return googleAccessToken(this.credential);
     const email = this.integration.config.clientEmail;
-    if (!email || !this.privateKey)
+    if (!email || !this.credential)
       throw new PublicError('Upload the Google key file in Integrations → Google Sheets.');
     const now = Math.floor(Date.now() / 1000);
     const b64 = (v: unknown) => Buffer.from(JSON.stringify(v)).toString('base64url');
@@ -69,7 +100,7 @@ export class GoogleSheetsAdapter implements CatalogSource, OrderDestination {
     signer.update(unsigned);
     let signature: string;
     try {
-      signature = signer.sign(this.privateKey.replace(/\\n/g, '\n'), 'base64url');
+      signature = signer.sign(this.credential.replace(/\\n/g, '\n'), 'base64url');
     } catch {
       // A cut-off or mistyped private key, which Node refuses before Google sees it.
       throw new PublicError(
@@ -109,11 +140,13 @@ export class GoogleSheetsAdapter implements CatalogSource, OrderDestination {
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       signal: AbortSignal.timeout(12000),
     });
-    if (!response.ok)
-      throw new PublicError(
-        await sheetsRefusal(response, this.integration.config.clientEmail?.trim()),
-        502,
-      );
+    if (!response.ok) {
+      // A cached Google access token refused: the next try asks Google afresh.
+      if (response.status === 401 && this.integration.config.auth === 'oauth')
+        forgetGoogleAccessToken(this.credential);
+      const { message, code } = await sheetsRefusal(response, this.integration.config);
+      throw new PublicError(message, 502, code ? { code } : undefined);
+    }
     return response.json();
   }
   /**
@@ -134,14 +167,20 @@ export class GoogleSheetsAdapter implements CatalogSource, OrderDestination {
     );
     const missing = (name: string) => !tabs.has(name.trim().toLowerCase());
     const orders = this.integration.config.ordersSheet || 'Orders';
+    // A Sheet connected with Google uses the tab names Orderly gave it.
+    const google = this.integration.config.auth === 'oauth';
     if (missing(orders))
       throw new PublicError(
-        `The spreadsheet has no tab named “${orders}”. Add it for order copies, or change the orders tab name.`,
+        google
+          ? `Your Sheet has no tab named “${orders}” any more. Rename the orders tab back to “${orders}”, then test again.`
+          : `The spreadsheet has no tab named “${orders}”. Add it for order copies, or change the orders tab name.`,
       );
     const menu = this.integration.config.catalogSheet || 'Menu';
     if (options.menuFor && missing(menu))
       throw new PublicError(
-        `The spreadsheet has no tab named “${menu}”. Add your menu there, or change the menu tab name.`,
+        google
+          ? `Your Sheet has no tab named “${menu}”. Add a tab with that name holding your menu, then test again.`
+          : `The spreadsheet has no tab named “${menu}”. Add your menu there, or change the menu tab name.`,
       );
     const sheet = this.sheet(orders);
     // An empty tab gets its header row, which already proves write access; otherwise the

@@ -29,6 +29,30 @@ export const sheetsConfigForSave = (config: Record<string, string>) => ({
   ordersSheet: config.ordersSheet?.trim() ?? '',
 });
 
+/**
+ * The key-file steps, folded away under "Connect with Google" when the server offers it, and
+ * open by default when the business is connected with a key file already.
+ */
+export function KeyFileOption({
+  collapsed,
+  open,
+  children,
+}: {
+  collapsed: boolean;
+  open: boolean;
+  children: ReactNode;
+}) {
+  if (!collapsed) return <>{children}</>;
+  return (
+    <details open={open} className="mt-5 rounded-2xl border border-ink/[0.06] bg-paper p-4">
+      <summary className="cursor-pointer text-sm font-semibold text-ink marker:text-brand-500">
+        Or use your own Google Cloud key file (advanced, about 15 minutes)
+      </summary>
+      <div className="mt-5">{children}</div>
+    </details>
+  );
+}
+
 /** Why the form can't be saved yet, pointing at the step to finish; undefined when it can. */
 export function sheetsFormProblem(
   config: Record<string, string>,

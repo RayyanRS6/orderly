@@ -5,7 +5,7 @@ import { supportEmail } from './Public';
 type LegalKind = 'privacy' | 'terms' | 'data-deletion';
 
 // Bump this whenever the text of any of the three documents changes.
-export const LEGAL_LAST_UPDATED = '19 October 2026';
+export const LEGAL_LAST_UPDATED = '24 October 2026';
 // The owner's facts, filled in on 19 October 2026. Orderly is run by a sole proprietor, so the
 // owner's own name is the legal name (no registered company or postal address; the support email
 // is the contact). Orderly keeps no regular database backups, by the owner's decision: the one-off
@@ -36,6 +36,10 @@ const documents: Record<LegalKind, { title: string; intro: string; sections: [st
         [
           'Who receives it',
           'Supabase hosts the database, logins and backend; the database is in Sydney, Australia. Cloudflare serves the website. Meta (WhatsApp) delivers messages for restaurants on the official WhatsApp Business Platform. Railway hosts Orderly’s WhatsApp gateway, only for restaurants that use the linked-phone connection: messages are decrypted and processed there, the encrypted WhatsApp session and contact IDs stay until the restaurant disconnects, incoming messages stay until Orderly has saved them (one Orderly cannot accept is kept for up to 24 hours, then deleted), and sent replies are kept encrypted for about 3 days so WhatsApp can resend one your phone could not open. The AI provider each restaurant chooses (OpenAI, Anthropic or Google) receives your current message, recent messages from the chat (which can include the name and address you typed, a photo’s caption, and the place name, address and coordinates of a location you shared), the menu and the restaurant’s bot settings, but not your WhatsApp number unless you type it. Google Sheets receives order details (name, number, address, items) if the restaurant connects a Sheet. Resend sends optional staff alert emails; it receives only the staff member’s email and a fixed notice with no customer details. Menu photos load from websites the restaurant chose, which can see your IP address. When an owner connects WhatsApp in the dashboard, Meta’s sign-up tool runs in their browser. Each provider handles data under its own terms.',
+        ],
+        [
+          'Google account data',
+          'If a restaurant owner connects Google Sheets with “Connect with Google”, Orderly asks Google only for permission to create and edit the files Orderly makes in that owner’s Google Drive. It cannot see or open the owner’s other files. Orderly also receives the Google account’s email address and account ID, to show which account is connected and to keep each business’s connection apart. Orderly uses this access only to create the restaurant’s order Sheet, add and update its orders there, and read its menu if the restaurant keeps the menu in that Sheet. Orderly does not sell this data, use it for advertising or use it to train AI models, and people at Orderly look at it only when the restaurant asks for help, for security, or when the law requires it. The access is stored encrypted and deleted when the restaurant disconnects Google Sheets or its workspace is deleted, and the owner can remove Orderly at any time in their Google Account. The Sheet itself stays in the owner’s Drive. Orderly’s use and transfer of information received from Google APIs to any other app will adhere to the Google API Services User Data Policy, including the Limited Use requirements.',
         ],
         [
           'International transfers',

@@ -168,3 +168,27 @@ export function catalogFromRows(companyId: string, rows: unknown[][]): Product[]
     throw new PublicError('Menu item IDs must be unique.');
   return products;
 }
+/**
+ * A menu as rows that catalogFromRows reads back as the same menu: the header row, then one row
+ * per item with prices in rupees. Item ids are kept, so deals still find their items.
+ */
+export function catalogRows(products: Product[]): (string | number)[][] {
+  const options = (list: Product['variants']) =>
+    list.length ? JSON.stringify(list.map((o) => ({ ...o, price: o.price / 100 }))) : '';
+  return [
+    catalogHeaders,
+    ...products.map((p) => [
+      p.id,
+      p.name,
+      p.description,
+      p.category,
+      p.price / 100,
+      p.available ? 'yes' : 'no',
+      p.emoji,
+      p.aliases.join('|'),
+      options(p.variants),
+      options(p.modifiers),
+      p.imageUrl ?? '',
+    ]),
+  ];
+}

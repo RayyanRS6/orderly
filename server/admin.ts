@@ -15,6 +15,7 @@ import { appMode, PLATFORM_AUDIT_ID } from './config';
 import { addMemberByEmail } from './team';
 import { gatewayAvailable } from './whatsapp/client';
 import { disconnectGateway } from './whatsapp/connections';
+import { googleAccessOf, releaseGoogleAccess } from './integrations/google-sheets-connect';
 
 /** Only the platform admin. Checked on every request; the role set for the open business is not trusted. */
 export const requireAdmin =
@@ -229,6 +230,8 @@ export function adminRoutes(repo: Repository) {
       repo.listAllMemberships(),
       repo.listAdminIds(),
     ]);
+    // The business's Google access for its Sheet, ended once the business is gone.
+    const google = await googleAccessOf(repo, id);
     let removed: DeletedBusiness;
     try {
       removed = await repo.deleteCompany(id, stored.slug, actorId);
@@ -241,6 +244,9 @@ export function adminRoutes(repo: Repository) {
         );
       throw error;
     }
+    // Best effort: the stored access is already deleted with the business, and the owner can
+    // still remove Orderly in their Google Account.
+    await releaseGoogleAccess(repo, google);
     const peopleLeftWithoutBusiness = memberships.filter(
       (m) =>
         m.companyId === id &&

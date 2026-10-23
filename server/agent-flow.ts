@@ -784,7 +784,7 @@ export async function buildAgentFlow(
     {
       id: 'sheets',
       title: 'Connect the order Sheet',
-      detail: 'Follow the steps in Integrations → Google Sheets, then save and test.',
+      detail: 'Connect your Google Sheet in Integrations → Google Sheets.',
       done: ready('sheets'),
       optional: mode === 'demo',
       page: 'integrations',

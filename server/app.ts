@@ -58,6 +58,14 @@ import { readiness } from './readiness.js';
 import { buildAgentFlow } from './agent-flow.js';
 import { verifyProviderKey } from './integrations/model-catalog.js';
 import { WhatsAppAdapter } from './integrations/whatsapp.js';
+import { googleConnectEnabled } from './integrations/google-oauth.js';
+import {
+  GOOGLE_CONFIG_KEYS,
+  connectGoogleSheets,
+  googleAccessOf,
+  prepareSheetMenu,
+  releaseGoogleAccess,
+} from './integrations/google-sheets-connect.js';
 import { whatsappRoutes } from './whatsapp/routes';
 import { gatewaySecret } from './whatsapp/client';
 import { verifySigned } from './whatsapp/signing';
@@ -677,6 +685,10 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
           409,
         );
     }
+    // Reading the menu from the Sheet starts only with a readable menu there (a Sheet Orderly
+    // made gets a Menu tab with the current menu): otherwise every chat would go to staff.
+    if (company.catalogSource === 'sheets' && stored.catalogSource !== 'sheets')
+      await prepareSheetMenu(repo, company);
     await repo.saveCompany(company);
     return c.json(company);
   });
@@ -1055,11 +1067,24 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
     const config = Object.fromEntries(
       Object.entries(body.config).filter(([key]) => integrationKeys[kind].includes(key)),
     );
+    // A Sheet connected with Google keeps its stored Google access: these settings alone can't
+    // change it, and a key file replaces it, so its Google settings go with it.
+    const google = kind === 'sheets' && previous?.config.auth === 'oauth';
+    if (google && !body.secret)
+      throw new PublicError(
+        'This Sheet is connected with Google. To use your own key file instead, upload it; to stop, disconnect Google Sheets.',
+      );
+    const replaced = google ? await googleAccessOf(repo, c.get('company').id) : {};
+    const kept = Object.fromEntries(
+      Object.entries(previous?.config ?? {}).filter(
+        ([key]) => !google || !(GOOGLE_CONFIG_KEYS as readonly string[]).includes(key),
+      ),
+    );
     const integration: Integration = {
       kind,
       configured: !!body.secret || !!(await repo.getSecret(c.get('company').id, kind)),
       status: 'configured',
-      config: { ...previous?.config, ...config },
+      config: { ...kept, ...config },
     };
     if (kind === 'whatsapp' && config.phoneNumberId) {
       const existing = await repo.findCompanyByPhoneNumberId(config.phoneNumberId);
@@ -1100,6 +1125,7 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
       integration,
       body.secret ? encryptSecret(body.secret) : undefined,
     );
+    if (google) await releaseGoogleAccess(repo, replaced);
     return c.json(integration);
   });
   app.post('/api/integrations/:kind/test', async (c) => {
@@ -1162,6 +1188,45 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
       configId: env('META_EMBEDDED_SIGNUP_CONFIG_ID') || '',
       version: env('META_GRAPH_VERSION') || '',
     });
+  });
+  // "Connect with Google" for the order Sheet: the client id for Google's popup, then the code
+  // it returns. The routes need the owner's own sign-in (a bearer token and the business in
+  // headers), which a page on another site can't send, so a forged request never reaches them.
+  app.get('/api/google/sheets-config', (c) => {
+    owner(c.get('role'));
+    const enabled = googleConnectEnabled();
+    return c.json({ enabled, clientId: enabled ? env('GOOGLE_OAUTH_CLIENT_ID') : '' });
+  });
+  app.post('/api/google/sheets/connect', async (c) => {
+    owner(c.get('role'));
+    if (!googleConnectEnabled())
+      throw new PublicError('Connecting with Google is not available here.', 409);
+    const company = c.get('company');
+    if (!(await repo.consumeRateLimit(`google-connect:${company.id}`, 6)))
+      throw new PublicError('Please wait a minute before connecting Google again.', 429);
+    const { code } = z
+      .object({ code: z.string().trim().min(10).max(2048) })
+      .strict()
+      .parse(await c.req.json());
+    // One connect at a time per business (two tabs would each make a Sheet).
+    const lock = `google-connect:${company.id}`;
+    const holder = randomUUID();
+    if (
+      !(await repo.acquireConversationLock(
+        company.id,
+        lock,
+        holder,
+        new Date(Date.now() + 120_000).toISOString(),
+      ))
+    )
+      throw new PublicError('Orderly is already connecting your Google Sheet. Wait a moment.', 409);
+    try {
+      const result = await connectGoogleSheets(repo, company, code);
+      await repo.audit(company.id, c.get('userId'), 'integration.sheets.google_connected');
+      return c.json(result);
+    } finally {
+      await repo.releaseConversationLock(company.id, lock, holder).catch(() => undefined);
+    }
   });
   app.post('/api/whatsapp/signup', async (c) => {
     owner(c.get('role'));

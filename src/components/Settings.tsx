@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react';
 import {
   ArrowRight,
   Bot,
+  ExternalLink,
   Building2,
   Cable,
   Check,
@@ -42,11 +43,16 @@ import {
 import { WhatsAppSignup } from './WhatsAppSignup';
 import { LinkedCleanupNote, WhatsAppConnection } from './WhatsAppConnection';
 import {
+  KeyFileOption,
   SHEETS_CONNECTED,
   SheetsConnect,
   sheetsConfigForSave,
   sheetsFormProblem,
 } from './SheetsConnect';
+import { GoogleSheetsConnect, connectedText } from './GoogleSheetsConnect';
+import type { GoogleSheetsConfig } from '../lib/google-connect';
+import { sheetUrl } from '../lib/sheets-connect';
+import { api } from '../lib/api';
 
 const providers: Record<Provider, { name: string; model: string }> = {
   mock: { name: 'Local demo · no API calls', model: MODEL_DEFAULTS.mock },
@@ -650,14 +656,36 @@ export function Integrations() {
   const [disconnectName, setDisconnectName] = useState('');
   // The old linked-phone session still needs removing on the phone (gatewayCleanupPending).
   const [linkedCleanup, setLinkedCleanup] = useState(false);
-  const { data, mutate, navigate, refresh } = useWorkspace();
+  const { data, mutate, navigate, notify, refresh } = useWorkspace();
   const { pending, run } = useAction();
   const [editing, setEditing] = useState<Integration | null>(null);
   const [config, setConfig] = useState<Record<string, string>>({});
   const [secret, setSecret] = useState('');
   // A step of the Sheets form still to do, shown when Save is clicked too early.
   const [formProblem, setFormProblem] = useState('');
+  // Disconnecting a Sheet connected with Google: Orderly ends that access itself.
+  const [disconnectGoogle, setDisconnectGoogle] = useState(false);
   const canEdit = data.role !== 'staff';
+  // "Connect with Google" for the Sheet, when Orderly's Google sign-in is set up on the server.
+  // An older server answers 404 here: the button then stays hidden.
+  const [googleSheets, setGoogleSheets] = useState<GoogleSheetsConfig>();
+  const companyId = data.company.id;
+  useEffect(() => {
+    if (!canEdit) return;
+    let live = true;
+    api<GoogleSheetsConfig>('/google/sheets-config', companyId).then(
+      (value) => live && setGoogleSheets(value),
+      () => undefined,
+    );
+    return () => {
+      live = false;
+    };
+  }, [canEdit, companyId]);
+  const googleConnect = editing?.kind === 'sheets' && !!googleSheets?.enabled;
+  // A key file is saved (a Sheet connected with Google keeps a Google sign-in instead).
+  const keySaved = !!editing?.configured && editing.config.auth !== 'oauth';
+  // The connection as it is now: `editing` is the copy from when the dialog opened.
+  const sheetsNow = (data.integrations || []).find((i) => i.kind === 'sheets');
   // Failures show as a notification from mutate.
   const act = (key: string, path: string, message: string) =>
     void run(key, () => mutate(path, {}, undefined, { success: message })).catch(() => undefined);
@@ -669,7 +697,11 @@ export function Integrations() {
           if (!v) setDisconnecting(undefined);
         }}
         title={`Disconnect ${disconnectName || 'this integration'}?`}
-        description="Automation will pause, Orderly will delete the stored credential and cancel pending delivery work for this integration. Revoke Orderly access or the API key in the provider account separately. Existing provider data is kept."
+        description={
+          disconnectGoogle
+            ? 'Automation will pause and Orderly stops copying orders. Orderly deletes its stored Google access and ends it in your Google account, unless another of your businesses uses the same Google account. Your Sheet stays in your Google Drive.'
+            : 'Automation will pause, Orderly will delete the stored credential and cancel pending delivery work for this integration. Revoke Orderly access or the API key in the provider account separately. Existing provider data is kept.'
+        }
         confirmLabel="Disconnect"
         busy={pending === 'disconnect'}
         busyLabel="Disconnecting…"
@@ -680,19 +712,27 @@ export function Integrations() {
           setDisconnectError('');
           void run('disconnect', async () => {
             try {
-              const result = await mutate<{ gatewayCleanupPending?: boolean }>(
-                `/integrations/${target.kind}`,
-                undefined,
-                'DELETE',
-                {
-                  dialog: true,
-                  success: `${integrationInfo[target.kind]?.title ?? 'Integration'} disconnected.`,
-                },
-              );
+              const result = await mutate<{
+                gatewayCleanupPending?: boolean;
+                providerRevocationRequired?: boolean;
+              }>(`/integrations/${target.kind}`, undefined, 'DELETE', {
+                dialog: true,
+                success: `${integrationInfo[target.kind]?.title ?? 'Integration'} disconnected.`,
+              });
               setDisconnecting(undefined);
               // A linked phone was in use and its session could not be ended from here.
               if (target.kind === 'whatsapp' && result?.gatewayCleanupPending)
                 setLinkedCleanup(true);
+              // Google didn't confirm: the owner removes Orderly in their Google Account.
+              if (
+                target.kind === 'sheets' &&
+                target.config.auth === 'oauth' &&
+                result?.providerRevocationRequired
+              )
+                notify(
+                  'Google didn’t confirm that Orderly’s access ended. To finish, remove Orderly at myaccount.google.com/connections.',
+                  'info',
+                );
             } catch (e) {
               setDisconnectError((e as Error).message);
             }
@@ -759,6 +799,22 @@ export function Integrations() {
                 <p className="mb-6 mt-2 text-sm leading-relaxed text-stone-500">
                   {info.description}
                 </p>
+                {integration.kind === 'sheets' && integration.config.spreadsheetId && (
+                  <p className="-mt-3 mb-5 text-[13px] leading-relaxed text-stone-600">
+                    {integration.config.auth === 'oauth' &&
+                      `Connected with Google${integration.config.googleEmail ? ` as ${integration.config.googleEmail}` : ''}. `}
+                    <a
+                      href={sheetUrl(integration.config.spreadsheetId)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 font-semibold text-brand-700 underline-offset-4 hover:underline"
+                    >
+                      Open your Sheet
+                      <ExternalLink className="size-3" aria-hidden />
+                      <span className="sr-only"> (opens in a new tab)</span>
+                    </a>
+                  </p>
+                )}
                 {integration.error && (
                   <p className="mb-4 rounded-xl bg-red-50 px-3 py-2 text-xs font-medium text-red-700">
                     {integration.error}
@@ -816,6 +872,9 @@ export function Integrations() {
                     onClick={() => {
                       setDisconnectError('');
                       setDisconnectName(info.title);
+                      setDisconnectGoogle(
+                        integration.kind === 'sheets' && integration.config.auth === 'oauth',
+                      );
                       setDisconnecting(integration);
                     }}
                   >
@@ -897,7 +956,7 @@ export function Integrations() {
         title={editing ? `Connect ${integrationInfo[editing.kind].title}` : 'Connect'}
         description={
           editing?.kind === 'sheets'
-            ? 'Do these steps once. Orderly then copies every order into your Sheet. This connection is only used for the selected business.'
+            ? `${googleConnect ? 'Connect once' : 'Do these steps once'}. Orderly then copies every order into your Sheet. This connection is only used for the selected business.`
             : 'These credentials are only used for the selected business.'
         }
         wide={editing?.kind === 'sheets'}
@@ -906,109 +965,127 @@ export function Integrations() {
         dismissable={editing?.kind !== 'sheets'}
       >
         {editing && (
-          <form
-            className="stagger space-y-5"
-            onSubmit={(e) => {
-              e.preventDefault();
-              const sheets = editing.kind === 'sheets';
-              const problem = sheets ? sheetsFormProblem(config, secret, editing.configured) : '';
-              setFormProblem(problem || '');
-              if (problem) return;
-              // Errors show inside this dialog (Modal), so no notification is needed.
-              void run('save-connection', async () => {
-                await mutate(
-                  `/integrations/${editing.kind}`,
-                  {
-                    config: sheets ? sheetsConfigForSave(config) : config,
-                    ...(secret.trim() ? { secret: secret.trim() } : {}),
-                  },
-                  undefined,
-                  {
-                    dialog: true,
-                    ...(!sheets && {
-                      success: 'Connection saved. Use Test to verify account access.',
-                    }),
-                  },
-                );
-                // The Sheet is tested at once, so a missed step shows here beside the steps.
-                if (sheets)
-                  await mutate('/integrations/sheets/test', {}, undefined, {
-                    dialog: true,
-                    success: SHEETS_CONNECTED,
-                  }).catch((e) => {
-                    // The server marked the connection as failing: the card shows it, too.
-                    void refresh().catch(() => undefined);
-                    throw e;
-                  });
-                setEditing(null);
-                setSecret('');
-              }).catch(() => undefined);
-            }}
-          >
-            {editing.kind === 'sheets' ? (
-              <SheetsConnect
-                config={config}
-                onConfig={(next) => {
-                  setConfig(next);
-                  setFormProblem('');
+          <>
+            {googleConnect && (
+              <GoogleSheetsConnect
+                clientId={googleSheets!.clientId}
+                integration={sheetsNow}
+                onConnected={(result) => {
+                  setEditing(null);
+                  setSecret('');
+                  notify(connectedText(result));
                 }}
-                secret={secret}
-                onSecret={(next) => {
-                  setSecret(next);
-                  setFormProblem('');
-                }}
-                keySaved={editing.configured}
               />
-            ) : (
-              <>
-                {integrationInfo[editing.kind].fields.map(([key, title]) => (
-                  <Field key={key} label={title}>
-                    <input
-                      className="input"
-                      value={config[key] || ''}
-                      onChange={(e) => setConfig({ ...config, [key]: e.target.value })}
-                      required={[
-                        'phoneNumberId',
-                        'wabaId',
-                        'spreadsheetId',
-                        'clientEmail',
-                      ].includes(key)}
-                      autoComplete="off"
-                    />
-                  </Field>
-                ))}
-                <Field
-                  label={integrationInfo[editing.kind].secret}
-                  hint={
-                    editing.configured
-                      ? 'Leave empty to keep the saved credential. Saved secrets are never shown here.'
-                      : 'Stored encrypted on this server.'
-                  }
-                >
-                  <input
-                    className="input"
-                    type="password"
-                    value={secret}
-                    onChange={(e) => setSecret(e.target.value)}
-                    required={!editing.configured}
-                    autoComplete="new-password"
-                  />
-                </Field>
-              </>
             )}
-            {formProblem && (
-              <ErrorNotice message={formProblem} onDismiss={() => setFormProblem('')} />
-            )}
-            <ActionButton
-              type="submit"
-              className="btn-primary w-full"
-              loading={pending === 'save-connection'}
-              loadingLabel={editing.kind === 'sheets' ? 'Saving and testing…' : 'Saving…'}
+            <KeyFileOption
+              collapsed={googleConnect}
+              open={!!sheetsNow?.configured && sheetsNow.config.auth !== 'oauth'}
             >
-              <KeyRound className="size-4" />
-              {editing.kind === 'sheets' ? 'Save and test' : 'Save connection'}
-            </ActionButton>
-          </form>
+              <form
+                className="stagger space-y-5"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const sheets = editing.kind === 'sheets';
+                  const problem = sheets ? sheetsFormProblem(config, secret, keySaved) : '';
+                  setFormProblem(problem || '');
+                  if (problem) return;
+                  // Errors show inside this dialog (Modal), so no notification is needed.
+                  void run('save-connection', async () => {
+                    await mutate(
+                      `/integrations/${editing.kind}`,
+                      {
+                        config: sheets ? sheetsConfigForSave(config) : config,
+                        ...(secret.trim() ? { secret: secret.trim() } : {}),
+                      },
+                      undefined,
+                      {
+                        dialog: true,
+                        ...(!sheets && {
+                          success: 'Connection saved. Use Test to verify account access.',
+                        }),
+                      },
+                    );
+                    // The Sheet is tested at once, so a missed step shows here beside the steps.
+                    if (sheets)
+                      await mutate('/integrations/sheets/test', {}, undefined, {
+                        dialog: true,
+                        success: SHEETS_CONNECTED,
+                      }).catch((e) => {
+                        // The server marked the connection as failing: the card shows it, too.
+                        void refresh().catch(() => undefined);
+                        throw e;
+                      });
+                    setEditing(null);
+                    setSecret('');
+                  }).catch(() => undefined);
+                }}
+              >
+                {editing.kind === 'sheets' ? (
+                  <SheetsConnect
+                    config={config}
+                    onConfig={(next) => {
+                      setConfig(next);
+                      setFormProblem('');
+                    }}
+                    secret={secret}
+                    onSecret={(next) => {
+                      setSecret(next);
+                      setFormProblem('');
+                    }}
+                    keySaved={keySaved}
+                  />
+                ) : (
+                  <>
+                    {integrationInfo[editing.kind].fields.map(([key, title]) => (
+                      <Field key={key} label={title}>
+                        <input
+                          className="input"
+                          value={config[key] || ''}
+                          onChange={(e) => setConfig({ ...config, [key]: e.target.value })}
+                          required={[
+                            'phoneNumberId',
+                            'wabaId',
+                            'spreadsheetId',
+                            'clientEmail',
+                          ].includes(key)}
+                          autoComplete="off"
+                        />
+                      </Field>
+                    ))}
+                    <Field
+                      label={integrationInfo[editing.kind].secret}
+                      hint={
+                        editing.configured
+                          ? 'Leave empty to keep the saved credential. Saved secrets are never shown here.'
+                          : 'Stored encrypted on this server.'
+                      }
+                    >
+                      <input
+                        className="input"
+                        type="password"
+                        value={secret}
+                        onChange={(e) => setSecret(e.target.value)}
+                        required={!editing.configured}
+                        autoComplete="new-password"
+                      />
+                    </Field>
+                  </>
+                )}
+                {formProblem && (
+                  <ErrorNotice message={formProblem} onDismiss={() => setFormProblem('')} />
+                )}
+                <ActionButton
+                  type="submit"
+                  className="btn-primary w-full"
+                  loading={pending === 'save-connection'}
+                  loadingLabel={editing.kind === 'sheets' ? 'Saving and testing…' : 'Saving…'}
+                >
+                  <KeyRound className="size-4" />
+                  {editing.kind === 'sheets' ? 'Save and test' : 'Save connection'}
+                </ActionButton>
+              </form>
+            </KeyFileOption>
+          </>
         )}
       </Modal>
     </>

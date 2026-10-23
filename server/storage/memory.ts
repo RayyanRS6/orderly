@@ -1644,6 +1644,18 @@ export class MemoryRepository implements Repository {
           ?.encryptedSecret,
     );
   }
+  sheetsCompaniesForGoogleAccount(accountId: string) {
+    return this.read((s) =>
+      s.integrations
+        .filter(
+          (i) =>
+            i.integration.kind === 'sheets' &&
+            i.integration.config.auth === 'oauth' &&
+            i.integration.config.googleAccountId === accountId,
+        )
+        .map((i) => i.companyId),
+    );
+  }
   addTrace(trace: Trace) {
     return this.mutate((s) => {
       companyExists(s, trace.companyId);

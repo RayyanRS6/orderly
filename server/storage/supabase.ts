@@ -945,6 +945,18 @@ export class SupabaseRepository implements Repository {
     ) as { encrypted_secret: string } | null;
     return row?.encrypted_secret as string | undefined;
   }
+  async sheetsCompaniesForGoogleAccount(accountId: string) {
+    return (
+      unwrap(
+        await this.client
+          .from('integrations')
+          .select('company_id')
+          .eq('kind', 'sheets')
+          .eq('data->config->>auth', 'oauth')
+          .eq('data->config->>googleAccountId', accountId),
+      ) ?? []
+    ).map((row: { company_id: string }) => row.company_id);
+  }
   async addTrace(trace: Trace) {
     unwrap(
       await this.client.from('traces').upsert({
