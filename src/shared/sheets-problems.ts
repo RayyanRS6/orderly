@@ -40,6 +40,17 @@ export const isPassingSheetsProblem = (code?: string) => !!code && PASSING.inclu
 export const isLastingSheetsProblem = (code?: string): code is SheetsProblem =>
   !!code && !PASSING.includes(code) && (SHEETS_PROBLEMS as readonly string[]).includes(code);
 
+/**
+ * How a message ends when the guide has its fix: Test on the Sheets card opens the guide there.
+ * These words also reach toasts and the menu refresh, where no Fix this button is beside them.
+ */
+export const SEE_FIX = 'Click Test on the Google Sheets card to see how to fix it.';
+/** The card's words when its Fix this button is right below them: that button, not Test. */
+export const besideFixThis = (message: string) =>
+  message.replace(SEE_FIX, 'Click Fix this to see how to fix it.');
+/** The message alone, where the fix is already open or the words go to Orderly. */
+export const withoutSeeFix = (message: string) => message.replace(SEE_FIX, '').trim();
+
 /** The Google project a helper account belongs to: name@PROJECT.iam.gserviceaccount.com. */
 export const projectOfHelper = (email?: string) =>
   /@([\w-]+)\.iam\.gserviceaccount\.com$/.exec(email?.trim() ?? '')?.[1];

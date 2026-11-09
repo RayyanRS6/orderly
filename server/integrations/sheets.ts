@@ -1,6 +1,6 @@
 import { createSign } from 'node:crypto';
 import type { Integration, Order, Product } from '../../src/shared/types.js';
-import { type SheetsProblem, projectOfHelper } from '../../src/shared/sheets-problems.js';
+import { SEE_FIX, type SheetsProblem, projectOfHelper } from '../../src/shared/sheets-problems.js';
 import { PublicError } from '../security.js';
 import { catalogFromRows, catalogHeaders } from './catalog.js';
 import { GOOGLE_REAUTH, forgetGoogleAccessToken, googleAccessToken } from './google-oauth.js';
@@ -25,9 +25,6 @@ export const ORDER_HEADERS = [
 const googleSilent = () =>
   new PublicError('Google didn’t answer. Orderly will try again.', 503, { code: 'GOOGLE_DOWN' });
 const GOOGLE_BUSY_MESSAGE = 'Google Sheets is rate limited; synchronization will retry.';
-// Test on the card always opens the guide at the fix. Fix this shows only when the problem was
-// recorded on the card, and these words also reach toasts and the menu refresh.
-const SEE_FIX = 'Click Test on the Google Sheets card to see how to fix it.';
 
 /**
  * Why Google refused a Sheets request, in words that name the fix, with the code that opens the

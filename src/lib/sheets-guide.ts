@@ -4,6 +4,7 @@
 // because the owner must find them on Google's page) and everything else plain:
 // "helper" for service account, "folder" for project, "key file" for JSON key.
 import type { SheetsProblem } from '../shared/sheets-problems';
+import { supportReply, supportWhatsapp, supportWhatsappShown } from './support';
 
 /** What the words and links of a screen are filled in with. */
 export interface GuideFacts {
@@ -1081,13 +1082,21 @@ export const SCREENS: Record<ScreenId, GuideScreen> = {
   },
   'get-help': {
     title: 'Ask Orderly for help',
-    what: 'A person at Orderly will reply, tell you what to do, and agree a time with you if we need to do it together. It costs nothing. Once you have written to us you can close these pages: your steps are saved.',
-    steps: [
-      'With your phone, take a photo of the Google page. Cannot manage a photo? That is fine: just say which step you reached.',
-      'Easiest: on your phone, write to Orderly at the address below and add the photo.',
-      'Or click **Email Orderly** below on this computer. If a window asks you to set up email, or nothing happens, close it and write from your Gmail instead.',
-      'Never send your key file, even to Orderly. A photo of the page is enough.',
-    ],
+    what: `${supportReply} We tell you what to do, and agree a time with you if we need to do it together. It costs nothing. Once you have written to us you can close these pages: your steps are saved.`,
+    steps: supportWhatsapp
+      ? [
+          'With your phone, take a photo of the Google page. Cannot manage a photo? That is fine: just say which step you reached.',
+          `Easiest: on your phone, send the photo on WhatsApp to Orderly at **${supportWhatsappShown}**, and write your business name with it.`,
+          'Or click **Message Orderly on WhatsApp** below. If a WhatsApp page opens first, click **Continue to Chat**. Send the message that is already written, then send the photo from your phone in the same Orderly chat.',
+          'No WhatsApp? Click **Email Orderly** below. If a window asks you to set up email, or nothing happens, close it and write from your Gmail to the address below.',
+          'Never send your key file, even to Orderly. A photo of the page is enough.',
+        ]
+      : [
+          'With your phone, take a photo of the Google page. Cannot manage a photo? That is fine: just say which step you reached.',
+          'Easiest: on your phone, write to Orderly at the address below and add the photo.',
+          'Or click **Email Orderly** below on this computer. If a window asks you to set up email, or nothing happens, close it and write from your Gmail instead.',
+          'Never send your key file, even to Orderly. A photo of the page is enough.',
+        ],
     nextLabel: 'Go back',
   },
 };
@@ -1171,6 +1180,17 @@ export function nextScreen(
   return at >= 0 && at < MAIN_PATH.length - 1 ? MAIN_PATH[at + 1]! : 'check';
 }
 
+/**
+ * Where Back goes on a step the guide reopened at, with no screens behind it in this visit: the
+ * step before it on the way through, so an owner who carried on later can still look back.
+ */
+export function previousScreen(screen: ScreenId): ScreenId | undefined {
+  if (screen === 'check') return MAIN_PATH[MAIN_PATH.length - 1];
+  const at = MAIN_PATH.indexOf(screen);
+  if (at > 0) return MAIN_PATH[at - 1];
+  return at === 0 ? 'intro' : undefined;
+}
+
 /** Where the guide opens: a named problem first, then the saved step, or the start. */
 export function startScreen(options: {
   problem?: string;
@@ -1186,6 +1206,15 @@ export function startScreen(options: {
   if (saved && resumable(saved)) return saved;
   return keyConnection ? 'check' : 'intro';
 }
+
+/**
+ * Where the saved step is forgotten: connected, or at the start with nothing gathered. Back to
+ * the start from a step kept from an earlier visit keeps that visit's link and key file.
+ */
+export const forgetsProgress = (screen: ScreenId, kept: { link: string; keyRead: boolean }) =>
+  screen === 'connected' ||
+  screen === 'delete-key' ||
+  (screen === 'intro' && !kept.link && !kept.keyRead);
 
 /**
  * The screens worth coming back to: the steps and the check. A help or fix screen isn't kept, so
@@ -1226,16 +1255,17 @@ export function clearProgress(companyId: string) {
   }
 }
 
-/** The email the Get help button starts: which step and problem, and never the key file. */
-export function helpEmail(options: {
+export interface HelpRequest {
   to: string;
   business: string;
   screenTitle: string;
   problem?: string;
   /** What Orderly last said, which carries the log reference of an unexpected failure. */
   message?: string;
-}) {
-  const body = [
+}
+/** What the owner sends for help: which step and problem, and never the key file. */
+function helpText(options: HelpRequest, photo: string) {
+  return [
     'Hello Orderly, I need help connecting my Google Sheet.',
     '',
     `Business: ${options.business}`,
@@ -1245,7 +1275,16 @@ export function helpEmail(options: {
       : []),
     ...(options.message ? [`Orderly said: ${options.message}`] : []),
     '',
-    'I have added a photo of the Google page.',
+    photo,
   ].join('\n');
+}
+/** The email the Email Orderly button starts. */
+export function helpEmail(options: HelpRequest) {
+  const body = helpText(options, 'I have added a photo of the Google page.');
   return `mailto:${options.to}?subject=${encodeURIComponent('Help connecting my Google Sheet')}&body=${encodeURIComponent(body)}`;
+}
+/** The WhatsApp message the WhatsApp button writes; the photo follows it in the chat. */
+export function helpWhatsapp(options: HelpRequest) {
+  const text = helpText(options, 'I am sending a photo of the Google page next.');
+  return `https://wa.me/${options.to}?text=${encodeURIComponent(text)}`;
 }

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Check, Copy, ExternalLink, Info } from 'lucide-react';
 import type { Integration } from '../shared/types';
+import { withoutSeeFix } from '../shared/sheets-problems';
 import { useWorkspace } from '../lib/workspace';
 import { inAppBrowser, loadGis, requestGoogleCode } from '../lib/google-connect';
 import { sheetUrl } from '../lib/sheets-connect';
@@ -156,7 +157,8 @@ export function GoogleSheetsConnect({
           </p>
           {integration?.error && (
             <p className="rounded-xl bg-red-50 px-3 py-2 text-xs font-medium text-red-700">
-              {integration.error}
+              {/* The fix is below in this dialog: no need to send the owner back to Test. */}
+              {withoutSeeFix(integration.error)}
             </p>
           )}
         </div>

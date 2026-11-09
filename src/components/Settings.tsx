@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import type { Company, Integration, IntegrationKind, Provider } from '../shared/types';
 import { money } from '../shared/types';
+import { besideFixThis } from '../shared/sheets-problems';
 import { MODEL_DEFAULTS } from '../shared/models';
 import { useAction, useWorkspace } from '../lib/workspace';
 import { pausedOnly, savedCompany } from '../lib/settings';
@@ -829,7 +830,9 @@ export function Integrations() {
                 )}
                 {integration.error && (
                   <p className="mb-4 rounded-xl bg-red-50 px-3 py-2 text-xs font-medium text-red-700">
-                    {integration.error}
+                    {integration.kind === 'sheets' && integration.errorCode
+                      ? besideFixThis(integration.error)
+                      : integration.error}
                   </p>
                 )}
                 {integration.kind === 'whatsapp' && linkedCleanup && (

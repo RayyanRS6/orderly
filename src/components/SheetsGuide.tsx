@@ -6,11 +6,12 @@ import {
   Copy,
   ExternalLink,
   Mail,
+  MessageCircle,
   RefreshCw,
   Upload,
 } from 'lucide-react';
 import type { Integration } from '../shared/types';
-import { isPassingSheetsProblem, projectOfHelper } from '../shared/sheets-problems';
+import { isPassingSheetsProblem, projectOfHelper, withoutSeeFix } from '../shared/sheets-problems';
 import { ApiError, api } from '../lib/api';
 import {
   KEY_FILE_LIMIT,
@@ -29,15 +30,19 @@ import {
   clearProgress,
   fillIn,
   fixFor,
+  forgetsProgress,
   helpEmail,
+  helpWhatsapp,
   loadProgress,
   nextScreen,
+  previousScreen,
   resumable,
   saveProgress,
   startScreen,
 } from '../lib/sheets-guide';
 import { useWorkspace } from '../lib/workspace';
-import { supportEmail, supportWhatsapp } from './Public';
+import { supportWhatsapp } from '../lib/support';
+import { supportEmail } from './Public';
 import { ActionButton, ErrorNotice, Field, Spinner } from './ui';
 
 // The Google Sheets connect guide: one small screen at a time, each with a button to the exact
@@ -248,8 +253,7 @@ export function SheetsGuide({
   // The owner is on another page half the time: where they were survives closing this. Only a
   // step or the check is kept (see resumable), and the start isn't progress at all.
   useEffect(() => {
-    if (screenId === 'connected' || screenId === 'delete-key' || screenId === 'intro')
-      clearProgress(companyId);
+    if (forgetsProgress(screenId, { link, keyRead })) clearProgress(companyId);
     else if (resumable(screenId))
       saveProgress(companyId, { screen: screenId, link, ...(keyRead && { keyUploaded: true }) });
   }, [companyId, screenId, link, keyRead]);
@@ -279,11 +283,12 @@ export function SheetsGuide({
     setHistory((past) => [...past, screenId]);
     show(next);
   };
+  // Back retraces this visit; on a step the guide reopened at, it goes to the step before.
+  const backTo = history[history.length - 1] ?? previousScreen(screenId);
   const back = () => {
-    const previous = history[history.length - 1];
-    if (!previous) return;
-    setHistory((past) => past.slice(0, -1));
-    show(previous);
+    if (!backTo) return;
+    if (history.length) setHistory((past) => past.slice(0, -1));
+    show(backTo);
   };
   const save = async (settings = config, key = secret) => {
     await api(`/integrations/sheets`, companyId, {
@@ -416,6 +421,14 @@ export function SheetsGuide({
     // that step comes next rather than making a second key.
     if (screenId === 'copy-link' && !keySaved && secret.trim()) return goTo('upload-key');
     goTo(nextScreen(screenId, { keySaved, fixing: fixing && !screen.rejoin }));
+  };
+  // The step the owner was on when they asked for help, and what Orderly last said.
+  const help = {
+    business: data.company.name,
+    screenTitle: fill(SCREENS[history[history.length - 1] ?? screenId].title),
+    problem: code,
+    // Without "Click Test on the card": that is for the owner, not for Orderly.
+    message: code ? withoutSeeFix(message) : undefined,
   };
   const mainLabel = justUploaded
     ? 'One last thing'
@@ -559,22 +572,16 @@ export function SheetsGuide({
         {screenId === 'get-help' && (
           <div className="space-y-2">
             {supportWhatsapp && (
-              <OpenButton
-                href={`https://wa.me/${supportWhatsapp}?text=${encodeURIComponent(`Help connecting my Google Sheet. Business: ${data.company.name}`)}`}
-                primary
-              >
-                Message Orderly on WhatsApp
-              </OpenButton>
+              <div className="pb-2">
+                <OpenButton href={helpWhatsapp({ ...help, to: supportWhatsapp })} primary>
+                  <MessageCircle className="size-4" aria-hidden />
+                  Message Orderly on WhatsApp
+                </OpenButton>
+              </div>
             )}
             <a
-              className="btn btn-ink w-full justify-center sm:w-auto"
-              href={helpEmail({
-                to: supportEmail,
-                business: data.company.name,
-                screenTitle: fill(SCREENS[history[history.length - 1] ?? screenId].title),
-                problem: code,
-                message: code ? message : undefined,
-              })}
+              className={`btn ${supportWhatsapp ? '' : 'btn-ink'} w-full justify-center sm:w-auto`}
+              href={helpEmail({ ...help, to: supportEmail })}
             >
               <Mail className="size-4" aria-hidden />
               Email Orderly
@@ -638,7 +645,7 @@ export function SheetsGuide({
           </div>
         )}
         <div className="flex flex-wrap items-center justify-between gap-2 border-t border-ink/[0.06] pt-4">
-          {history.length > 0 && screenId !== 'get-help' && screenId !== 'fix-wrong-account' ? (
+          {backTo && screenId !== 'get-help' && screenId !== 'fix-wrong-account' ? (
             <button type="button" className="btn btn-quiet" onClick={back} disabled={checking}>
               <ArrowLeft className="size-4" aria-hidden />
               Back

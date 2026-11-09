@@ -1,8 +1,5 @@
 import { ArrowRight, Check, MessageCircle } from 'lucide-react';
 export const supportEmail = 'waytogalaxy999@gmail.com';
-// Orderly's WhatsApp number for owners who need help, in international form with no plus sign
-// (such as 923001234567). Empty: the connect guide offers only email.
-export const supportWhatsapp = '';
 export function PublicHeader() {
   return (
     <header className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-4 px-5 py-5 sm:px-8">

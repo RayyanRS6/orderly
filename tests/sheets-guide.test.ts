@@ -14,16 +14,23 @@ import {
   clearProgress,
   fillIn,
   fixFor,
+  forgetsProgress,
   helpEmail,
+  helpWhatsapp,
   loadProgress,
   nextScreen,
+  previousScreen,
   resumable,
   saveProgress,
   startScreen,
 } from '../src/lib/sheets-guide';
+import { supportReply, supportWhatsapp, supportWhatsappShown } from '../src/lib/support';
 import { Workspace, type WorkspaceContext } from '../src/lib/workspace';
 import {
+  SEE_FIX,
   SHEETS_PROBLEMS,
+  besideFixThis,
+  withoutSeeFix,
   isLastingSheetsProblem,
   isPassingSheetsProblem,
   projectOfHelper,
@@ -387,6 +394,94 @@ describe('what the guide shows', () => {
     const html = render({ integration: keyRow(), problem: 'SHEETS_API_OFF' });
     expect(html.match(/role="status"/g)).toHaveLength(1);
     expect(html).toContain('<p class="sr-only" role="status"></p>');
+  });
+
+  it('lets an owner who carried on later go back a step', () => {
+    expect(atStep('make-sheet')).toMatch(/<button[^>]*>.*Back<\/button>/);
+    expect(atStep('check-gmail')).toMatch(/<button[^>]*>.*Back<\/button>/);
+    // The start and a fix opened from the card have nothing behind them.
+    vi.unstubAllGlobals();
+    expect(render()).not.toMatch(/>Back<\/button>/);
+    expect(render({ integration: keyRow(), problem: 'SHEETS_API_OFF' })).not.toMatch(
+      />Back<\/button>/,
+    );
+  });
+
+  it('keeps an earlier visit’s link and key file when Back reaches the start', () => {
+    const none = { link: '', keyRead: false };
+    expect(forgetsProgress('intro', none)).toBe(true);
+    expect(forgetsProgress('intro', { link: 'https://x', keyRead: false })).toBe(false);
+    expect(forgetsProgress('intro', { link: '', keyRead: true })).toBe(false);
+    expect(forgetsProgress('connected', { link: 'https://x', keyRead: true })).toBe(true);
+    expect(forgetsProgress('delete-key', none)).toBe(true);
+    expect(forgetsProgress('make-sheet', none)).toBe(false);
+  });
+
+  it('offers WhatsApp first, with the reply time, and email after it', () => {
+    const html = atStep('get-help');
+    expect(supportWhatsapp).toMatch(/^92\d{10}$/);
+    expect(html).toContain('Message Orderly on WhatsApp');
+    expect(html).toContain(`href="https://wa.me/${supportWhatsapp}?text=`);
+    expect(html).toContain(supportWhatsappShown);
+    expect(html).toContain('within 2 hours, from 10am to midnight');
+    // The buttons themselves, not the words in the steps: WhatsApp first and the main one.
+    expect(html.indexOf('href="https://wa.me/')).toBeLessThan(html.indexOf('href="mailto:'));
+    expect(html).toMatch(/<a href="https:\/\/wa\.me\/[^"]*"[^>]*class="btn btn-ink /);
+    expect(html).not.toMatch(/class="btn btn-ink[^"]*" href="mailto:/);
+    expect(html).toContain('write your business name');
+    expect(html).toContain('Continue to Chat');
+  });
+});
+
+describe('a person to reach, and the right button to press', () => {
+  it('goes back along the way through from a reopened step', () => {
+    expect(previousScreen('make-sheet')).toBe('two-step');
+    expect(previousScreen(MAIN_PATH[0]!)).toBe('intro');
+    expect(previousScreen('check')).toBe('share-send');
+    for (const screen of ['intro', 'get-help', 'fix-api-off', 'connected'] as const)
+      expect(previousScreen(screen)).toBeUndefined();
+  });
+
+  it('writes the WhatsApp message with the step and problem, safely in the link', () => {
+    const link = helpWhatsapp({
+      to: '923351256969',
+      business: 'Fries & Buns #2',
+      screenTitle: 'Turn on one Google switch',
+      problem: 'SHEETS_API_OFF',
+      message: 'The Google Sheets API is turned off.',
+    });
+    expect(link.startsWith('https://wa.me/923351256969?text=')).toBe(true);
+    // Read as WhatsApp reads it: an & or # left raw would cut the message short.
+    const url = new URL(link);
+    expect(url.hash).toBe('');
+    const text = url.searchParams.get('text')!;
+    expect(text).toContain('Business: Fries & Buns #2');
+    expect(text).toContain('Step: Turn on one Google switch');
+    expect(text).toContain('Problem code: SHEETS_API_OFF');
+    expect(text).toContain('Orderly said: The Google Sheets API is turned off.');
+    expect(text).toContain('photo');
+  });
+
+  it('keeps "Click Test on the card" out of the dialog and out of the help message', () => {
+    expect(withoutSeeFix(`Your Sheet has no tab named “Orders”. ${SEE_FIX}`)).toBe(
+      'Your Sheet has no tab named “Orders”.',
+    );
+  });
+
+  it('says when a person replies, and what happens outside those hours', () => {
+    expect(supportReply).toContain('within 2 hours');
+    expect(supportReply).toContain('10am to midnight');
+    expect(supportReply).toContain('next morning');
+  });
+
+  it('tells the owner to press Fix this where that button is beside the message', () => {
+    const message = `Your Sheet has no tab named “Orders”. ${SEE_FIX}`;
+    expect(besideFixThis(message)).toBe(
+      'Your Sheet has no tab named “Orders”. Click Fix this to see how to fix it.',
+    );
+    expect(besideFixThis('Share the spreadsheet as Editor.')).toBe(
+      'Share the spreadsheet as Editor.',
+    );
   });
 });
 
