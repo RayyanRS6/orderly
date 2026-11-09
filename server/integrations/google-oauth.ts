@@ -33,17 +33,27 @@ interface TokenAnswer {
   scope?: string;
   error?: string;
 }
+// Google slow or unreachable: a passing problem, so a working connection isn't marked broken.
+const googleSilent = () =>
+  new PublicError('Google didn’t answer. Orderly will try again.', 503, { code: 'GOOGLE_DOWN' });
+
 async function tokenRequest(params: Record<string, string>): Promise<TokenAnswer> {
-  const response = await fetch('https://oauth2.googleapis.com/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      client_id: requiredEnv('GOOGLE_OAUTH_CLIENT_ID'),
-      client_secret: requiredEnv('GOOGLE_OAUTH_CLIENT_SECRET'),
-      ...params,
-    }),
-    signal: AbortSignal.timeout(10000),
+  const body = new URLSearchParams({
+    client_id: requiredEnv('GOOGLE_OAUTH_CLIENT_ID'),
+    client_secret: requiredEnv('GOOGLE_OAUTH_CLIENT_SECRET'),
+    ...params,
   });
+  let response: Response;
+  try {
+    response = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body,
+      signal: AbortSignal.timeout(10000),
+    });
+  } catch {
+    throw googleSilent();
+  }
   return ((await response.json().catch(() => ({}))) ?? {}) as TokenAnswer;
 }
 
@@ -93,7 +103,9 @@ export async function googleAccessToken(refreshToken: string): Promise<string> {
   if (answer.error === 'invalid_grant')
     throw new PublicError(REAUTH_MESSAGE, 400, { code: GOOGLE_REAUTH });
   if (!answer.access_token)
-    throw new PublicError('Google didn’t answer Orderly. It will try again shortly.', 502);
+    throw new PublicError('Google didn’t answer Orderly. It will try again shortly.', 502, {
+      code: 'GOOGLE_DOWN',
+    });
   const seconds = Number(answer.expires_in) > 0 ? Number(answer.expires_in) : 3600;
   if (accessTokens.size >= 500) accessTokens.delete(accessTokens.keys().next().value!);
   accessTokens.set(refreshToken, {

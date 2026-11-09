@@ -652,6 +652,8 @@ export interface Integration {
   label?: string;
   checkedAt?: string;
   error?: string;
+  /** Why it failed, when the owner can fix it (a SheetsProblem): the card offers Fix this. */
+  errorCode?: string;
   config: Record<string, string>;
 }
 export interface Bootstrap {

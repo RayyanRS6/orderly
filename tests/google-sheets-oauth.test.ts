@@ -397,13 +397,33 @@ describe('a Sheet connected with Google, afterwards', () => {
     );
     const adapter = new GoogleSheetsAdapter(googleRow('a'), credential);
     await expect(adapter.readCatalog(company.id)).rejects.toThrow(
-      'Rename the tab back to “Orders” (or “Menu”)',
+      'Your Sheet has no tab named “Orders”.',
     );
     // The token is cached until Google refuses it (401); then the next call asks for a new one.
-    await expect(adapter.test()).rejects.toThrow();
+    // A refused token is a passing problem: the card isn't marked broken for it.
+    await expect(adapter.test()).rejects.toMatchObject({ code: 'GOOGLE_DOWN' });
     expect(refreshes).toBe(1);
     await expect(adapter.test()).rejects.toThrow();
     expect(refreshes).toBe(2);
+  });
+
+  it('treats Google’s sign-in service not answering as passing, not a broken connection', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new TypeError('network');
+      }),
+    );
+    await expect(
+      new GoogleSheetsAdapter(googleRow('a'), token('offline')).test(),
+    ).rejects.toMatchObject({ code: 'GOOGLE_DOWN' });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => Response.json({}, { status: 500 })),
+    );
+    await expect(
+      new GoogleSheetsAdapter(googleRow('a'), token('silent')).test(),
+    ).rejects.toMatchObject({ code: 'GOOGLE_DOWN' });
   });
 
   it('shows the reconnect message on the card when an order copy finds the sign-in ended', async () => {

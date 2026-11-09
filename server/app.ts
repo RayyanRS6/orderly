@@ -59,6 +59,7 @@ import { buildAgentFlow } from './agent-flow.js';
 import { verifyProviderKey } from './integrations/model-catalog.js';
 import { WhatsAppAdapter } from './integrations/whatsapp.js';
 import { googleConnectEnabled } from './integrations/google-oauth.js';
+import { isLastingSheetsProblem, isPassingSheetsProblem } from '../src/shared/sheets-problems.js';
 import {
   GOOGLE_CONFIG_KEYS,
   connectGoogleSheets,
@@ -1084,7 +1085,12 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
       kind,
       configured: !!body.secret || !!(await repo.getSecret(c.get('company').id, kind)),
       status: 'configured',
-      config: { ...kept, ...config },
+      config: {
+        ...kept,
+        ...config,
+        // Google's refusal of a key this new means "not ready yet", not a dead key.
+        ...(kind === 'sheets' && body.secret && { keySavedAt: new Date().toISOString() }),
+      },
     };
     if (kind === 'whatsapp' && config.phoneNumberId) {
       const existing = await repo.findCompanyByPhoneNumberId(config.phoneNumberId);
@@ -1133,7 +1139,12 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
     const kind = kindSchema.parse(c.req.param('kind'));
     const company = c.get('company');
     const integration = (await repo.getIntegrations(company.id)).find((i) => i.kind === kind);
-    if (!integration?.configured) throw new PublicError('Save the connection credentials first.');
+    if (!integration?.configured)
+      throw new PublicError(
+        'Save the connection credentials first.',
+        400,
+        kind === 'sheets' ? { code: 'KEY_MISSING' } : undefined,
+      );
     try {
       let displayPhoneNumber: string | undefined;
       if (kind === 'whatsapp')
@@ -1154,14 +1165,20 @@ export function createApp(repo: Repository, options: AppOptions = {}) {
         status: 'connected' as const,
         checkedAt,
         error: undefined,
+        errorCode: undefined,
       };
       await repo.saveIntegration(company.id, updated);
       return c.json(updated);
     } catch (error) {
+      const code = error instanceof PublicError ? error.code : undefined;
+      // Google busy or slow, or a new key not ready yet: the check says so, but the connection
+      // isn't marked as failing, which could stop settings saving while the bot is on.
+      if (kind === 'sheets' && isPassingSheetsProblem(code)) throw error;
       const updated = {
         ...integration!,
         status: 'error' as const,
         error: sanitizeError(error),
+        errorCode: kind === 'sheets' && isLastingSheetsProblem(code) ? code : undefined,
         checkedAt: new Date().toISOString(),
       };
       await repo.saveIntegration(company.id, updated);

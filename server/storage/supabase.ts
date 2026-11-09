@@ -931,6 +931,7 @@ export class SupabaseRepository implements Repository {
       throw new PublicError(
         'That orders spreadsheet tab is already assigned to another company. Choose a different spreadsheet or orders tab.',
         409,
+        { code: 'SHEET_TAKEN' },
       );
     unwrap(result);
   }

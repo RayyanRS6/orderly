@@ -86,7 +86,7 @@ The Agent flow checklist shows these steps in order. Each one has a button to th
 3. **Bot settings:** model (above), goal, tone, language, rules, greeting and handoff message. Save the draft.
 4. **Test your bot:** order something end to end. Click **Why this reply?** under any answer you don't like. It shows which settings, rule and model were used, what the AI proposed, what the order engine corrected, and who wrote each part of the reply.
 5. **Publish** the draft. Live WhatsApp chats only use the published version.
-6. **Integrations → Google Sheets:** follow the steps in its Connect dialog (paste the Sheet link, upload the Google key file, share the Sheet), then **Save and test**. Live automatic replies currently require this.
+6. **Integrations → Google Sheets:** click **Connect** and follow its guide, one small step at a time, until it says your Sheet is connected. Live automatic replies currently require this.
 7. **Connect WhatsApp** (section 4), then **Bot settings → Enable automation**.
 8. Run the controlled live test in `ORDERLY-LAUNCH-STEPS-2026-09-18.md` §11 before real customers.
 

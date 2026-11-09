@@ -34,7 +34,6 @@ import {
   Badge,
   ConfirmDialog,
   CustomSelect,
-  ErrorNotice,
   Field,
   Modal,
   PageHeading,
@@ -42,17 +41,12 @@ import {
 } from './ui';
 import { WhatsAppSignup } from './WhatsAppSignup';
 import { LinkedCleanupNote, WhatsAppConnection } from './WhatsAppConnection';
-import {
-  KeyFileOption,
-  SHEETS_CONNECTED,
-  SheetsConnect,
-  sheetsConfigForSave,
-  sheetsFormProblem,
-} from './SheetsConnect';
+import { KeyFileOption, SHEETS_CONNECTED, SheetsGuide } from './SheetsGuide';
+import { clearProgress, loadProgress } from '../lib/sheets-guide';
 import { GoogleSheetsConnect, connectedText } from './GoogleSheetsConnect';
 import type { GoogleSheetsConfig } from '../lib/google-connect';
 import { sheetUrl } from '../lib/sheets-connect';
-import { api } from '../lib/api';
+import { ApiError, api } from '../lib/api';
 
 const providers: Record<Provider, { name: string; model: string }> = {
   mock: { name: 'Local demo · no API calls', model: MODEL_DEFAULTS.mock },
@@ -661,10 +655,13 @@ export function Integrations() {
   const [editing, setEditing] = useState<Integration | null>(null);
   const [config, setConfig] = useState<Record<string, string>>({});
   const [secret, setSecret] = useState('');
-  // A step of the Sheets form still to do, shown when Save is clicked too early.
-  const [formProblem, setFormProblem] = useState('');
+  // Why the Sheets guide opened: it starts at the fix for this.
+  const [guideProblem, setGuideProblem] = useState<{ code?: string; message: string }>();
   // Disconnecting a Sheet connected with Google: Orderly ends that access itself.
   const [disconnectGoogle, setDisconnectGoogle] = useState(false);
+  const manageSheets = useRef<HTMLButtonElement>(null);
+  const editedKind = useRef<string | undefined>(undefined);
+  if (editing) editedKind.current = editing.kind;
   const canEdit = data.role !== 'staff';
   // "Connect with Google" for the Sheet, when Orderly's Google sign-in is set up on the server.
   // An older server answers 404 here: the button then stays hidden.
@@ -682,13 +679,28 @@ export function Integrations() {
     };
   }, [canEdit, companyId]);
   const googleConnect = editing?.kind === 'sheets' && !!googleSheets?.enabled;
-  // A key file is saved (a Sheet connected with Google keeps a Google sign-in instead).
-  const keySaved = !!editing?.configured && editing.config.auth !== 'oauth';
   // The connection as it is now: `editing` is the copy from when the dialog opened.
   const sheetsNow = (data.integrations || []).find((i) => i.kind === 'sheets');
   // Failures show as a notification from mutate.
   const act = (key: string, path: string, message: string) =>
     void run(key, () => mutate(path, {}, undefined, { success: message })).catch(() => undefined);
+  // A failed Sheets test opens the guide at the exact fix: a notification can't walk an owner
+  // through it. A reason the server didn't name still opens the screen that asks for help.
+  const testSheets = (integration: Integration) =>
+    void run('test-sheets', async () => {
+      try {
+        await api('/integrations/sheets/test', companyId, {});
+        notify(SHEETS_CONNECTED);
+      } catch (e) {
+        // UNKNOWN opens the screen that asks for help; the message carries the log reference.
+        setGuideProblem({
+          code: e instanceof ApiError && e.code ? e.code : 'UNKNOWN',
+          message: (e as Error).message,
+        });
+        setEditing(integration);
+      }
+      await refresh().catch(() => undefined);
+    }).catch(() => undefined);
   return (
     <>
       <ConfirmDialog
@@ -824,10 +836,29 @@ export function Integrations() {
                   <LinkedCleanupNote className="mb-4" onDismiss={() => setLinkedCleanup(false)} />
                 )}
                 <div className="mt-auto flex flex-wrap gap-2">
+                  {/* With its message only: a code left behind without one is old news. */}
+                  {integration.kind === 'sheets' && integration.errorCode && integration.error && (
+                    <button
+                      className="btn btn-primary"
+                      disabled={!canEdit}
+                      onClick={() => {
+                        setGuideProblem({
+                          code: integration.errorCode,
+                          message: integration.error ?? '',
+                        });
+                        setEditing(integration);
+                      }}
+                    >
+                      Fix this
+                      <ArrowRight className="size-4" />
+                    </button>
+                  )}
                   <button
+                    ref={integration.kind === 'sheets' ? manageSheets : undefined}
                     className={cn('btn', !integration.configured && 'btn-primary')}
                     disabled={!canEdit}
                     onClick={() => {
+                      setGuideProblem(undefined);
                       setEditing(integration);
                       setConfig(
                         Object.fromEntries(
@@ -838,10 +869,13 @@ export function Integrations() {
                         ),
                       );
                       setSecret('');
-                      setFormProblem('');
                     }}
                   >
-                    {integration.configured ? 'Manage connection' : 'Connect'}
+                    {integration.configured
+                      ? 'Manage connection'
+                      : integration.kind === 'sheets' && loadProgress(companyId)
+                        ? 'Continue where you left off'
+                        : 'Connect'}
                     <ArrowRight className="size-4" />
                   </button>
                   {integration.configured && (
@@ -851,13 +885,13 @@ export function Integrations() {
                       loading={pending === `test-${integration.kind}`}
                       loadingLabel="Testing…"
                       onClick={() =>
-                        act(
-                          `test-${integration.kind}`,
-                          `/integrations/${integration.kind}/test`,
-                          integration.kind === 'sheets'
-                            ? SHEETS_CONNECTED
-                            : `${info.title} credentials verified. Live message delivery still needs end-to-end testing.`,
-                        )
+                        integration.kind === 'sheets'
+                          ? testSheets(integration)
+                          : act(
+                              `test-${integration.kind}`,
+                              `/integrations/${integration.kind}/test`,
+                              `${info.title} credentials verified. Live message delivery still needs end-to-end testing.`,
+                            )
                       }
                     >
                       <RefreshCw className="size-4" />
@@ -956,136 +990,107 @@ export function Integrations() {
         title={editing ? `Connect ${integrationInfo[editing.kind].title}` : 'Connect'}
         description={
           editing?.kind === 'sheets'
-            ? `${googleConnect ? 'Connect once' : 'Do these steps once'}. Orderly then copies every order into your Sheet. This connection is only used for the selected business.`
+            ? 'Orderly copies every order into your own Sheet. This connection is only used for the selected business.'
             : 'These credentials are only used for the selected business.'
         }
-        wide={editing?.kind === 'sheets'}
         // The steps send the owner to Google in other tabs: a stray click outside must not
-        // lose the link and key file already given.
+        // close them.
         dismissable={editing?.kind !== 'sheets'}
+        // Fix this is gone once the fix worked: focus then goes to the card's own button. Read
+        // at close, when `editing` is already cleared, so the kind comes from a ref.
+        fallbackFocusTo={() => (editedKind.current === 'sheets' ? manageSheets.current : null)}
       >
-        {editing && (
+        {editing?.kind === 'sheets' && (
           <>
             {googleConnect && (
               <GoogleSheetsConnect
                 clientId={googleSheets!.clientId}
                 integration={sheetsNow}
                 onConnected={(result) => {
+                  // Connected with Google: an unfinished key-file guide is no longer needed.
+                  clearProgress(companyId);
                   setEditing(null);
-                  setSecret('');
                   notify(connectedText(result));
                 }}
               />
             )}
             <KeyFileOption
               collapsed={googleConnect}
-              open={!!sheetsNow?.configured && sheetsNow.config.auth !== 'oauth'}
+              // Open when it holds what to do now: a key-file connection that isn't working, any
+              // fix except reconnecting (the button above it), or a guide left half done.
+              open={
+                (!!guideProblem && guideProblem.code !== 'GOOGLE_REAUTH') ||
+                (!!sheetsNow?.configured &&
+                  sheetsNow.config.auth !== 'oauth' &&
+                  sheetsNow.status !== 'connected') ||
+                (!sheetsNow?.configured && !!loadProgress(companyId))
+              }
             >
-              <form
-                className="stagger space-y-5"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  const sheets = editing.kind === 'sheets';
-                  const problem = sheets ? sheetsFormProblem(config, secret, keySaved) : '';
-                  setFormProblem(problem || '');
-                  if (problem) return;
-                  // Errors show inside this dialog (Modal), so no notification is needed.
-                  void run('save-connection', async () => {
-                    await mutate(
-                      `/integrations/${editing.kind}`,
-                      {
-                        config: sheets ? sheetsConfigForSave(config) : config,
-                        ...(secret.trim() ? { secret: secret.trim() } : {}),
-                      },
-                      undefined,
-                      {
-                        dialog: true,
-                        ...(!sheets && {
-                          success: 'Connection saved. Use Test to verify account access.',
-                        }),
-                      },
-                    );
-                    // The Sheet is tested at once, so a missed step shows here beside the steps.
-                    if (sheets)
-                      await mutate('/integrations/sheets/test', {}, undefined, {
-                        dialog: true,
-                        success: SHEETS_CONNECTED,
-                      }).catch((e) => {
-                        // The server marked the connection as failing: the card shows it, too.
-                        void refresh().catch(() => undefined);
-                        throw e;
-                      });
-                    setEditing(null);
-                    setSecret('');
-                  }).catch(() => undefined);
-                }}
-              >
-                {editing.kind === 'sheets' ? (
-                  <SheetsConnect
-                    config={config}
-                    onConfig={(next) => {
-                      setConfig(next);
-                      setFormProblem('');
-                    }}
-                    secret={secret}
-                    onSecret={(next) => {
-                      setSecret(next);
-                      setFormProblem('');
-                    }}
-                    keySaved={keySaved}
-                  />
-                ) : (
-                  <>
-                    {integrationInfo[editing.kind].fields.map(([key, title]) => (
-                      <Field key={key} label={title}>
-                        <input
-                          className="input"
-                          value={config[key] || ''}
-                          onChange={(e) => setConfig({ ...config, [key]: e.target.value })}
-                          required={[
-                            'phoneNumberId',
-                            'wabaId',
-                            'spreadsheetId',
-                            'clientEmail',
-                          ].includes(key)}
-                          autoComplete="off"
-                        />
-                      </Field>
-                    ))}
-                    <Field
-                      label={integrationInfo[editing.kind].secret}
-                      hint={
-                        editing.configured
-                          ? 'Leave empty to keep the saved credential. Saved secrets are never shown here.'
-                          : 'Stored encrypted on this server.'
-                      }
-                    >
-                      <input
-                        className="input"
-                        type="password"
-                        value={secret}
-                        onChange={(e) => setSecret(e.target.value)}
-                        required={!editing.configured}
-                        autoComplete="new-password"
-                      />
-                    </Field>
-                  </>
-                )}
-                {formProblem && (
-                  <ErrorNotice message={formProblem} onDismiss={() => setFormProblem('')} />
-                )}
-                <ActionButton
-                  type="submit"
-                  className="btn-primary w-full"
-                  loading={pending === 'save-connection'}
-                  loadingLabel={editing.kind === 'sheets' ? 'Saving and testing…' : 'Saving…'}
-                >
-                  <KeyRound className="size-4" />
-                  {editing.kind === 'sheets' ? 'Save and test' : 'Save connection'}
-                </ActionButton>
-              </form>
+              <SheetsGuide
+                integration={sheetsNow}
+                problem={guideProblem?.code}
+                problemMessage={guideProblem?.message}
+                onClose={() => setEditing(null)}
+              />
             </KeyFileOption>
           </>
+        )}
+        {editing && editing.kind !== 'sheets' && (
+          <form
+            className="stagger space-y-5"
+            onSubmit={(e) => {
+              e.preventDefault();
+              // Errors show inside this dialog (Modal), so no notification is needed.
+              void run('save-connection', async () => {
+                await mutate(
+                  `/integrations/${editing.kind}`,
+                  { config, ...(secret.trim() ? { secret: secret.trim() } : {}) },
+                  undefined,
+                  { dialog: true, success: 'Connection saved. Use Test to verify account access.' },
+                );
+                setEditing(null);
+                setSecret('');
+              }).catch(() => undefined);
+            }}
+          >
+            {integrationInfo[editing.kind].fields.map(([key, title]) => (
+              <Field key={key} label={title}>
+                <input
+                  className="input"
+                  value={config[key] || ''}
+                  onChange={(e) => setConfig({ ...config, [key]: e.target.value })}
+                  required={['phoneNumberId', 'wabaId'].includes(key)}
+                  autoComplete="off"
+                />
+              </Field>
+            ))}
+            <Field
+              label={integrationInfo[editing.kind].secret}
+              hint={
+                editing.configured
+                  ? 'Leave empty to keep the saved credential. Saved secrets are never shown here.'
+                  : 'Stored encrypted on this server.'
+              }
+            >
+              <input
+                className="input"
+                type="password"
+                value={secret}
+                onChange={(e) => setSecret(e.target.value)}
+                required={!editing.configured}
+                autoComplete="new-password"
+              />
+            </Field>
+            <ActionButton
+              type="submit"
+              className="btn-primary w-full"
+              loading={pending === 'save-connection'}
+              loadingLabel="Saving…"
+            >
+              <KeyRound className="size-4" />
+              Save connection
+            </ActionButton>
+          </form>
         )}
       </Modal>
     </>

@@ -9,7 +9,7 @@ import {
   connectedText,
   type GoogleSheetsConnected,
 } from '../src/components/GoogleSheetsConnect';
-import { KeyFileOption } from '../src/components/SheetsConnect';
+import { KeyFileOption } from '../src/components/SheetsGuide';
 import { codeErrorText, inAppBrowser, popupErrorText } from '../src/lib/google-connect';
 import { sheetUrl } from '../src/lib/sheets-connect';
 import { Workspace, type WorkspaceContext } from '../src/lib/workspace';
@@ -136,7 +136,7 @@ describe('the key-file steps under Connect with Google', () => {
     );
 
   it('fold away, open for a business already on a key file', () => {
-    expect(render(true, false)).toContain('Or use your own Google Cloud key file');
+    expect(render(true, false)).toContain('Or use your own Google key file');
     expect(render(true, false)).not.toMatch(/<details[^>]* open/);
     expect(render(true, true)).toMatch(/<details[^>]* open/);
   });

@@ -42,7 +42,7 @@ export interface ServiceAccountKey {
 export const KEY_FILE_LIMIT = 20_000;
 
 const NOT_A_KEY =
-  'This isn’t the key file. Choose the file ending in .json that Google downloaded in step 3.';
+  'This isn’t the key file. Choose the newest file Google downloaded. Its long name usually starts with orderly.';
 
 /**
  * The email and private key in a downloaded service account key file (its JSON text), or why
@@ -61,7 +61,7 @@ export function serviceAccountKeyFrom(text: string): ServiceAccountKey | { error
   if ('installed' in fields || 'web' in fields)
     return {
       error:
-        'This is an OAuth client file, not a service account key. Make the key from the service account’s Keys tab, as in step 3.',
+        'This is a different kind of Google file. Make the key from your helper’s Keys page: Add key, Create new key, JSON.',
     };
   const { client_email: clientEmail, private_key: privateKey } = fields;
   if (

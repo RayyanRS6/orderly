@@ -51,7 +51,7 @@ import {
 } from '../src/shared/models.js';
 import { modelFingerprint } from './integrations/model-catalog.js';
 import { GoogleSheetsAdapter } from './integrations/sheets.js';
-import { GOOGLE_REAUTH } from './integrations/google-oauth.js';
+import { isLastingSheetsProblem } from '../src/shared/sheets-problems.js';
 import { WhatsAppAdapter } from './integrations/whatsapp.js';
 import { decryptSecret, PublicError, redactSecrets } from './security.js';
 import { sanitizeError } from './security.js';
@@ -101,6 +101,7 @@ export async function integrationAdapter(
     throw new PublicError(
       `Connect ${kind === 'sheets' ? 'Google Sheets' : 'WhatsApp'} first.`,
       409,
+      kind === 'sheets' ? { code: 'KEY_MISSING' } : undefined,
     );
   return kind === 'sheets'
     ? new GoogleSheetsAdapter(integration, decryptSecret(secret))
@@ -125,22 +126,33 @@ async function noteMenuSync(repo: Repository, companyId: string, error?: unknown
   const note = error === undefined ? undefined : `${MENU_SYNC_NOTE}${sanitizeError(error)}`;
   if (note === undefined && !sheets.error?.startsWith(MENU_SYNC_NOTE)) return;
   if (note !== undefined && sheets.error === note) return;
+  const code = error instanceof PublicError ? error.code : undefined;
   await repo.saveIntegration(companyId, {
     ...sheets,
     error: note,
+    errorCode: isLastingSheetsProblem(code) ? code : undefined,
     ...(note && { checkedAt: new Date().toISOString() }),
   });
 }
-// A problem with the Sheets connection found by background work, shown on its card. Like the
-// menu note, only the note changes, never the status.
-async function noteSheetsError(repo: Repository, companyId: string, message: string) {
+// A problem with the Sheets connection found by background work, shown on its card with its
+// guided fix. Like the menu note, only the note changes, never the status.
+async function noteSheetsError(repo: Repository, companyId: string, error: PublicError) {
   const sheets = (await repo.getIntegrations(companyId)).find((i) => i.kind === 'sheets');
-  if (!sheets || sheets.error === message) return;
+  if (!sheets || sheets.error === error.message) return;
   await repo.saveIntegration(companyId, {
     ...sheets,
-    error: message,
+    error: error.message,
+    errorCode: error.code,
     checkedAt: new Date().toISOString(),
   });
+}
+// An order copy got through: a problem an earlier copy reported is over. Not one a failed Test
+// recorded (status error): Test checks more than a copy does, so only Test clears it.
+async function clearSheetsError(repo: Repository, companyId: string) {
+  const sheets = (await repo.getIntegrations(companyId)).find((i) => i.kind === 'sheets');
+  if (!sheets?.errorCode || sheets.status === 'error' || sheets.error?.startsWith(MENU_SYNC_NOTE))
+    return;
+  await repo.saveIntegration(companyId, { ...sheets, error: undefined, errorCode: undefined });
 }
 /**
  * Refreshes a Sheet menu, at most one attempt a minute for the business however many chats
@@ -1654,6 +1666,7 @@ export async function processJob(repo: Repository, id: string) {
         }
         await (await integrationAdapter(repo, company.id, 'sheets')).syncOrder(order);
         await repo.setOrderSyncStatus(company.id, order.id, 'synced', order.updatedAt);
+        await clearSheetsError(repo, company.id).catch(() => undefined);
       } finally {
         await repo.releaseConversationLock(company.id, sheetLock, job.id);
       }
@@ -1770,9 +1783,9 @@ export async function processJob(repo: Repository, id: string) {
     });
     if (job.kind === 'sheet_sync') {
       await repo.setOrderSyncStatus(job.companyId, String(job.payload.orderId), 'failed');
-      // Retrying can't bring Google's access back; the Sheets card asks to reconnect.
-      if (error instanceof PublicError && error.code === GOOGLE_REAUTH)
-        await noteSheetsError(repo, job.companyId, error.message).catch(() => undefined);
+      // Retrying can't fix this by itself: the Sheets card shows it, with the guided fix.
+      if (error instanceof PublicError && isLastingSheetsProblem(error.code))
+        await noteSheetsError(repo, job.companyId, error).catch(() => undefined);
     }
     if (permanent && job.kind === 'whatsapp_send')
       await recordNotSent(

@@ -40,7 +40,11 @@ export function keepOpenForToasts(event: { target: EventTarget | null; preventDe
  * and returns there (when it still exists). returnTo, when it gives an element still on the
  * page, goes first: for an action about to remove what opened the dialog.
  */
-export function useReturnFocus(returnTo?: () => HTMLElement | null | undefined) {
+export function useReturnFocus(
+  returnTo?: () => HTMLElement | null | undefined,
+  /** Where focus goes when the opener is gone, before any dialog underneath. */
+  fallback?: () => HTMLElement | null | undefined,
+) {
   const opener = useRef<HTMLElement | null>(null);
   return {
     onOpenAutoFocus: () => {
@@ -51,11 +55,14 @@ export function useReturnFocus(returnTo?: () => HTMLElement | null | undefined) 
       // The opener can be gone (a confirmed action removed its button): fall back to the
       // dialog still open underneath, if any, rather than <body>.
       const chosen = returnTo?.();
+      const spare = fallback?.();
       const target = chosen?.isConnected
         ? chosen
         : opener.current?.isConnected
           ? opener.current
-          : document.querySelector<HTMLElement>('[role="dialog"][data-state="open"]');
+          : spare?.isConnected
+            ? spare
+            : document.querySelector<HTMLElement>('[role="dialog"][data-state="open"]');
       if (!target) return;
       event.preventDefault();
       target.focus();
@@ -203,6 +210,7 @@ export function Modal({
   children,
   wide,
   dismissable = true,
+  fallbackFocusTo,
 }: {
   open: boolean;
   onOpenChange: (value: boolean) => void;
@@ -212,12 +220,14 @@ export function Modal({
   wide?: boolean;
   /** false: a click on the dimmed backdrop doesn't close it (long forms). Escape and Close still do. */
   dismissable?: boolean;
+  /** Where focus returns when the button that opened the dialog is gone by its close. */
+  fallbackFocusTo?: () => HTMLElement | null | undefined;
 }) {
   const workspace = useContext(Workspace);
   const clearError = useRef(workspace?.clearError);
   const errorRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
-  const returnFocus = useReturnFocus();
+  const returnFocus = useReturnFocus(undefined, fallbackFocusTo);
   useEffect(() => {
     clearError.current = workspace?.clearError;
   });

@@ -1,15 +1,6 @@
-// Connecting Google Sheets as a restaurant owner: the step-by-step form reads the Sheet's link
-// and the key file Google downloads, and says which step is still missing. The tests run
-// without a browser, so they check the helpers and what the form renders on the server.
+// Connecting Google Sheets as a restaurant owner: reading the Sheet's link and the key file Google
+// downloads. The guide around them is in tests/sheets-guide.test.ts.
 import { describe, expect, it } from 'vitest';
-import { createElement } from 'react';
-import { renderToStaticMarkup } from 'react-dom/server';
-import { supportEmail } from '../src/components/Public';
-import {
-  SheetsConnect,
-  sheetsConfigForSave,
-  sheetsFormProblem,
-} from '../src/components/SheetsConnect';
 import {
   looksLikeKeyFile,
   serviceAccountKeyFrom,
@@ -72,7 +63,7 @@ describe('the key file', () => {
   it('tells an OAuth client file apart from a service account key', () => {
     const oauth = JSON.stringify({ installed: { client_id: 'x', client_secret: 'y' } });
     expect(serviceAccountKeyFrom(oauth)).toEqual({
-      error: expect.stringContaining('OAuth client file'),
+      error: expect.stringContaining('different kind of Google file'),
     });
   });
 
@@ -93,81 +84,5 @@ describe('the key file', () => {
   it('knows a pasted key file from a pasted private key', () => {
     expect(looksLikeKeyFile(` ${keyFile()}`)).toBe(true);
     expect(looksLikeKeyFile(pem)).toBe(false);
-  });
-});
-
-describe('saving the Sheets form', () => {
-  const ready = { spreadsheetId: id, clientEmail: email };
-
-  it('points at the step still to do', () => {
-    expect(sheetsFormProblem({ clientEmail: email }, pem, false)).toContain('step 2');
-    expect(sheetsFormProblem({ spreadsheetId: id }, pem, false)).toContain('step 4');
-    expect(sheetsFormProblem(ready, '', false)).toContain('step 4');
-    expect(sheetsFormProblem(ready, '{"web":{}}', false)).toContain('isn’t a Google key file');
-  });
-
-  it('saves with a new key, or with the key already saved', () => {
-    expect(sheetsFormProblem(ready, pem, false)).toBeUndefined();
-    expect(sheetsFormProblem(ready, '', true)).toBeUndefined();
-  });
-
-  it('saves tab names without stray spaces, which syncing would not ignore', () => {
-    expect(
-      sheetsConfigForSave({ ...ready, catalogSheet: ' Menu ', ordersSheet: 'My Orders ' }),
-    ).toEqual({ ...ready, catalogSheet: 'Menu', ordersSheet: 'My Orders' });
-  });
-});
-
-describe('the Sheets connect form', () => {
-  const render = (config: Record<string, string>, keySaved = false, secret = '') =>
-    renderToStaticMarkup(
-      createElement(SheetsConnect, {
-        config: { catalogSheet: 'Menu', ordersSheet: 'Orders', ...config },
-        onConfig: () => {},
-        secret,
-        onSecret: () => {},
-        keySaved,
-      }),
-    );
-
-  it('walks a new owner through six steps, with Google’s pages opening in new tabs', () => {
-    const html = render({});
-    for (const title of [
-      'Make your Google Sheet',
-      'Paste the Sheet’s link',
-      'Get a key file from Google',
-      'Upload the key file',
-      'Share your Sheet with the helper account',
-      'Save and test',
-    ])
-      expect(html).toContain(title);
-    for (const href of [
-      'https://sheets.new',
-      'https://console.cloud.google.com/projectcreate',
-      'https://console.cloud.google.com/flows/enableapi?apiid=sheets.googleapis.com',
-      'https://console.cloud.google.com/projectselector/iam-admin/serviceaccounts/create',
-      'https://console.cloud.google.com/iam-admin/serviceaccounts',
-    ])
-      expect(html).toContain(`href="${href}" target="_blank" rel="noopener noreferrer"`);
-    expect(html).toContain('href="/examples/menu.csv"');
-    // Google blocks key files on some new accounts: the owner is sent to support.
-    expect(html).toContain('Service account key creation is disabled');
-    expect(html).toContain(`href="mailto:${supportEmail}"`);
-    // No email to share with until the key file is read.
-    expect(html).toContain('shows here after step 4');
-    expect(html).not.toContain('aria-label="Helper account email"');
-  });
-
-  it('shows the email to share with, and the connected Sheet’s link, once known', () => {
-    const html = render({ spreadsheetId: id, clientEmail: email }, true);
-    expect(html).toContain(`value="${email}"`);
-    expect(html).toContain(`value="${sheetUrl(id)}"`);
-    expect(html).toContain('Sheet found.');
-    expect(html).toContain('A key is already saved.');
-  });
-
-  it('confirms a key file read in this visit', () => {
-    const html = render({ spreadsheetId: id, clientEmail: email }, false, pem);
-    expect(html).toContain('Key file read.');
   });
 });

@@ -3,6 +3,8 @@ import { generateKeyPairSync } from 'node:crypto';
 import { createApp } from '../server/app';
 import { MemoryRepository } from '../server/repository';
 import { encryptSecret } from '../server/security';
+import { processJob } from '../server/service';
+import { makeJob } from '../server/jobs';
 import { GoogleSheetsAdapter } from '../server/integrations/sheets';
 import { catalogFromRows, parsePrice } from '../server/integrations/catalog';
 import { seedCompanies } from '../src/shared/seed';
@@ -287,8 +289,196 @@ describe('the Sheets connection test', () => {
     });
     await expect(test()).rejects.toThrow('This is an Excel file, not a Google Sheet.');
     // A refusal without a JSON body still gets the general message.
-    google({ refuse: [500, 'oops'] });
-    await expect(test()).rejects.toThrow('Google Sheets request failed.');
+    google({ refuse: [400, 'oops'] });
+    await expect(test()).rejects.toMatchObject({
+      code: 'GOOGLE_REFUSED',
+      message: expect.stringContaining('Google Sheets request failed.'),
+    });
+  });
+
+  it('gives every refusal the code that opens its guided fix', async () => {
+    const error = (code: number, message: string, reason?: string): [number, unknown] => [
+      code,
+      { error: { code, message, ...(reason && { details: [{ reason }] }) } },
+    ];
+    const cases: [[number, unknown], string][] = [
+      [error(403, 'disabled', 'SERVICE_DISABLED'), 'SHEETS_API_OFF'],
+      [error(403, 'The caller does not have permission'), 'SHEET_NOT_SHARED'],
+      [error(404, 'Requested entity was not found.'), 'SHEET_NOT_FOUND'],
+      [error(400, 'This operation is not supported for this document'), 'SHEET_IS_EXCEL'],
+      [error(429, 'Too many'), 'GOOGLE_BUSY'],
+      [error(503, 'Unavailable'), 'GOOGLE_DOWN'],
+      [error(400, 'You are trying to edit a protected cell or object'), 'TAB_LOCKED'],
+    ];
+    for (const [refuse, code] of cases) {
+      google({ refuse });
+      await expect(test()).rejects.toMatchObject({ code });
+    }
+    // A tab name with an apostrophe comes back quoted, the apostrophe doubled.
+    google({ refuse: error(400, "Unable to parse range: 'Joe''s Menu'!1:502") });
+    await expect(test({ catalogSheet: "Joe's Menu" })).rejects.toMatchObject({
+      code: 'MENU_TAB_MISSING',
+      message: expect.stringContaining('Click Test on the Google Sheets card'),
+    });
+    google({ refuse: error(400, 'Unable to parse range: Orders!A:A') });
+    await expect(test()).rejects.toMatchObject({ code: 'ORDERS_TAB_MISSING' });
+    google({ values: orders('Order ID'), writeStatus: 403 });
+    await expect(test()).rejects.toMatchObject({ code: 'SHEET_VIEW_ONLY' });
+    google({ tabs: ['Sheet1'] });
+    await expect(test()).rejects.toMatchObject({ code: 'ORDERS_TAB_MISSING' });
+    google({ tabs: ['Orders'] });
+    await expect(test({}, company.id)).rejects.toMatchObject({ code: 'MENU_TAB_MISSING' });
+    google({ values: orders('Customer list') });
+    await expect(test()).rejects.toMatchObject({ code: 'ORDERS_TAB_HAS_DATA' });
+    google({ values: { ...orders('Order ID'), "'Menu'!1:502": [head, item('abc')] } });
+    await expect(test({}, company.id)).rejects.toMatchObject({ code: 'MENU_INVALID' });
+    await expect(
+      new GoogleSheetsAdapter(integration({ spreadsheetId: '' }), pem).test(),
+    ).rejects.toMatchObject({ code: 'LINK_MISSING' });
+    await expect(
+      new GoogleSheetsAdapter(integration({ clientEmail: '' }), pem).test(),
+    ).rejects.toMatchObject({ code: 'KEY_MISSING' });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new TypeError('network');
+      }),
+    );
+    await expect(test()).rejects.toMatchObject({ code: 'GOOGLE_DOWN' });
+  });
+
+  it('says why Google refused the key, and gives a new key time to work', async () => {
+    const token = (status: number, body: unknown) =>
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => Response.json(body, { status })),
+      );
+    const signature = { error: 'invalid_grant', error_description: 'Invalid JWT Signature.' };
+    token(400, signature);
+    await expect(test()).rejects.toMatchObject({ code: 'KEY_REJECTED' });
+    await expect(
+      test({ keySavedAt: new Date(Date.now() - 60_000).toISOString() }),
+    ).rejects.toMatchObject({ code: 'KEY_NOT_READY' });
+    await expect(
+      test({ keySavedAt: new Date(Date.now() - 10 * 60_000).toISOString() }),
+    ).rejects.toMatchObject({ code: 'KEY_REJECTED' });
+    token(400, { error: 'disabled_client', error_description: 'The OAuth client was disabled.' });
+    await expect(test()).rejects.toMatchObject({ code: 'HELPER_OFF' });
+    token(400, { error: 'invalid_grant', error_description: 'Invalid grant: account not found' });
+    await expect(test()).rejects.toMatchObject({ code: 'HELPER_GONE' });
+    token(500, {});
+    await expect(test()).rejects.toMatchObject({ code: 'GOOGLE_DOWN' });
+    await expect(
+      new GoogleSheetsAdapter(integration(), '-----BEGIN PRIVATE KEY-----\ncut off').test(),
+    ).rejects.toMatchObject({ code: 'KEY_BROKEN' });
+  });
+
+  it('never writes its titles over other data in an empty first column', async () => {
+    const calls = google({ values: { "'Orders'!1:1": [['', 'Customer', 'Phone']] } });
+    await expect(test()).rejects.toMatchObject({ code: 'ORDERS_TAB_HAS_DATA' });
+    expect(calls.some((c) => c.method === 'PUT')).toBe(false);
+  });
+
+  it('leaves the connection as it is when Google is only busy, and records a real problem', async () => {
+    const repo = new MemoryRepository();
+    await repo.saveIntegration(company.id, integration({}), encryptSecret(pem));
+    const run = () =>
+      createApp(repo).request('http://127.0.0.1:4000/api/integrations/sheets/test', {
+        method: 'POST',
+        headers: { 'x-company-id': company.id, Origin: 'http://127.0.0.1:5173' },
+      });
+    const saved = async () =>
+      (await repo.getIntegrations(company.id)).find((i) => i.kind === 'sheets');
+    google({ refuse: [503, { error: { code: 503 } }] });
+    const busy = await run();
+    expect((await busy.json()).code).toBe('GOOGLE_DOWN');
+    expect((await saved())?.status).toBe('configured');
+    google({
+      refuse: [
+        403,
+        { error: { code: 403, message: 'x', details: [{ reason: 'SERVICE_DISABLED' }] } },
+      ],
+    });
+    const off = await run();
+    expect((await off.json()).code).toBe('SHEETS_API_OFF');
+    expect(await saved()).toMatchObject({ status: 'error', errorCode: 'SHEETS_API_OFF' });
+    google({ values: orders('Order ID') });
+    expect((await run()).status).toBe(200);
+    const fixed = await saved();
+    expect(fixed?.status).toBe('connected');
+    expect(fixed?.errorCode).toBeUndefined();
+    expect(fixed?.error).toBeUndefined();
+  });
+
+  it('stamps when a key was saved, so a new key gets its minute', async () => {
+    const repo = new MemoryRepository();
+    const response = await createApp(repo).request(
+      'http://127.0.0.1:4000/api/integrations/sheets',
+      {
+        method: 'POST',
+        headers: {
+          'x-company-id': company.id,
+          Origin: 'http://127.0.0.1:5173',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          config: { spreadsheetId, clientEmail: 'menu@example.iam.gserviceaccount.com' },
+          secret: pem,
+        }),
+      },
+    );
+    expect(response.status).toBe(200);
+    const saved = (await repo.getIntegrations(company.id)).find((i) => i.kind === 'sheets');
+    expect(Date.now() - Date.parse(saved!.config.keySavedAt!)).toBeLessThan(60_000);
+  });
+
+  it('shows a background copy’s problem on the card, and clears it when copies work again', async () => {
+    const repo = new MemoryRepository();
+    await repo.saveIntegration(company.id, integration(), encryptSecret(pem));
+    const saved = async () =>
+      (await repo.getIntegrations(company.id)).find((i) => i.kind === 'sheets');
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const order = (await repo.listOrders(company.id))[0]!;
+    const conversation = (await repo.getConversation(order.companyId, order.conversationId))!;
+    await repo.saveConversation({ ...conversation, channel: 'whatsapp' });
+    await repo.saveOrder({ ...order, sandbox: false });
+    const copy = async () => {
+      const job = makeJob(company.id, 'sheet_sync', { orderId: order.id });
+      await repo.insertJob(job);
+      await processJob(repo, job.id).catch(() => undefined);
+    };
+    google({
+      refuse: [403, { error: { code: 403, message: 'The caller does not have permission' } }],
+    });
+    await copy();
+    expect(await saved()).toMatchObject({
+      status: 'configured',
+      errorCode: 'SHEET_NOT_SHARED',
+      error: expect.stringContaining('Share the spreadsheet'),
+    });
+    google({ values: orders('Order ID') });
+    await copy();
+    const after = await saved();
+    expect(after?.errorCode).toBeUndefined();
+    expect(after?.error).toBeUndefined();
+    // A problem a failed Test found stays until Test passes: Test checks more than a copy does.
+    await repo.saveIntegration(company.id, {
+      ...after!,
+      status: 'error',
+      error: 'Your Sheet has no tab named “Menu”.',
+      errorCode: 'MENU_TAB_MISSING',
+    });
+    await copy();
+    expect(await saved()).toMatchObject({ status: 'error', errorCode: 'MENU_TAB_MISSING' });
+  });
+
+  it('refuses a business that uses the same Sheet, with the code that explains it', async () => {
+    const repo = new MemoryRepository();
+    await repo.saveIntegration(company.id, integration(), encryptSecret(pem));
+    await expect(
+      repo.saveIntegration(seedCompanies[1].id, integration(), encryptSecret(pem)),
+    ).rejects.toMatchObject({ code: 'SHEET_TAKEN' });
   });
 
   it('says so when the saved private key is not a key, before calling Google', async () => {
