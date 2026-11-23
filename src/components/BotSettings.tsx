@@ -990,7 +990,10 @@ export function BotSettings() {
               onChange={(e) => update({ greeting: e.target.value })}
             />
           </Field>
-          <Field label="Handoff message (optional)">
+          <Field
+            label="Handoff message (optional)"
+            hint="While you’re closed, customers are told when you open instead."
+          >
             <textarea
               className="input"
               maxLength={500}

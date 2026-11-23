@@ -100,6 +100,8 @@ const STEP_LABELS: Record<string, string> = {
   deal_choice_asked: 'Asked for a deal’s choice',
   deal_choice_answered: 'Added a deal with the customer’s choices',
   deal_not_on: 'Said a deal isn’t on now',
+  closed_notice: 'Said the restaurant is closed',
+  closed_refused: 'Took no order while closed',
 };
 
 const CORRECTION_LABELS: Record<string, string> = {
@@ -131,6 +133,8 @@ const CORRECTION_LABELS: Record<string, string> = {
     'The customer asked about allergies, so your approved allergy answer was sent word for word; without one, a fixed safety notice was sent and the chat went to staff.',
   allergy_assurance_ignored:
     'The AI’s wording promised something about allergies or ingredients, so it was dropped.',
+  closed_refused:
+    'The restaurant was closed, so nothing was added or ordered and the customer was told when it opens.',
 };
 
 /** Recorded events (Activity) whose code name says too little on its own. */

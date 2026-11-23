@@ -356,6 +356,11 @@ function paymentRule(company: Company): string {
 // is on, and when) is in the per-message prompt, never here.
 const DEALS_RULE =
   'Deals are menu items. Add a deal with add_item using its product id, putting exactly one chosen option id per choice group in modifierIds. If the customer hasn’t chosen, add it without modifierIds: the application asks, so do not list options or say it was added. When pendingDealChoice is set and the customer picks one of its options, add that deal with the chosen option id and pendingDealChoice.quantity unless they give a new count; if they turn that deal down, use remove_item with its product id. Ordering a deal that is already in the cart ("ek aur deal 1", "aur ek deal 1 coke ke sath", "one more deal 1 with sprite") adds another one with the options named; change or remove a deal already in the cart only when the customer clearly asks to change, swap or remove it ("badal do", "change it to", "instead", "nahi chahiye"). Never compute or state prices, savings, discounts, percentages or times yourself; you may repeat a deal’s `when` text exactly as given. Never offer or add a deal whose available is false; say when it is on using its when text, or offer staff.';
+// What the AI does while the restaurant is closed. In the per-message prompt and only then, so the
+// instructions and their cached copy never change with the time. The engine takes no order while
+// closed whatever the AI proposes; this keeps its wording from sounding as if one was taken.
+const CLOSED_RULE =
+  'business.currentlyOpen is false, so no order can be taken. The application refuses add_item, clarify_item, set_details, review, confirm and new_order, and itself tells the customer that the restaurant is closed, when it opens and that nothing was ordered. Still return the action the customer asked for, so the application can answer it. Answer questions and show the menu as usual. Never say an item, name, address or location was noted, added or saved, never ask for items, pickup or delivery, a name, an area or an address (askFor none), and never promise an order, a delivery or a reply before it opens. This takes precedence over the operator’s ordering flow.';
 // A deal as the AI sees it in the catalog: no prices, only what it includes, its state and when
 // it is on, and its choices (option ids) while it is on now or later. `choices` false leaves
 // those out, to fit the prompt.
@@ -456,6 +461,7 @@ ${JSON.stringify({ name: config.name, personality: config.personality, language:
       (group) => !group.options.some((option) => pendingDeal!.picked.includes(option.id)),
     );
     const currentTime = new Date().toISOString();
+    const currentlyOpen = isOpen(company, currentTime);
     const promptFor = (dealChoices: boolean) =>
       JSON.stringify({
         business: {
@@ -469,9 +475,10 @@ ${JSON.stringify({ name: config.name, personality: config.personality, language:
           menuSource: company.catalogSource,
           menuSyncedAt: company.catalogSyncedAt,
           currentTime,
-          currentlyOpen: isOpen(company, currentTime),
+          currentlyOpen,
           paymentCapabilities: paymentCapabilities(company),
         },
+        ...(!currentlyOpen && { closedRule: CLOSED_RULE }),
         // A deal's stored times and regular price stay out: its state and `when` say enough.
         candidateCatalog: relevant.map(({ imageUrl: _image, ...product }) =>
           product.deal

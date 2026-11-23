@@ -21,6 +21,7 @@ import {
   asksForPerson,
   asksOrderStatus,
   asksToCancelOrder,
+  closedStaffNote,
   createConversation,
   emptyCart,
   limitNotice,
@@ -802,11 +803,12 @@ async function saveHandoff(
     outcome: 'staff',
     notice: cause,
   });
+  const lang = noticeLanguage(company, conversation, input.text);
   reply = disclosed(
     company,
     conversation,
-    reply,
-    noticeLanguage(company, conversation, input.text),
+    untilOpen(company, lang, c.cart, reply, turnInstant(input)),
+    lang,
     input.now,
   );
   c.messages.push(
@@ -936,6 +938,9 @@ function lateNotice(lang: Language, cart: Cart): string {
   const order = orderSafetyLine(lang, cart);
   return order ? `${base} ${order}` : base;
 }
+// A notice that says staff will reply, with when that is while the restaurant is closed.
+const untilOpen = (company: Company, lang: Language, cart: Cart, notice: string, now: string) =>
+  [notice, closedStaffNote(company, lang, cart, now)].filter(Boolean).join('\n\n');
 const pick = (lang: Language, en: string, ur: string, roman: string) =>
   lang === 'ur' ? ur : lang === 'roman-ur' ? roman : en;
 /**
@@ -1089,7 +1094,13 @@ async function savePause(
   let reply = '';
   let explanation: TurnResult['explanation'];
   if (notify) {
-    reply = disclosed(company, conversation, pause.text(c.language, c.cart), c.language, input.now);
+    reply = disclosed(
+      company,
+      conversation,
+      untilOpen(company, c.language, c.cart, pause.text(c.language, c.cart), at),
+      c.language,
+      input.now,
+    );
     c.limitNoticeAt = at;
     explanation = describeTurn({
       company,

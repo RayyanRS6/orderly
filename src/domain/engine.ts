@@ -416,6 +416,60 @@ export function closedText(company: Company, lang: Language, now?: string): stri
     `Hum ${inDays === 0 ? 'aaj' : inDays === 1 ? 'kal' : `${WEEKDAYS[day]} ko`} ${start} baje dobara khulenge.`,
   )}`;
 }
+// The steps that build or place an order. A closed restaurant takes none of them: a customer who
+// is asked for a name and an address believes they have ordered, whatever was said before.
+const ORDER_STEPS: ReadonlySet<BotAction['type']> = new Set<BotAction['type']>([
+  'add_item',
+  'clarify_item',
+  'set_details',
+  'review',
+  'confirm',
+  'new_order',
+]);
+/**
+ * What a customer who tries to order while the restaurant is closed is told: that it is closed,
+ * when it opens, and that nothing was ordered.
+ */
+export function closedRefusal(company: Company, lang: Language, cart: Cart, now: string): string {
+  const closed = closedText(company, lang, now);
+  // Their order is with the restaurant: only another one is refused.
+  if (cart.status === 'submitted')
+    return `${closed} ${say(
+      lang,
+      'We can’t take a new order until we open.',
+      'نیا آرڈر ہمارے کھلنے پر ہی لیا جا سکے گا۔',
+      'Naya order hamare khulne par hi le sakte hain.',
+    )}`;
+  return `${closed} ${
+    cart.items.length
+      ? say(
+          lang,
+          'Your cart is saved, but nothing in it has been ordered. Send “review” when we are open.',
+          'آپ کی ٹوکری محفوظ ہے، مگر ابھی کچھ آرڈر نہیں ہوا۔ ہمارے کھلنے پر “جائزہ” لکھیں۔',
+          'Aap ka cart save hai, magar abhi kuch order nahi hua. Jab hum khule hon to “review” likhein.',
+        )
+      : say(
+          lang,
+          'We can’t take orders now, so this has not been ordered. Please message us again when we are open.',
+          'ابھی آرڈر نہیں لیا جا سکتا، اس لیے یہ آرڈر نہیں ہوا۔ ہمارے کھلنے پر دوبارہ پیغام بھیجیں۔',
+          'Abhi order nahi le sakte, is liye yeh order nahi hua. Hamare khulne par dobara message karein.',
+        )
+  }`;
+}
+/**
+ * Added to a message that hands the chat to staff while the restaurant is closed, so nobody waits
+ * through the night for an answer: '' while open, or with an order already at the restaurant
+ * (staff are still finishing it, or will look at it first).
+ */
+export function closedStaffNote(company: Company, lang: Language, cart: Cart, now: string): string {
+  if (cart.status === 'submitted' || isOpen(company, now)) return '';
+  return `${closedText(company, lang, now)} ${say(
+    lang,
+    'Our team will reply here once we are open.',
+    'ہماری ٹیم کھلنے کے بعد یہیں جواب دے گی۔',
+    'Hamari team khulne ke baad yahin jawab degi.',
+  )}`;
+}
 
 const noChatOrdering = (lang: Language) =>
   say(
@@ -711,20 +765,16 @@ export function isCartSummaryRequest(text: string): boolean {
   );
 }
 
-// While closed, the review shows the order but is not confirmable: the cart stays 'building', so
-// no Confirm button is attached and a later "confirm" gets a fresh review. `includes`: false
-// leaves out what deals include.
+// Shown only while open (see ORDER_STEPS). `includes`: false leaves out what deals include.
 function review(
   company: Company,
   products: Product[],
   cart: Cart,
   lang: Language,
-  now: string,
   includes = true,
 ): string {
   const missing = missingDetails(company, cart, lang);
   if (missing) return `${cartSummary(company, products, cart, lang)}\n\n${missing}`;
-  const open = isOpen(company, now);
   const quote = quoteCart(company, products, cart);
   // Under a deal, what it includes ("   Zinger burger + Fries + Drink").
   const lines = (includes: boolean) =>
@@ -746,19 +796,12 @@ function review(
       `\n${cart.fulfillment === 'delivery' ? `Delivery: ${cart.address} (${cart.zone})` : 'Pickup'} · ${cart.customerName}`,
       `${say(lang, 'Delivery fee', 'ڈیلیوری فیس', 'Delivery fee')}: ${money(quote.deliveryFee)}`,
       `${say(lang, 'Total', 'کل رقم', 'Total')}: ${money(quote.total)}`,
-      open
-        ? say(
-            lang,
-            '\nReply “confirm” to submit this order for restaurant acceptance.',
-            '\nریسٹورنٹ کی منظوری کے لیے آرڈر بھیجنے کو “تصدیق” لکھیں۔',
-            '\nRestaurant ki manzoori ke liye “confirm” ya “haan” likhein.',
-          )
-        : `\n${closedText(company, lang, now)}${say(
-            lang,
-            ' Your cart is saved. Send “review” when we are open.',
-            ' آپ کی ٹوکری محفوظ ہے۔ ہمارے کھلنے پر “جائزہ” لکھیں۔',
-            ' Cart save hai. Jab hum khule hon to “review” likhein.',
-          )}`,
+      say(
+        lang,
+        '\nReply “confirm” to submit this order for restaurant acceptance.',
+        '\nریسٹورنٹ کی منظوری کے لیے آرڈر بھیجنے کو “تصدیق” لکھیں۔',
+        '\nRestaurant ki manzoori ke liye “confirm” ya “haan” likhein.',
+      ),
     ].join('\n');
   // WhatsApp drops the review's buttons above 1024 characters, so what deals include is shown
   // only while the review stays within that (and the whole reply does: see finish()).
@@ -767,10 +810,6 @@ function review(
   const text = withIncludes && withIncludes.length <= 1024 ? withIncludes : reviewText(false);
   if (text.length > 3500)
     throw new Error('This order is too large for one message. Please ask staff to complete it.');
-  if (!open) {
-    unreview(cart);
-    return text;
-  }
   cart.status = 'awaiting_confirmation';
   cart.reviewedRevision = cart.revision;
   cart.quoteHash = quote.hash;
@@ -2488,6 +2527,7 @@ const CORRECTION_TRACES = new Set([
   'invented_link_ignored',
   'allergy_assurance_ignored',
   'allergy_question_guarded',
+  'closed_refused',
 ]);
 
 // The owner's approved answer about allergies (an FAQ or knowledge entry), sent word for word.
@@ -2832,10 +2872,15 @@ export function processTurn(
   let shownReview: string | undefined;
   const showReview = () => {
     dealsOn();
-    const text = review(company, products, cart, lang, shownAt);
+    const text = review(company, products, cart, lang);
     if (cart.status === 'awaiting_confirmation') shownReview = text;
     return text;
   };
+  // While closed, no step of an order runs (see the action loop); `refusedClosed`: one was asked
+  // for. `sayClosed`: this reply shows the cart, so it says none of it is ordered.
+  const closed = !isOpen(company, shownAt);
+  let refusedClosed = false;
+  let sayClosed = false;
   // Only a choice the restaurant offers: with one option, it is the customer's without asking.
   const offered = offeredFulfillment(company);
   const settleFulfillment = () => {
@@ -2931,6 +2976,15 @@ export function processTurn(
       matchedRule?.responseMode === 'exact'
         ? fillMenuLink(matchedRule.response ?? '', input.menuLink)
         : '';
+    // Closed: an AI question that takes the next step of an order (more dishes, pickup or delivery,
+    // a name, an area, an address) is never asked; the customer hears it is closed instead.
+    const asksOrderStep =
+      closed &&
+      !exactResponse &&
+      !!modelResponse?.askFor &&
+      modelResponse.askFor !== 'none' &&
+      modelResponse.askFor !== 'items';
+    if (asksOrderStep) sayClosed = true;
     const transactional = traces.some((trace) =>
       [
         'add_item',
@@ -2948,6 +3002,7 @@ export function processTurn(
     );
     const protectedReply =
       correctedInterpretation ||
+      refusedClosed ||
       traces.some(
         (trace) =>
           trace.startsWith('validation_failed:') ||
@@ -2967,6 +3022,8 @@ export function processTurn(
     // The deal's choice comes last, after what was added (see settleDealChoice).
     if (dealQuestion && next.mode === 'bot')
       reply = [reply, dealQuestion].filter(Boolean).join('\n\n');
+    if ((refusedClosed || sayClosed) && next.mode === 'bot')
+      reply = [reply, closedRefusal(company, lang, cart, shownAt)].filter(Boolean).join('\n\n');
     // Explanation only: record which source wrote each part of the reply.
     let parts: ReplyPart[] = [];
     const answerByModel = !!modelAnswer && reply.includes(modelAnswer);
@@ -3013,6 +3070,7 @@ export function processTurn(
       configuredResponseUsed = true;
     } else if (
       !protectedReply &&
+      !asksOrderStep &&
       next.mode === 'bot' &&
       grounded &&
       (validAskFor || (!reply && harmlessAskFor)) &&
@@ -3041,11 +3099,13 @@ export function processTurn(
         ? 'protected'
         : next.mode !== 'bot'
           ? 'staff_mode'
-          : !grounded
-            ? 'ungrounded'
-            : !validAskFor
-              ? 'invalid_question'
-              : 'unsafe';
+          : asksOrderStep
+            ? 'protected'
+            : !grounded
+              ? 'ungrounded'
+              : !validAskFor
+                ? 'invalid_question'
+                : 'unsafe';
     }
     if (incompleteReviewQuestion && !configuredResponseUsed) {
       reply = `${reply}\n\n${incompleteReviewQuestion}`;
@@ -3080,21 +3140,56 @@ export function processTurn(
         );
     }
     const fallback = () => {
-      reply =
-        missingDetails(company, cart, lang) ??
-        say(
-          lang,
-          'Your details are saved. Ask to review the order when you are ready.',
-          'آپ کی تفصیلات محفوظ ہیں۔ تیار ہوں تو آرڈر کا جائزہ مانگیں۔',
-          'Aap ki details save hain. Tayyar hon to order review karne ko kahein.',
-        );
+      reply = closed
+        ? closedRefusal(company, lang, cart, shownAt)
+        : (missingDetails(company, cart, lang) ??
+          say(
+            lang,
+            'Your details are saved. Ask to review the order when you are ready.',
+            'آپ کی تفصیلات محفوظ ہیں۔ تیار ہوں تو آرڈر کا جائزہ مانگیں۔',
+            'Aap ki details save hain. Tayyar hon to order review karne ko kahein.',
+          ));
       traces.push('response_fallback');
       parts = ['fallback'];
     };
     if (!reply && next.mode === 'bot') fallback();
-    if (traces.includes('handoff') && handoffMessage && !exactResponse && !allergyQuestion) {
+    const staffMessage =
+      traces.includes('handoff') && !!handoffMessage && !exactResponse && !allergyQuestion;
+    if (staffMessage) {
       reply = handoffMessage;
       parts = ['handoff_message'];
+    }
+    // Handed to staff while closed: nobody answers until it opens, so the customer is told when
+    // that is. The owner's handoff message ("someone will reply shortly") would promise otherwise,
+    // so it is not sent then; their exact rule wording and the allergy notice stay, with this after.
+    const staffNote =
+      reply && (traces.includes('handoff') || matchedRule?.action === 'handoff')
+        ? closedStaffNote(company, lang, cart, shownAt)
+        : '';
+    if (staffNote) {
+      const unordered =
+        cart.items.length && cart.status !== 'cancelled' ? orderSafetyLine(lang, cart) : '';
+      // A reply that already says it is closed (a refused step beside it) says it once.
+      const lead = closedText(company, lang, shownAt);
+      const note = [
+        !staffMessage && reply.includes(lead) ? staffNote.slice(lead.length).trim() : staffNote,
+        unordered,
+      ]
+        .filter(Boolean)
+        .join(' ');
+      if (staffMessage) {
+        reply = `${say(
+          lang,
+          'I’ve passed your chat to our team.',
+          'آپ کی چیٹ ہماری ٹیم کو بھیج دی گئی ہے۔',
+          'Aap ki chat hamari team ko bhej di gayi hai.',
+        )} ${note}`;
+        parts = ['engine'];
+      } else {
+        reply = `${reply}\n\n${note}`;
+        if (!parts.includes('engine')) parts.push('engine');
+      }
+      traces.push('closed_notice');
     }
     if (
       company.bot?.published &&
@@ -3131,9 +3226,12 @@ export function processTurn(
       if (!parts.includes('engine')) parts.push('engine');
     }
     // A closed restaurant says so early, in its first reply while closed, not only once the
-    // customer reaches the review: before the reply, or after the owner's greeting, which opens
-    // the chat. The owner's exact wording and an allergy answer stay as they are, and a customer
+    // customer tries to order: before the reply, or after the owner's greeting, which opens the
+    // chat. Again under any reply that asks what they would like: the greeting, or the AI's own
+    // question. The owner's exact wording and an allergy answer stay as they are, and a customer
     // asking about a placed order needs no notice. A late message is answered for now.
+    const invitesOrder =
+      parts.includes('greeting') || (parts.includes('model') && modelResponse?.askFor === 'items');
     if (
       reply &&
       next.mode === 'bot' &&
@@ -3142,24 +3240,24 @@ export function processTurn(
       !parts.includes('approved_answer') &&
       !traces.includes('order_status') &&
       cart.status !== 'submitted' &&
-      !isOpen(company, shownAt) &&
+      closed &&
       !CLOSED_LEADS.some((lead) => reply.includes(lead)) &&
-      !conversation.messages.some(
-        (m) =>
-          m.role === 'assistant' &&
-          Date.parse(input.now) - Date.parse(m.createdAt) < CLOSED_NOTICE_MS &&
-          CLOSED_LEADS.some((lead) => m.text.includes(lead)),
-      )
+      (invitesOrder ||
+        !conversation.messages.some(
+          (m) =>
+            m.role === 'assistant' &&
+            Date.parse(input.now) - Date.parse(m.createdAt) < CLOSED_NOTICE_MS &&
+            CLOSED_LEADS.some((lead) => m.text.includes(lead)),
+        ))
     ) {
-      // A cancelled cart is not saved, so it is not promised.
       const notice =
         cart.status === 'cancelled'
           ? closedText(company, lang, shownAt)
           : `${closedText(company, lang, shownAt)} ${say(
               lang,
-              'You can still look at the menu and add items; your cart will be saved.',
-              'آپ پھر بھی مینو دیکھ کر چیزیں شامل کر سکتے ہیں، آپ کی ٹوکری محفوظ رہے گی۔',
-              'Aap phir bhi menu dekh kar items add kar sakte hain, cart save rahega.',
+              'You can look at the menu now and order when we open.',
+              'آپ ابھی مینو دیکھ سکتے ہیں اور آرڈر ہمارے کھلنے پر دے سکتے ہیں۔',
+              'Aap abhi menu dekh sakte hain, order hamare khulne par dein.',
             )}`;
       if (parts.includes('greeting')) {
         reply = `${reply}\n\n${notice}`;
@@ -3180,7 +3278,7 @@ export function processTurn(
       reply.length > 1024 &&
       reply.includes(shownReview)
     ) {
-      const plain = review(company, products, cart, lang, shownAt, false);
+      const plain = review(company, products, cart, lang, false);
       if (plain !== shownReview) {
         reply = reply.replace(shownReview, () => plain);
         shownReview = plain;
@@ -3617,7 +3715,25 @@ export function processTurn(
     const note = !first && more.length ? nextDealNote(lang) : '';
     dealQuestion = [refusal, question, note].filter(Boolean).join('\n\n') || undefined;
   };
+  // An order already with the restaurant answers for itself ("already submitted"); one staff never
+  // closed does not.
+  const orderPlaced =
+    cart.status === 'submitted' &&
+    !(cart.orderId && input.latestOrder && orderLeftOpen(input.latestOrder, shownAt));
   for (const action of requested) {
+    // Closed: nothing is added, asked, reviewed or placed, whatever the AI or a button proposed.
+    // Anything else in the turn still runs (a cancel, a person asked for, the menu, a question).
+    if (
+      closed &&
+      ORDER_STEPS.has(action.type) &&
+      (!orderPlaced || action.type === 'clarify_item' || action.type === 'new_order')
+    ) {
+      // A review shown before closing is no longer confirmable.
+      if (cart.status === 'awaiting_confirmation') unreview(cart);
+      if (!refusedClosed) traces.push('closed_refused');
+      refusedClosed = true;
+      continue;
+    }
     traces.push(action.type);
     try {
       if (action.type === 'handoff') {
@@ -3679,7 +3795,8 @@ export function processTurn(
           products,
           lang,
           action.query,
-          !!modelResponse,
+          // Closed: the menu without "Tell me the item and quantity".
+          !!modelResponse || closed,
           input.menuLink,
           shownAt,
         );
@@ -3690,6 +3807,8 @@ export function processTurn(
         const problem = dealProblem(company, products, cart, lang, clock);
         if (problem) traces.push('deal_not_on');
         reply = cartSummary(company, products, cart, lang, problem);
+        // "Your order so far" while closed is not an order.
+        if (closed && cart.status !== 'submitted' && cart.items.length) sayClosed = true;
         continue;
       }
       if (action.type === 'new_order') {
@@ -3955,6 +4074,7 @@ export function processTurn(
           throw new Error('That item is not in your cart.');
         cart.items = remaining;
         invalidate(cart);
+        if (closed && cart.items.length) sayClosed = true;
         reply = say(
           lang,
           'Removed that item. Send “review” to see your cart.',
@@ -4042,21 +4162,9 @@ export function processTurn(
             'Order review kar ke wazeh taur par “confirm” likhein.',
           );
           // The review again right below, so the next "confirm" places this order: it says how,
-          // so the lead only says nothing was placed. While closed, the review itself says so.
-          reply = !cart.items.length
-            ? prompt
-            : isOpen(company, shownAt)
-              ? `${orderSafetyLine(lang, cart)}\n\n${showReview()}`
-              : showReview();
+          // so the lead only says nothing was placed.
+          reply = cart.items.length ? `${orderSafetyLine(lang, cart)}\n\n${showReview()}` : prompt;
           traces.push('unconfirmed_model_action_rejected');
-          continue;
-        }
-        if (!isOpen(company, shownAt)) {
-          reply =
-            closedText(company, lang, shownAt) +
-            say(lang, ' Your cart is saved.', ' آپ کی ٹوکری محفوظ ہے۔', ' Cart save hai.');
-          // Nothing stays confirmable while closed; once open, "confirm" shows a fresh review.
-          if (cart.status === 'awaiting_confirmation') unreview(cart);
           continue;
         }
         // Its deals are judged now, not when the review was shown.

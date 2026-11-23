@@ -60,26 +60,34 @@ function turn(
 describe('G7.5: a closed restaurant says so in its first reply, with when it opens', () => {
   const night = at(8); // Thursday 02:30 in Karachi
   const closedLine =
-    'We are currently closed. Ordering hours are 12:00–23:00. We open again today at 12:00. You can still look at the menu and add items; your cart will be saved.';
+    'We are currently closed. Ordering hours are 12:00–23:00. We open again today at 12:00.';
+  const notice = `${closedLine} You can look at the menu now and order when we open.`;
 
-  it('tells the customer before they build a cart, once', () => {
-    const first = turn(
-      hours(),
-      fresh(),
-      '2 chicken biryani',
-      night,
-      [{ type: 'add_item', productId: biryani.id, quantity: 2 }],
-      { text: 'Anything else?', askFor: 'anything_else' },
-    );
-    expect(first.reply.startsWith(`${closedLine}\n\n`)).toBe(true);
-    expect(first.reply).toContain('Added 2 × Chicken Biryani');
-    expect(first.conversation.cart.items).toHaveLength(1);
+  it('tells the customer in its first reply, once, and takes no order', () => {
+    const first = turn(hours(), fresh(), 'menu', night);
+    expect(first.reply.startsWith(`${notice}\n\n`)).toBe(true);
     expect(first.traces).toContain('closed_notice');
-    const second = turn(hours(), first.conversation, 'aur 1 naan', night);
+    // Another question is answered without saying it again.
+    const second = turn(hours(), first.conversation, 'menu', night);
     expect(second.reply).not.toContain('We are currently closed.');
     // The next night is a new closed period.
     const nextNight = turn(hours(), second.conversation, 'menu', at(32));
     expect(nextNight.reply.startsWith('We are currently closed.')).toBe(true);
+    // An order is refused, however often it is asked, and the AI's own wording is not sent.
+    const order = turn(
+      hours(),
+      second.conversation,
+      '2 chicken biryani',
+      night,
+      [{ type: 'add_item', productId: biryani.id, quantity: 2 }],
+      { text: 'All set. Anything else?', askFor: 'anything_else' },
+    );
+    expect(order.reply).toBe(
+      `${closedLine} We can’t take orders now, so this has not been ordered. Please message us again when we are open.`,
+    );
+    expect(order.conversation.cart.items).toHaveLength(0);
+    expect(order.traces).toContain('closed_refused');
+    expect(order.traces).not.toContain('add_item');
   });
 
   it('says when it opens next on a closed day, in the customer’s language', () => {
@@ -106,20 +114,20 @@ describe('G7.5: a closed restaurant says so in its first reply, with when it ope
     );
     const urdu = turn(inLanguage(hours(), 'ur'), fresh(), 'مینو', night);
     expect(urdu.reply.startsWith('ہم اس وقت بند ہیں۔')).toBe(true);
-    expect(urdu.reply).toContain('آپ پھر بھی مینو دیکھ کر چیزیں شامل کر سکتے ہیں');
+    expect(urdu.reply).toContain('آپ ابھی مینو دیکھ سکتے ہیں');
   });
 
-  it('adds nothing while open, to a review that already says it, or to a staff handoff', () => {
+  it('adds nothing while open, and says it once in a refusal', () => {
     const open = turn(hours(), fresh(), 'menu', now);
     expect(open.reply).not.toContain('closed');
-    let c = turn(hours(), fresh(), '2 chicken biryani', night).conversation;
-    c = turn(hours(), c, '', night, undefined, undefined, {
-      action: { type: 'set_details', fulfillment: 'pickup', customerName: 'Ali' },
-    }).conversation;
-    const review = c.messages.at(-1)!.text;
-    expect(review.split('We are currently closed.')).toHaveLength(2);
+    const refused = turn(hours(), fresh(), '2 chicken biryani', night);
+    expect(refused.reply.split('We are currently closed.')).toHaveLength(2);
+  });
+
+  it('tells a customer handed to staff when the team will reply', () => {
     const staff = turn(hours(), fresh(), 'staff', night);
     expect(staff.conversation.mode).toBe('human');
-    expect(staff.reply).not.toContain('We are currently closed.');
+    expect(staff.reply).toContain(`${closedLine} Our team will reply here once we are open.`);
+    expect(turn(hours(), fresh(), 'staff', now).reply).not.toContain('closed');
   });
 });

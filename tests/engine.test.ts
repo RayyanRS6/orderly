@@ -636,7 +636,7 @@ describe('order builder and sentences shared with the menu page', () => {
       openingHours: { start: '09:00', end: '10:00', days: [] },
     };
     expect(turn(reviewed(), 'confirm', undefined, products, closed).reply).toBe(
-      'We are currently closed. Ordering hours are 09:00–10:00. Your cart is saved.',
+      'We are currently closed. Ordering hours are 09:00–10:00. Your cart is saved, but nothing in it has been ordered. Send “review” when we are open.',
     );
     expect(closedText(closed, 'en')).toBe(
       'We are currently closed. Ordering hours are 09:00–10:00.',

@@ -447,7 +447,7 @@ export async function buildAgentFlow(
       },
       {
         label: 'Hours',
-        value: `${hours.start}–${hours.end} · ${
+        value: `${hours.start === hours.end ? 'Open 24 hours' : `${hours.start}–${hours.end}`} · ${
           hours.days.length === 7
             ? 'every day'
             : hours.days.map((day) => days[day]).join(', ') || 'no days'
@@ -465,7 +465,10 @@ export async function buildAgentFlow(
       'An answer that matches an approved question is sent word-for-word, allergy answers included.',
       'If no fact covers a question, the bot says it isn’t sure and hands off to staff. An allergy question without an approved answer gets a fixed safety notice and goes to staff.',
     ],
-    fixed: [paymentOptions(company), 'Orders can’t be confirmed while the restaurant is closed.'],
+    fixed: [
+      paymentOptions(company),
+      'While the restaurant is closed, the bot answers questions and shows the menu but takes no order, and says when you open.',
+    ],
     todo: businessComplete ? undefined : 'Add the business address and phone in Settings.',
   };
 
@@ -719,7 +722,9 @@ export async function buildAgentFlow(
       },
       { label: 'Browser alerts', value: 'Optional, while the dashboard is open' },
     ],
-    affects: ['Your handoff message is what customers see when a chat moves to staff.'],
+    affects: [
+      'Your handoff message is what customers see when a chat moves to staff. While you’re closed, they are told when you open instead.',
+    ],
     fixed: [
       'Staff replies in WhatsApp are also only possible within 24 hours of the customer’s message.',
     ],

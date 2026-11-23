@@ -312,43 +312,50 @@ describe('F37: only the pickup or delivery the restaurant can offer', () => {
   });
 });
 
-describe('G7.5: a review while closed is not confirmable', () => {
+describe('G7.5: nothing is confirmable while closed', () => {
   const closed: Company = { ...company, openingHours: { start: '09:00', end: '10:00', days: [] } };
+  // A cart started while open, with one step left when the restaurant closes.
+  const started = (restaurant = company) =>
+    turn(fresh(), '2 chicken biryani', { restaurant }).conversation;
 
-  it('shows the order with the closed notice and leaves the cart building', () => {
-    const c = reviewed(closed);
-    const reply = c.messages.at(-1)!.text;
-    expect(reply).toContain('Please review your order:');
-    expect(reply).toContain(
-      'We are currently closed. Ordering hours are 09:00–10:00. Your cart is saved. Send “review” when we are open.',
+  it('shows no review while closed, and keeps the cart for when it opens', () => {
+    const named = turn(started(), '', {
+      action: { type: 'set_details', fulfillment: 'pickup', customerName: 'Ali' },
+      restaurant: closed,
+    });
+    expect(named.reply).toBe(
+      'We are currently closed. Ordering hours are 09:00–10:00. Your cart is saved, but nothing in it has been ordered. Send “review” when we are open.',
     );
-    expect(reply).not.toContain('Reply “confirm”');
-    expect(c.cart.status).toBe('building');
-    expect(c.cart.reviewedRevision).toBeUndefined();
+    const c = named.conversation;
+    expect(c.cart.customerName).toBeUndefined();
+    const review = turn(c, 'review', { restaurant: closed });
+    expect(review.reply).not.toContain('Please review your order:');
+    expect(review.reply).not.toContain('Reply “confirm”');
+    expect(review.conversation.cart.status).toBe('building');
+    expect(review.conversation.cart.reviewedRevision).toBeUndefined();
     expect(turn(c, 'confirm', { restaurant: closed }).order).toBeUndefined();
-    // Once open, "confirm" shows a fresh review before anything is placed.
-    const open = turn(c, 'confirm');
-    expect(open.order).toBeUndefined();
-    expect(open.traces).toContain('fresh_confirmation_required');
+    // Once open, the saved cart is finished as usual.
+    const open = turn(review.conversation, '', {
+      action: { type: 'set_details', fulfillment: 'pickup', customerName: 'Ali' },
+    });
+    expect(open.reply).toContain('Please review your order:');
     expect(turn(open.conversation, 'confirm').order).toBeDefined();
   });
 
   it('says it in the customer’s language', () => {
     const roman = { ...closed, bot: published({ language: 'roman-ur' }) };
-    expect(reviewed(roman).messages.at(-1)!.text).toContain(
-      'Cart save hai. Jab hum khule hon to “review” likhein.',
+    expect(turn(started(roman), 'review', { restaurant: roman }).reply).toContain('band hain');
+    expect(turn(started(), 'review', { restaurant: roman }).reply).toContain(
+      'Aap ka cart save hai, magar abhi kuch order nahi hua. Jab hum khule hon to “review” likhein.',
     );
     const urdu = { ...closed, bot: published({ language: 'ur' }) };
-    expect(reviewed(urdu).messages.at(-1)!.text).toContain('ہمارے کھلنے پر “جائزہ” لکھیں۔');
+    expect(turn(started(), 'review', { restaurant: urdu }).reply).toContain(
+      'ہمارے کھلنے پر “جائزہ” لکھیں۔',
+    );
   });
 
-  it('answers an unclear confirm while closed with the closed review only', () => {
-    const c = turn(fresh(), '2 chicken biryani', { restaurant: closed }).conversation;
-    const named = turn(c, '', {
-      action: { type: 'set_details', fulfillment: 'pickup', customerName: 'Ali' },
-      restaurant: closed,
-    }).conversation;
-    const result = turn(named, 'what is the total?', {
+  it('answers an unclear confirm while closed with the closed words only', () => {
+    const result = turn(reviewed(), 'what is the total?', {
       actions: [{ type: 'confirm' }],
       response: model(),
       restaurant: closed,
@@ -363,8 +370,9 @@ describe('G7.5: a review while closed is not confirmable', () => {
     const c = reviewed();
     const refused = turn(c, 'confirm', { restaurant: closed });
     expect(refused.reply).toBe(
-      'We are currently closed. Ordering hours are 09:00–10:00. Your cart is saved.',
+      'We are currently closed. Ordering hours are 09:00–10:00. Your cart is saved, but nothing in it has been ordered. Send “review” when we are open.',
     );
+    expect(refused.order).toBeUndefined();
     expect(refused.conversation.cart.status).toBe('building');
     const next = turn(refused.conversation, 'haan', { actions: [{ type: 'confirm' }] });
     expect(next.order).toBeUndefined();

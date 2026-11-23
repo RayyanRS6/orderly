@@ -13,7 +13,7 @@ describe('the closed notice and late messages', () => {
     const owner = withBot(hours, { greeting });
     const result = turn(owner, fresh(), 'salam', { now: night });
     expect(result.reply).toBe(
-      `${greeting}\n\n${closedText(owner, 'roman-ur', night)} Aap phir bhi menu dekh kar items add kar sakte hain, cart save rahega.`,
+      `${greeting}\n\n${closedText(owner, 'roman-ur', night)} Aap abhi menu dekh sakte hain, order hamare khulne par dein.`,
     );
     expect(result.traces).toContain('closed_notice');
   });
@@ -23,7 +23,7 @@ describe('the closed notice and late messages', () => {
     const cancelled = turn(hours, c, 'cancel', { now: night });
     expect(cancelled.reply).toContain('We are currently closed.');
     expect(cancelled.reply).toContain('Your cart has been cancelled.');
-    expect(cancelled.reply).not.toContain('your cart will be saved');
+    expect(cancelled.reply).not.toContain('cart is saved');
   });
 
   it('words opening hours and status age for when a late message is answered', () => {

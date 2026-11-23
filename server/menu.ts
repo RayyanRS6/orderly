@@ -39,7 +39,13 @@ import {
   offeredFulfillment,
   paymentMethods,
 } from '../src/shared/bot.js';
-import { closedText, createConversation, isOpen, noticeLanguage } from '../src/domain/engine.js';
+import {
+  closedRefusal,
+  createConversation,
+  emptyCart,
+  isOpen,
+  noticeLanguage,
+} from '../src/domain/engine.js';
 import { withDisclosure } from '../src/domain/disclosure.js';
 import { buildWebOrder, MenuOrderError, quoteWebCart } from '../src/domain/web-order.js';
 import { automationPaused, env } from './config.js';
@@ -879,7 +885,11 @@ export async function redeemMenuDraft(
     if (!(error instanceof MenuOrderError)) throw error;
     // Bot off, staff and blocked chats never get here (handleTurn checks first).
     if (error.code === 'closed')
-      return refuse(closedText(company, lang), 'Order code sent while closed.');
+      return refuse(
+        // The order is the code's, not what is in the chat's cart.
+        closedRefusal(company, lang, emptyCart(), now),
+        'Order code sent while closed.',
+      );
     // Nothing changed, so opening the menu again would not help.
     if (error.code === 'too_large')
       return refuse(

@@ -21,6 +21,7 @@ import { besideFixThis } from '../shared/sheets-problems';
 import { MODEL_DEFAULTS } from '../shared/models';
 import { useAction, useWorkspace } from '../lib/workspace';
 import { pausedOnly, savedCompany } from '../lib/settings';
+import { hoursProblem, hoursSummary, isAllDay, savedHours } from '../lib/opening-hours';
 import {
   PAYMENT_METHODS,
   PAYMENT_METHODS_HINT,
@@ -92,6 +93,8 @@ export function Settings() {
   const { pending, run } = useAction();
   const edits = useRef(0);
   const [draft, setDraft] = useState<SettingsDraft>(() => draftFrom(data.company));
+  // Chosen by name, never by two equal times: while typing, equal times are only a mistake.
+  const [allDay, setAllDay] = useState(() => isAllDay(draftFrom(data.company).openingHours));
   const [saved, setSaved] = useState(false);
   const [dirty, setDirty] = useState(false);
   // "Reload settings" after a save refused as made from an older copy: start again from the
@@ -102,11 +105,17 @@ export function Settings() {
     reloads.current = settingsReloads;
     edits.current++;
     setDraft(draftFrom(data.company));
+    setAllDay(isAllDay(draftFrom(data.company).openingHours));
     setSaved(false);
     setDirty(false);
   }, [settingsReloads]);
   const daysLabel = useId();
+  const hoursNote = useId();
   const paymentsLabel = useId();
+  const closesAt = useRef<HTMLInputElement>(null);
+  const hoursError = hoursProblem(draft.openingHours, allDay);
+  // The browser stops the save, focuses the closing time and says why.
+  useEffect(() => closesAt.current?.setCustomValidity(hoursError), [hoursError]);
   // Missing (a business from before the setting) means cash only, as before.
   const payments = paymentMethodsOf(draft);
   const canEdit = data.role !== 'staff';
@@ -136,7 +145,10 @@ export function Settings() {
           e.preventDefault();
           const before = edits.current;
           void run('settings', async () => {
-            const body = settingsSaveBody(draft);
+            const body = settingsSaveBody({
+              ...draft,
+              openingHours: savedHours(draft.openingHours, allDay),
+            });
             const path = `/companies/${draft.id}`;
             const result = await mutate(path, body, 'PUT', { success: 'Settings saved.' });
             const company = savedCompany(path, 'PUT', result, draft.id);
@@ -146,6 +158,7 @@ export function Settings() {
             // revision. Otherwise the form shows what the server saved.
             if (edits.current === before) {
               if (company) setDraft(draftFrom(company));
+              if (company) setAllDay(isAllDay(draftFrom(company).openingHours));
               setSaved(true);
               setDirty(false);
             } else if (company)
@@ -192,6 +205,7 @@ export function Settings() {
                   className="input"
                   type="time"
                   required
+                  disabled={!canEdit || allDay}
                   value={draft.openingHours?.start || '09:00'}
                   onChange={(e) =>
                     update({
@@ -207,14 +221,15 @@ export function Settings() {
                   }
                 />
               </Field>
-              <Field
-                label="Closes at"
-                hint="Matching opening and closing times means open 24 hours on selected days."
-              >
+              <Field label="Closes at">
                 <input
+                  ref={closesAt}
                   className="input"
                   type="time"
                   required
+                  disabled={!canEdit || allDay}
+                  aria-invalid={!!hoursError}
+                  aria-describedby={hoursNote}
                   value={draft.openingHours?.end || '22:00'}
                   onChange={(e) =>
                     update({
@@ -230,6 +245,30 @@ export function Settings() {
                   }
                 />
               </Field>
+              <div className="space-y-3 sm:col-span-2">
+                <label className="flex w-fit cursor-pointer items-center gap-3 text-[13px] font-medium">
+                  <input
+                    className="toggle"
+                    type="checkbox"
+                    checked={allDay}
+                    onChange={(e) => {
+                      setAllDay(e.target.checked);
+                      update({});
+                    }}
+                  />
+                  Open 24 hours
+                </label>
+                <p
+                  id={hoursNote}
+                  role="status"
+                  className={cn(
+                    'text-xs leading-relaxed',
+                    hoursError ? 'font-semibold text-red-700' : 'text-stone-500',
+                  )}
+                >
+                  {hoursError || hoursSummary(draft.openingHours, allDay)}
+                </p>
+              </div>
               <div className="sm:col-span-2">
                 <span id={daysLabel} className="field-label">
                   Open days · Asia/Karachi
